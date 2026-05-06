@@ -107,9 +107,10 @@ class Executor:
                 ssa_values[op.outputs[0]] = result
 
         if self._function.outputs:
-            last_output_name = self._function.outputs[-1][0]
-            if last_output_name in ssa_values:
-                return ssa_values[last_output_name]
+            # Return the first output (typically logits); rest are KV cache tensors
+            first_output_name = self._function.outputs[0][0]
+            if first_output_name in ssa_values:
+                return ssa_values[first_output_name]
 
         if ssa_values:
             return list(ssa_values.values())[-1]

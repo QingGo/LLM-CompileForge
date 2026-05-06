@@ -22,6 +22,7 @@ from compiler.ir import IrModule
 from engine.batch import GenerationResult
 from engine.block_manager import BlockManager
 from engine.executor import Executor
+from engine.sampler import sample
 from engine.scheduler import Scheduler
 from hal.interface import OpExecutor
 
@@ -99,12 +100,17 @@ class LLMEngine:
     # ── Core Loop ───────────────────────────────────────────
 
     def step(self) -> list[GenerationResult]:
-        """Execute one scheduling cycle.
+        """Execute one scheduling cycle — per-request forward pass.
+
+        Each request is processed independently through executor.forward()
+        with input shape [1, n_tokens]. This works with both static-shape
+        compiled models (fed exact compile-time shapes) and dynamic-seq
+        compiled models (accepting any [1, N] input).
 
         Returns a list of GenerationResult, one per request that produced output.
         """
         batch = self.scheduler.schedule(self.block_manager)
-        if batch.is_empty or batch.input_ids is None:
+        if batch.is_empty or not batch.request_input_ids:
             return []
 
         # Configure PagedAttention if KV cache is available
@@ -119,8 +125,50 @@ class LLMEngine:
                 head_dim=self._head_dim,
             )
 
-        logits = self.executor.forward(batch.input_ids, positions=batch.positions)
-        results = self.scheduler.process_outputs(logits, batch)
+        results: list[GenerationResult] = []
+        for i, req in enumerate(batch.requests):
+            req_input = batch.request_input_ids[i]
+            req_pos = batch.request_positions[i]
+            # Reshape [n] → [1, n] to match model's expected input layout
+            if req_input.dim() == 1:
+                req_input = req_input.unsqueeze(0)
+            if req_pos.dim() == 1:
+                req_pos = req_pos.unsqueeze(0)
+
+            logits = self.executor.forward(req_input, positions=req_pos)
+
+            # Take the last position's logits for next-token sampling
+            if logits.dim() >= 3:
+                req_logits = logits[0:1, -1, :]  # [batch, seq, vocab] → [1, vocab]
+            else:
+                req_logits = logits  # already [1, vocab] or [batch, vocab]
+
+            sp = req.sampling_params
+            token_id = sample(
+                req_logits,
+                temperature=sp.temperature,
+                top_p=sp.top_p,
+                top_k=sp.top_k,
+            )
+            token_val = int(token_id.item())
+            req.append_token(token_val)
+
+            is_finished = False
+            if len(req.output_tokens) >= sp.max_tokens:
+                is_finished = True
+            if token_val in sp.stop_token_ids:
+                is_finished = True
+            if is_finished:
+                req.mark_finished()
+
+            results.append(
+                GenerationResult(
+                    request_id=req.request_id,
+                    new_tokens=[token_val],
+                    is_finished=is_finished,
+                )
+            )
+
         return results
 
     # ── Convenience API ─────────────────────────────────────

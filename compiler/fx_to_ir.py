@@ -17,17 +17,83 @@ from compiler.ir import IrFunction, IrModule, IrOp, IrType
 
 # ── Aten → HAL operator mapping table ───────────────────────
 
+def _symint_to_int(val: Any) -> int | None:
+    """Convert a SymInt to concrete int if possible, else return None."""
+    if isinstance(val, torch.SymInt):
+        if hasattr(val, "node") and val.node is not None:
+            hint = getattr(val.node, "hint", None)
+            if hint is not None:
+                return int(hint)
+        return None
+    if isinstance(val, int):
+        return val
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _symint_for_view(val: Any) -> int:
+    """Convert view shape element: concrete int or -1 for dynamic dim."""
+    concrete = _symint_to_int(val)
+    if concrete is not None:
+        return concrete
+    return -1
+
+
+def _resolve_shape_tuple(raw_shape: Any) -> tuple[int | None, ...]:
+    """Convert raw shape (possibly with SymInt) to tuple of int or None."""
+    result: list[int | None] = []
+    for d in raw_shape:
+        result.append(_symint_to_int(d))
+    return tuple(result)
+
+
 _ATEN_TO_HAL: dict[str, str] = {
     "aten.add.Tensor": "add",
     "aten.add.Scalar": "add",
     "aten.add": "add",
+    "aten.add_.Tensor": "add",
     "aten.mul.Tensor": "mul",
     "aten.mul.Scalar": "mul",
     "aten.mul": "mul",
+    "aten.mul_.Tensor": "mul",
+    "aten.mul_.Scalar": "mul",
+    # Built-in Python ops that appear in FX graphs
+    "add": "add",
+    "getitem": "sym_size",
+    "neg": "neg",
+    "rsqrt": "rsqrt",
+    "mean": "mean",
+    "pow": "pow",
+    "gt": "identity",
+    "triu": "triu",
+    "sym_size": "sym_size",
+    "_assert_tensor_metadata": "identity",
+    # Additional aten overloads
+    "aten.neg.default": "neg",
+    "aten.neg": "neg",
+    "aten.rsqrt.default": "rsqrt",
+    "aten.rsqrt": "rsqrt",
+    "aten.pow.Tensor_Scalar": "pow",
+    "aten.pow": "pow",
+    "aten.mean.dim": "mean",
+    "aten.mean": "mean",
+    "aten.gt.Tensor": "identity",
+    "aten.gt": "identity",
+    "aten.triu.default": "triu",
+    "aten.triu": "triu",
+    "aten.sym_size.int": "sym_size",
+    "aten.sym_size": "sym_size",
+    "aten._assert_tensor_metadata.default": "identity",
+    "aten._assert_tensor_metadata": "identity",
+    # Context manager wrappers — skipped, output mapped to input_ids for sym_size
+    "wrap_with_set_grad_enabled": "_skip_wrap",
+    "aten.arange.start": "arange",
     "aten.matmul": "matmul",
     "aten.matmul.default": "matmul",
-    "aten.linear": "matmul",
-    "aten.linear.default": "matmul",
+    "aten.linear": "linear",
+    "aten.linear.default": "linear",
     "aten.mm": "matmul",
     "aten.mm.default": "matmul",
     "aten.bmm": "matmul",
@@ -121,6 +187,8 @@ def _map_aten_op(target: Any) -> str | None:
         target_str = target
     elif hasattr(target, "name"):
         target_str = target.name()  # pyright: ignore[reportUnknownMemberType]
+    elif hasattr(target, "__name__"):
+        target_str = target.__name__  # built-in functions (operator.add, etc.)
     else:
         target_str = str(target)
     # Normalize: OpOverload.name() returns 'aten::view' — convert '::' → '.'
@@ -134,15 +202,12 @@ def _map_aten_op(target: Any) -> str | None:
         # Only strip if the last part looks like an overload (e.g. 'int', 'default', 'Tensor')
         overload_candidates = {"default", "int", "float", "str", "bool", "complex",
                                "Scalar", "ScalarList", "Tensor", "dimname", "layout",
-                               "device", "memory_format", "generator"}
+                               "device", "memory_format", "generator", "dim", "start",
+                               "other", "dtype", "dtype_layout", "values", "copy"}
         if len(parts) == 2 and parts[1] in overload_candidates:
             base = parts[0]
             if base in _ATEN_TO_HAL:
                 return _ATEN_TO_HAL[base]
-            # Try matching keys that start with 'base.'
-            for aten_key, hal_name in _ATEN_TO_HAL.items():
-                if aten_key == base or aten_key.startswith(base + "."):
-                    return hal_name
     return None
 
 
@@ -198,7 +263,7 @@ def fx_graph_to_ir(
                 break
         if node is not None and "val" in node.meta:
             fake = node.meta["val"]
-            shape: tuple[int | None, ...] = tuple(fake.shape)
+            shape = _resolve_shape_tuple(fake.shape)
             dtype = str(fake.dtype).replace("torch.", "")
             func_inputs.append((inp_name, IrType(dtype=dtype, shape=shape)))
         else:
@@ -208,7 +273,8 @@ def fx_graph_to_ir(
     weight_name_map: dict[str, str] = {}
     if hasattr(sig, "input_specs"):
         for spec in sig.input_specs:
-            if spec.kind.value in (2,):  # InputKind.PARAMETER
+            # Include PARAMETER (value 2), BUFFER, and CONSTANT_TENSOR spec kinds
+            if spec.kind.value in (2, 3, 4):
                 placeholder_name = spec.arg.name
                 target_path = spec.target
                 if target_path:
@@ -224,6 +290,12 @@ def fx_graph_to_ir(
     for name, tensor in state_dict.items():
         clean_name = name.replace(".", "_")
         weights[clean_name] = tensor
+    # Also include exported program constants (e.g., lifted tensors)
+    if hasattr(program, "constants"):
+        for name, tensor in program.constants.items():
+            clean_name = name.replace(".", "_")
+            if clean_name not in weights:
+                weights[clean_name] = tensor
 
     # ── Phase 3: walk operations ────────────────────────────
     ir_ops: list[IrOp] = []
@@ -252,6 +324,10 @@ def fx_graph_to_ir(
             hal_op = _map_aten_op(node.target)
             if hal_op is None:
                 continue
+            if hal_op == "_skip_wrap":
+                # wrap_with_set_grad_enabled: skip, redirect output to input_ids
+                ssa_map[node.name] = func_inputs[0][0] if func_inputs else node.name
+                continue
 
             # Collect input SSA names and extract non-tensor kwargs
             input_names: list[str] = []
@@ -262,26 +338,59 @@ def fx_graph_to_ir(
                 "transpose": [1, 2],  # dim0, dim1
                 "unsqueeze": [1],  # dim
                 "embedding": [2],  # padding_idx
+                "full_like": [1],  # fill_value = args[1]
+                "triu": [1],  # diagonal = args[1]
+                "sym_size": [1],  # dim = args[1]
             }
             skip_positions: list[int] = _scalar_int_positions.get(hal_op, [])
+            # Map position → kwarg name for scalar attributes
+            _scalar_kwarg_names: dict[str, dict[int, str]] = {
+                "full_like": {1: "fill_value"},
+                "triu": {1: "diagonal"},
+                "sym_size": {1: "dim"},
+                "softmax": {1: "dim"},
+                "unsqueeze": {1: "dim"},
+                "transpose": {1: "dim0", 2: "dim1"},
+            }
+            scalar_kwargs: dict[int, str] = _scalar_kwarg_names.get(hal_op, {})
 
             for i, arg in enumerate(node.args):
                 if isinstance(arg, torch.fx.Node):
                     input_names.append(ssa_map.get(arg.name, arg.name))
                 elif isinstance(arg, (int, float)) and not isinstance(arg, bool):
                     if i in skip_positions:
-                        continue  # This scalar is a positional attribute, not an input
+                        # Extract scalar as a kwarg
+                        kwarg_name = scalar_kwargs.get(i)
+                        if kwarg_name:
+                            extra_kwargs.setdefault(kwarg_name, arg)
+                        continue
                     const_name = f"_const_{name_counter}"
                     name_counter += 1
                     weights[const_name] = torch.tensor(arg)
                     input_names.append(const_name)
                 elif isinstance(arg, (list, tuple)):
                     if hal_op == "view" and "shape" not in extra_kwargs:
-                        extra_kwargs["shape"] = tuple(arg)
+                        resolved: list[str | int] = []
+                        for s in arg:
+                            if isinstance(s, torch.fx.Node):
+                                ssa_name = ssa_map.get(s.name, s.name)
+                                resolved.append(ssa_name)
+                                input_names.append(ssa_name)
+                            else:
+                                resolved.append(_symint_for_view(s))
+                        extra_kwargs["shape"] = tuple(resolved)
                     elif hal_op == "layer_norm" and "normalized_shape" not in extra_kwargs:
                         extra_kwargs["normalized_shape"] = tuple(arg)
                     elif hal_op in ("ones_like", "full_like") and "shape" not in extra_kwargs:
-                        extra_kwargs["shape"] = tuple(arg)
+                        shape_resolved: list[str | int] = []
+                        for s in arg:
+                            if isinstance(s, torch.fx.Node):
+                                ssa_name = ssa_map.get(s.name, s.name)
+                                shape_resolved.append(ssa_name)
+                                input_names.append(ssa_name)
+                            else:
+                                shape_resolved.append(_symint_to_int(s) or 1)
+                        extra_kwargs["shape"] = tuple(shape_resolved)
 
             kwargs = _extract_node_kwargs(node)
             kwargs.update(extra_kwargs)
@@ -297,13 +406,13 @@ def fx_graph_to_ir(
                     kwargs["dim0"] = int_args[0]
                     kwargs["dim1"] = int_args[1]
             if hal_op == "softmax" and "dim" not in kwargs:
-                int_args = [a for a in node.args if isinstance(a, int) and not isinstance(a, bool)]
+                int_args = [a for a in node.args if isinstance(a, (int, torch.SymInt)) and not isinstance(a, bool)]  # type: ignore[misc]
                 if int_args:
-                    kwargs["dim"] = int_args[0]
+                    kwargs["dim"] = _symint_to_int(int_args[0]) or int_args[0]
             if hal_op == "unsqueeze" and "dim" not in kwargs:
-                int_args = [a for a in node.args if isinstance(a, int) and not isinstance(a, bool)]
+                int_args = [a for a in node.args if isinstance(a, (int, torch.SymInt)) and not isinstance(a, bool)]  # type: ignore[misc]
                 if int_args:
-                    kwargs["dim"] = int_args[0]
+                    kwargs["dim"] = _symint_to_int(int_args[0]) or int_args[0]
 
             output_name = node.name or f"_out_{name_counter}"
             name_counter += 1
@@ -320,7 +429,7 @@ def fx_graph_to_ir(
                     out_shape: tuple[int | None, ...] = ()
                     if "val" in arg.meta:
                         fake = arg.meta["val"]
-                        out_shape = tuple(fake.shape)
+                        out_shape = _resolve_shape_tuple(fake.shape)
                         out_dtype = str(fake.dtype).replace("torch.", "")
                     func_outputs.append((out_name, IrType(dtype=out_dtype, shape=out_shape)))
             continue

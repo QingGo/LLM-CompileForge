@@ -28,55 +28,49 @@ class FuseSiLU(Pass):
             for out in op.outputs:
                 producer_map[out] = op
 
-        fused_ops: list[IrOp] = []
-        removed_outputs: set[str] = set()
+        # Identify silu outputs that are consumed by mul ops
+        silu_by_mul: set[str] = set()  # silu outputs consumed by a mul
+        mul_to_other: dict[str, tuple[list[str], list[str]]] = {}  # mul output -> (silu_inputs, other_inputs)
 
         for op in func.ops:
-            if any(out in removed_outputs for out in op.outputs):
+            if op.name == "mul" and len(op.inputs) >= 2 and op.outputs:
+                for inp in op.inputs:
+                    if inp in producer_map and producer_map[inp].name == "silu":
+                        silu_op = producer_map[inp]
+                        silu_by_mul.add(silu_op.outputs[0])
+                        other = [i for i in op.inputs if i != inp]
+                        mul_to_other[op.outputs[0]] = (silu_op.inputs, other)
+                        break
+
+        # Rebuild ops list: skip consumed silu, replace mul with fused
+        new_ops: list[IrOp] = []
+        for op in func.ops:
+            if op.name == "silu" and op.outputs and op.outputs[0] in silu_by_mul:
                 continue
+            if op.name == "mul" and op.outputs and op.outputs[0] in mul_to_other:
+                silu_inputs, other_inputs = mul_to_other[op.outputs[0]]
+                new_ops.append(IrOp(
+                    name="fused_silu_mul",
+                    inputs=silu_inputs + other_inputs,
+                    outputs=op.outputs,
+                    attributes=op.attributes,
+                ))
+                continue
+            new_ops.append(op)
 
-            # Pattern: silu produces value A; mul consumes A and B → A * B
-            if op.name == "silu" and len(op.outputs) >= 1:
-                silu_out = op.outputs[0]
-                mul_op = FuseSiLU._find_consumer(silu_out, "mul", producer_map)
-                if mul_op:
-                    # Determine which mul input is the silu output, which is the gate
-                    other_inputs = [inp for inp in mul_op.inputs if inp != silu_out]
-                    fused = IrOp(
-                        name="fused_silu_mul",
-                        inputs=op.inputs + other_inputs,
-                        outputs=mul_op.outputs,
-                        attributes=mul_op.attributes,
-                    )
-                    fused_ops.append(fused)
-                    removed_outputs.update(op.outputs)
-                    removed_outputs.update(mul_op.outputs)
-                    continue
-
-            fused_ops.append(op)
-
-        # Remap inputs
-        fused_outputs: set[str] = {out for o in fused_ops for out in o.outputs}
-        for op in fused_ops:
-            new_inputs: list[str] = []
-            for inp in op.inputs:
-                if inp in removed_outputs and inp not in fused_outputs:
-                    found = False
-                    for fo in fused_ops:
-                        if inp in fo.outputs:
-                            new_inputs.append(fo.outputs[0])
-                            found = True
-                            break
-                    if found:
-                        continue
-                new_inputs.append(inp)
-            op.inputs = new_inputs
-
-        func.ops = fused_ops
+        func.ops = new_ops
 
     @staticmethod
     def _find_consumer(output_name: str, op_name: str, producer_map: dict[str, IrOp]) -> IrOp | None:
         for op in producer_map.values():
             if output_name in op.inputs and op.name == op_name:
+                return op
+        return None
+
+    @staticmethod
+    def _find_producer(output_name: str, op_name: str, producer_map: dict[str, IrOp]) -> IrOp | None:
+        if output_name in producer_map:
+            op = producer_map[output_name]
+            if op.name == op_name:
                 return op
         return None

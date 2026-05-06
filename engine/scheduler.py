@@ -209,7 +209,7 @@ class Scheduler:
         if not batch_requests:
             return SequenceGroup()
 
-        # Flatten tensors
+        # Flatten tensors (for backward compatibility / batch forward)
         input_ids = torch.cat(input_ids_list) if input_ids_list else torch.tensor([], dtype=torch.long)
         positions = torch.cat(positions_list) if positions_list else torch.tensor([], dtype=torch.long)
 
@@ -217,6 +217,8 @@ class Scheduler:
             requests=batch_requests,
             input_ids=input_ids,
             positions=positions,
+            request_input_ids=input_ids_list,
+            request_positions=positions_list,
             block_tables=block_tables,
         )
 

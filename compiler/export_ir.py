@@ -16,6 +16,7 @@ def export_model(
     model: torch.nn.Module,
     example_args: tuple[Any, ...] | None = None,
     example_kwargs: dict[str, Any] | None = None,
+    dynamic_shapes: dict[str, Any] | None = None,
 ) -> ExportedProgram:
     """Export a PyTorch model to ExportedProgram via torch.export.
 
@@ -28,6 +29,8 @@ def export_model(
         model: The PyTorch nn.Module to export.
         example_args: Positional arguments for a dummy forward call.
         example_kwargs: Keyword arguments for a dummy forward call.
+        dynamic_shapes: Shape constraints for dynamic dimensions.
+            E.g. {"input_ids": {1: Dim("seq")}} for dynamic seq length.
 
     Returns:
         ExportedProgram ready for IR conversion.
@@ -37,7 +40,7 @@ def export_model(
     """
     args = example_args or ()
     kwargs = example_kwargs or {}
-    return torch.export.export(model, args, kwargs=kwargs)
+    return torch.export.export(model, args, kwargs=kwargs, dynamic_shapes=dynamic_shapes)
 
 
 def get_signature(program: ExportedProgram) -> dict[str, Any]:

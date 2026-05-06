@@ -49,6 +49,7 @@ def compile_opt125m(output_dir: str) -> None:
     _patch_transformers_torch()
 
     from compiler.pipeline import default_pipeline
+    from torch.export import Dim
     from transformers.models.opt.configuration_opt import OPTConfig  # type: ignore[import-untyped]
     from transformers.models.opt.modeling_opt import OPTForCausalLM  # type: ignore[import-untyped]
 
@@ -70,14 +71,15 @@ def compile_opt125m(output_dir: str) -> None:
     model.load_state_dict(state_dict, strict=False)
     model.eval()
 
-    example_input = torch.randint(0, 50272, (1, 1), dtype=torch.long)
-    print(f"Exporting with example input shape: {list(example_input.shape)} (single token)")
+    example_input = torch.randint(0, 50272, (1, 4), dtype=torch.long)
+    print(f"Exporting with example input shape: {list(example_input.shape)} (dynamic seq)")
 
     pipeline = default_pipeline()
     ir_module = pipeline.compile(
         model,
         example_args=(example_input,),
         output_dir=output_dir,
+        dynamic_shapes={"input_ids": {1: Dim("seq")}},
     )
 
     op_count = len(ir_module.main.ops)
@@ -94,6 +96,7 @@ def compile_tiny_llama(output_dir: str) -> None:
     _patch_transformers_torch()
 
     from compiler.pipeline import default_pipeline
+    from torch.export import Dim
     from transformers.models.llama.configuration_llama import LlamaConfig  # type: ignore[import-untyped]
     from transformers.models.llama.modeling_llama import LlamaForCausalLM  # type: ignore[import-untyped]
 
@@ -124,6 +127,7 @@ def compile_tiny_llama(output_dir: str) -> None:
         model,
         example_args=(example_input,),
         output_dir=output_dir,
+        dynamic_shapes={"input_ids": {1: Dim("seq")}},
     )
 
     op_count = len(ir_module.main.ops)

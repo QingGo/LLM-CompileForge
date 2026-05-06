@@ -46,6 +46,7 @@ class CompilationPipeline:
         example_args: tuple[Any, ...] | None = None,
         example_kwargs: dict[str, Any] | None = None,
         output_dir: str | None = None,
+        dynamic_shapes: dict[str, Any] | None = None,
     ) -> IrModule:
         """Run the full compilation pipeline.
 
@@ -60,6 +61,7 @@ class CompilationPipeline:
             example_args: Dummy inputs for tracing.
             example_kwargs: Dummy kwargs for tracing.
             output_dir: If set, serialize the compiled artifact to this directory.
+            dynamic_shapes: Shape constraints for torch.export dynamic shapes.
 
         Returns:
             The optimized IrModule.
@@ -68,7 +70,7 @@ class CompilationPipeline:
             RuntimeError: If torch.export fails.
         """
         # Step 1: export
-        program = export_model(model, example_args, example_kwargs)
+        program = export_model(model, example_args, example_kwargs, dynamic_shapes=dynamic_shapes)
 
         # Step 2: convert to IR
         module = fx_graph_to_ir(program)

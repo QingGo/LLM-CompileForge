@@ -85,9 +85,12 @@ class SequenceGroup:
     """
 
     requests: list[Request] = field(default_factory=list)
-    # Flattened tensors across all requests in the batch
+    # Flattened tensors across all requests in the batch (batch forward, legacy)
     input_ids: torch.Tensor | None = None
     positions: torch.Tensor | None = None
+    # Per-request tensors (for per-request forward, aligned with requests list)
+    request_input_ids: list[torch.Tensor] = field(default_factory=list)
+    request_positions: list[torch.Tensor] = field(default_factory=list)
     # request_id → list of physical block IDs (PagedAttention KV cache)
     block_tables: dict[str, list[int]] = field(default_factory=dict)
 

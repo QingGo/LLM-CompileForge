@@ -69,6 +69,12 @@ class PyTorchBackend(OpExecutor):
     def _op_matmul(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         return torch.matmul(inputs[0], inputs[1])
 
+    def _op_linear(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        x = inputs[0]
+        w = inputs[1]
+        bias = inputs[2] if len(inputs) > 2 else None
+        return torch.nn.functional.linear(x, w, bias)
+
     def _op_add(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         return torch.add(inputs[0], inputs[1])
 
@@ -125,7 +131,12 @@ class PyTorchBackend(OpExecutor):
 
     def _op_cat(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         dim = kwargs.get("dim", 0)
-        return torch.cat(inputs, dim=dim)
+        resolved = []
+        for t in inputs:
+            if t.ndim == 0:
+                t = t.unsqueeze(0)
+            resolved.append(t)
+        return torch.cat(resolved, dim=dim)
 
     def _op_slice(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         x = inputs[0]
@@ -138,12 +149,22 @@ class PyTorchBackend(OpExecutor):
         return x[tuple(slicing)]
 
     def _op_view(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
-        shape = kwargs["shape"]
-        resolved = list(shape)
+        raw_shape = kwargs["shape"]
+        x = inputs[0]
+        # Separate shape dim inputs (SSA name references) from the main tensor
+        dim_inputs = list(inputs[1:])
+        resolved = []
+        for s in raw_shape:
+            if isinstance(s, str) and dim_inputs:
+                resolved.append(int(dim_inputs.pop(0).item()))
+            elif isinstance(s, int):
+                resolved.append(s)
+            else:
+                resolved.append(1)
         # Resolve -1 dimensions
         if -1 in resolved:
             neg_idx = resolved.index(-1)
-            total_elements = inputs[0].numel()
+            total_elements = x.numel()
             product_other = 1
             for i, s in enumerate(resolved):
                 if i != neg_idx:
@@ -154,18 +175,17 @@ class PyTorchBackend(OpExecutor):
                 resolved[neg_idx] = total_elements // product_other
         else:
             # No -1 in shape — if sizes don't match, compute a new leading dim
-            total_elements = inputs[0].numel()
+            total_elements = x.numel()
             product = 1
             for s in resolved:
                 product *= s
             if product != total_elements:
-                # Compute a new first dimension to match actual size
                 remaining = 1
                 for s in resolved[1:]:
                     remaining *= s
                 if remaining > 0 and total_elements % remaining == 0:
                     resolved[0] = total_elements // remaining
-        return inputs[0].reshape(*resolved)
+        return x.reshape(*resolved)
 
     def _op_identity(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         return inputs[0]
@@ -180,6 +200,9 @@ class PyTorchBackend(OpExecutor):
 
     def _op_unsqueeze(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         dim = kwargs.get("dim", 0)
+        ndim = inputs[0].ndim
+        if dim > ndim:
+            dim = ndim
         return inputs[0].unsqueeze(dim)
 
     def _op_sub(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
@@ -194,17 +217,50 @@ class PyTorchBackend(OpExecutor):
         return inputs[0]
 
     def _op_ones_like(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        shape_spec = kwargs.get("shape", (1,))
+        if isinstance(shape_spec, (list, tuple)):
+            resolved: list[int] = []
+            dim_inputs = list(inputs)
+            for s in shape_spec:
+                if isinstance(s, str) and dim_inputs:
+                    resolved.append(int(dim_inputs.pop(0).item()))
+                elif isinstance(s, int):
+                    resolved.append(s)
+                else:
+                    resolved.append(1)
+            if resolved:
+                return torch.ones(resolved, dtype=torch.float32)
         if inputs:
             return torch.ones_like(inputs[0])
-        shape = kwargs.get("shape", (1,))
+        shape = tuple(shape_spec) if isinstance(shape_spec, (list, tuple)) else (1,)
         return torch.ones(shape, dtype=torch.float32)
 
     def _op_full_like(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
-        if inputs:
-            value = kwargs.get("fill_value", 0)
+        shape_spec = kwargs.get("shape", (1,))
+        value = kwargs.get("fill_value", 0)
+        # Shape may contain SSA name strings (dynamic dims) resolved via inputs
+        if isinstance(shape_spec, (list, tuple)):
+            resolved: list[int] = []
+            dim_inputs = list(inputs)
+            for s in shape_spec:
+                if isinstance(s, str) and dim_inputs:
+                    resolved.append(int(dim_inputs.pop(0).item()))
+                elif isinstance(s, int):
+                    resolved.append(s)
+                else:
+                    resolved.append(1)
+            if resolved:
+                return torch.full(resolved, value, dtype=torch.float32)
+        # Fallback: use inputs as template (original full_like behavior)
+        is_simple = not any(
+            isinstance(s, str) for s in (
+                shape_spec if isinstance(shape_spec, (list, tuple)) else ()
+            )
+        )
+        if inputs and is_simple:
             return torch.full_like(inputs[0], value)
-        shape = kwargs.get("shape", (1,))
-        return torch.full(shape, 0, dtype=torch.float32)
+        shape = tuple(shape_spec) if isinstance(shape_spec, (list, tuple)) else (1,)
+        return torch.full(shape, value, dtype=torch.float32)
 
     def _op_arange(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         if inputs:
@@ -213,6 +269,35 @@ class PyTorchBackend(OpExecutor):
             end = kwargs.get("end", 1)
         start = kwargs.get("start", 0)
         return torch.arange(start, end, dtype=inputs[0].dtype if inputs else torch.float32)
+
+    def _op_neg(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return -inputs[0]
+
+    def _op_rsqrt(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return torch.rsqrt(inputs[0])
+
+    def _op_mean(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        dim = kwargs.get("dim", -1)
+        keepdim = kwargs.get("keepdim", True)
+        return torch.mean(inputs[0], dim=dim, keepdim=keepdim)
+
+    def _op_pow(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        if len(inputs) >= 2:
+            return torch.pow(inputs[0], inputs[1])
+        exponent = kwargs.get("exponent", 2)
+        return torch.pow(inputs[0], exponent)
+
+    def _op_triu(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        x = inputs[0]
+        diagonal = kwargs.get("diagonal", 0)
+        while x.ndim < 2:
+            x = x.unsqueeze(0)
+        return torch.triu(x, diagonal=diagonal)
+
+    def _op_sym_size(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        dim = kwargs.get("dim", 0)
+        size_val = inputs[0].shape[dim]
+        return torch.tensor(size_val, dtype=torch.int64)
 
     # ── 融合算子 ────────────────────────────────────────────
 
@@ -236,6 +321,7 @@ class PyTorchBackend(OpExecutor):
     def execute(self, op_name: str, inputs: list[Any], **kwargs: Any) -> torch.Tensor:
         dispatch = {
             "matmul": self._op_matmul,
+            "linear": self._op_linear,
             "add": self._op_add,
             "mul": self._op_mul,
             "gelu": self._op_gelu,
@@ -258,6 +344,12 @@ class PyTorchBackend(OpExecutor):
             "ones_like": self._op_ones_like,
             "full_like": self._op_full_like,
             "arange": self._op_arange,
+            "neg": self._op_neg,
+            "rsqrt": self._op_rsqrt,
+            "mean": self._op_mean,
+            "pow": self._op_pow,
+            "triu": self._op_triu,
+            "sym_size": self._op_sym_size,
             "fused_rms_norm_matmul": self._op_fused_rms_norm_matmul,
             "fused_silu_mul": self._op_fused_silu_mul,
         }
