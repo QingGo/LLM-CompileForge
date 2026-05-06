@@ -1,5 +1,27 @@
 === LLM-ServeForge 性能基线 ===
-Wed May  6 11:13:32 CST 2026
+Wed May  6 13:58:29 CST 2026
 模型加载耗时:
-5.74s
----
+5.52s
+
+=== Phase 1 里程碑 ===
+完成日期: 2026-05-06
+模块:
+  hal/:      293 行,  4 文件, 52 测试
+  compiler/: 1140 行, 8 文件, 29 测试
+  engine/:   1051 行, 7 文件, 41 测试
+  server/:   511 行,  3 文件, 27 测试
+  tests/:    1841 行, 11 文件, 167 测试 (total)
+总计约 3000 行源码, 167 单测, lint 零告警
+
+模块导入耗时:
+  compiler: 0.034s
+  engine:   0.001s
+  hal:      0.004s
+  server:   0.001s
+  torch:    5.52s (仍为懒加载, 仅 create_engine() 时触发)
+
+MVP 目标 (需真实模型验证):
+  - GPU Decode 1800 tok/s
+  - TTFT(8K) 1.2s
+  - CPU Decode 22 tok/s
+  - KV 效率 96%
