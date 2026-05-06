@@ -5,6 +5,7 @@ from compiler.ir import IrFunction, IrModule, IrOp
 from compiler.passes.base import Pass, PassManager
 from compiler.passes.constant_fold import ConstantFold
 from compiler.passes.cse_pass import CommonSubexpressionElimination
+from compiler.passes.dce_pass import DeadCodeElimination
 from compiler.passes.fuse_rms_norm import FuseRMSNorm
 from compiler.passes.fuse_silu import FuseSiLU
 
@@ -172,12 +173,84 @@ class TestConstantFold:
         mod = IrModule(functions=[func])
         cf = ConstantFold()
         result = cf.apply(mod)
-        # add should be replaced by constant
         assert result.main.ops[0].name == "constant"
         # Check folded value
         folded_name = result.main.ops[0].inputs[0]
         expected = w1 + w2
         assert torch.equal(result.main.weights[folded_name], expected)
+
+
+# ═══════════════════════════════════════════════════════════
+# DeadCodeElimination
+# ═══════════════════════════════════════════════════════════
+
+
+@pytest.mark.unit
+class TestDCE:
+    def test_keeps_live_ops(self):
+        func = IrFunction(
+            name="main",
+            inputs=[("x", None)],  # type: ignore[arg-type]
+            outputs=[("z", None)],  # type: ignore[arg-type]
+            ops=[
+                IrOp(name="add", inputs=["x", "y"], outputs=["z"]),
+            ],
+        )
+        mod = IrModule(functions=[func])
+        dce = DeadCodeElimination()
+        result = dce.apply(mod)
+        assert len(result.main.ops) == 1
+
+    def test_eliminates_dead_op(self):
+        func = IrFunction(
+            name="main",
+            inputs=[("x", None)],  # type: ignore[arg-type]
+            outputs=[("z", None)],  # type: ignore[arg-type]
+            ops=[
+                IrOp(name="add", inputs=["a", "b"], outputs=["dead"]),
+                IrOp(name="mul", inputs=["x", "w"], outputs=["z"]),
+            ],
+        )
+        mod = IrModule(functions=[func])
+        dce = DeadCodeElimination()
+        result = dce.apply(mod)
+        assert len(result.main.ops) == 1
+        assert result.main.ops[0].name == "mul"
+
+    def test_transitive_dead_chain(self):
+        func = IrFunction(
+            name="main",
+            inputs=[("x", None)],  # type: ignore[arg-type]
+            outputs=[("z", None)],  # type: ignore[arg-type]
+            ops=[
+                IrOp(name="add1", inputs=["a", "b"], outputs=["dead1"]),
+                IrOp(name="add2", inputs=["dead1", "c"], outputs=["dead2"]),
+                IrOp(name="mul", inputs=["x", "w"], outputs=["z"]),
+            ],
+        )
+        mod = IrModule(functions=[func])
+        dce = DeadCodeElimination()
+        result = dce.apply(mod)
+        assert len(result.main.ops) == 1
+        assert result.main.ops[0].name == "mul"
+
+    def test_input_consumed_by_output_is_live(self):
+        func = IrFunction(
+            name="main",
+            inputs=[("x", None)],  # type: ignore[arg-type]
+            outputs=[("live", None)],  # type: ignore[arg-type]
+            ops=[
+                IrOp(name="add", inputs=["a", "b"], outputs=["dead"]),
+                IrOp(name="mul", inputs=["dead", "x"], outputs=["live"]),
+            ],
+        )
+        mod = IrModule(functions=[func])
+        dce = DeadCodeElimination()
+        result = dce.apply(mod)
+        # "add" produces "dead" which IS consumed by mul
+        # mul's output "live" IS a function output → live
+        # Therefore "add" is live transitively through mul
+        assert len(result.main.ops) == 2
 
     def test_does_not_fold_runtime_input(self):
         w = torch.tensor([1.0])

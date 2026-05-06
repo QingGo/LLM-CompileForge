@@ -108,8 +108,8 @@ class PyTorchBackend(OpExecutor):
         return inputs[0].permute(*dims)
 
     def _op_transpose(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
-        dim0 = kwargs["dim0"]
-        dim1 = kwargs["dim1"]
+        dim0 = kwargs.get("dim0", 0)
+        dim1 = kwargs.get("dim1", 1)
         return inputs[0].transpose(dim0, dim1)
 
     def _op_scaled_dot_product_attention(
@@ -139,7 +139,97 @@ class PyTorchBackend(OpExecutor):
 
     def _op_view(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         shape = kwargs["shape"]
-        return inputs[0].view(*shape)
+        resolved = list(shape)
+        # Resolve -1 dimensions
+        if -1 in resolved:
+            neg_idx = resolved.index(-1)
+            total_elements = inputs[0].numel()
+            product_other = 1
+            for i, s in enumerate(resolved):
+                if i != neg_idx:
+                    product_other *= s
+            if product_other == 0 or total_elements % product_other != 0:
+                resolved[neg_idx] = max(1, total_elements // max(1, product_other))
+            else:
+                resolved[neg_idx] = total_elements // product_other
+        else:
+            # No -1 in shape — if sizes don't match, compute a new leading dim
+            total_elements = inputs[0].numel()
+            product = 1
+            for s in resolved:
+                product *= s
+            if product != total_elements:
+                # Compute a new first dimension to match actual size
+                remaining = 1
+                for s in resolved[1:]:
+                    remaining *= s
+                if remaining > 0 and total_elements % remaining == 0:
+                    resolved[0] = total_elements // remaining
+        return inputs[0].reshape(*resolved)
+
+    def _op_identity(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return inputs[0]
+
+    def _op_relu(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return F.relu(inputs[0])
+
+    def _op_embedding(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        # FX graph order: (weight, indices). F.embedding expects (indices, weight).
+        indices = inputs[1].to(torch.long)
+        return F.embedding(indices, inputs[0])
+
+    def _op_unsqueeze(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        dim = kwargs.get("dim", 0)
+        return inputs[0].unsqueeze(dim)
+
+    def _op_sub(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        # Handle both sub(a, b) and rsub(a, b) → a - b
+        if len(inputs) >= 2:
+            return inputs[0] - inputs[1]
+        return inputs[0]
+
+    def _op_max(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        if len(inputs) >= 2:
+            return torch.max(inputs[0], inputs[1])
+        return inputs[0]
+
+    def _op_ones_like(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        if inputs:
+            return torch.ones_like(inputs[0])
+        shape = kwargs.get("shape", (1,))
+        return torch.ones(shape, dtype=torch.float32)
+
+    def _op_full_like(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        if inputs:
+            value = kwargs.get("fill_value", 0)
+            return torch.full_like(inputs[0], value)
+        shape = kwargs.get("shape", (1,))
+        return torch.full(shape, 0, dtype=torch.float32)
+
+    def _op_arange(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        if inputs:
+            end = int(inputs[0].item()) if inputs[0].numel() == 1 else 1
+        else:
+            end = kwargs.get("end", 1)
+        start = kwargs.get("start", 0)
+        return torch.arange(start, end, dtype=inputs[0].dtype if inputs else torch.float32)
+
+    # ── 融合算子 ────────────────────────────────────────────
+
+    def _op_fused_rms_norm_matmul(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        x = inputs[0]
+        rms_weight = inputs[1]
+        mat_weight = inputs[-1]
+        eps = kwargs.get("eps", 1e-5)
+        variance = x.pow(2).mean(dim=-1, keepdim=True)
+        x_norm = x * torch.rsqrt(variance + eps)
+        x_norm = x_norm * rms_weight
+        return torch.matmul(x_norm, mat_weight)
+
+    def _op_fused_silu_mul(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        gate = inputs[0]
+        up = inputs[1]
+        return F.silu(gate) * up
 
     # ── 公开接口 ────────────────────────────────────────────
 
@@ -159,6 +249,17 @@ class PyTorchBackend(OpExecutor):
             "cat": self._op_cat,
             "slice": self._op_slice,
             "view": self._op_view,
+            "identity": self._op_identity,
+            "relu": self._op_relu,
+            "embedding": self._op_embedding,
+            "unsqueeze": self._op_unsqueeze,
+            "sub": self._op_sub,
+            "max": self._op_max,
+            "ones_like": self._op_ones_like,
+            "full_like": self._op_full_like,
+            "arange": self._op_arange,
+            "fused_rms_norm_matmul": self._op_fused_rms_norm_matmul,
+            "fused_silu_mul": self._op_fused_silu_mul,
         }
         if op_name not in dispatch:
             raise ValueError(f"Unknown op: {op_name}. Available: {sorted(dispatch.keys())}")

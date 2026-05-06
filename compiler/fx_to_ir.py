@@ -58,21 +58,91 @@ _ATEN_TO_HAL: dict[str, str] = {
     "aten.view.default": "view",
     "aten.reshape": "view",
     "aten.reshape.default": "view",
+    # Activation functions
+    "aten.relu": "relu",
+    "aten.relu.default": "relu",
+    "aten.sub": "sub",
+    "aten.sub.Tensor": "sub",
+    "aten.rsub": "sub",
+    "aten.rsub.Scalar": "sub",
+    # Element-wise ops
+    "aten.max": "max",
+    "aten.max.other": "max",
+    # Type conversion (passthrough)
+    "aten.to": "identity",
+    "aten.to.dtype": "identity",
+    "aten.to.dtype_layout": "identity",
+    # Misc
+    "aten.expand": "identity",
+    "aten.expand.default": "identity",
+    # Constant creation — computed at runtime from template tensor
+    "aten.ones": "ones_like",
+    "aten.ones.default": "ones_like",
+    "aten.full": "full_like",
+    "aten.full.default": "full_like",
+    "aten.arange": "arange",
+    "aten.arange.default": "arange",
+    "aten.cumsum": "identity",
+    "aten.cumsum.default": "identity",
+    "aten.masked_fill": "identity",
+    "aten.masked_fill.Scalar": "identity",
+    "aten.masked_fill_": "identity",
+    "aten.masked_fill_.Scalar": "identity",
+    "aten.lt": "identity",
+    "aten.lt.Tensor": "identity",
+    # Embedding / unsqueeze
+    "aten.embedding": "embedding",
+    "aten.embedding.default": "embedding",
+    "aten.unsqueeze": "unsqueeze",
+    "aten.unsqueeze.default": "unsqueeze",
+    # Pass-through / identity ops (no-op during inference)
+    "aten.contiguous": "identity",
+    "aten.contiguous.default": "identity",
+    "aten.clone": "identity",
+    "aten.clone.default": "identity",
+    "aten.dropout": "identity",
+    "aten.dropout.default": "identity",
+    "aten.detach": "identity",
+    "aten.detach.default": "identity",
+    "aten.detach_": "identity",
+    "aten.detach_.default": "identity",
+    "aten.alias": "identity",
+    "aten.alias.default": "identity",
+    "aten.type_as": "identity",
+    "aten.type_as.default": "identity",
+    "aten.lift_fresh_copy": "identity",
+    "aten.lift_fresh_copy.default": "identity",
 }
 
 
-def _map_aten_op(target: str | torch._ops.OpOverload) -> str | None:
+def _map_aten_op(target: Any) -> str | None:
     """Map an aten operator to its HAL op name."""
-    target_str: str = target if isinstance(target, str) else target.name()  # type: ignore[no-untyped-call]
+    if isinstance(target, str):
+        target_str = target
+    elif hasattr(target, "name"):
+        target_str = target.name()  # pyright: ignore[reportUnknownMemberType]
+    else:
+        target_str = str(target)
+    # Normalize: OpOverload.name() returns 'aten::view' — convert '::' → '.'
+    target_str = target_str.replace("::", ".")
     # Try exact match first
     if target_str in _ATEN_TO_HAL:
         return _ATEN_TO_HAL[target_str]
-    # Try prefix match (strip overload suffix)
-    parts = target_str.rsplit(".", 1)
-    base = parts[0] if len(parts) == 2 else target_str
-    for aten_key, hal_name in _ATEN_TO_HAL.items():
-        if aten_key.startswith(base):
-            return hal_name
+    # Try matching by stripping overload suffix: 'aten.softmax.int' → 'aten.softmax'
+    if "." in target_str:
+        parts = target_str.rsplit(".", 1)
+        # Only strip if the last part looks like an overload (e.g. 'int', 'default', 'Tensor')
+        overload_candidates = {"default", "int", "float", "str", "bool", "complex",
+                               "Scalar", "ScalarList", "Tensor", "dimname", "layout",
+                               "device", "memory_format", "generator"}
+        if len(parts) == 2 and parts[1] in overload_candidates:
+            base = parts[0]
+            if base in _ATEN_TO_HAL:
+                return _ATEN_TO_HAL[base]
+            # Try matching keys that start with 'base.'
+            for aten_key, hal_name in _ATEN_TO_HAL.items():
+                if aten_key == base or aten_key.startswith(base + "."):
+                    return hal_name
     return None
 
 
@@ -121,7 +191,11 @@ def fx_graph_to_ir(
 
     # Map from user input names to node types
     for inp_name in sig.user_inputs:
-        node = graph.find_node(inp_name)
+        node = None
+        for n in graph.nodes:
+            if n.name == inp_name:
+                node = n
+                break
         if node is not None and "val" in node.meta:
             fake = node.meta["val"]
             shape: tuple[int | None, ...] = tuple(fake.shape)
@@ -130,9 +204,20 @@ def fx_graph_to_ir(
         else:
             func_inputs.append((inp_name, IrType(dtype="float32")))
 
-    # Map parameter/buffer names
-    for param_name in sig.inputs_to_parameters:
-        placeholder_to_name[param_name] = param_name
+    # Map parameter/buffer names — build weight_name_map from input_specs
+    weight_name_map: dict[str, str] = {}
+    if hasattr(sig, "input_specs"):
+        for spec in sig.input_specs:
+            if spec.kind.value in (2,):  # InputKind.PARAMETER
+                placeholder_name = spec.arg.name
+                target_path = spec.target
+                if target_path:
+                    clean_name = target_path.replace(".", "_")
+                    weight_name_map[placeholder_name] = clean_name
+    else:
+        # Fallback: old API with inputs_to_parameters
+        for param_name in getattr(sig, "inputs_to_parameters", {}):
+            placeholder_to_name[param_name] = param_name
 
     # ── Phase 2: collect weights ────────────────────────────
     weights: dict[str, torch.Tensor] = {}
@@ -150,7 +235,11 @@ def fx_graph_to_ir(
 
     for node in graph.nodes:
         if node.op == "placeholder":
-            ssa_map[node.name] = node.name
+            if node.name in weight_name_map:
+                # Weight placeholder — map to weight reference
+                ssa_map[node.name] = weight_name_map[node.name]
+            else:
+                ssa_map[node.name] = node.name
             continue
 
         if node.op == "get_attr":
@@ -162,26 +251,64 @@ def fx_graph_to_ir(
         if node.op == "call_function":
             hal_op = _map_aten_op(node.target)
             if hal_op is None:
-                # Unsupported op — skip with a placeholder
                 continue
 
-            # Collect input SSA names
+            # Collect input SSA names and extract non-tensor kwargs
             input_names: list[str] = []
-            for arg in node.args:
+            extra_kwargs: dict[str, Any] = {}
+            # Skip scalars that map to known positional attributes
+            _scalar_int_positions: dict[str, list[int]] = {
+                "softmax": [1],   # dim = args[1]
+                "transpose": [1, 2],  # dim0, dim1
+                "unsqueeze": [1],  # dim
+                "embedding": [2],  # padding_idx
+            }
+            skip_positions: list[int] = _scalar_int_positions.get(hal_op, [])
+
+            for i, arg in enumerate(node.args):
                 if isinstance(arg, torch.fx.Node):
                     input_names.append(ssa_map.get(arg.name, arg.name))
-                elif isinstance(arg, (int, float)):
-                    # Inline constant as weight
+                elif isinstance(arg, (int, float)) and not isinstance(arg, bool):
+                    if i in skip_positions:
+                        continue  # This scalar is a positional attribute, not an input
                     const_name = f"_const_{name_counter}"
                     name_counter += 1
                     weights[const_name] = torch.tensor(arg)
                     input_names.append(const_name)
+                elif isinstance(arg, (list, tuple)):
+                    if hal_op == "view" and "shape" not in extra_kwargs:
+                        extra_kwargs["shape"] = tuple(arg)
+                    elif hal_op == "layer_norm" and "normalized_shape" not in extra_kwargs:
+                        extra_kwargs["normalized_shape"] = tuple(arg)
+                    elif hal_op in ("ones_like", "full_like") and "shape" not in extra_kwargs:
+                        extra_kwargs["shape"] = tuple(arg)
+
+            kwargs = _extract_node_kwargs(node)
+            kwargs.update(extra_kwargs)
+
+            # Extract positional int args for ops that need them
+            if hal_op == "ones_like" and not input_names:
+                # Create ones from shape attribute
+                extra_kwargs.setdefault("shape", (1, 1))
+            if hal_op == "full_like" and not input_names:
+                extra_kwargs.setdefault("shape", (1,))
+                int_args = [a for a in node.args if isinstance(a, int) and not isinstance(a, bool)]
+                if len(int_args) >= 2:
+                    kwargs["dim0"] = int_args[0]
+                    kwargs["dim1"] = int_args[1]
+            if hal_op == "softmax" and "dim" not in kwargs:
+                int_args = [a for a in node.args if isinstance(a, int) and not isinstance(a, bool)]
+                if int_args:
+                    kwargs["dim"] = int_args[0]
+            if hal_op == "unsqueeze" and "dim" not in kwargs:
+                int_args = [a for a in node.args if isinstance(a, int) and not isinstance(a, bool)]
+                if int_args:
+                    kwargs["dim"] = int_args[0]
 
             output_name = node.name or f"_out_{name_counter}"
             name_counter += 1
             ssa_map[node.name] = output_name
 
-            kwargs = _extract_node_kwargs(node)
             ir_ops.append(IrOp(name=hal_op, inputs=input_names, outputs=[output_name], attributes=kwargs))
             continue
 

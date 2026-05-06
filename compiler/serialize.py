@@ -32,7 +32,7 @@ def save_artifact(module: IrModule, directory: str) -> None:
     # model.ir
     ir_dict = module.to_dict()
     with open(out_dir / "model.ir", "w") as f:
-        json.dump(ir_dict, f, indent=2)
+        json.dump(ir_dict, f, indent=2, default=str)
 
     # weights.pth
     all_weights: dict[str, dict[str, torch.Tensor]] = pack_weights(module)

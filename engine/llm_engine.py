@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import torch
+
 from compiler.ir import IrModule
 from engine.batch import GenerationResult
 from engine.block_manager import BlockManager
@@ -46,6 +48,10 @@ class LLMEngine:
         chunk_size: int = 256,
         num_blocks: int = 1000,
         block_size: int = 16,
+        num_layers: int = 0,
+        num_kv_heads: int = 0,
+        head_dim: int = 0,
+        dtype: torch.dtype | None = None,
     ) -> None:
         self._module = module
         self._hal_backend = hal_backend
@@ -62,6 +68,34 @@ class LLMEngine:
         self._tokenizer: Any = None
         self._eos_token_id: int | None = None
 
+        # KV cache — allocated on first use
+        self._kv_cache: torch.Tensor | None = None
+        self._num_layers = num_layers
+        self._num_kv_heads = num_kv_heads
+        self._head_dim = head_dim
+        self._kv_dtype = dtype or torch.float32
+
+    # ── KV Cache Lifecycle ─────────────────────────────────
+
+    def _ensure_kv_cache(self) -> torch.Tensor:
+        """Allocate the KV cache tensor on first use."""
+        if self._kv_cache is not None:
+            return self._kv_cache
+        if self._num_layers <= 0 or self._num_kv_heads <= 0 or self._head_dim <= 0:
+            raise RuntimeError(
+                "KV cache requires num_layers, num_kv_heads, head_dim. "
+                "Set them on LLMEngine creation."
+            )
+        self._kv_cache = self.executor.prepare_kv_blocks(
+            num_layers=self._num_layers,
+            num_kv_heads=self._num_kv_heads,
+            head_dim=self._head_dim,
+            block_size=self.block_manager.block_size,
+            num_blocks=self.block_manager.num_blocks,
+            dtype=self._kv_dtype,
+        )
+        return self._kv_cache
+
     # ── Core Loop ───────────────────────────────────────────
 
     def step(self) -> list[GenerationResult]:
@@ -72,6 +106,18 @@ class LLMEngine:
         batch = self.scheduler.schedule(self.block_manager)
         if batch.is_empty or batch.input_ids is None:
             return []
+
+        # Configure PagedAttention if KV cache is available
+        kv = self._kv_cache
+        bt = batch.block_tables
+        if kv is not None and bt:
+            self.executor.set_kv_cache(
+                kv_cache=kv,
+                block_tables=bt,
+                block_size=self.block_manager.block_size,
+                num_kv_heads=self._num_kv_heads,
+                head_dim=self._head_dim,
+            )
 
         logits = self.executor.forward(batch.input_ids, positions=batch.positions)
         results = self.scheduler.process_outputs(logits, batch)
