@@ -1,0 +1,187 @@
+"""LLMEngine — top-level inference engine.
+
+Integrates Scheduler, BlockManager, and Executor into a single inference
+loop. Provides both a step() API for server integration and a blocking
+generate() convenience method.
+
+Architecture alignment:
+  - vLLM V1: Engine → Scheduler → Worker → ModelRunner
+  - LLM-ServeForge: Engine → Scheduler + BlockManager + Executor (HAL)
+
+The Engine owns the lifecycle of all subsystems and coordinates
+the per-step scheduling-execution-sampling cycle.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from compiler.ir import IrModule
+from engine.batch import GenerationResult
+from engine.block_manager import BlockManager
+from engine.executor import Executor
+from engine.scheduler import Scheduler
+from hal.interface import OpExecutor
+
+
+class LLMEngine:
+    """Single-process inference engine.
+
+    Coordinates the full inference loop:
+        schedule → prepare inputs → forward → sample → return results
+
+    Usage:
+        backend = PyTorchBackend("cpu")
+        ir_module = load_artifact("./compiled/model")
+        engine = LLMEngine(ir_module, backend)
+        text = engine.generate("Explain quantum computing", max_tokens=100)
+    """
+
+    def __init__(
+        self,
+        module: IrModule,
+        hal_backend: OpExecutor,
+        max_batch_size: int = 32,
+        max_tokens_per_step: int = 512,
+        chunk_size: int = 256,
+        num_blocks: int = 1000,
+        block_size: int = 16,
+    ) -> None:
+        self._module = module
+        self._hal_backend = hal_backend
+
+        self.scheduler = Scheduler(
+            max_batch_size=max_batch_size,
+            max_tokens_per_step=max_tokens_per_step,
+            chunk_size=chunk_size,
+        )
+        self.block_manager = BlockManager(num_blocks=num_blocks, block_size=block_size)
+        self.executor = Executor(module, hal_backend)
+
+        # Tokenizer reference — set by the API server or user
+        self._tokenizer: Any = None
+        self._eos_token_id: int | None = None
+
+    # ── Core Loop ───────────────────────────────────────────
+
+    def step(self) -> list[GenerationResult]:
+        """Execute one scheduling cycle.
+
+        Returns a list of GenerationResult, one per request that produced output.
+        """
+        batch = self.scheduler.schedule(self.block_manager)
+        if batch.is_empty or batch.input_ids is None:
+            return []
+
+        logits = self.executor.forward(batch.input_ids, positions=batch.positions)
+        results = self.scheduler.process_outputs(logits, batch)
+        return results
+
+    # ── Convenience API ─────────────────────────────────────
+
+    def add_request(
+        self,
+        prompt: str | list[int],
+        max_tokens: int = 256,
+        temperature: float = 1.0,
+        top_p: float = 1.0,
+        top_k: int = 0,
+        priority: int = 0,
+    ) -> str:
+        """Add an inference request.
+
+        Args:
+            prompt: Text prompt (requires tokenizer) or tokenized list.
+            max_tokens: Maximum tokens to generate.
+            temperature: Sampling temperature (0 = greedy).
+            top_p: Nucleus sampling threshold.
+            top_k: Top-k filtering.
+            priority: Queue priority (lower = higher).
+
+        Returns:
+            The request_id.
+        """
+        from engine.batch import SamplingParams
+
+        if isinstance(prompt, str):
+            if self._tokenizer is None:
+                raise RuntimeError("Text prompt requires a tokenizer. Pass tokenized IDs instead.")
+            prompt_tokens = self._tokenizer.encode(prompt)
+        else:
+            prompt_tokens = list(prompt)
+
+        sampling_params = SamplingParams(
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            max_tokens=max_tokens,
+        )
+
+        if self._eos_token_id is not None:
+            sampling_params.stop_token_ids.append(self._eos_token_id)
+
+        return self.scheduler.add_request(prompt_tokens, sampling_params, priority=priority)
+
+    def generate(
+        self,
+        prompt: str | list[int],
+        max_tokens: int = 256,
+        temperature: float = 1.0,
+        top_p: float = 1.0,
+        top_k: int = 0,
+    ) -> str:
+        """Blocking synchronous generation.
+
+        Adds a request and loops step() until the request completes,
+        returning the full generated text.
+        """
+        request_id = self.add_request(
+            prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+        )
+
+        all_output_tokens: list[int] = []
+
+        while True:
+            results = self.step()
+            for r in results:
+                if r.request_id == request_id:
+                    all_output_tokens.extend(r.new_tokens)
+                    if r.is_finished:
+                        if self._tokenizer is not None:
+                            return str(self._tokenizer.decode(all_output_tokens))
+                        return " ".join(str(t) for t in all_output_tokens)
+
+            if not self.scheduler.has_work:
+                break
+
+        if self._tokenizer is not None:
+            return str(self._tokenizer.decode(all_output_tokens))
+        return " ".join(str(t) for t in all_output_tokens)
+
+    # ── Tokenizer Support ───────────────────────────────────
+
+    def set_tokenizer(self, tokenizer: Any, eos_token_id: int | None = None) -> None:
+        """Attach a tokenizer for text encode/decode.
+
+        The tokenizer must support encode(text) → list[int] and decode(tokens) → str.
+        """
+        self._tokenizer = tokenizer
+        self._eos_token_id = eos_token_id
+
+    # ── Query ───────────────────────────────────────────────
+
+    @property
+    def is_idle(self) -> bool:
+        return not self.scheduler.has_work
+
+    @property
+    def num_running(self) -> int:
+        return self.scheduler.running_count
+
+    @property
+    def num_waiting(self) -> int:
+        return self.scheduler.waiting_count
