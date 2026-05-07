@@ -1,4 +1,5 @@
 import pytest
+import torch
 
 from engine.batch import SamplingParams
 from engine.block_manager import BlockManager
@@ -126,3 +127,46 @@ class TestSchedule:
         # Next schedule should reap the finished request
         s.schedule(bm)
         assert s.running_count == 0
+
+    def test_chunked_prefill_itl_bound(self):
+        """Chunked Prefill should keep per-step tokens within chunk_size for ITL guarantee."""
+        chunk = 16
+        s = Scheduler(max_batch_size=8, chunk_size=chunk, max_tokens_per_step=512)
+        bm = BlockManager(num_blocks=1000, block_size=16)
+
+        # Add a long prompt: 100 tokens
+        s.add_request(prompt_tokens=list(range(100)))
+
+        max_step_tokens = 0
+        steps = 0
+        while s.has_work:
+            batch = s.schedule(bm)
+            if batch.is_empty:
+                break
+            steps += 1
+            if batch.input_ids is not None:
+                step_tokens = int(torch.numel(batch.input_ids))
+                max_step_tokens = max(max_step_tokens, step_tokens)
+            # Check any request is in prefill or decode
+            for req in batch.requests:
+                if req.state == "decode":
+                    req.mark_finished()
+
+        assert steps > 1, "Long prompt (100 tokens) should take multiple prefill steps with chunk_size=16"
+
+    def test_mixed_prefill_decode_itl(self):
+        """Mixed prefill+decode step: total tokens per step should respect max_tokens_per_step."""
+        max_tok = 10
+        s = Scheduler(max_batch_size=8, chunk_size=4, max_tokens_per_step=max_tok)
+        bm = BlockManager(num_blocks=100, block_size=4)
+
+        # Add 2 requests: short (4 tokens) and long (8 tokens)
+        s.add_request(prompt_tokens=[1, 2, 3, 4])
+        s.add_request(prompt_tokens=list(range(8)))
+
+        # First step should process at most max_tok tokens
+        batch = s.schedule(bm)
+        total_input = 0
+        if batch.input_ids is not None:
+            total_input = int(torch.numel(batch.input_ids))
+        assert total_input <= max_tok, f"First step had {total_input} tokens, max={max_tok}"

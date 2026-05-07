@@ -13,12 +13,23 @@ from compiler.ir import IrFunction, IrModule, IrOp
 from compiler.passes.base import Pass
 
 
+def _make_hashable(value: Any) -> Any:
+    """Convert a value to a hashable form."""
+    if isinstance(value, list):
+        return tuple(_make_hashable(v) for v in value)
+    if isinstance(value, dict):
+        return tuple(sorted((k, _make_hashable(v)) for k, v in value.items()))
+    if isinstance(value, set):
+        return tuple(sorted(_make_hashable(v) for v in value))
+    return value
+
+
 def _op_signature(op: IrOp) -> tuple[Any, ...]:
     """Generate a hashable signature for an IrOp."""
     return (
         op.name,
         tuple(op.inputs),
-        tuple(sorted(op.attributes.items())),
+        tuple(sorted((k, _make_hashable(v)) for k, v in op.attributes.items())),
     )
 
 

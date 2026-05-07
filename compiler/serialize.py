@@ -22,6 +22,13 @@ from compiler.ir import IrModule, pack_weights
 def save_artifact(module: IrModule, directory: str) -> None:
     """Persist a compiled IrModule to disk.
 
+    Output structure (per design doc §4.2):
+      compiled/<model_name>/
+        model.ir        — IrModule structure (JSON)
+        model.mlir      — MLIR canonical representation (text)
+        weights.pth     — PyTorch state dict of all weight tensors
+        metadata.json   — compilation metadata
+
     Args:
         module: The compiled IrModule to save.
         directory: Target directory (created if it doesn't exist).
@@ -33,6 +40,12 @@ def save_artifact(module: IrModule, directory: str) -> None:
     ir_dict = module.to_dict()
     with open(out_dir / "model.ir", "w") as f:
         json.dump(ir_dict, f, indent=2, default=str)
+
+    # model.mlir (canonical MLIR representation)
+    mlir_text = module.metadata.get("mlir", "")
+    if mlir_text:
+        with open(out_dir / "model.mlir", "w") as f:
+            f.write(mlir_text)
 
     # weights.pth
     all_weights: dict[str, dict[str, torch.Tensor]] = pack_weights(module)

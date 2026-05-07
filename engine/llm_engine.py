@@ -97,51 +97,146 @@ class LLMEngine:
         )
         return self._kv_cache
 
+    def _write_kv_outputs(
+        self,
+        kv_tensors: list[tuple[str, torch.Tensor]],
+        positions: torch.Tensor,
+        block_tables: dict[str, list[int]],
+    ) -> None:
+        """Write K/V model outputs into the paged KV cache.
+
+        During prefill, the executor's SDPA intercept already writes K/V
+        to cache (covering the same tokens). This function serves as a
+        safety net for any K/V output pairs not captured by SDPA intercept.
+        """
+        if self._kv_cache is None:
+            return
+        self.executor.set_kv_cache(
+            kv_cache=self._kv_cache,
+            block_tables=block_tables,
+            block_size=self.block_manager.block_size,
+            num_kv_heads=self._num_kv_heads,
+            head_dim=self._head_dim,
+        )
+        for layer_idx in range(self._num_layers):
+            ki = layer_idx * 2
+            vi = layer_idx * 2 + 1
+            if ki < len(kv_tensors) and vi < len(kv_tensors):
+                _, key = kv_tensors[ki]
+                _, value = kv_tensors[vi]
+                # Squeeze batch dim: [1, seq, heads, head_dim] → [seq, heads, head_dim]
+                if key.dim() >= 4 and key.shape[0] == 1:
+                    key = key.squeeze(0)
+                if value.dim() >= 4 and value.shape[0] == 1:
+                    value = value.squeeze(0)
+                flat_pos = positions.squeeze(0) if positions.dim() >= 2 else positions
+                self.executor.write_kv_to_cache(
+                    key, value, flat_pos, block_tables, layer_idx=layer_idx
+                )
+
     # ── Core Loop ───────────────────────────────────────────
 
     def step(self) -> list[GenerationResult]:
-        """Execute one scheduling cycle — per-request forward pass.
+        """Execute one scheduling cycle — per-request or batch forward.
 
-        Each request is processed independently through executor.forward()
-        with input shape [1, n_tokens]. This works with both static-shape
-        compiled models (fed exact compile-time shapes) and dynamic-seq
-        compiled models (accepting any [1, N] input).
-
-        Returns a list of GenerationResult, one per request that produced output.
+        When all requests have compatible shapes (same number of tokens), they
+        are combined into a single batch forward. Otherwise, falls back to
+        per-request processing.
         """
         batch = self.scheduler.schedule(self.block_manager)
         if batch.is_empty or not batch.request_input_ids:
             return []
 
-        # Configure PagedAttention if KV cache is available
         kv = self._kv_cache
         bt = batch.block_tables
-        if kv is not None and bt:
+        use_kv = bool(kv is not None and bt)
+
+        # Try batch forward if all requests have same num tokens
+        can_batch = self._can_batch_forward(batch)
+        if can_batch:
+            return self._step_batch(batch, use_kv)
+        else:
+            return self._step_per_request(batch, use_kv)
+
+    def _can_batch_forward(self, batch: Any) -> bool:
+        """Check if requests can be combined into a single batch forward."""
+        if len(batch.requests) <= 1:
+            return len(batch.requests) == 1
+        first_n = batch.request_input_ids[0].numel()
+        for t in batch.request_input_ids[1:]:
+            if t.numel() != first_n:
+                return False
+        return True
+
+    def _step_batch(self, batch: Any, use_kv: bool) -> list[GenerationResult]:
+        """Execute a single batch forward for all requests."""
+        stacked_input = torch.stack([t.flatten() for t in batch.request_input_ids])
+        stacked_pos = torch.stack([t.flatten() for t in batch.request_positions])
+
+        if use_kv:
             self.executor.set_kv_cache(
-                kv_cache=kv,
-                block_tables=bt,
+                kv_cache=self._kv_cache,
+                block_tables=batch.block_tables,
+                block_size=self.block_manager.block_size,
+                num_kv_heads=self._num_kv_heads,
+                head_dim=self._head_dim,
+            )
+            logits, kv_tensors = self.executor.forward_with_kv(
+                stacked_input, positions=stacked_pos
+            )
+            self._write_kv_outputs(kv_tensors, stacked_pos, batch.block_tables)
+        else:
+            logits = self.executor.forward(stacked_input, positions=stacked_pos)
+
+        return self._sample_from_logits(logits, batch)
+
+    def _step_per_request(self, batch: Any, use_kv: bool) -> list[GenerationResult]:
+        """Process each request independently through executor.forward()."""
+        if use_kv:
+            self.executor.set_kv_cache(
+                kv_cache=self._kv_cache,
+                block_tables=batch.block_tables,
                 block_size=self.block_manager.block_size,
                 num_kv_heads=self._num_kv_heads,
                 head_dim=self._head_dim,
             )
 
         results: list[GenerationResult] = []
-        for i, req in enumerate(batch.requests):
+        for i, _req in enumerate(batch.requests):
             req_input = batch.request_input_ids[i]
             req_pos = batch.request_positions[i]
-            # Reshape [n] → [1, n] to match model's expected input layout
             if req_input.dim() == 1:
                 req_input = req_input.unsqueeze(0)
             if req_pos.dim() == 1:
                 req_pos = req_pos.unsqueeze(0)
 
-            logits = self.executor.forward(req_input, positions=req_pos)
-
-            # Take the last position's logits for next-token sampling
-            if logits.dim() >= 3:
-                req_logits = logits[0:1, -1, :]  # [batch, seq, vocab] → [1, vocab]
+            if use_kv:
+                logits, kv_tensors = self.executor.forward_with_kv(
+                    req_input, positions=req_pos
+                )
+                self._write_kv_outputs(kv_tensors, req_pos, batch.block_tables)
             else:
-                req_logits = logits  # already [1, vocab] or [batch, vocab]
+                logits = self.executor.forward(req_input, positions=req_pos)
+
+            req_results = self._sample_from_logits(logits, batch, single_req=i)
+            results.extend(req_results)
+
+        return results
+
+    def _sample_from_logits(
+        self, logits_tensor: torch.Tensor, batch: Any, single_req: int | None = None
+    ) -> list[GenerationResult]:
+        """Sample next tokens from logits and update requests."""
+        results: list[GenerationResult] = []
+        bsz = logits_tensor.shape[0] if logits_tensor.dim() >= 3 else 1
+        req_start = 0 if single_req is None else single_req
+        req_end = req_start + bsz if single_req is None else req_start + 1
+
+        for req_idx, req in enumerate(batch.requests[req_start:req_end]):
+            if logits_tensor.dim() >= 3:
+                req_logits = logits_tensor[req_idx:req_idx + 1, -1, :]
+            else:
+                req_logits = logits_tensor
 
             sp = req.sampling_params
             token_id = sample(

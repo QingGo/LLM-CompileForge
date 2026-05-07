@@ -66,7 +66,7 @@ _ATEN_TO_HAL: dict[str, str] = {
     "rsqrt": "rsqrt",
     "mean": "mean",
     "pow": "pow",
-    "gt": "identity",
+    "gt": "gt",
     "triu": "triu",
     "sym_size": "sym_size",
     "_assert_tensor_metadata": "identity",
@@ -79,8 +79,8 @@ _ATEN_TO_HAL: dict[str, str] = {
     "aten.pow": "pow",
     "aten.mean.dim": "mean",
     "aten.mean": "mean",
-    "aten.gt.Tensor": "identity",
-    "aten.gt": "identity",
+    "aten.gt.Tensor": "gt",
+    "aten.gt": "gt",
     "aten.triu.default": "triu",
     "aten.triu": "triu",
     "aten.sym_size.int": "sym_size",
@@ -139,8 +139,8 @@ _ATEN_TO_HAL: dict[str, str] = {
     "aten.to.dtype": "identity",
     "aten.to.dtype_layout": "identity",
     # Misc
-    "aten.expand": "identity",
-    "aten.expand.default": "identity",
+    "aten.expand": "expand",
+    "aten.expand.default": "expand",
     # Constant creation — computed at runtime from template tensor
     "aten.ones": "ones_like",
     "aten.ones.default": "ones_like",
@@ -148,14 +148,14 @@ _ATEN_TO_HAL: dict[str, str] = {
     "aten.full.default": "full_like",
     "aten.arange": "arange",
     "aten.arange.default": "arange",
-    "aten.cumsum": "identity",
-    "aten.cumsum.default": "identity",
-    "aten.masked_fill": "identity",
-    "aten.masked_fill.Scalar": "identity",
-    "aten.masked_fill_": "identity",
-    "aten.masked_fill_.Scalar": "identity",
-    "aten.lt": "identity",
-    "aten.lt.Tensor": "identity",
+    "aten.cumsum": "cumsum",
+    "aten.cumsum.default": "cumsum",
+    "aten.masked_fill": "masked_fill",
+    "aten.masked_fill.Scalar": "masked_fill",
+    "aten.masked_fill_": "masked_fill",
+    "aten.masked_fill_.Scalar": "masked_fill",
+    "aten.lt": "lt",
+    "aten.lt.Tensor": "lt",
     # Embedding / unsqueeze
     "aten.embedding": "embedding",
     "aten.embedding.default": "embedding",
@@ -178,6 +178,32 @@ _ATEN_TO_HAL: dict[str, str] = {
     "aten.type_as.default": "identity",
     "aten.lift_fresh_copy": "identity",
     "aten.lift_fresh_copy.default": "identity",
+    # ── Qwen3.5 extended ops ─────────────────────────────────
+    "aten.__and__.Tensor": "logical_and",
+    "aten.eq.Tensor": "eq",
+    "aten.le.Tensor": "le",
+    "aten.ne.Scalar": "ne",
+    "aten.ne.Tensor": "ne",
+    "aten.sigmoid.default": "sigmoid",
+    "aten.sigmoid": "sigmoid",
+    "aten.softplus.default": "softplus",
+    "aten.exp.default": "exp",
+    "aten.sum.dim_IntList": "sum",
+    "aten.tril.default": "tril",
+    "aten.tril": "tril",
+    "aten.chunk.default": "chunk",
+    "aten.split_with_sizes.default": "split",
+    "aten.conv1d.default": "conv1d",
+    "aten.copy_.default": "identity",
+    "aten.diff.default": "diff",
+    "aten.pad.default": "pad",
+    "aten.index.Tensor": "index",
+    "aten.eye.default": "eye",
+    "aten.zeros.default": "zeros",
+    "aten.zeros_like.default": "zeros_like",
+    "aten.new_ones.default": "new_ones",
+    "aten.select.int": "select",
+    "aten.select": "select",
 }
 
 
@@ -186,7 +212,9 @@ def _map_aten_op(target: Any) -> str | None:
     if isinstance(target, str):
         target_str = target
     elif hasattr(target, "name"):
-        target_str = target.name()  # pyright: ignore[reportUnknownMemberType]
+        # OpOverload.name() returns 'aten::diff' (short), str() returns 'aten.diff.default' (full).
+        # Prefer str() for overload resolution, fall back to name() for compatibility.
+        target_str = str(target)
     elif hasattr(target, "__name__"):
         target_str = target.__name__  # built-in functions (operator.add, etc.)
     else:
@@ -341,6 +369,19 @@ def fx_graph_to_ir(
                 "full_like": [1],  # fill_value = args[1]
                 "triu": [1],  # diagonal = args[1]
                 "sym_size": [1],  # dim = args[1]
+                "cumsum": [1],  # dim = args[1]
+                "cat": [1],  # dim = args[1]
+                "slice": [1, 2, 3, 4],  # dim, start, end, step
+                # Qwen extended
+                "sum": [1, 2],  # dim, keepdim
+                "tril": [1],  # diagonal
+                "select": [1, 2],  # dim, index
+                "chunk": [1, 2],  # chunks, dim
+                "diff": [1, 2],  # n, dim
+                "conv1d": [2, 3, 4, 5, 6],  # bias, stride, padding, dilation, groups
+                "split": [2],  # dim
+                "eye": [0, 1],  # n, m
+                "pad": [1],  # pad list
             }
             skip_positions: list[int] = _scalar_int_positions.get(hal_op, [])
             # Map position → kwarg name for scalar attributes
@@ -351,22 +392,49 @@ def fx_graph_to_ir(
                 "softmax": {1: "dim"},
                 "unsqueeze": {1: "dim"},
                 "transpose": {1: "dim0", 2: "dim1"},
+                "cumsum": {1: "dim"},
+                "cat": {1: "dim"},
+                "slice": {1: "dim", 2: "start", 3: "end", 4: "step"},
+                # Qwen extended
+                "sum": {1: "dim", 2: "keepdim"},
+                "tril": {1: "diagonal"},
+                "select": {1: "dim", 2: "index"},
+                "chunk": {1: "chunks", 2: "dim"},
+                "diff": {1: "n", 2: "dim"},
+                "conv1d": {2: "bias", 3: "stride", 4: "padding", 5: "dilation", 6: "groups"},
+                "split": {2: "dim"},
+                "eye": {0: "n", 1: "m"},
             }
             scalar_kwargs: dict[int, str] = _scalar_kwarg_names.get(hal_op, {})
 
             for i, arg in enumerate(node.args):
                 if isinstance(arg, torch.fx.Node):
                     input_names.append(ssa_map.get(arg.name, arg.name))
-                elif isinstance(arg, (int, float)) and not isinstance(arg, bool):
+                elif isinstance(arg, bool):
+                    # Boolean positional args: treat as kwarg if in skip_positions
                     if i in skip_positions:
-                        # Extract scalar as a kwarg
                         kwarg_name = scalar_kwargs.get(i)
                         if kwarg_name:
                             extra_kwargs.setdefault(kwarg_name, arg)
                         continue
+                elif isinstance(arg, (int, float, torch.SymInt)) and not isinstance(arg, bool):
+                    if i in skip_positions:
+                        kwarg_name = scalar_kwargs.get(i)
+                        if kwarg_name:
+                            if isinstance(arg, torch.SymInt):
+                                extra_kwargs.setdefault(kwarg_name, _symint_to_int(arg))
+                            else:
+                                extra_kwargs.setdefault(kwarg_name, arg)
+                        continue
                     const_name = f"_const_{name_counter}"
                     name_counter += 1
-                    weights[const_name] = torch.tensor(arg)
+                    if isinstance(arg, torch.SymInt):
+                        scalar_val: Any = _symint_to_int(arg)
+                        if scalar_val is None:
+                            scalar_val = 1
+                    else:
+                        scalar_val = arg
+                    weights[const_name] = torch.tensor(scalar_val)
                     input_names.append(const_name)
                 elif isinstance(arg, (list, tuple)):
                     if hal_op == "view" and "shape" not in extra_kwargs:
@@ -391,6 +459,44 @@ def fx_graph_to_ir(
                             else:
                                 shape_resolved.append(_symint_to_int(s) or 1)
                         extra_kwargs["shape"] = tuple(shape_resolved)
+                    elif hal_op == "cat":
+                        for item in arg:
+                            if isinstance(item, torch.fx.Node):
+                                input_names.append(ssa_map.get(item.name, item.name))
+                            else:
+                                const_name = f"_const_{name_counter}"
+                                name_counter += 1
+                                weights[const_name] = torch.tensor(item)
+                                input_names.append(const_name)
+                    elif hal_op == "expand":
+                        for s in arg:
+                            if isinstance(s, torch.fx.Node):
+                                ssa_name = ssa_map.get(s.name, s.name)
+                                input_names.append(ssa_name)
+                            else:
+                                const_name = f"_const_{name_counter}"
+                                name_counter += 1
+                                weights[const_name] = torch.tensor(s)
+                                input_names.append(const_name)
+                    elif hal_op in ("sum", "split"):
+                        # List of ints (dim list for sum, split_sizes for split)
+                        if hal_op == "sum":
+                            extra_kwargs.setdefault("dim", list(arg))
+                        elif hal_op == "split":
+                            extra_kwargs.setdefault("split_sizes", list(arg))
+                    elif hal_op == "pad":
+                        # pad arg is a list of ints for padding
+                        extra_kwargs.setdefault("pad", list(arg))
+                    elif hal_op == "index":
+                        # indices are a list of tensors
+                        for item in arg:
+                            if isinstance(item, torch.fx.Node):
+                                input_names.append(ssa_map.get(item.name, item.name))
+                            else:
+                                const_name = f"_const_{name_counter}"
+                                name_counter += 1
+                                weights[const_name] = torch.tensor(item)
+                                input_names.append(const_name)
 
             kwargs = _extract_node_kwargs(node)
             kwargs.update(extra_kwargs)

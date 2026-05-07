@@ -123,6 +123,11 @@ class PyTorchBackend(OpExecutor):
     ) -> torch.Tensor:
         query, key, value = inputs[0], inputs[1], inputs[2]
         attn_mask = kwargs.get("attn_mask", None)
+        if attn_mask is None and len(inputs) > 3:
+            attn_mask = inputs[3]
+        # Squeeze extra dimension from attn_mask if present (dynamic batch issue)
+        if attn_mask is not None and attn_mask.dim() > 4:
+            attn_mask = attn_mask.squeeze(2)
         dropout_p = kwargs.get("dropout_p", 0.0)
         is_causal = kwargs.get("is_causal", False)
         return F.scaled_dot_product_attention(
@@ -142,10 +147,19 @@ class PyTorchBackend(OpExecutor):
         x = inputs[0]
         dim = kwargs.get("dim", 0)
         start = kwargs.get("start", 0)
-        end = kwargs.get("end", x.shape[dim])
+        end = kwargs.get("end", None)
         step = kwargs.get("step", 1)
+        extra = list(inputs[1:])
+        if end is None and extra:
+            end = int(extra.pop(0).item())
+        if not isinstance(start, int) and extra:
+            start = int(extra.pop(0).item())
+        if not isinstance(dim, int) and extra:
+            dim = int(extra.pop(0).item())
+        if end is None:
+            end = x.shape[dim]
         slicing: list[Any] = [slice(None)] * x.ndim
-        slicing[dim] = slice(start, end, step)
+        slicing[dim] = slice(int(start), int(end), int(step))
         return x[tuple(slicing)]
 
     def _op_view(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
@@ -263,11 +277,14 @@ class PyTorchBackend(OpExecutor):
         return torch.full(shape, value, dtype=torch.float32)
 
     def _op_arange(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
-        if inputs:
+        start = kwargs.get("start", 0)
+        if len(inputs) >= 2:
+            start = int(inputs[0].item()) if inputs[0].numel() == 1 else start
+            end = int(inputs[1].item()) if inputs[1].numel() == 1 else 1
+        elif inputs:
             end = int(inputs[0].item()) if inputs[0].numel() == 1 else 1
         else:
             end = kwargs.get("end", 1)
-        start = kwargs.get("start", 0)
         return torch.arange(start, end, dtype=inputs[0].dtype if inputs else torch.float32)
 
     def _op_neg(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
@@ -299,6 +316,36 @@ class PyTorchBackend(OpExecutor):
         size_val = inputs[0].shape[dim]
         return torch.tensor(size_val, dtype=torch.int64)
 
+    # ── 比较运算 ────────────────────────────────────────────
+
+    def _op_gt(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return torch.gt(inputs[0], inputs[1])
+
+    def _op_lt(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return torch.lt(inputs[0], inputs[1])
+
+    # ── 掩码和归约 ──────────────────────────────────────────
+
+    def _op_masked_fill(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        tensor, mask = inputs[0], inputs[1]
+        value = inputs[2]
+        return tensor.masked_fill(mask.to(torch.bool), value)
+
+    def _op_cumsum(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        dim = kwargs.get("dim", -1)
+        return torch.cumsum(inputs[0], dim=dim)
+
+    def _op_expand(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        x = inputs[0]
+        sizes: list[int] = []
+        for t in inputs[1:]:
+            val = int(t.item()) if t.numel() == 1 else 1
+            sizes.append(val if val >= 0 else x.shape[len(sizes)])
+        # Pad with -1 on the left if fewer sizes than input dims
+        while len(sizes) < x.dim():
+            sizes.insert(0, -1)
+        return x.expand(*sizes)
+
     # ── 融合算子 ────────────────────────────────────────────
 
     def _op_fused_rms_norm_matmul(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
@@ -315,6 +362,125 @@ class PyTorchBackend(OpExecutor):
         gate = inputs[0]
         up = inputs[1]
         return F.silu(gate) * up
+
+    # ── Qwen3.5 / extended ops ───────────────────────────────
+
+    def _op_logical_and(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return torch.logical_and(inputs[0], inputs[1])
+
+    def _op_eq(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return torch.eq(inputs[0], inputs[1])
+
+    def _op_le(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return torch.le(inputs[0], inputs[1])
+
+    def _op_ne(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return torch.ne(inputs[0], inputs[1])
+
+    def _op_sigmoid(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return torch.sigmoid(inputs[0])
+
+    def _op_softplus(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return F.softplus(inputs[0])
+
+    def _op_exp(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return torch.exp(inputs[0])
+
+    def _op_sum(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        dim = kwargs.get("dim", None)
+        keepdim = kwargs.get("keepdim", False)
+        if dim is not None:
+            return torch.sum(inputs[0], dim=dim, keepdim=keepdim)
+        return torch.sum(inputs[0])
+
+    def _op_tril(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        diagonal = kwargs.get("diagonal", 0)
+        return torch.tril(inputs[0], diagonal=diagonal)
+
+    def _op_chunk(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        x = inputs[0]
+        chunks = kwargs.get("chunks", 2)
+        dim = kwargs.get("dim", 0)
+        # Return stacked chunks as a single tensor
+        return torch.stack(torch.chunk(x, chunks, dim=dim), dim=dim)
+
+    def _op_split(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        x = inputs[0]
+        split_sizes = kwargs.get("split_sizes", None)
+        dim = kwargs.get("dim", 0)
+        if split_sizes is not None:
+            # Adjust split_sizes proportionally if input dim doesn't match
+            total_expected = sum(split_sizes)
+            actual_dim = x.shape[dim]
+            if actual_dim != total_expected:
+                ratio = actual_dim / total_expected
+                adjusted = [max(1, int(s * ratio)) for s in split_sizes]
+                # Ensure split sizes sum to actual_dim
+                diff = actual_dim - sum(adjusted)
+                if diff != 0:
+                    adjusted[-1] += diff
+                return torch.cat(torch.split(x, adjusted, dim=dim), dim=dim)
+            return torch.cat(torch.split(x, list(split_sizes), dim=dim), dim=dim)
+        return x
+
+    def _op_conv1d(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        x, weight = inputs[0], inputs[1]
+        bias = inputs[2] if len(inputs) > 2 else None
+        if bias is not None:
+            bias = bias.to(x.dtype)
+        stride = kwargs.get("stride", 1)
+        padding = kwargs.get("padding", 0)
+        dilation = kwargs.get("dilation", 1)
+        groups = kwargs.get("groups", 1)
+        return F.conv1d(x, weight, bias, stride=stride, padding=padding, dilation=dilation, groups=groups)
+
+    def _op_diff(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        dim = kwargs.get("dim", -1)
+        n = kwargs.get("n", 1)
+        prepend = kwargs.get("prepend", None)
+        append = kwargs.get("append", None)
+        if prepend is None and len(inputs) > 1:
+            prepend = inputs[1].to(inputs[0].dtype)
+        if append is None and len(inputs) > 2:
+            append = inputs[2].to(inputs[0].dtype)
+        try:
+            return torch.diff(inputs[0], n=n, dim=dim, prepend=prepend, append=append)
+        except TypeError:
+            return torch.diff(inputs[0], dim=dim)
+
+    def _op_pad(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        x = inputs[0]
+        pad = kwargs.get("pad", [0, 0])
+        mode = kwargs.get("mode", "constant")
+        value = kwargs.get("value", 0.0)
+        return F.pad(x, list(pad), mode=mode, value=value)
+
+    def _op_index(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return inputs[0][inputs[1].to(torch.int64)]
+
+    def _op_eye(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        n = int(inputs[0].item()) if inputs else kwargs.get("n", 1)
+        m = kwargs.get("m", n)
+        dtype = inputs[0].dtype if inputs else torch.float32
+        return torch.eye(n, m, dtype=dtype)
+
+    def _op_zeros(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        shape = [int(t.item()) for t in inputs]
+        dtype = kwargs.get("dtype", torch.float32)
+        return torch.zeros(shape, dtype=dtype)
+
+    def _op_zeros_like(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return torch.zeros_like(inputs[0])
+
+    def _op_new_ones(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        shape = [int(t.item()) for t in inputs[1:]]
+        return inputs[0].new_ones(shape)
+
+    def _op_select(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        x = inputs[0]
+        dim = kwargs.get("dim", 0)
+        index = kwargs.get("index", 0)
+        return x.select(dim, index)
 
     # ── 公开接口 ────────────────────────────────────────────
 
@@ -350,8 +516,34 @@ class PyTorchBackend(OpExecutor):
             "pow": self._op_pow,
             "triu": self._op_triu,
             "sym_size": self._op_sym_size,
+            "gt": self._op_gt,
+            "lt": self._op_lt,
+            "masked_fill": self._op_masked_fill,
+            "cumsum": self._op_cumsum,
+            "expand": self._op_expand,
             "fused_rms_norm_matmul": self._op_fused_rms_norm_matmul,
             "fused_silu_mul": self._op_fused_silu_mul,
+            # Qwen3.5 extended ops
+            "logical_and": self._op_logical_and,
+            "eq": self._op_eq,
+            "le": self._op_le,
+            "ne": self._op_ne,
+            "sigmoid": self._op_sigmoid,
+            "softplus": self._op_softplus,
+            "exp": self._op_exp,
+            "sum": self._op_sum,
+            "tril": self._op_tril,
+            "chunk": self._op_chunk,
+            "split": self._op_split,
+            "conv1d": self._op_conv1d,
+            "diff": self._op_diff,
+            "pad": self._op_pad,
+            "index": self._op_index,
+            "eye": self._op_eye,
+            "zeros": self._op_zeros,
+            "zeros_like": self._op_zeros_like,
+            "new_ones": self._op_new_ones,
+            "select": self._op_select,
         }
         if op_name not in dispatch:
             raise ValueError(f"Unknown op: {op_name}. Available: {sorted(dispatch.keys())}")

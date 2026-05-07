@@ -10,6 +10,7 @@ __all__ = [
     "IrType",
     "compile_module",
     "default_pipeline",
+    "ir_module_to_mlir",
 ]
 
 _LAZY_ATTRS = frozenset(
@@ -21,6 +22,7 @@ _LAZY_ATTRS = frozenset(
         "IrType",
         "compile_module",
         "default_pipeline",
+        "ir_module_to_mlir",
     }
 )
 
@@ -28,6 +30,7 @@ _LAZY_ATTRS = frozenset(
 def __getattr__(name: str) -> Any:
     if name in _LAZY_ATTRS:
         import compiler.ir as _ir
+        import compiler.mlir_emitter as _mlir_emitter
         import compiler.pipeline as _pipeline
 
         _globals = {
@@ -38,6 +41,7 @@ def __getattr__(name: str) -> Any:
             "CompilationPipeline": _pipeline.CompilationPipeline,
             "compile_module": _pipeline.compile_module,
             "default_pipeline": _pipeline.default_pipeline,
+            "ir_module_to_mlir": _mlir_emitter.ir_module_to_mlir,
         }
         if name in _globals:
             value = _globals[name]

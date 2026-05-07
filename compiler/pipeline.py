@@ -13,6 +13,7 @@ import torch
 from compiler.export_ir import export_model
 from compiler.fx_to_ir import fx_graph_to_ir
 from compiler.ir import IrModule
+from compiler.mlir_emitter import ir_module_to_mlir
 from compiler.passes.base import PassManager
 from compiler.passes.constant_fold import ConstantFold
 from compiler.passes.cse_pass import CommonSubexpressionElimination
@@ -47,6 +48,7 @@ class CompilationPipeline:
         example_kwargs: dict[str, Any] | None = None,
         output_dir: str | None = None,
         dynamic_shapes: dict[str, Any] | None = None,
+        emit_mlir: bool = True,
     ) -> IrModule:
         """Run the full compilation pipeline.
 
@@ -54,7 +56,9 @@ class CompilationPipeline:
           1. torch.export → ExportedProgram
           2. FX Graph → IrModule
           3. Apply optimization passes
-          4. Return compiled IrModule
+          4. Generate MLIR (canonical representation)
+          5. Serialize (optional)
+          6. Return compiled IrModule
 
         Args:
             model: The PyTorch nn.Module to compile.
@@ -62,6 +66,7 @@ class CompilationPipeline:
             example_kwargs: Dummy kwargs for tracing.
             output_dir: If set, serialize the compiled artifact to this directory.
             dynamic_shapes: Shape constraints for torch.export dynamic shapes.
+            emit_mlir: If True, generate MLIR text and include in output.
 
         Returns:
             The optimized IrModule.
@@ -78,10 +83,14 @@ class CompilationPipeline:
         # Step 3: optimize
         module = self._optimize(module)
 
-        # Step 4: serialize (optional)
+        # Step 4: generate MLIR (canonical compilation representation)
+        if emit_mlir:
+            mlir_text = ir_module_to_mlir(module)
+            module.metadata["mlir"] = mlir_text
+
+        # Step 5: serialize (optional)
         if output_dir is not None:
             save_artifact(module, str(output_dir))
-            module.metadata["output_dir"] = output_dir
 
         return module
 

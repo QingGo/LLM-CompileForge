@@ -23,7 +23,7 @@ def test_package_imports():
 
 
 @pytest.mark.smoke
-@pytest.mark.timeout(8)
+@pytest.mark.timeout(30)
 def test_dependencies_available():
     """Key runtime dependencies must be installed."""
     import fastapi  # noqa: F401

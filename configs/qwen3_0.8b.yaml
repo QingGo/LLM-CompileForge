@@ -1,0 +1,63 @@
+# configs/qwen3_0.8b.yaml — Qwen3.5-0.8B model configuration
+model:
+  name: "Qwen/Qwen3.5-0.8B"
+  architecture: "qwen3_5"
+  dtype: "bfloat16"
+  num_layers: 24
+  num_heads: 8
+  num_kv_heads: 2
+  head_dim: 256
+  hidden_size: 1024
+  intermediate_size: 3584
+  vocab_size: 248320
+  max_position_embeddings: 262144
+  rms_norm_eps: 1.0e-06
+  rope_theta: 10000000.0
+  mamba_ssm_dtype: "float32"
+  linear_conv_kernel_dim: 4
+  linear_key_head_dim: 128
+  linear_num_key_heads: 16
+  linear_num_value_heads: 16
+  linear_value_head_dim: 128
+  full_attention_interval: 4
+  attn_output_gate: true
+  layer_types:
+    - "linear_attention"
+    - "linear_attention"
+    - "linear_attention"
+    - "full_attention"
+    - "linear_attention"
+    - "linear_attention"
+    - "linear_attention"
+    - "full_attention"
+    - "linear_attention"
+    - "linear_attention"
+    - "linear_attention"
+    - "full_attention"
+    - "linear_attention"
+    - "linear_attention"
+    - "linear_attention"
+    - "full_attention"
+    - "linear_attention"
+    - "linear_attention"
+    - "linear_attention"
+    - "full_attention"
+    - "linear_attention"
+    - "linear_attention"
+    - "linear_attention"
+    - "full_attention"
+
+compilation:
+  backend: "mlir"
+  optimization_level: 3
+  enable_fusion: true
+  enable_cse: true
+  enable_constant_fold: true
+  output_dir: "./compiled/qwen3_0.8b"
+
+runtime:
+  max_batch_size: 8
+  block_size: 16
+  max_blocks: 2000
+  chunk_size: 256
+  max_tokens_per_step: 512

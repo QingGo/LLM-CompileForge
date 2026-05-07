@@ -119,20 +119,69 @@ def compile_tiny_llama(output_dir: str) -> None:
     model.load_state_dict(state_dict, strict=False)
     model.eval()
 
-    example_input = torch.randint(0, 32000, (1, 4), dtype=torch.long)
-    print(f"Exporting with example input shape: {list(example_input.shape)}")
+    example_input = torch.randint(0, 32000, (2, 4), dtype=torch.long)
+    print(f"Exporting with example input shape: {list(example_input.shape)} (dynamic batch + seq)")
 
     pipeline = default_pipeline()
     ir_module = pipeline.compile(
         model,
         example_args=(example_input,),
         output_dir=output_dir,
-        dynamic_shapes={"input_ids": {1: Dim("seq")}},
+        dynamic_shapes={"input_ids": {0: Dim("batch"), 1: Dim("seq")}},
     )
 
     op_count = len(ir_module.main.ops)
     weight_count = len(ir_module.main.weights)
     print(f"Compiled: {op_count} ops, {weight_count} weight tensors")
+    print(f"Artifact saved to: {output_dir}")
+
+
+def compile_qwen(output_dir: str) -> None:
+    """Compile Qwen/Qwen3.5-0.8B through the full pipeline."""
+    import os
+    import torch
+
+    _patch_transformers_torch()
+
+    from compiler.pipeline import default_pipeline
+    from torch.export import Dim
+    from transformers import AutoConfig, AutoModelForCausalLM  # type: ignore[import-untyped]
+
+    model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models", "Qwen", "Qwen3.5-0.8B")
+    model_dir = os.path.abspath(model_dir)
+
+    if not os.path.isdir(model_dir):
+        raise FileNotFoundError(f"Model directory not found: {model_dir}")
+
+    print(f"Loading Qwen3.5-0.8B from: {model_dir}")
+
+    config = AutoConfig.from_pretrained(model_dir, trust_remote_code=True)
+    # Qwen3_5 stores use_cache in text_config sub-config
+    if hasattr(config, "text_config") and hasattr(config.text_config, "use_cache"):
+        config.text_config.use_cache = False
+    elif hasattr(config, "use_cache"):
+        config.use_cache = False
+    model = AutoModelForCausalLM.from_pretrained(model_dir, config=config, trust_remote_code=True, torch_dtype=torch.bfloat16)
+    model.eval()
+
+    example_input = torch.randint(0, 248320, (1, 64), dtype=torch.long)
+    print(f"Exporting with example input shape: {list(example_input.shape)} (static shape due to linear attention constraints)")
+
+    pipeline = default_pipeline()
+    ir_module = pipeline.compile(
+        model,
+        example_args=(example_input,),
+        output_dir=output_dir,
+        dynamic_shapes=None,
+    )
+
+    op_count = len(ir_module.main.ops)
+    weight_count = len(ir_module.main.weights)
+    print(f"Compiled: {op_count} ops, {weight_count} weight tensors")
+
+    mlir_text = ir_module.metadata.get("mlir", "")
+    mlir_lines = len(mlir_text.splitlines()) if mlir_text else 0
+    print(f"MLIR output: {mlir_lines} lines")
     print(f"Artifact saved to: {output_dir}")
 
 
@@ -142,8 +191,8 @@ def main() -> None:
     )
     parser.add_argument(
         "model",
-        choices=["opt-125m", "tiny-llama"],
-        help="Model to compile (opt-125m or tiny-llama)",
+        choices=["opt-125m", "tiny-llama", "qwen"],
+        help="Model to compile (opt-125m, tiny-llama, or qwen)",
     )
     parser.add_argument(
         "--output-dir",
@@ -156,6 +205,7 @@ def main() -> None:
     targets = {
         "opt-125m": (compile_opt125m, "./compiled/opt_125m"),
         "tiny-llama": (compile_tiny_llama, "./compiled/tiny_llama"),
+        "qwen": (compile_qwen, "./compiled/qwen3_0.8b"),
     }
 
     func, default_dir = targets[args.model]
