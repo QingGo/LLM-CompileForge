@@ -67,12 +67,19 @@ class PyTorchBackend(OpExecutor):
     # ── 算子映射表 ──────────────────────────────────────────
 
     def _op_matmul(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
-        return torch.matmul(inputs[0], inputs[1])
+        a, b = inputs[0], inputs[1]
+        if a.dtype != b.dtype:
+            b = b.to(a.dtype)
+        return torch.matmul(a, b)
 
     def _op_linear(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         x = inputs[0]
         w = inputs[1]
         bias = inputs[2] if len(inputs) > 2 else None
+        if x.dtype != w.dtype:
+            w = w.to(x.dtype)
+            if bias is not None and bias.dtype != x.dtype:
+                bias = bias.to(x.dtype)
         return torch.nn.functional.linear(x, w, bias)
 
     def _op_add(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
@@ -103,11 +110,28 @@ class PyTorchBackend(OpExecutor):
         x = inputs[0]
         weight = inputs[1] if len(inputs) > 1 else None
         eps = kwargs.get("eps", 1e-5)
-        variance = x.pow(2).mean(dim=-1, keepdim=True)
-        out = x * torch.rsqrt(variance + eps)
+        orig_dtype = x.dtype
+        # Upcast to float32 for numerical stability (matching HF implementation)
+        if x.dtype in (torch.float16, torch.bfloat16):
+            x_f32 = x.float()
+        else:
+            x_f32 = x
+        variance = x_f32.pow(2).mean(dim=-1, keepdim=True)
+        out = x_f32 * torch.rsqrt(variance + eps)
         if weight is not None:
+            if weight.dtype != out.dtype:
+                weight = weight.to(out.dtype)
             out = out * weight
-        return out
+        return out.to(orig_dtype)
+
+    def _op_type_as(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return inputs[0].to(inputs[1].dtype)
+
+    def _op_copy_(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        x = inputs[0]
+        if len(inputs) > 1:
+            x = inputs[1].clone()
+        return x
 
     def _op_permute(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         dims = kwargs["dims"]
@@ -125,9 +149,16 @@ class PyTorchBackend(OpExecutor):
         attn_mask = kwargs.get("attn_mask", None)
         if attn_mask is None and len(inputs) > 3:
             attn_mask = inputs[3]
-        # Squeeze extra dimension from attn_mask if present (dynamic batch issue)
+        # Normalize attn_mask shape for dynamic batch.
+        # In dynamic batch mode, the mask may be 5D: [batch, ?, 1, seq_q, seq_k]
+        # where dim 1 spuriously got batch size propagated instead of 1.
         if attn_mask is not None and attn_mask.dim() > 4:
             attn_mask = attn_mask.squeeze(2)
+        if attn_mask is not None and attn_mask.dim() == 4:
+            bsize = query.shape[0]
+            # Fix spurious batch propagation into heads dim: [B, B, S, S] → [B, 1, S, S]
+            if attn_mask.shape[1] > 1 and attn_mask.shape[1] == bsize:
+                attn_mask = attn_mask[:, :1, :, :]
         dropout_p = kwargs.get("dropout_p", 0.0)
         is_causal = kwargs.get("is_causal", False)
         return F.scaled_dot_product_attention(
@@ -202,7 +233,24 @@ class PyTorchBackend(OpExecutor):
         return x.reshape(*resolved)
 
     def _op_identity(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
-        return inputs[0]
+        x = inputs[0]
+        dtype_str = kwargs.get("dtype", None)
+        if dtype_str is not None:
+            dtype_map = {
+                "torch.bfloat16": torch.bfloat16,
+                "torch.float16": torch.float16,
+                "torch.float32": torch.float32,
+                "torch.float64": torch.float64,
+                "torch.int32": torch.int32,
+                "torch.int64": torch.int64,
+                "torch.bool": torch.bool,
+            }
+            target_dtype = dtype_map.get(dtype_str)
+            if target_dtype is not None and x.dtype != target_dtype:
+                x = x.to(target_dtype)
+        if len(inputs) > 1 and "type_as" in str(kwargs.get("original", "")):
+            x = x.to(inputs[1].dtype)
+        return x
 
     def _op_relu(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         return F.relu(inputs[0])
@@ -353,10 +401,21 @@ class PyTorchBackend(OpExecutor):
         rms_weight = inputs[1]
         mat_weight = inputs[-1]
         eps = kwargs.get("eps", 1e-5)
-        variance = x.pow(2).mean(dim=-1, keepdim=True)
-        x_norm = x * torch.rsqrt(variance + eps)
+        orig_dtype = x.dtype
+        # Upcast to float32 for numerical stability (matching HF implementation)
+        if x.dtype in (torch.float16, torch.bfloat16):
+            x_f32 = x.float()
+        else:
+            x_f32 = x
+        variance = x_f32.pow(2).mean(dim=-1, keepdim=True)
+        x_norm = x_f32 * torch.rsqrt(variance + eps)
+        if rms_weight.dtype != x_norm.dtype:
+            rms_weight = rms_weight.to(x_norm.dtype)
         x_norm = x_norm * rms_weight
-        return torch.matmul(x_norm, mat_weight)
+        if mat_weight.dtype != x_norm.dtype:
+            mat_weight = mat_weight.to(x_norm.dtype)
+        result = torch.matmul(x_norm, mat_weight)
+        return result.to(orig_dtype)
 
     def _op_fused_silu_mul(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         gate = inputs[0]
@@ -426,6 +485,8 @@ class PyTorchBackend(OpExecutor):
     def _op_conv1d(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         x, weight = inputs[0], inputs[1]
         bias = inputs[2] if len(inputs) > 2 else None
+        if x.dtype != weight.dtype:
+            weight = weight.to(x.dtype)
         if bias is not None:
             bias = bias.to(x.dtype)
         stride = kwargs.get("stride", 1)
@@ -456,7 +517,10 @@ class PyTorchBackend(OpExecutor):
         return F.pad(x, list(pad), mode=mode, value=value)
 
     def _op_index(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
-        return inputs[0][inputs[1].to(torch.int64)]
+        indices = [inp.to(torch.int64) for inp in inputs[1:]]
+        if len(indices) == 1:
+            return inputs[0][indices[0]]
+        return inputs[0][tuple(indices)]
 
     def _op_eye(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         n = int(inputs[0].item()) if inputs else kwargs.get("n", 1)
@@ -544,6 +608,8 @@ class PyTorchBackend(OpExecutor):
             "zeros_like": self._op_zeros_like,
             "new_ones": self._op_new_ones,
             "select": self._op_select,
+            "type_as": self._op_type_as,
+            "copy_": self._op_copy_,
         }
         if op_name not in dispatch:
             raise ValueError(f"Unknown op: {op_name}. Available: {sorted(dispatch.keys())}")

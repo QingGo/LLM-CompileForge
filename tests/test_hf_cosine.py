@@ -205,3 +205,60 @@ class TestHFCosineOpt125M:
         similarity = _cosine_similarity(hf_logits, compiled_logits)
         print(f"\n  opt_125m decode cos: {similarity:.8f}")
         assert similarity > 0.999
+
+
+@pytest.mark.integration
+class TestHFCosineOpt125MDynamic:
+    """Cosine similarity test with dynamically-compiled opt_125m (batch+seq)."""
+
+    @pytest.mark.timeout(300)
+    def test_cosine_similarity_exceeds_threshold(self):
+        """Compiled opt_125m_dynamic logits must match HF within cos > 0.999."""
+        from compiler.serialize import load_artifact
+        from engine.executor import Executor
+        from hal.pytorch_backend import PyTorchBackend
+
+        hf_model = _load_hf_opt_125m()
+        compiled_module = load_artifact("./compiled/opt_125m_dynamic")
+        backend = PyTorchBackend("cpu")
+        executor = Executor(compiled_module, backend)
+
+        input_ids = torch.randint(0, 1000, (1, 4), dtype=torch.long)
+
+        with torch.no_grad():
+            hf_output = hf_model(input_ids)
+            hf_logits = hf_output.logits
+
+        compiled_logits = executor.forward(input_ids)
+
+        assert hf_logits.shape == compiled_logits.shape, (
+            f"Shape mismatch: HF {hf_logits.shape} vs compiled {compiled_logits.shape}"
+        )
+
+        similarity = _cosine_similarity(hf_logits, compiled_logits)
+        print(f"\n  opt_125m_dynamic cosine similarity: {similarity:.8f}")
+        assert similarity > 0.999, (
+            f"Cosine similarity {similarity:.8f} below threshold 0.999"
+        )
+
+    @pytest.mark.timeout(300)
+    def test_cosine_similarity_batch2(self):
+        """Compiled opt_125m_dynamic batch=2 — should not crash and produce valid output."""
+        from compiler.serialize import load_artifact
+        from engine.executor import Executor
+        from hal.pytorch_backend import PyTorchBackend
+
+        compiled_module = load_artifact("./compiled/opt_125m_dynamic")
+        backend = PyTorchBackend("cpu")
+        executor = Executor(compiled_module, backend)
+
+        input_ids = torch.randint(0, 1000, (2, 4), dtype=torch.long)
+        compiled_logits = executor.forward(input_ids)
+
+        assert compiled_logits.shape == (2, 4, 50272), (
+            f"Expected (2,4,50272), got {compiled_logits.shape}"
+        )
+        assert not torch.allclose(compiled_logits[0], compiled_logits[1],
+                                  atol=1e-6), "Different batch elements should produce different logits"
+        assert not torch.isnan(compiled_logits).any(), "No NaN in output"
+        assert not torch.isinf(compiled_logits).any(), "No Inf in output"

@@ -67,19 +67,20 @@ def compile_opt125m(output_dir: str) -> None:
     print("Building OPT-125M model...")
     config_path = os.path.join(snapshots, snap, "config.json")
     config = OPTConfig.from_pretrained(config_path) if os.path.exists(config_path) else OPTConfig()
+    config.use_cache = False
     model = OPTForCausalLM(config)
     model.load_state_dict(state_dict, strict=False)
     model.eval()
 
-    example_input = torch.randint(0, 50272, (1, 4), dtype=torch.long)
-    print(f"Exporting with example input shape: {list(example_input.shape)} (dynamic seq)")
+    example_input = torch.randint(0, 50272, (2, 4), dtype=torch.long)
+    print(f"Exporting with example input shape: {list(example_input.shape)} (dynamic batch + seq)")
 
     pipeline = default_pipeline()
     ir_module = pipeline.compile(
         model,
         example_args=(example_input,),
         output_dir=output_dir,
-        dynamic_shapes={"input_ids": {1: Dim("seq")}},
+        dynamic_shapes={"input_ids": {0: Dim("batch"), 1: Dim("seq")}},
     )
 
     op_count = len(ir_module.main.ops)
@@ -112,6 +113,7 @@ def compile_tiny_llama(output_dir: str) -> None:
 
     config_path = os.path.join(snapshots, snap, "config.json")
     config = LlamaConfig.from_pretrained(config_path) if os.path.exists(config_path) else LlamaConfig()
+    config.use_cache = False
     model = LlamaForCausalLM(config)
     # Load safetensors
     import safetensors.torch

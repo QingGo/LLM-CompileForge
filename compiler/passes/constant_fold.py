@@ -168,6 +168,9 @@ class ConstantFold(Pass):
                 diagonal = op.attributes.get("diagonal", 0)
                 return torch.triu(tensors[0], diagonal=diagonal)
             elif op.name == "identity":
+                # Identity with dtype semantics must preserve the conversion
+                if op.attributes.get("dtype") is not None:
+                    return None
                 return tensors[0]
             elif op.name == "diff":
                 dim = op.attributes.get("dim", -1)
