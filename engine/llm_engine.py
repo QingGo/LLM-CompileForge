@@ -53,16 +53,25 @@ class LLMEngine:
         num_kv_heads: int = 0,
         head_dim: int = 0,
         dtype: torch.dtype | None = None,
+        enable_prefix_cache: bool = False,
     ) -> None:
         self._module = module
         self._hal_backend = hal_backend
+
+        self.block_manager = BlockManager(num_blocks=num_blocks, block_size=block_size)
+
+        # ── Prefix Cache ──────────────────────────────
+        self._radix_cache = None
+        if enable_prefix_cache:
+            from cache.radix_cache import RadixCache
+            self._radix_cache = RadixCache(self.block_manager)
 
         self.scheduler = Scheduler(
             max_batch_size=max_batch_size,
             max_tokens_per_step=max_tokens_per_step,
             chunk_size=chunk_size,
+            radix_cache=self._radix_cache,
         )
-        self.block_manager = BlockManager(num_blocks=num_blocks, block_size=block_size)
         self.executor = Executor(module, hal_backend)
 
         # Tokenizer reference — set by the API server or user
@@ -143,6 +152,13 @@ class LLMEngine:
         are combined into a single batch forward. Otherwise, falls back to
         per-request processing.
         """
+        # ── Prefix Cache LRU eviction (under memory pressure) ──
+        if self._radix_cache is not None:
+            free = self.block_manager.num_free_blocks()
+            total = self.block_manager.num_blocks
+            if free < max(1, total // 10):  # < 10% free
+                self._radix_cache.evict(max(1, total // 10 - free))
+
         batch = self.scheduler.schedule(self.block_manager)
         if batch.is_empty or not batch.request_input_ids:
             return []

@@ -7,10 +7,11 @@ The scheduler is the runtime's central decision-maker. Each step:
   4. Builds a Batch with input_ids, positions, and block_tables.
 
 Key scheduling strategies:
-  - FCFS (default): requests processed in arrival order.
-  - Priority Queue: heapq-based, lower priority value = higher priority.
-  - Chunked Prefill: long prompts split into chunk_size-token slices.
-  - Hybrid: prefill and decode requests mixed in a single step.
+   - FCFS (default): requests processed in arrival order.
+   - Priority Queue: heapq-based, lower priority value = higher priority.
+   - Chunked Prefill: long prompts split into chunk_size-token slices.
+   - Hybrid: prefill and decode requests mixed in a single step.
+   - Prefix Cache: RadixTree-based KV block reuse for shared prefixes.
 """
 
 from __future__ import annotations
@@ -18,11 +19,15 @@ from __future__ import annotations
 import heapq
 import time
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import torch
 
 from engine.batch import GenerationResult, Request, SamplingParams, SequenceGroup
 from engine.block_manager import BlockManager
+
+if TYPE_CHECKING:
+    from cache.radix_cache import RadixCache
 
 
 @dataclass(order=True)
@@ -51,6 +56,7 @@ class Scheduler:
         max_batch_size: int = 32,
         max_tokens_per_step: int = 512,
         chunk_size: int = 256,
+        radix_cache: RadixCache | None = None,
     ) -> None:
         if max_batch_size <= 0:
             raise ValueError(f"max_batch_size must be positive, got {max_batch_size}")
@@ -60,6 +66,7 @@ class Scheduler:
         self.max_batch_size = max_batch_size
         self.max_tokens_per_step = max_tokens_per_step
         self.chunk_size = chunk_size
+        self.radix_cache = radix_cache
 
         # Priority queue: list of _QueueEntry, heapq-maintained
         self._waiting: list[_QueueEntry] = []
@@ -119,6 +126,14 @@ class Scheduler:
         finished = [r for r in self._running if r.is_finished]
         for r in finished:
             self._running.remove(r)
+            # Insert KV blocks into prefix cache before freeing
+            if self.radix_cache is not None:
+                all_tokens = r.prompt_tokens + r.output_tokens
+                try:
+                    blks = block_manager.get_blocks(r.request_id)
+                    self.radix_cache.insert(all_tokens, blks)
+                except KeyError:
+                    pass
             block_manager.free(r.request_id)
 
         # Step 2: admit new requests
@@ -126,6 +141,20 @@ class Scheduler:
             entry = heapq.heappop(self._waiting)
             req = entry.request
             req.state = "prefill"
+
+            # ── Prefix cache lookup ──
+            if self.radix_cache is not None:
+                matched_blocks, matched_tokens = self.radix_cache.match_prefix(
+                    req.prompt_tokens
+                )
+                if matched_tokens > 0:
+                    req.prefill_pos = matched_tokens
+                    # Assign cached blocks immediately so both prefill and
+                    # decode paths can find them via get_blocks().
+                    block_manager.assign_cached_blocks(req.request_id, matched_blocks)
+                    if matched_tokens >= len(req.prompt_tokens):
+                        req.state = "decode"
+
             self._running.append(req)
 
         if not self._running:
@@ -169,8 +198,29 @@ class Scheduler:
                     # Allocate KV blocks on first prefill step, reuse thereafter
                     try:
                         blocks = block_manager.get_blocks(req.request_id)
+                        # Blocks exist (from cache or prior allocation) — check
+                        # whether they cover the full prompt.
+                        covered = len(blocks) * block_manager.block_size
+                        if covered < len(req.prompt_tokens):
+                            extra = len(req.prompt_tokens) - covered
+                            n_extra = (
+                                (extra + block_manager.block_size - 1)
+                                // block_manager.block_size
+                            )
+                            for _ in range(n_extra):
+                                bid = block_manager.free_blocks.pop()
+                                block_manager.blocks[bid].ref_count = 1
+                                block_manager.block_tables[req.request_id].append(bid)
                     except KeyError:
-                        blocks = block_manager.allocate(req.request_id, len(req.prompt_tokens))
+                        # Check if prefix cache already assigned blocks
+                        existing = block_manager.block_tables.get(req.request_id, [])
+                        existing_tokens = len(existing) * block_manager.block_size
+                        suffix_tokens = max(0, len(req.prompt_tokens) - existing_tokens)
+                        if suffix_tokens > 0:
+                            block_manager.allocate(req.request_id, suffix_tokens)
+                        else:
+                            block_manager.block_tables.setdefault(req.request_id, [])
+                        blocks = block_manager.get_blocks(req.request_id)
                     block_tables[req.request_id] = blocks
 
                     # If all prompt tokens consumed this step, transition to decode

@@ -5,6 +5,10 @@ Phase 1.5 legacy fixes:
   2. getitem resolution — tuple indexing vs sym_size fallback
   3. conv1d attribute extraction (stride, padding, dilation)
   4. torch.dtype argument handling
+
+_OpDef unification tests:
+  5. Auto-derived tables match expected values
+  6. No missing or duplicate aten→HAL mappings
 """
 
 from __future__ import annotations
@@ -12,7 +16,105 @@ from __future__ import annotations
 import pytest
 import torch
 
-from compiler.fx_to_ir import _map_aten_op
+from compiler.fx_to_ir import (
+    _ATEN_TO_HAL,
+    _LIST_ARG_ATTR,
+    _OP_DEFS,
+    _SCALAR_INT_POSITIONS,
+    _SCALAR_KWARG_NAMES,
+    _map_aten_op,
+    _OpDef,
+)
+
+# ═══════════════════════════════════════════════════════════
+# _OpDef unification — tables are auto-derived correctly
+# ═══════════════════════════════════════════════════════════
+
+
+@pytest.mark.unit
+class TestOpDefUnification:
+    """Verify that _ATEN_TO_HAL, _LIST_ARG_ATTR, _SCALAR_KWARG_NAMES,
+    and _SCALAR_INT_POSITIONS are correctly auto-derived from _OP_DEFS."""
+
+    def test_all_aten_names_have_hal_mapping(self):
+        """Every aten name in _OP_DEFS appears in _ATEN_TO_HAL."""
+        for od in _OP_DEFS:
+            for aten_name in od.aten_names:
+                assert aten_name in _ATEN_TO_HAL, f"missing: {aten_name}"
+                assert _ATEN_TO_HAL[aten_name] == od.hal_name
+
+    def test_all_list_arg_attr_ops_present(self):
+        """Ops with list_arg_attr set appear in _LIST_ARG_ATTR."""
+        for od in _OP_DEFS:
+            if od.list_arg_attr == "_SKIP_":
+                continue
+            assert _LIST_ARG_ATTR.get(od.hal_name, "_MISSING_") == od.list_arg_attr
+
+    def test_list_arg_attr_skip_is_default(self):
+        """Ops with default list_arg_attr are not in _LIST_ARG_ATTR."""
+        for od in _OP_DEFS:
+            if od.list_arg_attr == "_SKIP_":
+                assert od.hal_name not in _LIST_ARG_ATTR
+
+    def test_all_scalar_kwargs_present(self):
+        """Ops with scalar_kwargs appear in _SCALAR_KWARG_NAMES."""
+        for od in _OP_DEFS:
+            if od.scalar_kwargs:
+                assert _SCALAR_KWARG_NAMES.get(od.hal_name) == od.scalar_kwargs
+
+    def test_scalar_int_positions_derived(self):
+        """_SCALAR_INT_POSITIONS includes kwarg positions + scalar_skip."""
+        for od in _OP_DEFS:
+            expected = set(od.scalar_kwargs.keys()) | set(od.scalar_skip)
+            actual = set(_SCALAR_INT_POSITIONS.get(od.hal_name, []))
+            assert actual == expected, f"{od.hal_name}: expected {expected}, got {actual}"
+
+    def test_embedding_has_scalar_skip_position_2(self):
+        assert 2 in _SCALAR_INT_POSITIONS.get("embedding", [])
+
+    def test_pad_has_scalar_skip_position_1(self):
+        assert 1 in _SCALAR_INT_POSITIONS.get("pad", [])
+
+    def test_flatten_ops_have_none_list_arg_attr(self):
+        """Ops that flatten list args have None in _LIST_ARG_ATTR."""
+        for flatten_name in ("cat", "expand", "index"):
+            assert _LIST_ARG_ATTR.get(flatten_name) is None, \
+                f"{flatten_name} should be None (flatten)"
+
+    def test_conv1d_has_special_list_dispatch(self):
+        assert _LIST_ARG_ATTR.get("conv1d") == "__conv1d__"
+
+    def test_key_op_mappings(self):
+        """Spot-check critical aten→HAL mappings."""
+        assert _ATEN_TO_HAL["aten.copy_.default"] == "copy_"
+        assert _ATEN_TO_HAL["aten.zeros.default"] == "zeros"
+        assert _ATEN_TO_HAL["aten.cos.default"] == "cos"
+        assert _ATEN_TO_HAL["aten.sin.default"] == "sin"
+        assert _ATEN_TO_HAL["aten.split_with_sizes.default"] == "split"
+
+    def test_aten_count_minimum(self):
+        """Sanity: we should have at least 120 aten→HAL entries."""
+        assert len(_ATEN_TO_HAL) >= 120
+
+    def test_op_def_count_minimum(self):
+        """Sanity: we should have at least 55 _OpDef entries."""
+        assert len(_OP_DEFS) >= 55
+
+    def test_hal_op_names_are_valid_identifiers(self):
+        """HAL op names should be valid Python identifiers."""
+        for od in _OP_DEFS:
+            assert od.hal_name.isidentifier(), f"bad HAL name: {od.hal_name}"
+
+    def test_op_def_construction(self):
+        """Verify _OpDef dataclass fields are correctly stored."""
+        od = _OpDef("test_add", ("aten.add.Tensor", "aten.add"), list_arg_attr=None,
+                     scalar_kwargs={1: "dim"}, scalar_skip=(2,))
+        assert od.hal_name == "test_add"
+        assert od.aten_names == ("aten.add.Tensor", "aten.add")
+        assert od.list_arg_attr is None
+        assert od.scalar_kwargs == {1: "dim"}
+        assert od.scalar_skip == (2,)
+
 
 # ═══════════════════════════════════════════════════════════
 # _map_aten_op — mapping correctness (unit: no export needed)

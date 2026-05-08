@@ -27,6 +27,10 @@ test-unit: $(VENV)
 test-integration: $(VENV)
 	-$(PYTEST) tests/ -m integration -v --tb=short --timeout=300
 
+# ---- 基线回归 (cosine >0.999) ----
+test-baseline: $(VENV)
+	-$(PYTEST) tests/ -m baseline -v --tb=long --timeout=300
+
 # ---- 快速测试 (lint + unit, <15s) ----
 test-fast: lint test-unit smoke
 

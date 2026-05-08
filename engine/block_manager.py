@@ -116,6 +116,35 @@ class BlockManager:
 
         del self.block_tables[request_id]
 
+    def free_block(self, block_id: int) -> None:
+        """Release a single physical block (for LRU eviction).
+
+        Decrements the reference count on the block.  If it reaches
+        zero the block is returned to the free pool.  This is a
+        low-level operation used by the RadixCache eviction path.
+        """
+        block = self.blocks[block_id]
+        block.ref_count -= 1
+        self._shared_owners.pop(block_id, None)
+        if block.ref_count == 0:
+            self.free_blocks.append(block_id)
+
+    def assign_cached_blocks(self, request_id: str, block_ids: list[int]) -> None:
+        """Prepend pre-existing cached blocks to a request's block table.
+
+        Increments reference counts on each block.  The blocks are
+        appended to the front of the request's existing table (if any).
+        This is the primary integration point for RadixCache — it lets
+        a new request share KV blocks from cached tree nodes.
+        """
+        for bid in block_ids:
+            self.blocks[bid].ref_count += 1
+            self._shared_owners.setdefault(bid, set()).add(request_id)
+        if request_id in self.block_tables:
+            self.block_tables[request_id] = list(block_ids) + self.block_tables[request_id]
+        else:
+            self.block_tables[request_id] = list(block_ids)
+
     # ── Prefix Cache via Block Sharing ──────────────────────
 
     def share_prefix(self, src_request_id: str, dst_request_id: str, prefix_len: int) -> list[int]:

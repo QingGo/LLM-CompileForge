@@ -86,6 +86,7 @@ def _cosine_similarity(a: torch.Tensor, b: torch.Tensor) -> float:
 
 
 @pytest.mark.integration
+@pytest.mark.baseline
 class TestHFCosineTinyLlama:
     """Cosine similarity test with compiled tiny_llama."""
 
@@ -147,6 +148,7 @@ class TestHFCosineTinyLlama:
 
 
 @pytest.mark.integration
+@pytest.mark.baseline
 class TestHFCosineOpt125M:
     """Cosine similarity test with compiled opt_125m."""
 
@@ -208,6 +210,7 @@ class TestHFCosineOpt125M:
 
 
 @pytest.mark.integration
+@pytest.mark.baseline
 class TestHFCosineOpt125MDynamic:
     """Cosine similarity test with dynamically-compiled opt_125m (batch+seq)."""
 
@@ -270,6 +273,7 @@ class TestHFCosineOpt125MDynamic:
 # (hf_qwen and module_qwen fixtures are in conftest.py)
 
 @pytest.mark.integration
+@pytest.mark.baseline
 class TestHFCosineQwen:
     """Cosine similarity test with compiled Qwen3.5-0.8B."""
 

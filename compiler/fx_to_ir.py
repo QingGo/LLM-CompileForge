@@ -7,6 +7,7 @@ the pass pipeline and ultimately to the engine executor.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -15,7 +16,204 @@ from torch.export import ExportedProgram
 
 from compiler.ir import IrFunction, IrModule, IrOp, IrType
 
-# ── Aten → HAL operator mapping table ───────────────────────
+# ── Unified operator definition ─────────────────────────────
+# _OpDef is the single source of truth for FX→IR op conversion.
+# It replaces the three separate tables (_ATEN_TO_HAL, _LIST_ARG_ATTR,
+# _SCALAR_KWARG_NAMES) that previously required coordinated updates.
+#
+# To add a new op: add one _OpDef entry to _OP_DEFS below.  The four
+# lookup tables (_ATEN_TO_HAL, _LIST_ARG_ATTR, _SCALAR_KWARG_NAMES,
+# _SCALAR_INT_POSITIONS) are auto-derived at import time.
+
+_SUPPRESS_LIST = "_SKIP_"  # sentinel: no list-arg handling for this op
+
+
+@dataclass
+class _OpDef:
+    """Unified definition of a HAL operator for FX graph conversion.
+
+    Attributes:
+        hal_name: HAL operator name (e.g. ``"add"``, ``"matmul"``).
+        aten_names: All aten op name strings that map to this HAL op.
+        list_arg_attr: How to handle a list/tuple positional arg:
+            * ``"_SKIP_"`` (default) — no list-arg handling.
+            * ``None`` — flatten list elements into individual input refs.
+            * ``"__conv1d__"`` — multi-list-arg dispatch via ``scalar_kwargs``.
+            * any other str — store list value as this kwarg attribute name.
+        scalar_kwargs: Mapping from positional index to kwarg name for
+            scalar args that should be promoted to IrOp attributes.
+        scalar_skip: Extra positional indices to skip (consumed but not
+            stored as kwargs).  e.g. ``embedding`` has ``scalar_skip=(2,)``
+            for ``padding_idx``.
+    """
+    hal_name: str
+    aten_names: tuple[str, ...]
+    list_arg_attr: str | None = _SUPPRESS_LIST
+    scalar_kwargs: dict[int, str] = field(default_factory=dict)
+    scalar_skip: tuple[int, ...] = ()
+
+
+# ── Master operator registry ────────────────────────────────
+# Grouped by logical category for readability.  Adding a new op
+# requires *only* adding one entry here — all four lookup tables
+# are auto-derived by _build_tables() below.
+
+_OP_DEFS: list[_OpDef] = [
+    # ── Arithmetic ──
+    _OpDef("add", ("aten.add.Tensor", "aten.add.Scalar", "aten.add", "aten.add_.Tensor", "add")),
+    _OpDef("mul", ("aten.mul.Tensor", "aten.mul.Scalar", "aten.mul", "aten.mul_.Tensor", "aten.mul_.Scalar")),
+    _OpDef("sub", ("aten.sub", "aten.sub.Tensor", "aten.rsub", "aten.rsub.Scalar")),
+    _OpDef("neg", ("neg", "aten.neg.default", "aten.neg")),
+    _OpDef("pow", ("pow", "aten.pow.Tensor_Scalar", "aten.pow")),
+    _OpDef("max", ("aten.max", "aten.max.other")),
+    # ── Activation ──
+    _OpDef("relu", ("aten.relu", "aten.relu.default")),
+    _OpDef("gelu", ("aten.gelu", "aten.gelu.default")),
+    _OpDef("silu", ("aten.silu", "aten.silu.default")),
+    _OpDef("sigmoid", ("aten.sigmoid.default", "aten.sigmoid")),
+    _OpDef("softplus", ("aten.softplus.default",)),
+    _OpDef("exp", ("aten.exp.default",)),
+    # ── Normalization ──
+    _OpDef("layer_norm", ("aten.layer_norm", "aten.layer_norm.default",
+                           "aten.native_layer_norm", "aten.native_layer_norm.default"),
+            list_arg_attr="normalized_shape"),
+    _OpDef("rms_norm", ("aten.rms_norm", "aten.rms_norm.default"),
+            list_arg_attr="normalized_shape"),
+    _OpDef("softmax", ("aten._softmax", "aten._softmax.default", "aten.softmax.int"),
+            scalar_kwargs={1: "dim"}),
+    # ── Linear algebra ──
+    _OpDef("matmul", ("aten.matmul", "aten.matmul.default", "aten.mm", "aten.mm.default", "aten.bmm")),
+    _OpDef("linear", ("aten.linear", "aten.linear.default")),
+    # ── Shape & indexing ──
+    _OpDef("view", ("aten.view", "aten.view.default", "aten.reshape", "aten.reshape.default"),
+            list_arg_attr="shape"),
+    _OpDef("unsqueeze", ("aten.unsqueeze", "aten.unsqueeze.default"),
+            scalar_kwargs={1: "dim"}),
+    _OpDef("expand", ("aten.expand", "aten.expand.default"),
+            list_arg_attr=None),
+    _OpDef("permute", ("aten.permute", "aten.permute.default")),
+    _OpDef("transpose", ("aten.transpose", "aten.transpose.int"),
+            scalar_kwargs={1: "dim0", 2: "dim1"}),
+    _OpDef("slice", ("aten.slice.Tensor", "aten.slice_copy.Tensor"),
+            scalar_kwargs={1: "dim", 2: "start", 3: "end", 4: "step"}),
+    _OpDef("select", ("aten.select.int", "aten.select"),
+            scalar_kwargs={1: "dim", 2: "index"}),
+    _OpDef("cat", ("aten.cat", "aten.cat.default"),
+            list_arg_attr=None, scalar_kwargs={1: "dim"}),
+    _OpDef("split", ("aten.split_with_sizes.default",),
+            list_arg_attr="split_sizes", scalar_kwargs={2: "dim"}),
+    _OpDef("chunk", ("aten.chunk.default",),
+            scalar_kwargs={1: "chunks", 2: "dim"}),
+    # ── Attention ──
+    _OpDef("scaled_dot_product_attention",
+            ("aten.scaled_dot_product_attention", "aten.scaled_dot_product_attention.default")),
+    # ── Comparison ──
+    _OpDef("gt", ("gt", "aten.gt.Tensor", "aten.gt")),
+    _OpDef("lt", ("aten.lt", "aten.lt.Tensor")),
+    _OpDef("eq", ("aten.eq.Tensor",)),
+    _OpDef("ne", ("aten.ne.Scalar", "aten.ne.Tensor")),
+    _OpDef("le", ("aten.le.Tensor",)),
+    _OpDef("logical_and", ("aten.__and__.Tensor",)),
+    # ── Math ──
+    _OpDef("cos", ("aten.cos.default", "aten.cos")),
+    _OpDef("sin", ("aten.sin.default", "aten.sin")),
+    _OpDef("rsqrt", ("rsqrt", "aten.rsqrt.default", "aten.rsqrt")),
+    _OpDef("mean", ("mean", "aten.mean.dim", "aten.mean")),
+    _OpDef("triu", ("triu", "aten.triu.default", "aten.triu"),
+            scalar_kwargs={1: "diagonal"}),
+    _OpDef("tril", ("aten.tril.default", "aten.tril"),
+            scalar_kwargs={1: "diagonal"}),
+    _OpDef("cumsum", ("aten.cumsum", "aten.cumsum.default"),
+            scalar_kwargs={1: "dim"}),
+    _OpDef("sum", ("aten.sum.dim_IntList",),
+            list_arg_attr="dim", scalar_kwargs={1: "dim", 2: "keepdim"}),
+    _OpDef("diff", ("aten.diff.default",),
+            scalar_kwargs={1: "n", 2: "dim"}),
+    # ── Constant creation ──
+    _OpDef("arange", ("aten.arange.start", "aten.arange", "aten.arange.default")),
+    _OpDef("ones_like", ("aten.ones", "aten.ones.default"),
+            list_arg_attr="shape"),
+    _OpDef("full_like", ("aten.full", "aten.full.default"),
+            list_arg_attr="shape", scalar_kwargs={1: "fill_value"}),
+    _OpDef("zeros", ("aten.zeros.default",),
+            list_arg_attr="shape"),
+    _OpDef("zeros_like", ("aten.zeros_like.default",)),
+    _OpDef("new_ones", ("aten.new_ones.default",)),
+    _OpDef("eye", ("aten.eye.default",),
+            scalar_kwargs={0: "n", 1: "m"}),
+    # ── Embedding ──
+    _OpDef("embedding", ("aten.embedding", "aten.embedding.default"),
+            scalar_skip=(2,)),
+    # ── Misc ──
+    _OpDef("masked_fill", ("aten.masked_fill", "aten.masked_fill.Scalar",
+                            "aten.masked_fill_", "aten.masked_fill_.Scalar")),
+    _OpDef("conv1d", ("aten.conv1d.default",),
+            list_arg_attr="__conv1d__",
+            scalar_kwargs={2: "bias", 3: "stride", 4: "padding", 5: "dilation", 6: "groups"}),
+    _OpDef("pad", ("aten.pad.default",),
+            list_arg_attr="pad", scalar_skip=(1,)),
+    _OpDef("index", ("aten.index.Tensor",),
+            list_arg_attr=None),
+    _OpDef("sym_size", ("sym_size", "aten.sym_size.int", "aten.sym_size"),
+            scalar_kwargs={1: "dim"}),
+    _OpDef("copy_", ("aten.copy_.default",)),
+    _OpDef("type_as", ("aten.type_as", "aten.type_as.default")),
+    # ── Identity / passthrough ──
+    _OpDef("identity", (
+        "_assert_tensor_metadata",
+        "aten._assert_tensor_metadata.default", "aten._assert_tensor_metadata",
+        "aten.to", "aten.to.dtype", "aten.to.dtype_layout",
+        "aten.contiguous", "aten.contiguous.default",
+        "aten.clone", "aten.clone.default",
+        "aten.dropout", "aten.dropout.default",
+        "aten.detach", "aten.detach.default", "aten.detach_", "aten.detach_.default",
+        "aten.alias", "aten.alias.default",
+        "aten.lift_fresh_copy", "aten.lift_fresh_copy.default",
+    ), scalar_kwargs={1: "dtype"}),
+    # ── Special (compile-time resolved) ──
+    _OpDef("getitem", ("getitem",)),
+    _OpDef("_skip_wrap", ("wrap_with_set_grad_enabled",)),
+]
+
+# ── Auto-derived lookup tables ──────────────────────────────
+
+_ATEN_TO_HAL: dict[str, str] = {}
+_LIST_ARG_ATTR: dict[str, str | None] = {}
+_SCALAR_KWARG_NAMES: dict[str, dict[int, str]] = {}
+_SCALAR_INT_POSITIONS: dict[str, list[int]] = {}
+
+
+def _build_tables() -> None:
+    """Populate all four lookup tables from _OP_DEFS.
+
+    Called at module import time.  After this, the four module-level
+    dicts behave identically to the hand-maintained versions they replace.
+    """
+    for od in _OP_DEFS:
+        hal = od.hal_name
+        # _ATEN_TO_HAL: reverse map from aten name → HAL name
+        for aten_name in od.aten_names:
+            if aten_name in _ATEN_TO_HAL and _ATEN_TO_HAL[aten_name] != hal:
+                raise AssertionError(
+                    f"aten '{aten_name}' maps to both "
+                    f"'{_ATEN_TO_HAL[aten_name]}' and '{hal}'"
+                )
+            _ATEN_TO_HAL[aten_name] = hal
+        # _LIST_ARG_ATTR
+        if od.list_arg_attr != _SUPPRESS_LIST:
+            _LIST_ARG_ATTR.setdefault(hal, od.list_arg_attr)
+        # _SCALAR_KWARG_NAMES
+        if od.scalar_kwargs:
+            _SCALAR_KWARG_NAMES.setdefault(hal, od.scalar_kwargs)
+        # _SCALAR_INT_POSITIONS: kwarg positions + extra skip positions
+        positions = set(od.scalar_kwargs.keys()) | set(od.scalar_skip)
+        if positions:
+            existing = set(_SCALAR_INT_POSITIONS.get(hal, []))
+            _SCALAR_INT_POSITIONS[hal] = sorted(existing | positions)
+
+
+_build_tables()
+
 
 def _symint_to_int(val: Any) -> int | None:
     """Convert a SymInt to concrete int if possible, else return None."""
@@ -47,223 +245,6 @@ def _resolve_shape_tuple(raw_shape: Any) -> tuple[int | None, ...]:
     for d in raw_shape:
         result.append(_symint_to_int(d))
     return tuple(result)
-
-
-_ATEN_TO_HAL: dict[str, str] = {
-    "aten.add.Tensor": "add",
-    "aten.add.Scalar": "add",
-    "aten.add": "add",
-    "aten.add_.Tensor": "add",
-    "aten.mul.Tensor": "mul",
-    "aten.mul.Scalar": "mul",
-    "aten.mul": "mul",
-    "aten.mul_.Tensor": "mul",
-    "aten.mul_.Scalar": "mul",
-    # Built-in Python ops that appear in FX graphs
-    "add": "add",
-    "getitem": "getitem",
-    "neg": "neg",
-    "rsqrt": "rsqrt",
-    "mean": "mean",
-    "pow": "pow",
-    "gt": "gt",
-    "triu": "triu",
-    "sym_size": "sym_size",
-    "_assert_tensor_metadata": "identity",
-    # Additional aten overloads
-    "aten.neg.default": "neg",
-    "aten.neg": "neg",
-    "aten.cos.default": "cos",
-    "aten.cos": "cos",
-    "aten.sin.default": "sin",
-    "aten.sin": "sin",
-    "aten.rsqrt.default": "rsqrt",
-    "aten.rsqrt": "rsqrt",
-    "aten.pow.Tensor_Scalar": "pow",
-    "aten.pow": "pow",
-    "aten.mean.dim": "mean",
-    "aten.mean": "mean",
-    "aten.gt.Tensor": "gt",
-    "aten.gt": "gt",
-    "aten.triu.default": "triu",
-    "aten.triu": "triu",
-    "aten.sym_size.int": "sym_size",
-    "aten.sym_size": "sym_size",
-    "aten._assert_tensor_metadata.default": "identity",
-    "aten._assert_tensor_metadata": "identity",
-    # Context manager wrappers — skipped, output mapped to input_ids for sym_size
-    "wrap_with_set_grad_enabled": "_skip_wrap",
-    "aten.arange.start": "arange",
-    "aten.matmul": "matmul",
-    "aten.matmul.default": "matmul",
-    "aten.linear": "linear",
-    "aten.linear.default": "linear",
-    "aten.mm": "matmul",
-    "aten.mm.default": "matmul",
-    "aten.bmm": "matmul",
-    "aten.gelu": "gelu",
-    "aten.gelu.default": "gelu",
-    "aten.silu": "silu",
-    "aten.silu.default": "silu",
-    "aten._softmax": "softmax",
-    "aten._softmax.default": "softmax",
-    "aten.softmax.int": "softmax",
-    "aten.layer_norm": "layer_norm",
-    "aten.layer_norm.default": "layer_norm",
-    "aten.native_layer_norm": "layer_norm",
-    "aten.native_layer_norm.default": "layer_norm",
-    "aten.rms_norm": "rms_norm",
-    "aten.rms_norm.default": "rms_norm",
-    "aten.permute": "permute",
-    "aten.permute.default": "permute",
-    "aten.transpose": "transpose",
-    "aten.transpose.int": "transpose",
-    "aten.scaled_dot_product_attention": "scaled_dot_product_attention",
-    "aten.scaled_dot_product_attention.default": "scaled_dot_product_attention",
-    "aten.cat": "cat",
-    "aten.cat.default": "cat",
-    "aten.slice.Tensor": "slice",
-    "aten.slice_copy.Tensor": "slice",
-    "aten.view": "view",
-    "aten.view.default": "view",
-    "aten.reshape": "view",
-    "aten.reshape.default": "view",
-    # Activation functions
-    "aten.relu": "relu",
-    "aten.relu.default": "relu",
-    "aten.sub": "sub",
-    "aten.sub.Tensor": "sub",
-    "aten.rsub": "sub",
-    "aten.rsub.Scalar": "sub",
-    # Element-wise ops
-    "aten.max": "max",
-    "aten.max.other": "max",
-    # Type conversion (passthrough)
-    "aten.to": "identity",
-    "aten.to.dtype": "identity",
-    "aten.to.dtype_layout": "identity",
-    # Misc
-    "aten.expand": "expand",
-    "aten.expand.default": "expand",
-    # Constant creation — computed at runtime from template tensor
-    "aten.ones": "ones_like",
-    "aten.ones.default": "ones_like",
-    "aten.full": "full_like",
-    "aten.full.default": "full_like",
-    "aten.arange": "arange",
-    "aten.arange.default": "arange",
-    "aten.cumsum": "cumsum",
-    "aten.cumsum.default": "cumsum",
-    "aten.masked_fill": "masked_fill",
-    "aten.masked_fill.Scalar": "masked_fill",
-    "aten.masked_fill_": "masked_fill",
-    "aten.masked_fill_.Scalar": "masked_fill",
-    "aten.lt": "lt",
-    "aten.lt.Tensor": "lt",
-    # Embedding / unsqueeze
-    "aten.embedding": "embedding",
-    "aten.embedding.default": "embedding",
-    "aten.unsqueeze": "unsqueeze",
-    "aten.unsqueeze.default": "unsqueeze",
-    # Pass-through / identity ops (no-op during inference)
-    "aten.contiguous": "identity",
-    "aten.contiguous.default": "identity",
-    "aten.clone": "identity",
-    "aten.clone.default": "identity",
-    "aten.dropout": "identity",
-    "aten.dropout.default": "identity",
-    "aten.detach": "identity",
-    "aten.detach.default": "identity",
-    "aten.detach_": "identity",
-    "aten.detach_.default": "identity",
-    "aten.alias": "identity",
-    "aten.alias.default": "identity",
-    "aten.type_as": "type_as",
-    "aten.type_as.default": "type_as",
-    "aten.lift_fresh_copy": "identity",
-    "aten.lift_fresh_copy.default": "identity",
-    # ── Qwen3.5 extended ops ─────────────────────────────────
-    "aten.__and__.Tensor": "logical_and",
-    "aten.eq.Tensor": "eq",
-    "aten.le.Tensor": "le",
-    "aten.ne.Scalar": "ne",
-    "aten.ne.Tensor": "ne",
-    "aten.sigmoid.default": "sigmoid",
-    "aten.sigmoid": "sigmoid",
-    "aten.softplus.default": "softplus",
-    "aten.exp.default": "exp",
-    "aten.sum.dim_IntList": "sum",
-    "aten.tril.default": "tril",
-    "aten.tril": "tril",
-    "aten.chunk.default": "chunk",
-    "aten.split_with_sizes.default": "split",
-    "aten.conv1d.default": "conv1d",
-    "aten.copy_.default": "copy_",
-    "aten.diff.default": "diff",
-    "aten.pad.default": "pad",
-    "aten.index.Tensor": "index",
-    "aten.eye.default": "eye",
-    "aten.zeros.default": "zeros",
-    "aten.zeros_like.default": "zeros_like",
-    "aten.new_ones.default": "new_ones",
-    "aten.select.int": "select",
-    "aten.select": "select",
-}
-
-# ── List/tuple argument dispatch ────────────────────────────
-# Maps a HAL op name to the attribute name that should receive
-# the first list/tuple positional argument.  ``None`` means the
-# list elements should be flattened into individual inputs or
-# handled with custom logic.
-_LIST_ARG_ATTR: dict[str, str | None] = {
-    "view": "shape",
-    "layer_norm": "normalized_shape",
-    "rms_norm": "normalized_shape",
-    "ones_like": "shape",
-    "full_like": "shape",
-    "zeros": "shape",
-    "sum": "dim",
-    "split": "split_sizes",
-    "pad": "pad",
-    # --- special: each element becomes an input/const tensor ---
-    "cat": None,
-    "expand": None,
-    "index": None,
-    # --- multi-list-arg: dispatch via scalar_kwargs ---
-    "conv1d": "__conv1d__",
-}
-
-# ── Scalar positional argument dispatch ─────────────────────
-# Maps HAL op name → {position_index → kwarg_name}.
-# _SCALAR_INT_POSITIONS is auto-derived from this dict.
-_SCALAR_KWARG_NAMES: dict[str, dict[int, str]] = {
-    "full_like": {1: "fill_value"},
-    "triu": {1: "diagonal"},
-    "sym_size": {1: "dim"},
-    "softmax": {1: "dim"},
-    "unsqueeze": {1: "dim"},
-    "transpose": {1: "dim0", 2: "dim1"},
-    "cumsum": {1: "dim"},
-    "cat": {1: "dim"},
-    "slice": {1: "dim", 2: "start", 3: "end", 4: "step"},
-    "sum": {1: "dim", 2: "keepdim"},
-    "tril": {1: "diagonal"},
-    "select": {1: "dim", 2: "index"},
-    "chunk": {1: "chunks", 2: "dim"},
-    "diff": {1: "n", 2: "dim"},
-    "conv1d": {2: "bias", 3: "stride", 4: "padding", 5: "dilation", 6: "groups"},
-    "split": {2: "dim"},
-    "eye": {0: "n", 1: "m"},
-    "identity": {1: "dtype"},
-}
-
-# Auto-derived: positions whose scalar args become kwargs
-_SCALAR_INT_POSITIONS: dict[str, list[int]] = {
-    op: sorted(kw_map.keys()) for op, kw_map in _SCALAR_KWARG_NAMES.items()
-}
-# Special cases: scalar positions to skip (not stored as kwarg)
-_SCALAR_INT_POSITIONS["embedding"] = [2]
-_SCALAR_INT_POSITIONS["pad"] = [1]
 
 
 def _map_aten_op(target: Any) -> str | None:

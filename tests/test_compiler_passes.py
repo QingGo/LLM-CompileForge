@@ -6,6 +6,7 @@ from compiler.passes.base import Pass, PassManager
 from compiler.passes.constant_fold import ConstantFold
 from compiler.passes.cse_pass import CommonSubexpressionElimination
 from compiler.passes.dce_pass import DeadCodeElimination
+from compiler.passes.fuse_qkv import FuseQKVProjection
 from compiler.passes.fuse_rms_norm import FuseRMSNorm
 from compiler.passes.fuse_silu import FuseSiLU
 
@@ -155,8 +156,220 @@ class TestFuseSiLU:
         assert result.main.ops[0].name == "fused_silu_mul"
 
 
+
 # ═══════════════════════════════════════════════════════════
-# ConstantFold
+# FuseQKVProjection
+# ═══════════════════════════════════════════════════════════
+
+
+@pytest.mark.unit
+class TestFuseQKVProjection:
+    def test_no_pattern_no_change(self):
+        func = IrFunction(
+            name="main",
+            ops=[
+                IrOp(name="linear", inputs=["x", "w_q"], outputs=["q"]),
+                IrOp(name="add", inputs=["q", "b"], outputs=["y"]),
+            ],
+            weights={"w_q": torch.randn(4, 8)},
+        )
+        mod = IrModule(functions=[func])
+        fuse = FuseQKVProjection()
+        result = fuse.apply(mod)
+        assert len(result.main.ops) == 2
+
+    def test_fuses_qkv_linear(self):
+        w_q = torch.randn(8, 16)
+        w_k = torch.randn(4, 16)
+        w_v = torch.randn(4, 16)
+        func = IrFunction(
+            name="main",
+            ops=[
+                IrOp(name="linear", inputs=["x", "q_proj_w"], outputs=["q"]),
+                IrOp(name="linear", inputs=["x", "k_proj_w"], outputs=["k"]),
+                IrOp(name="linear", inputs=["x", "v_proj_w"], outputs=["v"]),
+                IrOp(name="add", inputs=["q", "k"], outputs=["qk"]),
+            ],
+            weights={"q_proj_w": w_q, "k_proj_w": w_k, "v_proj_w": w_v},
+        )
+        mod = IrModule(functions=[func])
+        fuse = FuseQKVProjection()
+        result = fuse.apply(mod)
+        ops = result.main.ops
+        assert len(ops) == 5
+        fused_op = ops[0]
+        assert fused_op.name == "linear"
+        assert fused_op.inputs[0] == "x"
+        assert fused_op.inputs[1].startswith("__fused_qkv_w_")
+        assert fused_op.outputs[0].startswith("__fused_qkv_out_")
+        assert ops[1].name == "slice"
+        assert ops[1].outputs == ["q"]
+        assert ops[2].name == "slice"
+        assert ops[2].outputs == ["k"]
+        assert ops[3].name == "slice"
+        assert ops[3].outputs == ["v"]
+        assert ops[4].name == "add"
+        fused_weight = result.main.weights[fused_op.inputs[1]]
+        assert fused_weight.shape == (16, 16)
+        assert torch.equal(fused_weight[:8], w_q)
+        assert torch.equal(fused_weight[8:12], w_k)
+        assert torch.equal(fused_weight[12:], w_v)
+
+    def test_fuses_qkv_with_bias(self):
+        w_q = torch.randn(8, 16)
+        w_k = torch.randn(4, 16)
+        w_v = torch.randn(4, 16)
+        b_q = torch.randn(8)
+        b_k = torch.randn(4)
+        b_v = torch.randn(4)
+        func = IrFunction(
+            name="main",
+            ops=[
+                IrOp(name="linear", inputs=["x", "q_proj_w", "b_q"], outputs=["q"]),
+                IrOp(name="linear", inputs=["x", "k_proj_w", "b_k"], outputs=["k"]),
+                IrOp(name="linear", inputs=["x", "v_proj_w", "b_v"], outputs=["v"]),
+            ],
+            weights={"q_proj_w": w_q, "k_proj_w": w_k, "v_proj_w": w_v, "b_q": b_q, "b_k": b_k, "b_v": b_v},
+        )
+        mod = IrModule(functions=[func])
+        fuse = FuseQKVProjection()
+        result = fuse.apply(mod)
+        ops = result.main.ops
+        assert len(ops) == 4
+        fused_op = ops[0]
+        assert len(fused_op.inputs) == 3
+        fused_b_name = fused_op.inputs[2]
+        fused_b = result.main.weights[fused_b_name]
+        assert fused_b.shape == (16,)
+
+    def test_fuses_two_projections(self):
+        w_k = torch.randn(4, 16)
+        w_v = torch.randn(4, 16)
+        func = IrFunction(
+            name="main",
+            ops=[
+                IrOp(name="linear", inputs=["x", "k_proj_w"], outputs=["k"]),
+                IrOp(name="linear", inputs=["x", "v_proj_w"], outputs=["v"]),
+            ],
+            weights={"k_proj_w": w_k, "v_proj_w": w_v},
+        )
+        mod = IrModule(functions=[func])
+        fuse = FuseQKVProjection()
+        result = fuse.apply(mod)
+        assert len(result.main.ops) == 3
+        assert result.main.ops[0].name == "linear"
+        assert result.main.ops[1].outputs == ["k"]
+        assert result.main.ops[2].outputs == ["v"]
+
+    def test_no_fuse_unrelated_matmul(self):
+        w_a = torch.randn(8, 16)
+        w_b = torch.randn(4, 16)
+        func = IrFunction(
+            name="main",
+            ops=[
+                IrOp(name="linear", inputs=["x", "w_a"], outputs=["a"]),
+                IrOp(name="linear", inputs=["x", "w_b"], outputs=["b"]),
+            ],
+            weights={"w_a": w_a, "w_b": w_b},
+        )
+        mod = IrModule(functions=[func])
+        fuse = FuseQKVProjection()
+        result = fuse.apply(mod)
+        assert len(result.main.ops) == 2
+
+    def test_no_fuse_different_inputs(self):
+        w_q = torch.randn(8, 16)
+        w_k = torch.randn(4, 16)
+        func = IrFunction(
+            name="main",
+            ops=[
+                IrOp(name="linear", inputs=["x", "w_q"], outputs=["q"]),
+                IrOp(name="linear", inputs=["y", "w_k"], outputs=["k"]),
+            ],
+            weights={"w_q": w_q, "w_k": w_k},
+        )
+        mod = IrModule(functions=[func])
+        fuse = FuseQKVProjection()
+        result = fuse.apply(mod)
+        assert len(result.main.ops) == 2
+
+    def test_slice_attributes_correct(self):
+        w_q = torch.randn(8, 16)
+        w_k = torch.randn(4, 16)
+        w_v = torch.randn(4, 16)
+        func = IrFunction(
+            name="main",
+            ops=[
+                IrOp(name="linear", inputs=["x", "q_proj_w"], outputs=["q"]),
+                IrOp(name="linear", inputs=["x", "k_proj_w"], outputs=["k"]),
+                IrOp(name="linear", inputs=["x", "v_proj_w"], outputs=["v"]),
+            ],
+            weights={"q_proj_w": w_q, "k_proj_w": w_k, "v_proj_w": w_v},
+        )
+        mod = IrModule(functions=[func])
+        fuse = FuseQKVProjection()
+        result = fuse.apply(mod)
+        slices = [op for op in result.main.ops if op.name == "slice"]
+        assert len(slices) == 3
+        assert slices[0].attributes["start"] == 0
+        assert slices[0].attributes["end"] == 8
+        assert slices[1].attributes["start"] == 8
+        assert slices[1].attributes["end"] == 12
+        assert slices[2].attributes["start"] == 12
+        assert slices[2].attributes["end"] == 16
+
+    def test_fuses_matmul_ops(self):
+        w_q = torch.randn(8, 16)
+        w_k = torch.randn(4, 16)
+        func = IrFunction(
+            name="main",
+            ops=[
+                IrOp(name="matmul", inputs=["x", "q_proj_w"], outputs=["q"]),
+                IrOp(name="matmul", inputs=["x", "k_proj_w"], outputs=["k"]),
+            ],
+            weights={"q_proj_w": w_q, "k_proj_w": w_k},
+        )
+        mod = IrModule(functions=[func])
+        fuse = FuseQKVProjection()
+        result = fuse.apply(mod)
+        assert result.main.ops[0].name == "matmul"
+
+    def test_alternate_naming_tokens(self):
+        w_query = torch.randn(4, 16)
+        w_key = torch.randn(4, 16)
+        w_value = torch.randn(4, 16)
+        func = IrFunction(
+            name="main",
+            ops=[
+                IrOp(name="linear", inputs=["x", "w_query"], outputs=["q"]),
+                IrOp(name="linear", inputs=["x", "w_key"], outputs=["k"]),
+                IrOp(name="linear", inputs=["x", "w_value"], outputs=["v"]),
+            ],
+            weights={"w_query": w_query, "w_key": w_key, "w_value": w_value},
+        )
+        mod = IrModule(functions=[func])
+        fuse = FuseQKVProjection()
+        result = fuse.apply(mod)
+        assert len(result.main.ops) == 4
+
+    def test_q_linear_k_linear_tokens(self):
+        w_q = torch.randn(4, 16)
+        w_k = torch.randn(4, 16)
+        func = IrFunction(
+            name="main",
+            ops=[
+                IrOp(name="linear", inputs=["x", "w_q_linear"], outputs=["q"]),
+                IrOp(name="linear", inputs=["x", "w_k_linear"], outputs=["k"]),
+            ],
+            weights={"w_q_linear": w_q, "w_k_linear": w_k},
+        )
+        mod = IrModule(functions=[func])
+        fuse = FuseQKVProjection()
+        result = fuse.apply(mod)
+        assert len(result.main.ops) == 3
+
+
+
 # ═══════════════════════════════════════════════════════════
 
 

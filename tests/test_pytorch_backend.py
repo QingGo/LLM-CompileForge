@@ -285,6 +285,29 @@ class TestPyTorchBackendAttention:
         ref = F.scaled_dot_product_attention(q, q, q, is_causal=True)
         _assert_tensors_close(out, ref)
 
+    def test_sdpa_scale_passthrough(self):
+        """Regression: scale kwarg must be passed to F.sdpa, not ignored.
+        When the IR sets scale=1.0 (Q is pre-scaled), SDPA should not apply
+        its own default scale.  Bug: opt_125m_dynamic cos was 0.92 because
+        scale was applied twice (Q pre-scale × SDPA default scale)."""
+        b = PyTorchBackend("cpu")
+        q = torch.randn(1, 1, 4, 8)
+        k = torch.randn(1, 1, 4, 8)
+        v = torch.randn(1, 1, 4, 8)
+        # Pre-scale Q (as dynamic-shape export does)
+        q_scaled = q * (1.0 / (8 ** 0.5))
+        # SDPA with scale=1.0 on pre-scaled Q should match PyTorch reference
+        out = b.execute("scaled_dot_product_attention", [q_scaled, k, v], scale=1.0)
+        ref = F.scaled_dot_product_attention(q_scaled, k, v, scale=1.0)
+        _assert_tensors_close(out, ref)
+        # Pre-scaled Q + scale=1.0 must equal unscaled Q + default scale
+        # (This equivalence is why the IR pre-scales Q and sets scale=1.0)
+        out_default = b.execute("scaled_dot_product_attention", [q, k, v])
+        _assert_tensors_close(out, out_default)
+        # Verify kwarg passthrough: default scale (no kwarg) uses PyTorch default
+        ref_default = F.scaled_dot_product_attention(q, k, v)
+        _assert_tensors_close(out_default, ref_default)
+
 
 # ═══════════════════════════════════════════════════════════
 # Registry

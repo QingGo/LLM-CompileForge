@@ -188,8 +188,14 @@ class PyTorchBackend(OpExecutor):
                 attn_mask = attn_mask[:, :1, :, :]
         dropout_p = kwargs.get("dropout_p", 0.0)
         is_causal = kwargs.get("is_causal", False)
+        # Honor the IR's scale attribute.  When the model pre-scales Q
+        # (e.g. dynamic-shape exports), scale=1.0 in the IR indicates
+        # "no additional scaling".  When absent, PyTorch's default
+        # (1/√head_dim) is used.
+        scale = kwargs.get("scale", None)
         return F.scaled_dot_product_attention(
-            query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal
+            query, key, value, attn_mask=attn_mask, dropout_p=dropout_p,
+            is_causal=is_causal, scale=scale,
         )
 
     def _op_cat(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:

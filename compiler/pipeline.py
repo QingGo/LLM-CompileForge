@@ -2,6 +2,10 @@
 
 Assembles the full AOT compilation flow:
   PyTorch model → torch.export → FX → IR → optimization passes → artifact
+
+Pass order (fusion): FuseQKVProjection → FuseRMSNorm → FuseSiLU
+QKV fusion runs first so that the fused QKV matmul can then be fused
+with a preceding RMSNorm by the FuseRMSNorm pass.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from compiler.passes.base import PassManager
 from compiler.passes.constant_fold import ConstantFold
 from compiler.passes.cse_pass import CommonSubexpressionElimination
 from compiler.passes.dce_pass import DeadCodeElimination
+from compiler.passes.fuse_qkv import FuseQKVProjection
 from compiler.passes.fuse_rms_norm import FuseRMSNorm
 from compiler.passes.fuse_silu import FuseSiLU
 from compiler.passes.validate_ir import ValidateIR
@@ -123,6 +128,7 @@ class CompilationPipeline:
         pm.add(DeadCodeElimination())
 
         if self.enable_fusion:
+            pm.add(FuseQKVProjection())
             pm.add(FuseRMSNorm())
             pm.add(FuseSiLU())
 
