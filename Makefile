@@ -51,6 +51,13 @@ profile: $(VENV)
 smoke: $(VENV)
 	$(PYTEST) tests/test_smoke.py -m smoke -v --tb=short
 
+# ---- Benchmark (Phase 2.5 Sprint 1) ----
+benchmark: $(VENV)
+	$(PYTHON) scripts/benchmark.py --all --output benchmark_results.json
+
+test-benchmark: $(VENV)
+	$(PYTEST) tests/test_benchmark.py -m benchmark -v --tb=short --timeout=120
+
 # ---- 工具 ----
 clean:
 	rm -rf .venv .pytest_cache .mypy_cache .ruff_cache dist *.egg-info compiled/ .profile_baseline.txt

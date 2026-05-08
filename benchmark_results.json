@@ -1,0 +1,74 @@
+[
+  {
+    "name": "prefix_cache_ttft",
+    "description": "TTFT comparison (128-token prompt, 5 runs, tiny_llama)",
+    "metrics": {
+      "ttft_cold_mean_ms": 8.7,
+      "ttft_cold_median_ms": 8.99,
+      "ttft_cold_stdev_ms": 1.4,
+      "ttft_warm_mean_ms": 6.3,
+      "ttft_warm_median_ms": 6.51,
+      "ttft_warm_stdev_ms": 0.54,
+      "ttft_reduction_mean_pct": 27.6,
+      "ttft_reduction_median_pct": 27.6,
+      "prefill_skipped_verified": true,
+      "prompt_tokens": 128,
+      "iterations": 5,
+      "model": "tiny_llama"
+    },
+    "passed": true,
+    "error": null
+  },
+  {
+    "name": "fusion_latency",
+    "description": "Forward latency fusion on/off (64-token input, 5 iters)",
+    "metrics": {
+      "ops_fusion": 357,
+      "ops_nofusion": 345,
+      "gemm_fusion": 49,
+      "gemm_nofusion": 73,
+      "gemm_reduction": 24,
+      "fusion_latency_mean_ms": 173.49,
+      "fusion_latency_median_ms": 142.65,
+      "fusion_latency_stdev_ms": 64.01,
+      "nofusion_latency_mean_ms": 115.06,
+      "nofusion_latency_median_ms": 115.29,
+      "nofusion_latency_stdev_ms": 1.21,
+      "latency_reduction_median_pct": -23.7,
+      "input_tokens": 64,
+      "warmup": 3,
+      "iterations": 5
+    },
+    "passed": true,
+    "error": null
+  },
+  {
+    "name": "fuse_qkv",
+    "description": "FuseQKV single-pass: GEMM count + latency (64-token input, 5 iters)",
+    "metrics": {
+      "gemm_qkv": 49,
+      "gemm_nofusion": 73,
+      "gemm_reduction": 24,
+      "qkv_fused_groups": 12,
+      "qkv_latency_median_ms": 131.37,
+      "nofusion_latency_median_ms": 127.24,
+      "latency_reduction_median_pct": -3.2,
+      "input_tokens": 64,
+      "iterations": 5
+    },
+    "passed": true,
+    "error": null
+  },
+  {
+    "name": "compilation_time",
+    "description": "Full compilation wall-clock time (opt-125m)",
+    "metrics": {
+      "compile_time_s": 0.0,
+      "ops": 357,
+      "weights": 240,
+      "passes_applied": "ValidateIR, CommonSubexpressionElimination, ConstantFold, DeadCodeElimination, FuseQKVProjection, FuseRMSNorm, FuseSiLU"
+    },
+    "passed": false,
+    "error": null
+  }
+]

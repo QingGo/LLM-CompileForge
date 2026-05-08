@@ -60,4 +60,5 @@ markers = [
     "integration: integration test (may use real I/O)",
     "smoke: minimal smoke test",
     "baseline: model-output cosine regression test (>0.999 vs HF)",
+    "benchmark: performance benchmark test",
 ]
