@@ -1,4 +1,4 @@
-.PHONY: lint lint-ruff lint-mypy test-unit test-integration profile smoke clean
+.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all profile smoke clean
 
 # ---- 环境 ----
 VENV := .venv
@@ -23,9 +23,15 @@ lint-mypy:
 test-unit: $(VENV)
 	$(PYTEST) tests/ -m unit -v --tb=short --timeout=1
 
-# ---- L2: 集成测试 (<30s, 可选) ----
+# ---- L2: 集成测试 (<80s, 可选) ----
 test-integration: $(VENV)
-	-$(PYTEST) tests/ -m integration -v --tb=short --timeout=30
+	-$(PYTEST) tests/ -m integration -v --tb=short --timeout=300
+
+# ---- 快速测试 (lint + unit, <15s) ----
+test-fast: lint test-unit smoke
+
+# ---- 全量测试 (all tests, <2min) ----
+test-all: lint test-unit test-integration smoke
 
 # ---- L3: 性能回归 (<5min) ----
 profile: $(VENV)

@@ -180,5 +180,5 @@ class ConstantFold(Pass):
                 index = op.attributes.get("index", 0)
                 return tensors[0].select(dim, index)
             return None
-        except Exception:
+        except (TypeError, ValueError, IndexError, RuntimeError):
             return None

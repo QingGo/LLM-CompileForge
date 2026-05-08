@@ -260,5 +260,50 @@ class TestHFCosineOpt125MDynamic:
         )
         assert not torch.allclose(compiled_logits[0], compiled_logits[1],
                                   atol=1e-6), "Different batch elements should produce different logits"
+        assert not torch.allclose(compiled_logits[0], compiled_logits[1],
+                                  atol=1e-6), "Different batch elements should produce different logits"
         assert not torch.isnan(compiled_logits).any(), "No NaN in output"
         assert not torch.isinf(compiled_logits).any(), "No Inf in output"
+
+
+# --- Qwen3.5-0.8B ---
+# (hf_qwen and module_qwen fixtures are in conftest.py)
+
+@pytest.mark.integration
+class TestHFCosineQwen:
+    """Cosine similarity test with compiled Qwen3.5-0.8B."""
+
+    @pytest.mark.timeout(300)
+    def test_cosine_similarity_exceeds_threshold(self, hf_qwen, module_qwen):
+        """Compiled Qwen3.5-0.8B logits must match HF within cos > 0.999."""
+        from engine.executor import Executor
+        from hal.pytorch_backend import PyTorchBackend
+
+        hf_model = hf_qwen
+        executor = Executor(module_qwen, PyTorchBackend("cpu"))
+
+        input_ids = torch.randint(0, 1000, (1, 64), dtype=torch.long)
+        with torch.no_grad():
+            hf_logits = hf_model(input_ids).logits
+        compiled_logits = executor.forward(input_ids)
+
+        assert hf_logits.shape == compiled_logits.shape
+        similarity = _cosine_similarity(hf_logits, compiled_logits)
+        print(f"\n  qwen3_0.8b cosine similarity: {similarity:.8f}")
+        assert similarity > 0.999
+
+    @pytest.mark.timeout(300)
+    def test_cosine_similarity_decode_shape(self, hf_qwen, module_qwen):
+        """Compiled Qwen3.5-0.8B seq=64 — static shape limitation."""
+        from engine.executor import Executor
+        from hal.pytorch_backend import PyTorchBackend
+
+        executor = Executor(module_qwen, PyTorchBackend("cpu"))
+        input_ids = torch.randint(0, 1000, (1, 64), dtype=torch.long)
+        with torch.no_grad():
+            hf_logits = hf_qwen(input_ids).logits
+        compiled_logits = executor.forward(input_ids)
+
+        assert hf_logits.shape == compiled_logits.shape
+        similarity = _cosine_similarity(hf_logits, compiled_logits)
+        assert similarity > 0.999

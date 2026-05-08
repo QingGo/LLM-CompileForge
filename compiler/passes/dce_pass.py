@@ -23,6 +23,12 @@ class DeadCodeElimination(Pass):
         # Collect all SSA names that are live (consumed as inputs)
         live: set[str] = {out_name for out_name, _ in func.outputs}
 
+        # In-place ops: must be preserved because they modify state tensors
+        # through views. Mark their outputs as live so the op survives.
+        for op in func.ops:
+            if op.in_place and op.outputs:
+                live.update(op.outputs)
+
         # Build consumer sets
         consumers: dict[str, list[IrOp]] = {}
         for op in func.ops:
@@ -33,7 +39,6 @@ class DeadCodeElimination(Pass):
         worklist: list[str] = list(live)
         while worklist:
             name = worklist.pop()
-            # Find the producer of this live name
             for op in func.ops:
                 if name in op.outputs:
                     for inp in op.inputs:
@@ -42,11 +47,11 @@ class DeadCodeElimination(Pass):
                             worklist.append(inp)
                     break
 
-        # Filter ops: keep iff any output is live
+        # Filter ops: keep if any output is live, or op is in-place
         new_ops: list[IrOp] = []
         removed_outputs: set[str] = set()
         for op in func.ops:
-            if any(out in live for out in op.outputs):
+            if any(out in live for out in op.outputs) or op.in_place:
                 new_ops.append(op)
             else:
                 for out in op.outputs:

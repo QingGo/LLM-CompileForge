@@ -184,12 +184,25 @@ class Executor:
             elif inp_name in self._function.weights:
                 tensor_inputs.append(self._function.weights[inp_name])
             else:
-                raise KeyError(f"Unknown input '{inp_name}' for op '{op.name}'")
+                available = sorted(ssa_values.keys())[:20]
+                raise KeyError(
+                    f"Op '{op.name}' needs input '{inp_name}' which was never produced. "
+                    f"Available SSA values (first 20): {available}"
+                )
 
         if not tensor_inputs:
-            return self._hal.execute(op.name, [], **op.attributes)
+            result = self._hal.execute(op.name, [], **op.attributes)
+        else:
+            result = self._hal.execute(op.name, tensor_inputs, **op.attributes)
 
-        return self._hal.execute(op.name, tensor_inputs, **op.attributes)
+        # For in-place ops (copy_), propagate the modification to the
+        # destination tensor's SSA name so downstream ops see the update.
+        if op.name == "copy_" and op.inputs and op.outputs:
+            dst_name = op.inputs[0]
+            if dst_name in ssa_values and result is not None:
+                ssa_values[dst_name] = result
+
+        return result
 
     # ── PagedAttention interception ──────────────────────────
 

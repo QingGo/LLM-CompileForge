@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import torch
 
@@ -35,6 +34,9 @@ def save_artifact(module: IrModule, directory: str) -> None:
     """
     out_dir = Path(directory)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Stamp schema version for forward compatibility
+    module.metadata.setdefault("ir_schema_version", 1)
 
     # model.ir
     ir_dict = module.to_dict()
@@ -87,6 +89,14 @@ def load_artifact(directory: str) -> IrModule:
     with open(ir_path) as f:
         ir_dict = json.load(f)
 
+    # Schema version check
+    schema_ver = (ir_dict.get("metadata", {}) or {}).get("ir_schema_version")
+    if schema_ver is not None and schema_ver != 1:
+        raise RuntimeError(
+            f"Unsupported IR schema version {schema_ver}. "
+            f"This runtime supports version 1. Re-compile the model."
+        )
+
     # Load weights
     weights: dict[str, dict[str, torch.Tensor]] = {}
     if weights_path.exists():
@@ -101,11 +111,3 @@ def load_artifact(directory: str) -> IrModule:
             weights.setdefault(func_name, {})[wname] = tensor
 
     return IrModule.from_dict(ir_dict, all_weights=weights)
-
-
-def module_to_dict(module: IrModule) -> dict[str, Any]:
-    """Serialize IrModule to a plain dict (for in-memory transfer)."""
-    return {
-        "ir": module.to_dict(),
-        "weights": {func.name: {k: v.numpy().tolist() for k, v in func.weights.items()} for func in module.functions},
-    }

@@ -43,19 +43,21 @@ def _make_add_module() -> IrModule:
     )
 
 
-    def test_prepare_kv_blocks(self):
-        mod = _make_test_module()
-        backend = PyTorchBackend("cpu")
-        executor = Executor(mod, backend)
+@pytest.mark.unit
+def test_prepare_kv_blocks_shape():
+    """Test KV cache block allocation shape."""
+    mod = _make_test_module()
+    backend = PyTorchBackend("cpu")
+    executor = Executor(mod, backend)
 
-        kv = executor.prepare_kv_blocks(
-            num_layers=32,
-            num_kv_heads=8,
-            head_dim=128,
-            block_size=16,
-            num_blocks=10,
-        )
-        assert kv.shape == (10, 32, 2, 16, 8, 128)
+    kv = executor.prepare_kv_blocks(
+        num_layers=32,
+        num_kv_heads=8,
+        head_dim=128,
+        block_size=16,
+        num_blocks=10,
+    )
+    assert kv.shape == (10, 32, 2, 16, 8, 128)
 
 
 # ═══════════════════════════════════════════════════════════

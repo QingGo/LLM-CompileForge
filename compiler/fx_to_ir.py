@@ -73,6 +73,10 @@ _ATEN_TO_HAL: dict[str, str] = {
     # Additional aten overloads
     "aten.neg.default": "neg",
     "aten.neg": "neg",
+    "aten.cos.default": "cos",
+    "aten.cos": "cos",
+    "aten.sin.default": "sin",
+    "aten.sin": "sin",
     "aten.rsqrt.default": "rsqrt",
     "aten.rsqrt": "rsqrt",
     "aten.pow.Tensor_Scalar": "pow",
@@ -205,6 +209,61 @@ _ATEN_TO_HAL: dict[str, str] = {
     "aten.select.int": "select",
     "aten.select": "select",
 }
+
+# ── List/tuple argument dispatch ────────────────────────────
+# Maps a HAL op name to the attribute name that should receive
+# the first list/tuple positional argument.  ``None`` means the
+# list elements should be flattened into individual inputs or
+# handled with custom logic.
+_LIST_ARG_ATTR: dict[str, str | None] = {
+    "view": "shape",
+    "layer_norm": "normalized_shape",
+    "rms_norm": "normalized_shape",
+    "ones_like": "shape",
+    "full_like": "shape",
+    "zeros": "shape",
+    "sum": "dim",
+    "split": "split_sizes",
+    "pad": "pad",
+    # --- special: each element becomes an input/const tensor ---
+    "cat": None,
+    "expand": None,
+    "index": None,
+    # --- multi-list-arg: dispatch via scalar_kwargs ---
+    "conv1d": "__conv1d__",
+}
+
+# ── Scalar positional argument dispatch ─────────────────────
+# Maps HAL op name → {position_index → kwarg_name}.
+# _SCALAR_INT_POSITIONS is auto-derived from this dict.
+_SCALAR_KWARG_NAMES: dict[str, dict[int, str]] = {
+    "full_like": {1: "fill_value"},
+    "triu": {1: "diagonal"},
+    "sym_size": {1: "dim"},
+    "softmax": {1: "dim"},
+    "unsqueeze": {1: "dim"},
+    "transpose": {1: "dim0", 2: "dim1"},
+    "cumsum": {1: "dim"},
+    "cat": {1: "dim"},
+    "slice": {1: "dim", 2: "start", 3: "end", 4: "step"},
+    "sum": {1: "dim", 2: "keepdim"},
+    "tril": {1: "diagonal"},
+    "select": {1: "dim", 2: "index"},
+    "chunk": {1: "chunks", 2: "dim"},
+    "diff": {1: "n", 2: "dim"},
+    "conv1d": {2: "bias", 3: "stride", 4: "padding", 5: "dilation", 6: "groups"},
+    "split": {2: "dim"},
+    "eye": {0: "n", 1: "m"},
+    "identity": {1: "dtype"},
+}
+
+# Auto-derived: positions whose scalar args become kwargs
+_SCALAR_INT_POSITIONS: dict[str, list[int]] = {
+    op: sorted(kw_map.keys()) for op, kw_map in _SCALAR_KWARG_NAMES.items()
+}
+# Special cases: scalar positions to skip (not stored as kwarg)
+_SCALAR_INT_POSITIONS["embedding"] = [2]
+_SCALAR_INT_POSITIONS["pad"] = [1]
 
 
 def _map_aten_op(target: Any) -> str | None:
@@ -378,7 +437,7 @@ def fx_graph_to_ir(
                     ssa_map[node.name] = output_name
                     ir_ops.append(IrOp(name="sym_size", inputs=[tensor_ssa],
                                        outputs=[output_name],
-                                       attributes={"dim": dim_val}))
+                                       attributes={"dim": dim_val, "source_node": node.name}))
                 continue
 
             # ── split_with_sizes: expand to N slice ops ──
@@ -404,9 +463,14 @@ def fx_graph_to_ir(
                         offset = 0
                         for i, size in enumerate(sizes):
                             out_name = f"{node.name}__split_{i}"
-                            slice_op = IrOp(name="slice", inputs=[tensor_ssa],
-                                           outputs=[out_name],
-                                           attributes={"dim": dim, "start": offset, "end": offset + size})
+                            slice_op = IrOp(
+                                name="slice", inputs=[tensor_ssa],
+                                outputs=[out_name],
+                                attributes={
+                                    "dim": dim, "start": offset,
+                                    "end": offset + size, "source_node": node.name,
+                                },
+                            )
                             ir_ops.append(slice_op)
                             outputs.append(out_name)
                             offset += size
@@ -435,9 +499,14 @@ def fx_graph_to_ir(
                         for i in range(int(chunks)):
                             size = total // int(chunks) + (1 if i < (total % int(chunks)) else 0)
                             out_name = f"{node.name}__chunk_{i}"
-                            slice_op = IrOp(name="slice", inputs=[tensor_ssa],
-                                           outputs=[out_name],
-                                           attributes={"dim": dim, "start": offset, "end": offset + size})
+                            slice_op = IrOp(
+                                name="slice", inputs=[tensor_ssa],
+                                outputs=[out_name],
+                                attributes={
+                                    "dim": dim, "start": offset,
+                                    "end": offset + size, "source_node": node.name,
+                                },
+                            )
                             ir_ops.append(slice_op)
                             outputs.append(out_name)
                             offset += size
@@ -448,54 +517,8 @@ def fx_graph_to_ir(
             # Collect input SSA names and extract non-tensor kwargs
             input_names: list[str] = []
             extra_kwargs: dict[str, Any] = {}
-            # Skip scalars that map to known positional attributes
-            _scalar_int_positions: dict[str, list[int]] = {
-                "softmax": [1],   # dim = args[1]
-                "transpose": [1, 2],  # dim0, dim1
-                "unsqueeze": [1],  # dim
-                "embedding": [2],  # padding_idx
-                "full_like": [1],  # fill_value = args[1]
-                "triu": [1],  # diagonal = args[1]
-                "sym_size": [1],  # dim = args[1]
-                "cumsum": [1],  # dim = args[1]
-                "cat": [1],  # dim = args[1]
-                "slice": [1, 2, 3, 4],  # dim, start, end, step
-                # Qwen extended
-                "sum": [1, 2],  # dim, keepdim
-                "tril": [1],  # diagonal
-                "select": [1, 2],  # dim, index
-                "chunk": [1, 2],  # chunks, dim
-                "diff": [1, 2],  # n, dim
-                "conv1d": [2, 3, 4, 5, 6],  # bias, stride, padding, dilation, groups
-                "split": [2],  # dim
-                "eye": [0, 1],  # n, m
-                "pad": [1],  # pad list
-                "identity": [1],  # dtype for aten.to.dtype
-            }
-            skip_positions: list[int] = _scalar_int_positions.get(hal_op, [])
-            # Map position → kwarg name for scalar attributes
-            _scalar_kwarg_names: dict[str, dict[int, str]] = {
-                "full_like": {1: "fill_value"},
-                "triu": {1: "diagonal"},
-                "sym_size": {1: "dim"},
-                "softmax": {1: "dim"},
-                "unsqueeze": {1: "dim"},
-                "transpose": {1: "dim0", 2: "dim1"},
-                "cumsum": {1: "dim"},
-                "cat": {1: "dim"},
-                "slice": {1: "dim", 2: "start", 3: "end", 4: "step"},
-                # Qwen extended
-                "sum": {1: "dim", 2: "keepdim"},
-                "tril": {1: "diagonal"},
-                "select": {1: "dim", 2: "index"},
-                "chunk": {1: "chunks", 2: "dim"},
-                "diff": {1: "n", 2: "dim"},
-                "conv1d": {2: "bias", 3: "stride", 4: "padding", 5: "dilation", 6: "groups"},
-                "split": {2: "dim"},
-                "eye": {0: "n", 1: "m"},
-                "identity": {1: "dtype"},
-            }
-            scalar_kwargs: dict[int, str] = _scalar_kwarg_names.get(hal_op, {})
+            skip_positions: list[int] = _SCALAR_INT_POSITIONS.get(hal_op, [])
+            scalar_kwargs: dict[int, str] = _SCALAR_KWARG_NAMES.get(hal_op, {})
 
             for i, arg in enumerate(node.args):
                 if isinstance(arg, torch.fx.Node):
@@ -532,71 +555,43 @@ def fx_graph_to_ir(
                         extra_kwargs.setdefault(kwarg_name, str(arg))
                     continue
                 elif isinstance(arg, (list, tuple)):
-                    if hal_op == "view" and "shape" not in extra_kwargs:
+                    list_attr = _LIST_ARG_ATTR.get(hal_op, "__skip__")
+                    if list_attr == "__skip__":
+                        continue
+
+                    if list_attr == "__conv1d__":
+                        # conv1d: multiple list args dispatched via scalar_kwargs
+                        kwarg_name = scalar_kwargs.get(i)
+                        if kwarg_name and kwarg_name not in extra_kwargs:
+                            extra_kwargs[kwarg_name] = list(arg)
+
+                    elif list_attr is None:
+                        # Flatten into individual inputs (cat, expand, index)
+                        for item in arg:
+                            if isinstance(item, torch.fx.Node):
+                                input_names.append(ssa_map.get(item.name, item.name))
+                            else:
+                                const_name = f"_const_{name_counter}"
+                                name_counter += 1
+                                weights[const_name] = torch.tensor(item)
+                                input_names.append(const_name)
+
+                    elif list_attr not in extra_kwargs:
+                        # SSA-aware shape/normalized_shape attribute extraction
                         resolved: list[str | int] = []
+                        _use_view = hal_op == "view"
                         for s in arg:
                             if isinstance(s, torch.fx.Node):
                                 ssa_name = ssa_map.get(s.name, s.name)
                                 resolved.append(ssa_name)
                                 input_names.append(ssa_name)
-                            else:
+                            elif _use_view:
                                 resolved.append(_symint_for_view(s))
-                        extra_kwargs["shape"] = tuple(resolved)
-                    elif hal_op == "layer_norm" and "normalized_shape" not in extra_kwargs:
-                        extra_kwargs["normalized_shape"] = tuple(arg)
-                    elif hal_op in ("ones_like", "full_like") and "shape" not in extra_kwargs:
-                        shape_resolved: list[str | int] = []
-                        for s in arg:
-                            if isinstance(s, torch.fx.Node):
-                                ssa_name = ssa_map.get(s.name, s.name)
-                                shape_resolved.append(ssa_name)
-                                input_names.append(ssa_name)
+                            elif isinstance(s, (int, torch.SymInt)) and not isinstance(s, bool):
+                                resolved.append(_symint_to_int(s) or 1 if isinstance(s, torch.SymInt) else s)
                             else:
-                                shape_resolved.append(_symint_to_int(s) or 1)
-                        extra_kwargs["shape"] = tuple(shape_resolved)
-                    elif hal_op == "cat":
-                        for item in arg:
-                            if isinstance(item, torch.fx.Node):
-                                input_names.append(ssa_map.get(item.name, item.name))
-                            else:
-                                const_name = f"_const_{name_counter}"
-                                name_counter += 1
-                                weights[const_name] = torch.tensor(item)
-                                input_names.append(const_name)
-                    elif hal_op == "expand":
-                        for s in arg:
-                            if isinstance(s, torch.fx.Node):
-                                ssa_name = ssa_map.get(s.name, s.name)
-                                input_names.append(ssa_name)
-                            else:
-                                const_name = f"_const_{name_counter}"
-                                name_counter += 1
-                                weights[const_name] = torch.tensor(s)
-                                input_names.append(const_name)
-                    elif hal_op in ("sum", "split", "conv1d"):
-                        # List of ints (dim list for sum, split_sizes for split,
-                        # stride/padding/dilation for conv1d)
-                        if hal_op == "sum":
-                            extra_kwargs.setdefault("dim", list(arg))
-                        elif hal_op == "split":
-                            extra_kwargs.setdefault("split_sizes", list(arg))
-                        elif hal_op == "conv1d":
-                            kwarg_name = scalar_kwargs.get(i)
-                            if kwarg_name:
-                                extra_kwargs.setdefault(kwarg_name, list(arg))
-                    elif hal_op == "pad":
-                        # pad arg is a list of ints for padding
-                        extra_kwargs.setdefault("pad", list(arg))
-                    elif hal_op == "index":
-                        # indices are a list of tensors
-                        for item in arg:
-                            if isinstance(item, torch.fx.Node):
-                                input_names.append(ssa_map.get(item.name, item.name))
-                            else:
-                                const_name = f"_const_{name_counter}"
-                                name_counter += 1
-                                weights[const_name] = torch.tensor(item)
-                                input_names.append(const_name)
+                                resolved.append(s)
+                        extra_kwargs[list_attr] = tuple(resolved)
 
             kwargs = _extract_node_kwargs(node)
             kwargs.update(extra_kwargs)
@@ -624,7 +619,11 @@ def fx_graph_to_ir(
             name_counter += 1
             ssa_map[node.name] = output_name
 
-            ir_ops.append(IrOp(name=hal_op, inputs=input_names, outputs=[output_name], attributes=kwargs))
+            kwargs["source_node"] = node.name
+            ir_ops.append(IrOp(
+                name=hal_op, inputs=input_names, outputs=[output_name],
+                attributes=kwargs, in_place=(hal_op == "copy_"),
+            ))
             continue
 
         if node.op == "output":

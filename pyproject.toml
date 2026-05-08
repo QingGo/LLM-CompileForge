@@ -59,5 +59,4 @@ markers = [
     "unit: fast unit test (<1s)",
     "integration: integration test (may use real I/O)",
     "smoke: minimal smoke test",
-    "slow: slow test excluded from unit suite",
 ]

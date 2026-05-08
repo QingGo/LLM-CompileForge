@@ -14,15 +14,13 @@ class TestE2ERealModel:
     """E2E test with compiled tiny_llama (fast, 2-layer random model)."""
 
     @pytest.mark.timeout(120)
-    def test_compiled_forward_varying_seq(self):
+    def test_compiled_forward_varying_seq(self, module_tiny_llama):
         """Compiled model should accept different seq lengths without error."""
-        from compiler.serialize import load_artifact
         from engine.executor import Executor
         from hal.pytorch_backend import PyTorchBackend
 
-        module = load_artifact("./compiled/tiny_llama")
         backend = PyTorchBackend("cpu")
-        executor = Executor(module, backend)
+        executor = Executor(module_tiny_llama, backend)
 
         for seq in [1, 4, 8]:
             x = torch.randint(0, 100, (1, seq))
@@ -31,15 +29,13 @@ class TestE2ERealModel:
             assert logits.dtype == torch.float32
 
     @pytest.mark.timeout(120)
-    def test_engine_generate_runs_without_error(self):
+    def test_engine_generate_runs_without_error(self, module_tiny_llama):
         """LLMEngine.generate() should complete without crash."""
-        from compiler.serialize import load_artifact
         from engine.llm_engine import LLMEngine
         from hal.pytorch_backend import PyTorchBackend
 
-        module = load_artifact("./compiled/tiny_llama")
         backend = PyTorchBackend("cpu")
-        engine = LLMEngine(module, backend, max_batch_size=4, chunk_size=8)
+        engine = LLMEngine(module_tiny_llama, backend, max_batch_size=4, chunk_size=8)
 
         # Simple tokenizer for testing
         class _SimpleTokenizer:
@@ -56,15 +52,13 @@ class TestE2ERealModel:
         assert len(result) > 0
 
     @pytest.mark.timeout(120)
-    def test_engine_step_returns_results(self):
+    def test_engine_step_returns_results(self, module_tiny_llama):
         """step() should produce GenerationResult entries."""
-        from compiler.serialize import load_artifact
         from engine.llm_engine import LLMEngine
         from hal.pytorch_backend import PyTorchBackend
 
-        module = load_artifact("./compiled/tiny_llama")
         backend = PyTorchBackend("cpu")
-        engine = LLMEngine(module, backend, max_batch_size=4, chunk_size=8)
+        engine = LLMEngine(module_tiny_llama, backend, max_batch_size=4, chunk_size=8)
 
         class _SimpleTokenizer:
             def encode(self, text):
@@ -87,15 +81,13 @@ class TestE2EOpt125M:
     """E2E test with compiled opt-125m (12-layer, larger model)."""
 
     @pytest.mark.timeout(300)
-    def test_compiled_forward_varying_seq(self):
+    def test_compiled_forward_varying_seq(self, module_opt_125m):
         """opt-125m should accept different seq lengths."""
-        from compiler.serialize import load_artifact
         from engine.executor import Executor
         from hal.pytorch_backend import PyTorchBackend
 
-        module = load_artifact("./compiled/opt_125m")
         backend = PyTorchBackend("cpu")
-        executor = Executor(module, backend)
+        executor = Executor(module_opt_125m, backend)
 
         for seq in [1, 4]:
             x = torch.randint(0, 1000, (1, seq))
@@ -104,15 +96,13 @@ class TestE2EOpt125M:
             assert logits.dtype == torch.float32
 
     @pytest.mark.timeout(300)
-    def test_engine_step_runs_without_error(self):
+    def test_engine_step_runs_without_error(self, module_opt_125m):
         """LLMEngine.step() should work with compiled opt-125m."""
-        from compiler.serialize import load_artifact
         from engine.llm_engine import LLMEngine
         from hal.pytorch_backend import PyTorchBackend
 
-        module = load_artifact("./compiled/opt_125m")
         backend = PyTorchBackend("cpu")
-        engine = LLMEngine(module, backend, max_batch_size=2, chunk_size=4)
+        engine = LLMEngine(module_opt_125m, backend, max_batch_size=2, chunk_size=4)
 
         class _SimpleTokenizer:
             def encode(self, text):

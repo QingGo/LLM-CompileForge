@@ -277,3 +277,117 @@ class TestDCE:
         cf = ConstantFold()
         result = cf.apply(mod)
         assert result.main.ops[0].name == "constant"
+
+
+# ═══════════════════════════════════════════════════════════
+# ValidateIR
+# ═══════════════════════════════════════════════════════════
+
+
+@pytest.mark.unit
+class TestValidateIR:
+    def test_valid_module_passes(self):
+        from compiler.passes.validate_ir import ValidateIR
+        func = IrFunction(
+            name="main",
+            inputs=[("x", None)],  # type: ignore[arg-type]
+            outputs=[("y", None)],  # type: ignore[arg-type]
+            ops=[
+                IrOp(name="add", inputs=["x", "w"], outputs=["y"]),
+            ],
+            weights={"w": torch.ones(3)},
+        )
+        mod = IrModule(functions=[func])
+        ValidateIR().apply(mod)  # Should not raise
+
+    def test_undefined_input_raises(self):
+        from compiler.passes.validate_ir import IRValidationError, ValidateIR
+        func = IrFunction(
+            name="main",
+            ops=[
+                IrOp(name="add", inputs=["x", "missing_name"], outputs=["y"]),
+            ],
+        )
+        mod = IrModule(functions=[func])
+        with pytest.raises(IRValidationError, match="Undefined SSA inputs"):
+            ValidateIR().apply(mod)
+
+    def test_duplicate_output_raises(self):
+        from compiler.passes.validate_ir import IRValidationError, ValidateIR
+        func = IrFunction(
+            name="main",
+            ops=[
+                IrOp(name="add", inputs=["a", "b"], outputs=["y"]),
+                IrOp(name="mul", inputs=["y", "c"], outputs=["y"]),
+            ],
+            weights={"a": torch.ones(1), "b": torch.ones(1), "c": torch.ones(1)},
+        )
+        mod = IrModule(functions=[func])
+        with pytest.raises(IRValidationError, match="Duplicate SSA output names"):
+            ValidateIR().apply(mod)
+
+    def test_missing_output_raises(self):
+        from compiler.passes.validate_ir import IRValidationError, ValidateIR
+        func = IrFunction(
+            name="main",
+            outputs=[("no_such_name", None)],  # type: ignore[arg-type]
+            ops=[
+                IrOp(name="add", inputs=["a", "b"], outputs=["y"]),
+            ],
+            weights={"a": torch.ones(1), "b": torch.ones(1)},
+        )
+        mod = IrModule(functions=[func])
+        with pytest.raises(IRValidationError, match="has no producer"):
+            ValidateIR().apply(mod)
+
+    def test_input_as_output_passes(self):
+        from compiler.passes.validate_ir import ValidateIR
+        func = IrFunction(
+            name="main",
+            inputs=[("x", None)],  # type: ignore[arg-type]
+            outputs=[("x", None)],  # type: ignore[arg-type]
+            ops=[],
+        )
+        mod = IrModule(functions=[func])
+        ValidateIR().apply(mod)  # Should not raise
+
+
+# ═══════════════════════════════════════════════════════════
+# PassManager immutability
+# ═══════════════════════════════════════════════════════════
+
+
+@pytest.mark.unit
+class TestPassManagerImmutability:
+    def test_original_module_not_mutated(self):
+        func = IrFunction(
+            name="main",
+            ops=[
+                IrOp(name="add", inputs=["a", "b"], outputs=["y"]),
+            ],
+            weights={"a": torch.ones(1), "b": torch.ones(1)},
+        )
+        original = IrModule(functions=[func])
+        original_ops_count = len(original.main.ops)
+
+        pm = PassManager()
+        pm.add(DeadCodeElimination())
+        result = pm.run(original)
+
+        assert len(original.main.ops) == original_ops_count
+        assert result is not original
+        assert result.main.ops is not original.main.ops
+
+    def test_structural_copy_preserves_weights(self):
+        from compiler.passes.base import _structural_copy
+        w = torch.ones(3)
+        func = IrFunction(
+            name="main",
+            ops=[],
+            weights={"w": w},
+        )
+        mod = IrModule(functions=[func])
+        copymod = _structural_copy(mod)
+
+        assert copymod.main.weights["w"] is mod.main.weights["w"]
+        assert copymod.main.ops is not mod.main.ops

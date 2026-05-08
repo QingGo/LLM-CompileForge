@@ -10,7 +10,6 @@ from typing import Any
 
 import torch
 
-from compiler.export_ir import export_model
 from compiler.fx_to_ir import fx_graph_to_ir
 from compiler.ir import IrModule
 from compiler.mlir_emitter import ir_module_to_mlir
@@ -20,6 +19,7 @@ from compiler.passes.cse_pass import CommonSubexpressionElimination
 from compiler.passes.dce_pass import DeadCodeElimination
 from compiler.passes.fuse_rms_norm import FuseRMSNorm
 from compiler.passes.fuse_silu import FuseSiLU
+from compiler.passes.validate_ir import ValidateIR
 from compiler.serialize import save_artifact
 
 
@@ -36,10 +36,14 @@ class CompilationPipeline:
         enable_fusion: bool = True,
         enable_cse: bool = True,
         enable_constant_fold: bool = True,
+        enable_validation: bool = True,
+        cache_export: bool = False,
     ) -> None:
         self.enable_fusion = enable_fusion
         self.enable_cse = enable_cse
         self.enable_constant_fold = enable_constant_fold
+        self.enable_validation = enable_validation
+        self.cache_export = cache_export
 
     def compile(
         self,
@@ -49,6 +53,7 @@ class CompilationPipeline:
         output_dir: str | None = None,
         dynamic_shapes: dict[str, Any] | None = None,
         emit_mlir: bool = True,
+        model_dir: str = "",
     ) -> IrModule:
         """Run the full compilation pipeline.
 
@@ -75,7 +80,15 @@ class CompilationPipeline:
             RuntimeError: If torch.export fails.
         """
         # Step 1: export
-        program = export_model(model, example_args, example_kwargs, dynamic_shapes=dynamic_shapes)
+        from compiler.export_ir import export_model
+        args = example_args or ()
+        kwargs = example_kwargs or {}
+        program = export_model(
+            model, args, kwargs,
+            dynamic_shapes=dynamic_shapes,
+            model_dir=model_dir,
+            cache=self.cache_export,
+        )
 
         # Step 2: convert to IR
         module = fx_graph_to_ir(program)
@@ -97,6 +110,9 @@ class CompilationPipeline:
     def _optimize(self, module: IrModule) -> IrModule:
         """Apply the default pass pipeline."""
         pm = PassManager()
+
+        if self.enable_validation:
+            pm.add(ValidateIR())
 
         if self.enable_cse:
             pm.add(CommonSubexpressionElimination())

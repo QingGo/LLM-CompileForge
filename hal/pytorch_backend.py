@@ -1,11 +1,29 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import torch
 import torch.nn.functional as F  # noqa: N812
 
 from hal.interface import Buffer, Device, OpExecutor
+
+# ── Op registry (validates input counts before dispatch) ────
+
+
+@dataclass
+class _OpSpec:
+    name: str
+    min_inputs: int = 0
+    max_inputs: int | None = None
+
+
+_op_registry: dict[str, _OpSpec] = {}
+
+
+def _register_op(name: str, min_inputs: int = 0, max_inputs: int | None = None) -> None:
+    """Register an op with its input-count constraints."""
+    _op_registry[name] = _OpSpec(name=name, min_inputs=min_inputs, max_inputs=max_inputs)
 
 
 class PyTorchDevice(Device):
@@ -63,6 +81,15 @@ class PyTorchBackend(OpExecutor):
 
     def __init__(self, device: str = "cpu") -> None:
         self._device = torch.device(device)
+        _register_op("add", min_inputs=2, max_inputs=2)
+        _register_op("mul", min_inputs=2, max_inputs=2)
+        _register_op("sub", min_inputs=2, max_inputs=2)
+        _register_op("matmul", min_inputs=2, max_inputs=2)
+        _register_op("neg", min_inputs=1, max_inputs=1)
+        _register_op("cos", min_inputs=1, max_inputs=1)
+        _register_op("sin", min_inputs=1, max_inputs=1)
+        _register_op("zeros", min_inputs=0, max_inputs=10)
+        _register_op("copy_", min_inputs=2, max_inputs=2)
 
     # ── 算子映射表 ──────────────────────────────────────────
 
@@ -128,10 +155,10 @@ class PyTorchBackend(OpExecutor):
         return inputs[0].to(inputs[1].dtype)
 
     def _op_copy_(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
-        x = inputs[0]
-        if len(inputs) > 1:
-            x = inputs[1].clone()
-        return x
+        if len(inputs) >= 2:
+            dst, src = inputs[0], inputs[1]
+            return dst.copy_(src)
+        return inputs[0]
 
     def _op_permute(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         dims = kwargs["dims"]
@@ -338,6 +365,12 @@ class PyTorchBackend(OpExecutor):
     def _op_neg(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         return -inputs[0]
 
+    def _op_cos(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return torch.cos(inputs[0])
+
+    def _op_sin(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return torch.sin(inputs[0])
+
     def _op_rsqrt(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         return torch.rsqrt(inputs[0])
 
@@ -497,7 +530,9 @@ class PyTorchBackend(OpExecutor):
 
     def _op_diff(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         dim = kwargs.get("dim", -1)
+        import warnings
         n = kwargs.get("n", 1)
+        dim = kwargs.get("dim", -1)
         prepend = kwargs.get("prepend", None)
         append = kwargs.get("append", None)
         if prepend is None and len(inputs) > 1:
@@ -507,6 +542,11 @@ class PyTorchBackend(OpExecutor):
         try:
             return torch.diff(inputs[0], n=n, dim=dim, prepend=prepend, append=append)
         except TypeError:
+            warnings.warn(
+                f"torch.diff(prepend=, append=) not supported — "
+                f"falling back to torch.diff(dim={dim})",
+                stacklevel=2,
+            )
             return torch.diff(inputs[0], dim=dim)
 
     def _op_pad(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
@@ -529,8 +569,14 @@ class PyTorchBackend(OpExecutor):
         return torch.eye(n, m, dtype=dtype)
 
     def _op_zeros(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
-        shape = [int(t.item()) for t in inputs]
+        if inputs:
+            shape = [int(t.item()) for t in inputs]
+        else:
+            shape_raw = kwargs.get("shape", ())
+            shape = [int(s) for s in shape_raw if s is not None]
         dtype = kwargs.get("dtype", torch.float32)
+        if isinstance(dtype, str):
+            dtype = getattr(torch, dtype.replace("torch.", ""))
         return torch.zeros(shape, dtype=dtype)
 
     def _op_zeros_like(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
@@ -549,6 +595,20 @@ class PyTorchBackend(OpExecutor):
     # ── 公开接口 ────────────────────────────────────────────
 
     def execute(self, op_name: str, inputs: list[Any], **kwargs: Any) -> torch.Tensor:
+        spec = _op_registry.get(op_name)
+        if spec is not None:
+            n_in = len(inputs)
+            if n_in < spec.min_inputs:
+                raise ValueError(
+                    f"Op '{op_name}' expects at least {spec.min_inputs} input(s), "
+                    f"got {n_in}."
+                )
+            if spec.max_inputs is not None and n_in > spec.max_inputs:
+                raise ValueError(
+                    f"Op '{op_name}' expects at most {spec.max_inputs} input(s), "
+                    f"got {n_in}."
+                )
+
         dispatch = {
             "matmul": self._op_matmul,
             "linear": self._op_linear,
@@ -575,6 +635,8 @@ class PyTorchBackend(OpExecutor):
             "full_like": self._op_full_like,
             "arange": self._op_arange,
             "neg": self._op_neg,
+            "cos": self._op_cos,
+            "sin": self._op_sin,
             "rsqrt": self._op_rsqrt,
             "mean": self._op_mean,
             "pow": self._op_pow,

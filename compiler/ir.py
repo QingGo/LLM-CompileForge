@@ -55,20 +55,30 @@ class IrOp:
 
     Inputs/outputs are identified by SSA value names (strings).
     Attributes carry op-specific parameters (e.g. dim, eps, is_causal).
+
+    Set ``in_place = True`` for operations (like ``copy_``) that
+    semantically modify their first input.  This signals DCE and
+    other passes to preserve the op even when its formal output
+    appears unused — the in-place side-effect on the destination
+    makes the op live.
     """
 
     name: str  # e.g. "matmul", "rms_norm", "sdpa"
     inputs: list[str] = field(default_factory=list)
     outputs: list[str] = field(default_factory=list)
     attributes: dict[str, Any] = field(default_factory=dict)
+    in_place: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "name": self.name,
             "inputs": self.inputs,
             "outputs": self.outputs,
             "attributes": self.attributes,
         }
+        if self.in_place:
+            d["in_place"] = True
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> IrOp:
@@ -77,6 +87,7 @@ class IrOp:
             inputs=d.get("inputs", []),
             outputs=d.get("outputs", []),
             attributes=d.get("attributes", {}),
+            in_place=d.get("in_place", False),
         )
 
 

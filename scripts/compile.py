@@ -170,11 +170,13 @@ def compile_qwen(output_dir: str) -> None:
     print(f"Exporting with example input shape: {list(example_input.shape)} (static shape due to linear attention constraints)")
 
     pipeline = default_pipeline()
+    pipeline.cache_export = True
     ir_module = pipeline.compile(
         model,
         example_args=(example_input,),
         output_dir=output_dir,
         dynamic_shapes=None,
+        model_dir=model_dir,
     )
 
     op_count = len(ir_module.main.ops)
