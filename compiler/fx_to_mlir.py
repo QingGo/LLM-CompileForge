@@ -91,11 +91,12 @@ def fx_graph_to_mlir(
 
     for node in graph.nodes:
         if node.op == "placeholder":
-            ssa_map[node.name] = weight_name_map.get(node.name, f"%{node.name}")
+            ssa_map[node.name] = f"%{weight_name_map.get(node.name, node.name)}"
             continue
 
         if node.op == "get_attr":
-            ssa_map[node.name] = str(node.target).replace(".", "_")
+            attr_name = str(node.target).replace(".", "_")
+            ssa_map[node.name] = f"%{attr_name}"  # SSA reference to weight constant result
             continue
 
         if node.op == "call_function":

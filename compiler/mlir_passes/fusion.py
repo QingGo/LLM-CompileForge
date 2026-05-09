@@ -13,13 +13,22 @@ When bindings are unavailable, these functions are no-ops (skip gracefully).
 
 from __future__ import annotations
 
-from collections.abc import Callable  # noqa: F401
+import sys
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from compiler.mlir_artifact import MlirModule
 
 
+def _setup_mlir_path() -> None:
+    _mlir_pkg = Path(__file__).resolve().parent.parent.parent / "mlir_binding" / "mlir_package"
+    if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
+        sys.path.insert(0, str(_mlir_pkg))
+
+
 def _has_bindings() -> bool:
+    _setup_mlir_path()
     try:
         import mlir.ir  # noqa: F401
         return True
@@ -62,6 +71,7 @@ def _run_pattern(
 
     Returns the modified MLIR text.
     """
+    _setup_mlir_path()
     import mlir.ir as ir
     from mlir.rewrite import (
         GreedyRewriteConfig,

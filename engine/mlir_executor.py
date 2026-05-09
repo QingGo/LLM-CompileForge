@@ -134,7 +134,7 @@ class MlirExecutor(_KVCacheMixin):
 
     def _execute_op(self, op: MlirOp, ssa_values: dict[str, torch.Tensor]) -> torch.Tensor | None:
         if op.name in _WEIGHT_OPS:
-            wname = op.attributes.get("name", "")
+            wname = op.attributes.get("name", "") or op.attributes.get('"name"', "")
             if not wname and op.operands:
                 wname = op.operands[0]
             if wname in self._weights:

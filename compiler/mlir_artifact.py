@@ -67,7 +67,99 @@ class MlirModule:
         return self.functions[0]
 
 
-# ── Public API ────────────────────────────────────────────────
+def mlir_module_to_text(module: MlirModule) -> str:
+    """Serialize an MlirModule to standard MLIR text.
+
+    This is the reverse of _parse_mlir_text — generates model.mlir format.
+    """
+    lines: list[str] = []
+    lines.append("module {")
+
+    for func in module.functions:
+        # Function arguments
+        arg_strs = []
+        for name, tp in func.inputs:
+            arg_strs.append(f"{name}: {tp}")
+        args_str = ", ".join(arg_strs)
+
+        # Return type
+        out_types = [tp for _, tp in func.outputs]
+        ret = out_types[0] if len(out_types) == 1 else f"({', '.join(out_types)})"
+
+        lines.append(f"  func.func @{func.name}({args_str}) -> {ret} {{")
+
+        # Ops
+        for op in func.ops:
+            # Weight constants: no operands, just attribute
+            if op.op_name == "weight":
+                wname = op.attributes.get("name", "")
+                lines.append(f'    {op.results[0]} = "{op.name}"() {{"name" = "{wname}"}} : '
+                             f'() -> tensor<f32>')
+                continue
+
+            results_str = ", ".join(op.results)
+            operands_str = ", ".join(op.operands)
+            attrs_str = ""
+            if op.attributes:
+                attr_parts = []
+                for k, v in op.attributes.items():
+                    if k == "source_node":
+                        continue
+                    attr_parts.append(_format_attr(k, v))
+                if attr_parts:
+                    attrs_str = " {" + ", ".join(attr_parts) + "}"
+            lines.append(f'    {results_str} = "{op.name}"({operands_str}){attrs_str} : '
+                         f'(...) -> (...)')
+
+        # Return
+        ret_names = [name for name, _ in func.outputs]
+        ret_str = ", ".join(ret_names)
+        lines.append(f"    func.return {ret_str}")
+        lines.append("  }")
+
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
+def _format_attr(key: str, value: Any) -> str:
+    """Format a single attribute key=value pair for MLIR text."""
+    if isinstance(value, bool):
+        return f'"{key}" = {"true" if value else "false"}'
+    if isinstance(value, int):
+        return f'"{key}" = {value} : i64'
+    if isinstance(value, float):
+        return f'"{key}" = {value} : f64'
+    if isinstance(value, str):
+        return f'"{key}" = "{value}"'
+    if isinstance(value, (list, tuple)):
+        items = ", ".join(str(v) for v in value)
+        return f'"{key}" = [{items}]'
+    if value is None:
+        return f'"{key}" = none'
+    return f'"{key}" = "{value}"'
+
+
+def save_mlir_module_artifact(module: MlirModule, directory: str) -> None:
+    """Persist an MlirModule as MLIR artifact (model.mlir + weights.pth + metadata.json)."""
+    out_dir = Path(directory)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    mlir_text = mlir_module_to_text(module)
+    with open(out_dir / "model.mlir", "w") as f:
+        f.write(mlir_text)
+
+    weight_state: dict[str, torch.Tensor] = {}
+    for func in module.functions:
+        for wname, tensor in func.weights.items():
+            key = f"{func.name}.{wname}" if func.name != "main" else wname
+            weight_state[key] = tensor
+    torch.save(weight_state, out_dir / "weights.pth")
+
+    with open(out_dir / "metadata.json", "w") as f:
+        json.dump(module.metadata, f, indent=2)
+
+
+# ── Public API (legacy IrModule version) ──────────────────────
 
 
 def save_mlir_artifact(module: IrModule, directory: str) -> None:
