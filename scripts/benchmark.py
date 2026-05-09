@@ -231,15 +231,7 @@ def _compile_opt125m(
 
     import torch
     from torch.export import Dim
-    from compiler.pipeline import CompilationPipeline
-    from compiler.passes.base import PassManager
-    from compiler.passes.constant_fold import ConstantFold
-    from compiler.passes.cse_pass import CommonSubexpressionElimination
-    from compiler.passes.dce_pass import DeadCodeElimination
-    from compiler.passes.fuse_qkv import FuseQKVProjection
-    from compiler.passes.fuse_rms_norm import FuseRMSNorm
-    from compiler.passes.fuse_silu import FuseSiLU
-    from compiler.passes.validate_ir import ValidateIR
+    from compiler.pipeline import compile_mlir
     from transformers.models.opt.configuration_opt import OPTConfig  # type: ignore[import-untyped]
     from transformers.models.opt.modeling_opt import OPTForCausalLM  # type: ignore[import-untyped]
 
@@ -260,28 +252,14 @@ def _compile_opt125m(
     model.load_state_dict(state_dict, strict=False)
     model.eval()
 
-    if enable_qkv_only:
-        # Build a pipeline with ONLY FuseQKV (no FuseRMSNorm, no FuseSiLU)
-        pipeline = CompilationPipeline(
-            enable_fusion=False,
-            enable_cse=enable_cse,
-            enable_constant_fold=enable_constant_fold,
-        )
-    else:
-        pipeline = CompilationPipeline(
-            enable_fusion=enable_fusion,
-            enable_cse=enable_cse,
-            enable_constant_fold=enable_constant_fold,
-        )
-
-    example_input = torch.randint(0, 50272, (2, 4), dtype=torch.long)
-
     t0 = time.perf_counter()
-    ir_module = pipeline.compile(
+    ir_module = compile_mlir(
         model,
         example_args=(example_input,),
         output_dir=output_dir,
         dynamic_shapes={"input_ids": {0: Dim("batch"), 1: Dim("seq")}},
+        apply_fusion=enable_fusion,
+    )
     )
     elapsed = time.perf_counter() - t0
 

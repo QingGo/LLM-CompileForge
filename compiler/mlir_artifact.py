@@ -21,9 +21,6 @@ from typing import Any
 
 import torch
 
-from compiler.ir import IrModule, pack_weights
-from compiler.mlir_emitter import ir_module_to_mlir
-
 
 @dataclass
 class MlirOp:
@@ -158,39 +155,6 @@ def save_mlir_module_artifact(module: MlirModule, directory: str) -> None:
     with open(out_dir / "metadata.json", "w") as f:
         json.dump(module.metadata, f, indent=2)
 
-
-# ── Public API (legacy IrModule version) ──────────────────────
-
-
-def save_mlir_artifact(module: IrModule, directory: str) -> None:
-    """Persist a compiled IrModule as MLIR artifact.
-
-    Writes model.mlir (primary), weights.pth, and metadata.json.
-    """
-    out_dir = Path(directory)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # Stamp schema version
-    module.metadata.setdefault("ir_schema_version", 1)
-    module.metadata["artifact_format"] = "mlir"
-
-    # model.mlir (primary format)
-    mlir_text = ir_module_to_mlir(module)
-    with open(out_dir / "model.mlir", "w") as f:
-        f.write(mlir_text)
-
-    # weights.pth
-    all_weights = pack_weights(module)
-    weight_state: dict[str, torch.Tensor] = {}
-    for func_name, func_weights in all_weights.items():
-        for wname, tensor in func_weights.items():
-            key = f"{func_name}.{wname}" if func_name != "main" else wname
-            weight_state[key] = tensor
-    torch.save(weight_state, out_dir / "weights.pth")
-
-    # metadata.json
-    with open(out_dir / "metadata.json", "w") as f:
-        json.dump(module.metadata, f, indent=2)
 
 
 def load_mlir_artifact(directory: str) -> MlirModule:

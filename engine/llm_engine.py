@@ -18,7 +18,6 @@ from typing import Any, Protocol, runtime_checkable
 
 import torch
 
-from compiler.ir import IrModule
 from compiler.mlir_artifact import MlirModule
 from engine.batch import GenerationResult
 from engine.block_manager import BlockManager
@@ -92,7 +91,7 @@ class LLMEngine:
 
     def __init__(
         self,
-        module: IrModule | MlirModule,
+        module: MlirModule,
         hal_backend: OpExecutor,
         executor: _ExecutorLike | None = None,
         max_batch_size: int = 32,
@@ -125,12 +124,9 @@ class LLMEngine:
         )
         if executor is not None:
             self.executor: _ExecutorLike = executor
-        elif isinstance(module, MlirModule):
+        else:
             from engine.mlir_executor import MlirExecutor
             self.executor = MlirExecutor(module, hal_backend)
-        else:
-            from engine.executor import Executor
-            self.executor = Executor(module, hal_backend)
 
         # Tokenizer reference — set by the API server or user
         self._tokenizer: Any = None

@@ -9,26 +9,10 @@ from __future__ import annotations
 
 import pytest
 
-from compiler.ir import IrFunction, IrModule, IrOp, IrType
 from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp
-from engine.executor import Executor
 from engine.llm_engine import LLMEngine
 from engine.mlir_executor import MlirExecutor
 from hal.pytorch_backend import PyTorchBackend
-
-
-def _make_test_ir() -> IrModule:
-    """IrModule: input_ids → identity → logits (passthrough)."""
-    return IrModule(
-        functions=[
-            IrFunction(
-                name="main",
-                inputs=[("input_ids", IrType("float32", (None,)))],
-                outputs=[("logits", IrType("float32", (None,)))],
-                ops=[IrOp(name="identity", inputs=["input_ids"], outputs=["logits"])],
-            )
-        ]
-    )
 
 
 def _make_test_mlir() -> MlirModule:
@@ -57,18 +41,13 @@ def _make_test_mlir() -> MlirModule:
 class TestLLMEngineInit:
     """Constructor validation and executor selection."""
 
-    def test_creates_executor_from_irmodule(self):
-        mod = _make_test_ir()
-        engine = LLMEngine(mod, PyTorchBackend("cpu"))
-        assert isinstance(engine.executor, Executor)
-
-    def test_creates_mli_executor_from_mlir_module(self):
+    def test_creates_mli_executor(self):
         mod = _make_test_mlir()
         engine = LLMEngine(mod, PyTorchBackend("cpu"))
         assert isinstance(engine.executor, MlirExecutor)
 
     def test_explicit_executor_override(self):
-        mod = _make_test_ir()
+        mod = _make_test_mlir()
         backend = PyTorchBackend("cpu")
         mlir_exe = MlirExecutor(_make_test_mlir(), backend)
         engine = LLMEngine(mod, backend, executor=mlir_exe)
@@ -76,10 +55,10 @@ class TestLLMEngineInit:
 
     def test_max_batch_size_zero_raises(self):
         with pytest.raises(ValueError, match="max_batch_size"):
-            LLMEngine(_make_test_ir(), PyTorchBackend("cpu"), max_batch_size=0)
+            LLMEngine(_make_test_mlir(), PyTorchBackend("cpu"), max_batch_size=0)
 
     def test_defaults_idle(self):
-        engine = LLMEngine(_make_test_ir(), PyTorchBackend("cpu"))
+        engine = LLMEngine(_make_test_mlir(), PyTorchBackend("cpu"))
         assert engine.is_idle
         assert engine.num_running == 0
         assert engine.num_waiting == 0
@@ -95,17 +74,17 @@ class TestLLMEngineGenerate:
         return SimpleTokenizer()
 
     def test_generate_with_token_ids(self):
-        engine = LLMEngine(_make_test_ir(), PyTorchBackend("cpu"), max_batch_size=4, chunk_size=2)
+        engine = LLMEngine(_make_test_mlir(), PyTorchBackend("cpu"), max_batch_size=4, chunk_size=2)
         result = engine.generate([1, 2, 3], max_tokens=2, temperature=0)
         assert isinstance(result, str)
 
     def test_generate_requires_tokenizer_for_text(self):
-        engine = LLMEngine(_make_test_ir(), PyTorchBackend("cpu"))
+        engine = LLMEngine(_make_test_mlir(), PyTorchBackend("cpu"))
         with pytest.raises(RuntimeError, match="requires a tokenizer"):
             engine.generate("hello world")
 
     def test_generate_with_tokenizer(self):
-        engine = LLMEngine(_make_test_ir(), PyTorchBackend("cpu"), max_batch_size=4, chunk_size=2)
+        engine = LLMEngine(_make_test_mlir(), PyTorchBackend("cpu"), max_batch_size=4, chunk_size=2)
         engine.set_tokenizer(self._tokenizer())
         result = engine.generate("hello world", max_tokens=2, temperature=0)
         assert isinstance(result, str)
@@ -121,18 +100,18 @@ class TestLLMEngineAddRequest:
     """add_request() edge cases."""
 
     def test_add_text_requires_tokenizer(self):
-        engine = LLMEngine(_make_test_ir(), PyTorchBackend("cpu"))
+        engine = LLMEngine(_make_test_mlir(), PyTorchBackend("cpu"))
         with pytest.raises(RuntimeError, match="requires a tokenizer"):
             engine.add_request("hello")
 
     def test_add_token_ids_returns_request_id(self):
-        engine = LLMEngine(_make_test_ir(), PyTorchBackend("cpu"))
+        engine = LLMEngine(_make_test_mlir(), PyTorchBackend("cpu"))
         rid = engine.add_request([1, 2, 3])
         assert rid.startswith("req_")
         assert not engine.is_idle
 
     def test_add_with_sampling_params(self):
-        engine = LLMEngine(_make_test_ir(), PyTorchBackend("cpu"))
+        engine = LLMEngine(_make_test_mlir(), PyTorchBackend("cpu"))
         rid = engine.add_request([1, 2], temperature=0.5, top_p=0.9, priority=1)
         assert rid.startswith("req_")
 
@@ -142,11 +121,11 @@ class TestLLMEngineStep:
     """step() loop behaviour."""
 
     def test_step_idle_returns_empty(self):
-        engine = LLMEngine(_make_test_ir(), PyTorchBackend("cpu"))
+        engine = LLMEngine(_make_test_mlir(), PyTorchBackend("cpu"))
         assert engine.step() == []
 
     def test_step_returns_generation_results(self):
-        engine = LLMEngine(_make_test_ir(), PyTorchBackend("cpu"), max_batch_size=4, chunk_size=2)
+        engine = LLMEngine(_make_test_mlir(), PyTorchBackend("cpu"), max_batch_size=4, chunk_size=2)
         engine.add_request([1, 2, 3], max_tokens=2, temperature=0)
         results = engine.step()
         assert len(results) > 0
@@ -154,7 +133,7 @@ class TestLLMEngineStep:
             assert r.request_id.startswith("req_")
 
     def test_step_exhausts_requests(self):
-        engine = LLMEngine(_make_test_ir(), PyTorchBackend("cpu"), max_batch_size=4, chunk_size=2)
+        engine = LLMEngine(_make_test_mlir(), PyTorchBackend("cpu"), max_batch_size=4, chunk_size=2)
         engine.add_request([1, 2], max_tokens=1, temperature=0)
         for _ in range(10):
             engine.step()
@@ -163,7 +142,7 @@ class TestLLMEngineStep:
         assert engine.num_running == 0
 
     def test_multiple_add_has_work(self):
-        engine = LLMEngine(_make_test_ir(), PyTorchBackend("cpu"), max_batch_size=4)
+        engine = LLMEngine(_make_test_mlir(), PyTorchBackend("cpu"), max_batch_size=4)
         engine.add_request([1, 2, 3], max_tokens=5, temperature=0)
         engine.add_request([4, 5], max_tokens=3, temperature=0)
         assert engine.num_waiting == 2
@@ -179,13 +158,13 @@ class TestLLMEngineTokenizer:
         return SimpleTokenizer()
 
     def test_set_tokenizer(self):
-        engine = LLMEngine(_make_test_ir(), PyTorchBackend("cpu"))
+        engine = LLMEngine(_make_test_mlir(), PyTorchBackend("cpu"))
         engine.set_tokenizer(self._tokenizer(), eos_token_id=99)
         engine.add_request("test prompt")
         assert not engine.is_idle
 
     def test_eos_stops_generation(self):
-        engine = LLMEngine(_make_test_ir(), PyTorchBackend("cpu"), max_batch_size=4, chunk_size=2)
+        engine = LLMEngine(_make_test_mlir(), PyTorchBackend("cpu"), max_batch_size=4, chunk_size=2)
         engine.set_tokenizer(self._tokenizer(), eos_token_id=0)
         engine.add_request([1, 2], max_tokens=100, temperature=0)
         for _ in range(20):

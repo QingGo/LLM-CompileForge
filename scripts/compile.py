@@ -48,7 +48,7 @@ def compile_opt125m(output_dir: str) -> None:
 
     _patch_transformers_torch()
 
-    from compiler.pipeline import default_pipeline
+    from compiler.pipeline import compile_mlir
     from torch.export import Dim
     from transformers.models.opt.configuration_opt import OPTConfig  # type: ignore[import-untyped]
     from transformers.models.opt.modeling_opt import OPTForCausalLM  # type: ignore[import-untyped]
@@ -75,16 +75,16 @@ def compile_opt125m(output_dir: str) -> None:
     example_input = torch.randint(0, 50272, (2, 4), dtype=torch.long)
     print(f"Exporting with example input shape: {list(example_input.shape)} (dynamic batch + seq)")
 
-    pipeline = default_pipeline()
-    ir_module = pipeline.compile(
+    pipeline = compile_mlir
+    mlir_mod = pipeline(
         model,
         example_args=(example_input,),
         output_dir=output_dir,
         dynamic_shapes={"input_ids": {0: Dim("batch"), 1: Dim("seq")}},
     )
 
-    op_count = len(ir_module.main.ops)
-    weight_count = len(ir_module.main.weights)
+    op_count = len(mlir_mod.functions[0].ops)
+    weight_count = len(mlir_mod.functions[0].weights)
     print(f"Compiled: {op_count} ops, {weight_count} weight tensors")
     print(f"Artifact saved to: {output_dir}")
 
@@ -96,7 +96,7 @@ def compile_tiny_llama(output_dir: str) -> None:
 
     _patch_transformers_torch()
 
-    from compiler.pipeline import default_pipeline
+    from compiler.pipeline import compile_mlir
     from torch.export import Dim
     from transformers.models.llama.configuration_llama import LlamaConfig  # type: ignore[import-untyped]
     from transformers.models.llama.modeling_llama import LlamaForCausalLM  # type: ignore[import-untyped]
@@ -124,16 +124,16 @@ def compile_tiny_llama(output_dir: str) -> None:
     example_input = torch.randint(0, 32000, (2, 4), dtype=torch.long)
     print(f"Exporting with example input shape: {list(example_input.shape)} (dynamic batch + seq)")
 
-    pipeline = default_pipeline()
-    ir_module = pipeline.compile(
+    pipeline = compile_mlir
+    mlir_mod = pipeline(
         model,
         example_args=(example_input,),
         output_dir=output_dir,
         dynamic_shapes={"input_ids": {0: Dim("batch"), 1: Dim("seq")}},
     )
 
-    op_count = len(ir_module.main.ops)
-    weight_count = len(ir_module.main.weights)
+    op_count = len(mlir_mod.functions[0].ops)
+    weight_count = len(mlir_mod.functions[0].weights)
     print(f"Compiled: {op_count} ops, {weight_count} weight tensors")
     print(f"Artifact saved to: {output_dir}")
 
@@ -145,7 +145,7 @@ def compile_qwen(output_dir: str) -> None:
 
     _patch_transformers_torch()
 
-    from compiler.pipeline import default_pipeline
+    from compiler.pipeline import compile_mlir
     from torch.export import Dim
     from transformers import AutoConfig, AutoModelForCausalLM  # type: ignore[import-untyped]
 
@@ -169,21 +169,19 @@ def compile_qwen(output_dir: str) -> None:
     example_input = torch.randint(0, 248320, (1, 64), dtype=torch.long)
     print(f"Exporting with example input shape: {list(example_input.shape)} (static shape due to linear attention constraints)")
 
-    pipeline = default_pipeline()
-    pipeline.cache_export = True
-    ir_module = pipeline.compile(
+    mlir_mod = compile_mlir(
         model,
         example_args=(example_input,),
         output_dir=output_dir,
-        dynamic_shapes=None,
         model_dir=model_dir,
+        cache_export=True,
     )
 
-    op_count = len(ir_module.main.ops)
-    weight_count = len(ir_module.main.weights)
+    op_count = len(mlir_mod.functions[0].ops)
+    weight_count = len(mlir_mod.functions[0].weights)
     print(f"Compiled: {op_count} ops, {weight_count} weight tensors")
 
-    mlir_text = ir_module.metadata.get("mlir", "")
+    mlir_text = mlir_mod.metadata.get("mlir", "")
     mlir_lines = len(mlir_text.splitlines()) if mlir_text else 0
     print(f"MLIR output: {mlir_lines} lines")
     print(f"Artifact saved to: {output_dir}")

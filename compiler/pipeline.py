@@ -97,7 +97,6 @@ def compile_mlir(
 
 def _apply_mlir_passes(mlir_text: str) -> str:
     """Apply MLIR optimization passes to the given MLIR text."""
-    # Standard passes first (only if bindings available)
     from compiler.mlir_passes.fusion import _has_bindings, fuse_rms_norm_pass, fuse_silu_pass
 
     if _has_bindings():
@@ -114,9 +113,8 @@ def _apply_mlir_passes(mlir_text: str) -> str:
                 pman.run(module.operation)
                 mlir_text = str(module)
         except Exception:
-            pass  # standard passes are optional
+            pass
 
-    # Fusion passes
     try:
         mlir_text = fuse_silu_pass(mlir_text)
     except Exception:
@@ -128,95 +126,3 @@ def _apply_mlir_passes(mlir_text: str) -> str:
 
     return mlir_text
 
-
-# ── Backward compatibility: legacy compile returns IrModule ─────
-
-from compiler.fx_to_ir import fx_graph_to_ir  # noqa: E402
-from compiler.ir import IrModule  # noqa: E402
-from compiler.passes.base import PassManager  # noqa: E402
-from compiler.passes.constant_fold import ConstantFold  # noqa: E402
-from compiler.passes.cse_pass import CommonSubexpressionElimination  # noqa: E402
-from compiler.passes.dce_pass import DeadCodeElimination  # noqa: E402
-from compiler.passes.fuse_attention import FuseAttentionPattern  # noqa: E402
-from compiler.passes.fuse_attention_block import FuseAttentionBlock  # noqa: E402
-from compiler.passes.fuse_qkv import FuseQKVProjection  # noqa: E402
-from compiler.passes.fuse_rms_norm import FuseRMSNorm  # noqa: E402
-from compiler.passes.fuse_silu import FuseSiLU  # noqa: E402
-from compiler.passes.validate_ir import ValidateIR  # noqa: E402
-from compiler.serialize import save_artifact  # noqa: E402
-
-
-class CompilationPipeline:
-    """Legacy compilation pipeline (deprecated — use compile_mlir() instead)."""
-
-    def __init__(
-        self,
-        enable_fusion: bool = True,
-        enable_cse: bool = True,
-        enable_constant_fold: bool = True,
-        enable_validation: bool = True,
-        cache_export: bool = False,
-    ) -> None:
-        self.enable_fusion = enable_fusion
-        self.enable_cse = enable_cse
-        self.enable_constant_fold = enable_constant_fold
-        self.enable_validation = enable_validation
-        self.cache_export = cache_export
-
-    def compile(
-        self,
-        model: torch.nn.Module,
-        example_args: tuple[Any, ...] | None = None,
-        example_kwargs: dict[str, Any] | None = None,
-        output_dir: str | None = None,
-        dynamic_shapes: dict[str, Any] | None = None,
-        emit_mlir: bool = True,
-        model_dir: str = "",
-    ) -> IrModule:
-        from compiler.export_ir import export_model
-
-        args = example_args or ()
-        kwargs = example_kwargs or {}
-        program = export_model(
-            model, args, kwargs,
-            dynamic_shapes=dynamic_shapes,
-            model_dir=model_dir,
-            cache=self.cache_export,
-        )
-        module = fx_graph_to_ir(program)
-        module = self._optimize(module)
-        if output_dir is not None:
-            save_artifact(module, str(output_dir))
-        return module
-
-    def _optimize(self, module: IrModule) -> IrModule:
-        pm = PassManager()
-        if self.enable_validation:
-            pm.add(ValidateIR())
-        if self.enable_cse:
-            pm.add(CommonSubexpressionElimination())
-        if self.enable_constant_fold:
-            pm.add(ConstantFold())
-        pm.add(DeadCodeElimination())
-        if self.enable_fusion:
-            pm.add(FuseQKVProjection())
-            pm.add(FuseRMSNorm())
-            pm.add(FuseSiLU())
-            pm.add(FuseAttentionPattern())
-            pm.add(FuseAttentionBlock())
-        return pm.run(module)
-
-
-def default_pipeline() -> CompilationPipeline:
-    """Legacy convenience function (deprecated)."""
-    return CompilationPipeline(enable_fusion=True, enable_cse=True, enable_constant_fold=True)
-
-
-def compile_module(
-    model: torch.nn.Module,
-    example_args: tuple[Any, ...] | None = None,
-    output_dir: str | None = None,
-) -> IrModule:
-    """Legacy convenience function (deprecated)."""
-    pipeline = default_pipeline()
-    return pipeline.compile(model, example_args, output_dir=output_dir)

@@ -142,3 +142,36 @@ class _KVCacheMixin:
         layer_idx: int = 0,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         return self._gather_kv_flat(block_tables, max_seq_len, layer_idx)
+
+
+def _normalize_kv_for_cache(
+    k: torch.Tensor,
+    v: torch.Tensor,
+    num_kv_heads: int,
+    head_dim: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Normalize K/V tensor shapes for paged cache storage.
+
+    Handles various input formats:
+      [batch, heads, seq, head_dim] → squeeze batch
+      [heads, seq, head_dim] → [seq, heads, head_dim]
+      [seq, hidden] → [seq, heads, head_dim]
+    """
+    if k.dim() >= 4 and k.shape[0] == 1:
+        k = k.squeeze(0)
+        v = v.squeeze(0)
+
+    nkh = num_kv_heads
+    hd = head_dim
+
+    if k.dim() == 3 and k.shape[0] == nkh and k.shape[-1] == hd:
+        k = k.permute(1, 0, 2)
+        v = v.permute(1, 0, 2)
+    elif k.dim() == 2 and k.shape[-1] == nkh * hd:
+        k = k.reshape(-1, nkh, hd)
+        v = v.reshape(-1, nkh, hd)
+    elif k.dim() == 3 and k.shape[-1] == nkh * hd:
+        k = k.reshape(-1, nkh, hd)
+        v = v.reshape(-1, nkh, hd)
+
+    return k, v

@@ -120,7 +120,7 @@ def main() -> None:
     _patch_transformers_torch()
 
     from transformers import AutoConfig, AutoModelForCausalLM
-    from compiler.fx_to_ir import fx_graph_to_ir
+    from compiler.fx_to_mlir import fx_graph_to_mlir
     from hal.pytorch_backend import PyTorchBackend
 
     model_dir = os.path.join(
@@ -178,8 +178,8 @@ def main() -> None:
     print(f"  Export: {time.time() - t0:.1f}s")
 
     t0 = time.time()
-    ir_module = fx_graph_to_ir(program, "main")
-    ir_func = ir_module.main
+    ir_module = fx_graph_to_mlir(program)
+    ir_func = ir_module.functions[0]
     print(f"  IR conversion: {time.time() - t0:.1f}s")
     print(f"  IR ops: {len(ir_func.ops)}, weights: {len(ir_func.weights)}")
 

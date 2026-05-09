@@ -1,6 +1,6 @@
 """End-to-end integration tests — full pipeline with real LLMEngine.
 
-Creates a minimal IrModule with deterministic weights, a real
+Creates a minimal MlirModule with deterministic weights, a real
 PyTorchBackend, and a real LLMEngine. The engine is wrapped in a
 FastAPI app via create_app() and tested with TestClient.
 
@@ -17,7 +17,7 @@ import pytest
 import torch
 from fastapi.testclient import TestClient
 
-from compiler.ir import IrFunction, IrModule, IrOp, IrType
+from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp
 from engine.llm_engine import LLMEngine
 from hal import PyTorchBackend
 from server.app import create_app
@@ -41,31 +41,25 @@ VOCAB_SIZE = 100
 HIDDEN_SIZE = 8
 
 
-def _make_deterministic_module() -> IrModule:
-    """Create a minimal IrModule that always returns token 42 as argmax.
-
-    Pipeline:
-        constant(embed) → matmul(embed, w) → logits
-
-    Weights are constructed so that logits[0, 42] = 1.0 and all other
-    logits are 0.0.  With temperature=0 (greedy) the sampler always
-    picks token 42.
-    """
+def _make_deterministic_module() -> MlirModule:
+    """Create a minimal MlirModule that always returns token 42 as argmax."""
     embed = torch.ones(1, HIDDEN_SIZE, dtype=torch.float32)
     w = torch.zeros(HIDDEN_SIZE, VOCAB_SIZE, dtype=torch.float32)
     w[0, TOKEN_42] = 1.0
 
-    func = IrFunction(
+    func = MlirFunction(
         name="main",
-        inputs=[("input_ids", IrType("int64", (None,)))],
-        outputs=[("logits", IrType("float32", (None, VOCAB_SIZE)))],
+        inputs=[("%input_ids", "tensor<?xi64>")],
+        outputs=[("%logits", f"tensor<?x{VOCAB_SIZE}xf32>")],
         ops=[
-            IrOp(name="constant", inputs=["embed"], outputs=["%1"]),
-            IrOp(name="matmul", inputs=["%1", "w"], outputs=["logits"]),
+            MlirOp(name="sf.constant", dialect="sf", op_name="constant",
+                   operands=["embed"], results=["%1"]),
+            MlirOp(name="sf.matmul", dialect="sf", op_name="matmul",
+                   operands=["%1", "w"], results=["%logits"]),
         ],
         weights={"embed": embed, "w": w},
     )
-    return IrModule(functions=[func], metadata={"vocab_size": VOCAB_SIZE, "hidden_size": HIDDEN_SIZE})
+    return MlirModule(functions=[func], metadata={"vocab_size": VOCAB_SIZE, "hidden_size": HIDDEN_SIZE})
 
 
 def _create_test_engine(

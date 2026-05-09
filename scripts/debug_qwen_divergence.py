@@ -282,12 +282,12 @@ def main() -> None:
 
     # ── Step 2: Convert EP to IR (no optimization passes) ────
     print("\n=== Step 2: Converting EP to IR ===")
-    from compiler.fx_to_ir import fx_graph_to_ir
+    from compiler.fx_to_mlir import fx_graph_to_mlir
     from hal.pytorch_backend import PyTorchBackend
 
     t0 = time.time()
-    ir_module = fx_graph_to_ir(program, "main")
-    ir_func = ir_module.main
+    ir_module = fx_graph_to_mlir(program)
+    ir_func = ir_module.functions[0]
     print(f"  IR conversion done in {time.time() - t0:.1f}s")
     print(f"  IR ops: {len(ir_func.ops)}, weights: {len(ir_func.weights)}")
 

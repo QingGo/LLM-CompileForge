@@ -87,12 +87,12 @@ def create_engine(
     Returns:
         A configured LLMEngine instance.
     """
-    from compiler.ir import IrFunction, IrModule
+    from compiler.mlir_artifact import MlirFunction, MlirModule
     from engine.llm_engine import LLMEngine  # concrete import for mypy
     from hal import PyTorchBackend
 
     backend = PyTorchBackend(device)
-    module = IrModule(functions=[IrFunction(name="main")])
+    module = MlirModule(functions=[MlirFunction(name="main", inputs=[], outputs=[])])
     engine: LLMEngine = LLMEngine(
         module,
         backend,
