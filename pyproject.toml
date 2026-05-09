@@ -90,7 +90,7 @@ exclude_also = [
 
 [tool.uv]
 required-environments = [
-    { sys_platform = "darwin", platform_machine = "x86_64" },
+    "sys_platform == 'darwin' and platform_machine == 'x86_64'",
 ]
 
 [[tool.uv.index]]
