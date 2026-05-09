@@ -1,11 +1,12 @@
 import pytest
 import torch
 
-from compiler.ir import IrFunction, IrModule, IrOp
+from compiler.ir import IrFunction, IrModule, IrOp, IrType
 from compiler.passes.base import Pass, PassManager
 from compiler.passes.constant_fold import ConstantFold
 from compiler.passes.cse_pass import CommonSubexpressionElimination
 from compiler.passes.dce_pass import DeadCodeElimination
+from compiler.passes.fuse_attention import FuseAttentionPattern
 from compiler.passes.fuse_qkv import FuseQKVProjection
 from compiler.passes.fuse_rms_norm import FuseRMSNorm
 from compiler.passes.fuse_silu import FuseSiLU
@@ -604,3 +605,210 @@ class TestPassManagerImmutability:
 
         assert copymod.main.weights["w"] is mod.main.weights["w"]
         assert copymod.main.ops is not mod.main.ops
+
+
+# ═══════════════════════════════════════════════════════════
+# FuseAttentionPattern
+# ═══════════════════════════════════════════════════════════
+
+
+@pytest.mark.unit
+class TestFuseAttentionPattern:
+    def test_no_sdpa_no_change(self) -> None:
+        func = IrFunction(
+            name="main",
+            inputs=[("x", IrType(dtype="float32", shape=(4,)))],
+            outputs=[("y", IrType(dtype="float32", shape=(4,)))],
+            ops=[IrOp(name="add", inputs=["x", "b"], outputs=["y"])],
+        )
+        mod = IrModule(functions=[func])
+        result = FuseAttentionPattern().apply(mod)
+        assert len(result.main.ops) == 1
+        assert result.main.ops[0].name == "add"
+
+    def test_fuses_sdpa_chain(self) -> None:
+        func = IrFunction(
+            name="main",
+            inputs=[("q", IrType(dtype="float32", shape=(1, 4, 8)))],
+            outputs=[("out", IrType(dtype="float32", shape=(1, 4, 16)))],
+            ops=[
+                IrOp(name="scaled_dot_product_attention", inputs=["q", "k", "v"], outputs=["sdpa_out"]),
+                IrOp(name="transpose", inputs=["sdpa_out"], outputs=["t_out"]),
+                IrOp(name="view", inputs=["t_out"], outputs=["v_out"]),
+                IrOp(name="linear", inputs=["v_out", "o_proj_weight"], outputs=["out"]),
+            ],
+            weights={"o_proj_weight": torch.randn(16, 32)},
+        )
+        mod = IrModule(functions=[func])
+        result = FuseAttentionPattern().apply(mod)
+        assert len(result.main.ops) == 1
+        assert result.main.ops[0].name == "fused_attention_output"
+
+    def test_no_fuse_non_o_proj_weight(self) -> None:
+        func = IrFunction(
+            name="main",
+            inputs=[("q", IrType(dtype="float32", shape=(1, 4, 8)))],
+            outputs=[("out", IrType(dtype="float32", shape=(1, 4, 16)))],
+            ops=[
+                IrOp(name="scaled_dot_product_attention", inputs=["q", "k", "v"], outputs=["sdpa_out"]),
+                IrOp(name="transpose", inputs=["sdpa_out"], outputs=["t_out"]),
+                IrOp(name="view", inputs=["t_out"], outputs=["v_out"]),
+                IrOp(name="linear", inputs=["v_out", "some_other_weight"], outputs=["out"]),
+            ],
+            weights={"some_other_weight": torch.randn(16, 32)},
+        )
+        mod = IrModule(functions=[func])
+        result = FuseAttentionPattern().apply(mod)
+        assert len(result.main.ops) == 4
+
+    def test_no_fuse_intermediate_used_elsewhere(self) -> None:
+        func = IrFunction(
+            name="main",
+            inputs=[("q", IrType(dtype="float32", shape=(1, 4, 8)))],
+            outputs=[
+                ("out", IrType(dtype="float32", shape=(1, 4, 16))),
+                ("other", IrType(dtype="float32", shape=(1, 4, 8))),
+            ],
+            ops=[
+                IrOp(name="scaled_dot_product_attention", inputs=["q", "k", "v"], outputs=["sdpa_out"]),
+                IrOp(name="transpose", inputs=["sdpa_out"], outputs=["t_out"]),
+                IrOp(name="view", inputs=["t_out"], outputs=["v_out"]),
+                IrOp(name="linear", inputs=["v_out", "o_proj_weight"], outputs=["out"]),
+                IrOp(name="add", inputs=["t_out", "x"], outputs=["other"]),
+            ],
+            weights={"o_proj_weight": torch.randn(16, 32)},
+        )
+        mod = IrModule(functions=[func])
+        result = FuseAttentionPattern().apply(mod)
+        assert any(op.name == "scaled_dot_product_attention" for op in result.main.ops)
+
+    def test_fuses_with_matmul_variant(self) -> None:
+        func = IrFunction(
+            name="main",
+            inputs=[("q", IrType(dtype="float32", shape=(1, 4, 8)))],
+            outputs=[("out", IrType(dtype="float32", shape=(1, 4, 16)))],
+            ops=[
+                IrOp(name="scaled_dot_product_attention", inputs=["q", "k", "v"], outputs=["sdpa_out"]),
+                IrOp(name="transpose", inputs=["sdpa_out"], outputs=["t_out"]),
+                IrOp(name="view", inputs=["t_out"], outputs=["v_out"]),
+                IrOp(name="matmul", inputs=["v_out", "out_proj_w"], outputs=["out"]),
+            ],
+            weights={"out_proj_w": torch.randn(16, 32)},
+        )
+        mod = IrModule(functions=[func])
+        result = FuseAttentionPattern().apply(mod)
+        assert result.main.ops[0].name == "fused_attention_output"
+
+    def test_two_attention_blocks_both_fused(self) -> None:
+        func = IrFunction(
+            name="main",
+            inputs=[("q", IrType(dtype="float32", shape=(1, 4, 8)))],
+            outputs=[("out2", IrType(dtype="float32", shape=(1, 4, 16)))],
+            ops=[
+                IrOp(name="scaled_dot_product_attention", inputs=["q", "k", "v"], outputs=["sdpa_out"]),
+                IrOp(name="transpose", inputs=["sdpa_out"], outputs=["t_out"]),
+                IrOp(name="view", inputs=["t_out"], outputs=["v_out"]),
+                IrOp(name="linear", inputs=["v_out", "o_proj_w1"], outputs=["out1"]),
+                IrOp(name="scaled_dot_product_attention", inputs=["out1", "k2", "v2"], outputs=["sdpa_out2"]),
+                IrOp(name="transpose", inputs=["sdpa_out2"], outputs=["t_out2"]),
+                IrOp(name="view", inputs=["t_out2"], outputs=["v_out2"]),
+                IrOp(name="linear", inputs=["v_out2", "o_proj_w2"], outputs=["out2"]),
+            ],
+            weights={"o_proj_w1": torch.randn(16, 32), "o_proj_w2": torch.randn(16, 32)},
+        )
+        mod = IrModule(functions=[func])
+        result = FuseAttentionPattern().apply(mod)
+        fused = [op for op in result.main.ops if op.name == "fused_attention_output"]
+        assert len(fused) == 2
+
+
+# ═══════════════════════════════════════════════════════════
+# Fusion Pass Combinations
+# ═══════════════════════════════════════════════════════════
+
+
+@pytest.mark.unit
+class TestFusionCombinations:
+    def test_cse_before_fuse_qkv(self) -> None:
+        func = IrFunction(
+            name="main",
+            inputs=[("x", IrType(dtype="float32", shape=(16,)))],
+            outputs=[("q", IrType(dtype="float32", shape=(16,)))],
+            ops=[
+                IrOp(name="mul", inputs=["x", "x"], outputs=["dup"]),
+                IrOp(name="linear", inputs=["dup", "q_proj_w"], outputs=["q"]),
+            ],
+            weights={"q_proj_w": torch.randn(16, 16)},
+        )
+        mod = IrModule(functions=[func])
+        pm = PassManager()
+        pm.add(CommonSubexpressionElimination())
+        pm.add(FuseQKVProjection())
+        result = pm.run(mod)
+        assert len(result.main.ops) > 0
+
+    def test_fuse_qkv_then_attention_pattern(self) -> None:
+        func = IrFunction(
+            name="main",
+            inputs=[("x", IrType(dtype="float32", shape=(1, 8)))],
+            outputs=[("out", IrType(dtype="float32", shape=(1, 4)))],
+            ops=[
+                IrOp(name="linear", inputs=["x", "q_w"], outputs=["q"]),
+                IrOp(name="linear", inputs=["x", "k_w"], outputs=["k"]),
+                IrOp(name="linear", inputs=["x", "v_w"], outputs=["v"]),
+                IrOp(name="scaled_dot_product_attention", inputs=["q", "k", "v"], outputs=["attn_out"]),
+                IrOp(name="transpose", inputs=["attn_out"], outputs=["t_out"]),
+                IrOp(name="view", inputs=["t_out"], outputs=["v_out"]),
+                IrOp(name="linear", inputs=["v_out", "o_proj_w"], outputs=["out"]),
+            ],
+            weights={
+                "q_w": torch.randn(8, 8), "k_w": torch.randn(8, 8),
+                "v_w": torch.randn(8, 8), "o_proj_w": torch.randn(4, 8),
+            },
+        )
+        mod = IrModule(functions=[func])
+        pm = PassManager()
+        pm.add(FuseQKVProjection())
+        pm.add(FuseAttentionPattern())
+        result = pm.run(mod)
+        assert any(op.name == "fused_attention_output" for op in result.main.ops)
+
+    def test_all_fusion_passes_together(self) -> None:
+        func = IrFunction(
+            name="main",
+            inputs=[("x", IrType(dtype="float32", shape=(1, 8)))],
+            outputs=[("out", IrType(dtype="float32", shape=(1, 4)))],
+            ops=[
+                IrOp(name="linear", inputs=["x", "q_w"], outputs=["q"]),
+                IrOp(name="linear", inputs=["x", "k_w"], outputs=["k"]),
+                IrOp(name="linear", inputs=["x", "v_w"], outputs=["v"]),
+                IrOp(name="scaled_dot_product_attention", inputs=["q", "k", "v"], outputs=["attn_out"]),
+                IrOp(name="transpose", inputs=["attn_out"], outputs=["t_out"]),
+                IrOp(name="view", inputs=["t_out"], outputs=["v_out"]),
+                IrOp(name="linear", inputs=["v_out", "o_proj_w"], outputs=["out"]),
+            ],
+            weights={
+                "q_w": torch.randn(8, 8), "k_w": torch.randn(8, 8),
+                "v_w": torch.randn(8, 8), "o_proj_w": torch.randn(4, 8),
+            },
+        )
+        mod = IrModule(functions=[func])
+        pm = PassManager()
+        pm.add(FuseQKVProjection())
+        pm.add(FuseRMSNorm())
+        pm.add(FuseSiLU())
+        pm.add(FuseAttentionPattern())
+        result = pm.run(mod)
+        assert any(op.name == "fused_attention_output" for op in result.main.ops)
+
+    def test_pipeline_order_preserved_in_metadata(self) -> None:
+        func = IrFunction(name="main", inputs=[], outputs=[])
+        mod = IrModule(functions=[func])
+        pm = PassManager()
+        pm.add(FuseQKVProjection())
+        pm.add(FuseAttentionPattern())
+        result = pm.run(mod)
+        passes = result.metadata.get("passes_applied", [])
+        qkv_idx = passes.index("FuseQKVProjection")
+        attn_idx = passes.index("FuseAttentionPattern")
+        assert qkv_idx < attn_idx

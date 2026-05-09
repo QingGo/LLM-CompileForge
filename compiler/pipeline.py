@@ -16,11 +16,11 @@ import torch
 
 from compiler.fx_to_ir import fx_graph_to_ir
 from compiler.ir import IrModule
-from compiler.mlir_emitter import ir_module_to_mlir
 from compiler.passes.base import PassManager
 from compiler.passes.constant_fold import ConstantFold
 from compiler.passes.cse_pass import CommonSubexpressionElimination
 from compiler.passes.dce_pass import DeadCodeElimination
+from compiler.passes.fuse_attention import FuseAttentionPattern
 from compiler.passes.fuse_qkv import FuseQKVProjection
 from compiler.passes.fuse_rms_norm import FuseRMSNorm
 from compiler.passes.fuse_silu import FuseSiLU
@@ -101,12 +101,7 @@ class CompilationPipeline:
         # Step 3: optimize
         module = self._optimize(module)
 
-        # Step 4: generate MLIR (canonical compilation representation)
-        if emit_mlir:
-            mlir_text = ir_module_to_mlir(module)
-            module.metadata["mlir"] = mlir_text
-
-        # Step 5: serialize (optional)
+        # Step 4: serialize (optional — writes model.mlir, weights.pth, metadata.json)
         if output_dir is not None:
             save_artifact(module, str(output_dir))
 
@@ -131,6 +126,7 @@ class CompilationPipeline:
             pm.add(FuseQKVProjection())
             pm.add(FuseRMSNorm())
             pm.add(FuseSiLU())
+            pm.add(FuseAttentionPattern())
 
         return pm.run(module)
 

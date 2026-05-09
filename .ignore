@@ -1,1 +1,3 @@
 !models/
+!mlir_binding/
+!.agent_memory.md

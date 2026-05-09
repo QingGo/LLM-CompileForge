@@ -9,3 +9,6 @@ dist/
 compiled/
 .cache/
 models/
+mlir_binding/src/
+mlir_binding/build/
+mlir_binding/mlir_package/

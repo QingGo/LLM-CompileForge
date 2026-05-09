@@ -1,0 +1,91 @@
+"""MLIR-level compiler passes using official mlir Python bindings.
+
+Uses mlir.ir for IR traversal and mlir.passmanager for running
+standard MLIR passes (CSE, canonicalize, etc.).
+
+Since LLVM 20.1.8 bindings don't export PassManager.add() for Python
+callbacks, Python-side analysis passes use direct IR tree walks, while
+optimization passes delegate to the C++ PassManager.
+
+Usage:
+    from compiler.mlir_passes import (
+        mlir_count_ops, mlir_run_cse, mlir_verify_structure
+    )
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+def mlir_count_ops(mlir_module: Any, ctx: Any) -> dict[str, int]:
+    """Count operations by dialect via IR tree walk."""
+    import mlir.ir as ir
+
+    stats: dict[str, int] = {}
+
+    def _count(op: ir.Operation) -> None:
+        name = str(op.name)
+        dialect = name.split(".", 1)[0] if "." in name else name
+        stats[dialect] = stats.get(dialect, 0) + 1
+        for region in op.regions:
+            for block in region.blocks:
+                for child in block.operations:
+                    _count(child)
+
+    with ctx:
+        for region in mlir_module.operation.regions:
+            for block in region.blocks:
+                for op in block.operations:
+                    _count(op)
+    return stats
+
+
+def mlir_run_cse(mlir_module: Any) -> Any:
+    """Run MLIR's built-in CSE pass on the module."""
+    import mlir.passmanager as pm
+
+    ctx = mlir_module.operation.context
+    with ctx:
+        p = pm.PassManager.parse("builtin.module(cse)", ctx)
+        p.run(mlir_module.operation)
+    return mlir_module
+
+
+def mlir_run_canonicalize(mlir_module: Any) -> Any:
+    """Run MLIR's built-in canonicalize + CSE passes."""
+    import mlir.passmanager as pm
+
+    ctx = mlir_module.operation.context
+    with ctx:
+        p = pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx)
+        p.run(mlir_module.operation)
+    return mlir_module
+
+
+def mlir_verify_structure(mlir_module: Any, ctx: Any) -> list[str]:
+    """Validate basic structural invariants of an MLIR module."""
+    issues: list[str] = []
+    with ctx:
+        for region in mlir_module.operation.regions:
+            for block in region.blocks:
+                func_count = 0
+                for op in block.operations:
+                    name = str(op.name)
+                    if "func" in name:
+                        func_count += 1
+                        if not op.regions:
+                            issues.append(f"{name}: missing body region")
+                if func_count == 0:
+                    issues.append("module: no functions found")
+    return issues
+
+
+def mlir_count_ops_in_module(mlir_text: str) -> dict[str, int]:
+    """Convenience: parse MLIR text and count ops by dialect."""
+    import mlir.ir as ir
+
+    ctx = ir.Context()
+    with ctx:
+        module = ir.Module.parse(mlir_text, ctx)
+        return mlir_count_ops(module, ctx)

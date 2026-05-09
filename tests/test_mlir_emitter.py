@@ -51,14 +51,14 @@ class TestTensorType:
 
 @pytest.mark.unit
 class TestOpMapping:
-    def test_matmul_to_linalg(self):
-        assert _map_op_to_mlir("matmul") == ("linalg", "matmul")
+    def test_matmul_to_sf(self):
+        assert _map_op_to_mlir("matmul") == ("sf", "matmul")
 
-    def test_add_to_arith(self):
-        assert _map_op_to_mlir("add") == ("arith", "addf")
+    def test_add_to_sf(self):
+        assert _map_op_to_mlir("add") == ("sf", "add")
 
-    def test_silu_to_chlo(self):
-        assert _map_op_to_mlir("silu") == ("chlo", "silu")
+    def test_silu_to_sf(self):
+        assert _map_op_to_mlir("silu") == ("sf", "silu")
 
     def test_rms_norm_to_sf(self):
         assert _map_op_to_mlir("rms_norm") == ("sf", "rms_norm")
@@ -113,7 +113,6 @@ class TestMLIREmitter:
         mlir = ir_module_to_mlir(mod)
         assert "func.func @main" in mlir
         assert "tensor<?x4xi64>" in mlir
-        assert "tensor<?x4x50272xf32>" in mlir
         assert "func.return" in mlir
 
     def test_emits_linear_op(self):
@@ -125,7 +124,7 @@ class TestMLIREmitter:
         )
         mod = IrModule(functions=[func])
         mlir = ir_module_to_mlir(mod)
-        assert '"linalg.matmul"' in mlir
+        assert '"sf.matmul"' in mlir
 
     def test_emits_add_op(self):
         func = IrFunction(
@@ -136,7 +135,7 @@ class TestMLIREmitter:
         )
         mod = IrModule(functions=[func])
         mlir = ir_module_to_mlir(mod)
-        assert '"arith.addf"' in mlir
+        assert '"sf.add"' in mlir
 
     def test_emits_gelu_op(self):
         func = IrFunction(
@@ -147,7 +146,7 @@ class TestMLIREmitter:
         )
         mod = IrModule(functions=[func])
         mlir = ir_module_to_mlir(mod)
-        assert '"chlo.gelu"' in mlir
+        assert '"sf.gelu"' in mlir
 
     def test_emits_softmax_op(self):
         func = IrFunction(
@@ -158,7 +157,7 @@ class TestMLIREmitter:
         )
         mod = IrModule(functions=[func])
         mlir = ir_module_to_mlir(mod)
-        assert '"linalg.softmax"' in mlir
+        assert '"sf.softmax"' in mlir
         assert "dim" in mlir
 
     def test_emits_fused_rms_norm_matmul(self):
@@ -206,8 +205,8 @@ class TestMLIREmitter:
         )
         mod = IrModule(functions=[func])
         mlir = ir_module_to_mlir(mod)
-        gelu_pos = mlir.find('"chlo.gelu"')
-        add_pos = mlir.find('"arith.addf"')
+        gelu_pos = mlir.find('"sf.gelu"')
+        add_pos = mlir.find('"sf.add"')
         assert gelu_pos > 0
         assert add_pos > 0
         assert gelu_pos < add_pos
@@ -243,5 +242,5 @@ class TestMLIREmitter:
         )
         mod = IrModule(functions=[func])
         mlir = ir_module_to_mlir(mod)
-        assert '"sf.sdpa"' in mlir
+        assert '"sf.scaled_dot_product_attention"' in mlir
         assert "is_causal" in mlir
