@@ -292,6 +292,230 @@ def _extract_node_kwargs(node: torch.fx.Node) -> dict[str, Any]:
             continue
     return kwargs
 
+def _handle_getitem(
+    node: torch.fx.Node,
+    hal_op: str,
+    ssa_map: dict[str, str],
+    name_counter: int,
+    weights: dict[str, torch.Tensor],
+    tuple_outputs: dict[str, list[str]],
+    ir_ops: list[IrOp],
+) -> bool:
+    """Handle getitem: resolve tuple indexing or emit sym_size. Returns True if handled."""
+    if hal_op != "getitem":
+        return False
+    source_node = node.args[0] if node.args else None
+    idx = node.args[1] if len(node.args) > 1 else 0
+    if isinstance(source_node, torch.fx.Node) and source_node.name in tuple_outputs:
+        outputs = tuple_outputs[source_node.name]
+        if isinstance(idx, int) and 0 <= idx < len(outputs):
+            ssa_map[node.name] = outputs[idx]
+            return True
+    if isinstance(source_node, torch.fx.Node):
+        tensor_ssa = ssa_map.get(source_node.name, source_node.name)
+        dim_val = _symint_to_int(idx) if isinstance(idx, torch.SymInt) else idx
+        nc = name_counter + 1
+        output_name = node.name or f"_out_{nc}"
+        ssa_map[node.name] = output_name
+        ir_ops.append(IrOp(
+            name="sym_size", inputs=[tensor_ssa],
+            outputs=[output_name],
+            attributes={"dim": dim_val, "source_node": node.name},
+        ))
+    return True
+
+
+def _handle_getitem_result(
+    node: torch.fx.Node,
+    ssa_map: dict[str, str],
+    name_counter: int,
+    weights: dict[str, torch.Tensor],
+    tuple_outputs: dict[str, list[str]],
+    ir_ops: list[IrOp],
+) -> int:
+    return name_counter + 1
+
+
+def _handle_split(
+    node: torch.fx.Node,
+    ssa_map: dict[str, str],
+    name_counter: int,
+    tuple_outputs: dict[str, list[str]],
+    ir_ops: list[IrOp],
+) -> bool:
+    """Handle split_with_sizes: expand to N slice ops. Returns True if handled."""
+    tensor_node = node.args[0] if node.args else None
+    split_sizes_raw = node.args[1] if len(node.args) > 1 else []
+    dim = node.args[2] if len(node.args) > 2 else 0
+    if not isinstance(tensor_node, torch.fx.Node) or not split_sizes_raw:
+        return False
+    tensor_ssa = ssa_map.get(tensor_node.name, tensor_node.name)
+    if isinstance(dim, torch.SymInt):
+        dim = _symint_to_int(dim) or 0
+    sizes: list[int] = []
+    for s in split_sizes_raw:  # type: ignore[union-attr]
+        concrete = _symint_to_int(s) if isinstance(s, torch.SymInt) else s
+        if isinstance(concrete, int) and concrete is not None:
+            sizes.append(concrete)
+        else:
+            return False
+    if not sizes:
+        return False
+    outputs = []
+    offset = 0
+    for i, size in enumerate(sizes):
+        out_name = f"{node.name}__split_{i}"
+        ir_ops.append(IrOp(
+            name="slice", inputs=[tensor_ssa], outputs=[out_name],
+            attributes={"dim": dim, "start": offset, "end": offset + size, "source_node": node.name},
+        ))
+        outputs.append(out_name)
+        offset += size
+    tuple_outputs[node.name] = outputs
+    ssa_map[node.name] = outputs[0] if outputs else node.name
+    return True
+
+
+def _handle_chunk(
+    node: torch.fx.Node,
+    ssa_map: dict[str, str],
+    name_counter: int,
+    tuple_outputs: dict[str, list[str]],
+    ir_ops: list[IrOp],
+) -> bool:
+    """Handle chunk: expand to N slice ops. Returns True if handled."""
+    tensor_node = node.args[0] if node.args else None
+    chunks = node.args[1] if len(node.args) > 1 else 2
+    dim = node.args[2] if len(node.args) > 2 else 0
+    if not isinstance(tensor_node, torch.fx.Node) or "val" not in tensor_node.meta:
+        return False
+    tensor_ssa = ssa_map.get(tensor_node.name, tensor_node.name)
+    if isinstance(chunks, torch.SymInt):
+        chunks = _symint_to_int(chunks) or 2
+    if isinstance(dim, torch.SymInt):
+        dim = _symint_to_int(dim) or 0
+    fake = tensor_node.meta["val"]
+    shape = _resolve_shape_tuple(fake.shape)
+    total_val = shape[dim]  # type: ignore[index]
+    if total_val is None:
+        return False
+    total: int = total_val
+    outputs = []
+    offset = 0
+    n_chunks = int(chunks)  # type: ignore[arg-type]
+    for i in range(n_chunks):
+        size = total // n_chunks + (1 if i < (total % n_chunks) else 0)
+        out_name = f"{node.name}__chunk_{i}"
+        ir_ops.append(IrOp(
+            name="slice", inputs=[tensor_ssa], outputs=[out_name],
+            attributes={"dim": dim, "start": offset, "end": offset + size, "source_node": node.name},
+        ))
+        outputs.append(out_name)
+        offset += size
+    tuple_outputs[node.name] = outputs
+    ssa_map[node.name] = outputs[0] if outputs else node.name
+    return True
+
+
+def _collect_input_args(
+    node: torch.fx.Node,
+    hal_op: str,
+    ssa_map: dict[str, str],
+    name_counter: int,
+    weights: dict[str, torch.Tensor],
+    scalar_kwargs_map: dict[int, str],
+    scalar_int_positions: list[int],
+    list_arg_attr: str | None,
+    extra_kwargs: dict[str, Any],
+) -> tuple[list[str], int]:
+    """Collect input SSA names and extract scalar/list kwargs from FX node args."""
+    input_names: list[str] = []
+    skip_positions: set[int] = set(scalar_int_positions)
+
+    for i, arg in enumerate(node.args):
+        if isinstance(arg, torch.fx.Node):
+            input_names.append(ssa_map.get(arg.name, arg.name))
+        elif isinstance(arg, bool):
+            if i in skip_positions:
+                kwarg_name = scalar_kwargs_map.get(i)
+                if kwarg_name:
+                    extra_kwargs.setdefault(kwarg_name, arg)
+        elif isinstance(arg, (int, float, torch.SymInt)) and not isinstance(arg, bool):
+            if i in skip_positions:
+                kwarg_name = scalar_kwargs_map.get(i)
+                if kwarg_name:
+                    extra_kwargs.setdefault(kwarg_name, _symint_to_int(arg) if isinstance(arg, torch.SymInt) else arg)
+                continue
+            const_name = f"_const_{name_counter}"
+            name_counter += 1
+            scalar_val: Any = _symint_to_int(arg) if isinstance(arg, torch.SymInt) else arg
+            if scalar_val is None:
+                scalar_val = 1
+            weights[const_name] = torch.tensor(scalar_val)
+            input_names.append(const_name)
+        elif isinstance(arg, (torch.dtype, torch.memory_format, torch.layout)):
+            kwarg_name = scalar_kwargs_map.get(i)
+            if kwarg_name:
+                extra_kwargs.setdefault(kwarg_name, str(arg))
+        elif isinstance(arg, (list, tuple)):
+            if list_arg_attr == "__skip__":
+                continue
+            if list_arg_attr == "__conv1d__":
+                kwarg_name = scalar_kwargs_map.get(i)
+                if kwarg_name and kwarg_name not in extra_kwargs:
+                    extra_kwargs[kwarg_name] = list(arg)
+            elif list_arg_attr is None:
+                for item in arg:
+                    if isinstance(item, torch.fx.Node):
+                        input_names.append(ssa_map.get(item.name, item.name))
+                    else:
+                        const_name = f"_const_{name_counter}"
+                        name_counter += 1
+                        weights[const_name] = torch.tensor(item)
+                        input_names.append(const_name)
+            elif list_arg_attr not in extra_kwargs:
+                resolved: list[str | int] = []
+                use_view = hal_op == "view"
+                for s in arg:
+                    if isinstance(s, torch.fx.Node):
+                        ssa_name = ssa_map.get(s.name, s.name)
+                        resolved.append(ssa_name)
+                        input_names.append(ssa_name)
+                    elif use_view:
+                        resolved.append(_symint_for_view(s))
+                    elif isinstance(s, (int, torch.SymInt)) and not isinstance(s, bool):
+                        resolved.append(_symint_to_int(s) or 1 if isinstance(s, torch.SymInt) else s)
+                    else:
+                        resolved.append(s)
+                extra_kwargs[list_arg_attr] = tuple(resolved)
+
+    return input_names, name_counter
+
+
+def _apply_post_kwargs(
+    hal_op: str,
+    node: torch.fx.Node,
+    input_names: list[str],
+    kwargs: dict[str, Any],
+) -> None:
+    """Apply op-specific post-processing: default shapes, dim extraction."""
+    if hal_op == "ones_like" and not input_names:
+        kwargs.setdefault("shape", (1, 1))
+    if hal_op == "full_like" and not input_names:
+        kwargs.setdefault("shape", (1,))
+        int_args = [a for a in node.args if isinstance(a, int) and not isinstance(a, bool)]
+        if len(int_args) >= 2:
+            kwargs["dim0"] = int_args[0]
+            kwargs["dim1"] = int_args[1]
+    if hal_op == "softmax" and "dim" not in kwargs:
+        int_args = [a for a in node.args if isinstance(a, (int, torch.SymInt)) and not isinstance(a, bool)]  # type: ignore[misc]
+        if int_args:
+            kwargs["dim"] = _symint_to_int(int_args[0]) or int_args[0]
+    if hal_op == "unsqueeze" and "dim" not in kwargs:
+        int_args = [a for a in node.args if isinstance(a, (int, torch.SymInt)) and not isinstance(a, bool)]  # type: ignore[misc]
+        if int_args:
+            kwargs["dim"] = _symint_to_int(int_args[0]) or int_args[0]
+
 
 def fx_graph_to_ir(
     program: ExportedProgram,
@@ -379,14 +603,12 @@ def fx_graph_to_ir(
     for node in graph.nodes:
         if node.op == "placeholder":
             if node.name in weight_name_map:
-                # Weight placeholder — map to weight reference
                 ssa_map[node.name] = weight_name_map[node.name]
             else:
                 ssa_map[node.name] = node.name
             continue
 
         if node.op == "get_attr":
-            # Weight/constant access — reference by clean name
             attr_name = str(node.target).replace(".", "_")
             ssa_map[node.name] = attr_name
             continue
@@ -396,205 +618,34 @@ def fx_graph_to_ir(
             if hal_op is None:
                 continue
             if hal_op == "_skip_wrap":
-                # wrap_with_set_grad_enabled: skip, redirect output to input_ids
                 ssa_map[node.name] = func_inputs[0][0] if func_inputs else node.name
                 continue
 
-            # ── getitem: resolve tuple indexing at compile time ──
-            if hal_op == "getitem":
-                source_node = node.args[0] if node.args else None
-                idx = node.args[1] if len(node.args) > 1 else 0
-                if isinstance(source_node, torch.fx.Node) and source_node.name in _tuple_outputs:
-                    outputs = _tuple_outputs[source_node.name]
-                    if isinstance(idx, int) and 0 <= idx < len(outputs):
-                        ssa_map[node.name] = outputs[idx]
-                        continue
-                # Fallback: getitem on a non-tuple source — treat as sym_size (shape dim extraction)
-                if isinstance(source_node, torch.fx.Node):
-                    tensor_ssa = ssa_map.get(source_node.name, source_node.name)
-                    dim_val = _symint_to_int(idx) if isinstance(idx, torch.SymInt) else idx
-                    output_name = node.name or f"_out_{name_counter}"
-                    name_counter += 1
-                    ssa_map[node.name] = output_name
-                    ir_ops.append(IrOp(name="sym_size", inputs=[tensor_ssa],
-                                       outputs=[output_name],
-                                       attributes={"dim": dim_val, "source_node": node.name}))
+            skwargs = _SCALAR_KWARG_NAMES.get(hal_op, {})
+            sipos = _SCALAR_INT_POSITIONS.get(hal_op, [])
+            laa = _LIST_ARG_ATTR.get(hal_op, "__skip__")
+
+            if _handle_getitem(node, hal_op, ssa_map, name_counter, weights, _tuple_outputs, ir_ops):
+                name_counter = _handle_getitem_result(node, ssa_map, name_counter, weights, _tuple_outputs, ir_ops)
                 continue
 
-            # ── split_with_sizes: expand to N slice ops ──
             if hal_op == "split":
-                tensor_node = node.args[0] if node.args else None
-                split_sizes_raw = node.args[1] if len(node.args) > 1 else []
-                dim = node.args[2] if len(node.args) > 2 else 0
-                if isinstance(tensor_node, torch.fx.Node) and split_sizes_raw:
-                    tensor_ssa = ssa_map.get(tensor_node.name, tensor_node.name)
-                    if isinstance(dim, torch.SymInt):
-                        dim = _symint_to_int(dim) or 0
-                    # Resolve split sizes to concrete ints
-                    sizes: list[int] = []
-                    for s in split_sizes_raw:
-                        concrete = _symint_to_int(s) if isinstance(s, torch.SymInt) else s
-                        if isinstance(concrete, int) and concrete is not None:
-                            sizes.append(concrete)
-                        else:
-                            sizes = []
-                            break
-                    if sizes:
-                        outputs = []
-                        offset = 0
-                        for i, size in enumerate(sizes):
-                            out_name = f"{node.name}__split_{i}"
-                            slice_op = IrOp(
-                                name="slice", inputs=[tensor_ssa],
-                                outputs=[out_name],
-                                attributes={
-                                    "dim": dim, "start": offset,
-                                    "end": offset + size, "source_node": node.name,
-                                },
-                            )
-                            ir_ops.append(slice_op)
-                            outputs.append(out_name)
-                            offset += size
-                        _tuple_outputs[node.name] = outputs
-                        ssa_map[node.name] = outputs[0] if outputs else node.name
-                        continue
-
-            # ── chunk: expand to N slice ops ──
-            if hal_op == "chunk":
-                tensor_node = node.args[0] if node.args else None
-                chunks = node.args[1] if len(node.args) > 1 else 2
-                dim = node.args[2] if len(node.args) > 2 else 0
-                if isinstance(tensor_node, torch.fx.Node) and "val" in tensor_node.meta:
-                    tensor_ssa = ssa_map.get(tensor_node.name, tensor_node.name)
-                    if isinstance(chunks, torch.SymInt):
-                        chunks = _symint_to_int(chunks) or 2
-                    if isinstance(dim, torch.SymInt):
-                        dim = _symint_to_int(dim) or 0
-                    fake = tensor_node.meta["val"]
-                    shape = _resolve_shape_tuple(fake.shape)
-                    total_val = shape[dim]
-                    if isinstance(dim, int) and dim < len(shape) and total_val is not None:
-                        total: int = total_val
-                        outputs = []
-                        offset = 0
-                        for i in range(int(chunks)):
-                            size = total // int(chunks) + (1 if i < (total % int(chunks)) else 0)
-                            out_name = f"{node.name}__chunk_{i}"
-                            slice_op = IrOp(
-                                name="slice", inputs=[tensor_ssa],
-                                outputs=[out_name],
-                                attributes={
-                                    "dim": dim, "start": offset,
-                                    "end": offset + size, "source_node": node.name,
-                                },
-                            )
-                            ir_ops.append(slice_op)
-                            outputs.append(out_name)
-                            offset += size
-                        _tuple_outputs[node.name] = outputs
-                        ssa_map[node.name] = outputs[0] if outputs else node.name
-                        continue
-
-            # Collect input SSA names and extract non-tensor kwargs
-            input_names: list[str] = []
-            extra_kwargs: dict[str, Any] = {}
-            skip_positions: list[int] = _SCALAR_INT_POSITIONS.get(hal_op, [])
-            scalar_kwargs: dict[int, str] = _SCALAR_KWARG_NAMES.get(hal_op, {})
-
-            for i, arg in enumerate(node.args):
-                if isinstance(arg, torch.fx.Node):
-                    input_names.append(ssa_map.get(arg.name, arg.name))
-                elif isinstance(arg, bool):
-                    # Boolean positional args: treat as kwarg if in skip_positions
-                    if i in skip_positions:
-                        kwarg_name = scalar_kwargs.get(i)
-                        if kwarg_name:
-                            extra_kwargs.setdefault(kwarg_name, arg)
-                        continue
-                elif isinstance(arg, (int, float, torch.SymInt)) and not isinstance(arg, bool):
-                    if i in skip_positions:
-                        kwarg_name = scalar_kwargs.get(i)
-                        if kwarg_name:
-                            if isinstance(arg, torch.SymInt):
-                                extra_kwargs.setdefault(kwarg_name, _symint_to_int(arg))
-                            else:
-                                extra_kwargs.setdefault(kwarg_name, arg)
-                        continue
-                    const_name = f"_const_{name_counter}"
-                    name_counter += 1
-                    if isinstance(arg, torch.SymInt):
-                        scalar_val: Any = _symint_to_int(arg)
-                        if scalar_val is None:
-                            scalar_val = 1
-                    else:
-                        scalar_val = arg
-                    weights[const_name] = torch.tensor(scalar_val)
-                    input_names.append(const_name)
-                elif isinstance(arg, (torch.dtype, torch.memory_format, torch.layout)):
-                    kwarg_name = scalar_kwargs.get(i)
-                    if kwarg_name:
-                        extra_kwargs.setdefault(kwarg_name, str(arg))
+                if _handle_split(node, ssa_map, name_counter, _tuple_outputs, ir_ops):
                     continue
-                elif isinstance(arg, (list, tuple)):
-                    list_attr = _LIST_ARG_ATTR.get(hal_op, "__skip__")
-                    if list_attr == "__skip__":
-                        continue
 
-                    if list_attr == "__conv1d__":
-                        # conv1d: multiple list args dispatched via scalar_kwargs
-                        kwarg_name = scalar_kwargs.get(i)
-                        if kwarg_name and kwarg_name not in extra_kwargs:
-                            extra_kwargs[kwarg_name] = list(arg)
+            if hal_op == "chunk":
+                if _handle_chunk(node, ssa_map, name_counter, _tuple_outputs, ir_ops):
+                    continue
 
-                    elif list_attr is None:
-                        # Flatten into individual inputs (cat, expand, index)
-                        for item in arg:
-                            if isinstance(item, torch.fx.Node):
-                                input_names.append(ssa_map.get(item.name, item.name))
-                            else:
-                                const_name = f"_const_{name_counter}"
-                                name_counter += 1
-                                weights[const_name] = torch.tensor(item)
-                                input_names.append(const_name)
-
-                    elif list_attr not in extra_kwargs:
-                        # SSA-aware shape/normalized_shape attribute extraction
-                        resolved: list[str | int] = []
-                        _use_view = hal_op == "view"
-                        for s in arg:
-                            if isinstance(s, torch.fx.Node):
-                                ssa_name = ssa_map.get(s.name, s.name)
-                                resolved.append(ssa_name)
-                                input_names.append(ssa_name)
-                            elif _use_view:
-                                resolved.append(_symint_for_view(s))
-                            elif isinstance(s, (int, torch.SymInt)) and not isinstance(s, bool):
-                                resolved.append(_symint_to_int(s) or 1 if isinstance(s, torch.SymInt) else s)
-                            else:
-                                resolved.append(s)
-                        extra_kwargs[list_attr] = tuple(resolved)
+            extra_kwargs: dict[str, Any] = {}
+            input_names, name_counter = _collect_input_args(
+                node, hal_op, ssa_map, name_counter,
+                weights, skwargs, sipos, laa, extra_kwargs,
+            )
 
             kwargs = _extract_node_kwargs(node)
             kwargs.update(extra_kwargs)
-
-            # Extract positional int args for ops that need them
-            if hal_op == "ones_like" and not input_names:
-                # Create ones from shape attribute
-                extra_kwargs.setdefault("shape", (1, 1))
-            if hal_op == "full_like" and not input_names:
-                extra_kwargs.setdefault("shape", (1,))
-                int_args = [a for a in node.args if isinstance(a, int) and not isinstance(a, bool)]
-                if len(int_args) >= 2:
-                    kwargs["dim0"] = int_args[0]
-                    kwargs["dim1"] = int_args[1]
-            if hal_op == "softmax" and "dim" not in kwargs:
-                int_args = [a for a in node.args if isinstance(a, (int, torch.SymInt)) and not isinstance(a, bool)]  # type: ignore[misc]
-                if int_args:
-                    kwargs["dim"] = _symint_to_int(int_args[0]) or int_args[0]
-            if hal_op == "unsqueeze" and "dim" not in kwargs:
-                int_args = [a for a in node.args if isinstance(a, (int, torch.SymInt)) and not isinstance(a, bool)]  # type: ignore[misc]
-                if int_args:
-                    kwargs["dim"] = _symint_to_int(int_args[0]) or int_args[0]
+            _apply_post_kwargs(hal_op, node, input_names, kwargs)
 
             output_name = node.name or f"_out_{name_counter}"
             name_counter += 1

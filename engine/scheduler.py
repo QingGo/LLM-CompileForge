@@ -7,17 +7,18 @@ The scheduler is the runtime's central decision-maker. Each step:
   4. Builds a Batch with input_ids, positions, and block_tables.
 
 Key scheduling strategies:
-   - FCFS (default): requests processed in arrival order.
-   - Priority Queue: heapq-based, lower priority value = higher priority.
-   - Chunked Prefill: long prompts split into chunk_size-token slices.
-   - Hybrid: prefill and decode requests mixed in a single step.
-   - Prefix Cache: RadixTree-based KV block reuse for shared prefixes.
+    - FCFS (default): requests processed in arrival order.
+    - Priority Queue: heapq-based, lower priority value = higher priority.
+    - Chunked Prefill: long prompts split into chunk_size-token slices.
+    - Hybrid: prefill and decode requests mixed in a single step.
+    - Prefix Cache: RadixTree-based KV block reuse for shared prefixes.
 """
 
 from __future__ import annotations
 
 import heapq
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -32,8 +33,6 @@ if TYPE_CHECKING:
 
 @dataclass(order=True)
 class _QueueEntry:
-    """Entry in the waiting priority queue. Lower priority_value = higher priority."""
-
     priority_value: int
     request: Request = field(compare=False)
 
@@ -57,6 +56,7 @@ class Scheduler:
         max_tokens_per_step: int = 512,
         chunk_size: int = 256,
         radix_cache: RadixCache | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if max_batch_size <= 0:
             raise ValueError(f"max_batch_size must be positive, got {max_batch_size}")
@@ -67,13 +67,11 @@ class Scheduler:
         self.max_tokens_per_step = max_tokens_per_step
         self.chunk_size = chunk_size
         self.radix_cache = radix_cache
+        self._clock = clock
 
-        # Priority queue: list of _QueueEntry, heapq-maintained
         self._waiting: list[_QueueEntry] = []
         self._running: list[Request] = []
         self._request_counter = 0
-
-    # ── Public API ──────────────────────────────────────────
 
     def add_request(
         self,
@@ -82,17 +80,6 @@ class Scheduler:
         priority: int = 0,
         request_id: str | None = None,
     ) -> str:
-        """Add a request to the waiting queue.
-
-        Args:
-            prompt_tokens: Tokenized prompt.
-            sampling_params: Generation parameters.
-            priority: Lower value = higher priority (for heapq).
-            request_id: Optional custom ID. Auto-generated if None.
-
-        Returns:
-            The request_id (useful for tracking).
-        """
         if request_id is None:
             self._request_counter += 1
             request_id = f"req_{self._request_counter}"
@@ -102,31 +89,24 @@ class Scheduler:
             prompt_tokens=list(prompt_tokens),
             sampling_params=sampling_params or SamplingParams(),
             priority=priority,
-            arrival_time=time.monotonic(),
+            arrival_time=self._clock(),
         )
         heapq.heappush(self._waiting, _QueueEntry(priority, req))
         return request_id
 
     def schedule(self, block_manager: BlockManager) -> SequenceGroup:
-        """Core scheduling method — called once per forward step.
+        self._reap_finished(block_manager)
+        self._admit_requests(block_manager)
 
-        Algorithm:
-          1. Remove finished requests from running batch, free their KV blocks.
-          2. Transition waiting → running until max_batch_size.
-          3. For prefill requests, chunk tokens to respect max_tokens_per_step.
-          4. Build flattened input tensors and position arrays.
+        if not self._running:
+            return SequenceGroup()
 
-        Args:
-            block_manager: BlockManager for KV cache allocation queries.
+        return self._build_sequence_group(block_manager)
 
-        Returns:
-            SequenceGroup describing the batch for this step.
-        """
-        # Step 1: reap finished requests
+    def _reap_finished(self, block_manager: BlockManager) -> None:
         finished = [r for r in self._running if r.is_finished]
         for r in finished:
             self._running.remove(r)
-            # Insert KV blocks into prefix cache before freeing
             if self.radix_cache is not None:
                 all_tokens = r.prompt_tokens + r.output_tokens
                 try:
@@ -136,31 +116,25 @@ class Scheduler:
                     pass
             block_manager.free(r.request_id)
 
-        # Step 2: admit new requests
+    def _admit_requests(self, block_manager: BlockManager) -> None:
         while self._waiting and len(self._running) < self.max_batch_size:
             entry = heapq.heappop(self._waiting)
             req = entry.request
             req.state = "prefill"
 
-            # ── Prefix cache lookup ──
             if self.radix_cache is not None:
                 matched_blocks, matched_tokens = self.radix_cache.match_prefix(
                     req.prompt_tokens
                 )
                 if matched_tokens > 0:
                     req.prefill_pos = matched_tokens
-                    # Assign cached blocks immediately so both prefill and
-                    # decode paths can find them via get_blocks().
                     block_manager.assign_cached_blocks(req.request_id, matched_blocks)
                     if matched_tokens >= len(req.prompt_tokens):
                         req.state = "decode"
 
             self._running.append(req)
 
-        if not self._running:
-            return SequenceGroup()
-
-        # Step 3: build the batch with Chunked Prefill
+    def _build_sequence_group(self, block_manager: BlockManager) -> SequenceGroup:
         batch_requests: list[Request] = []
         input_ids_list: list[torch.Tensor] = []
         positions_list: list[torch.Tensor] = []
@@ -170,96 +144,33 @@ class Scheduler:
 
         for req in self._running:
             if req.state == "prefill":
-                # Chunked Prefill: limit tokens per step
-                remaining = req.tokens_remaining
-                if remaining <= 0:
-                    req.state = "decode"
-                    # Fall through to decode logic
-                else:
-                    # How many tokens can this request prefill this step?
-                    prefill_budget = self.max_tokens_per_step - total_prefill_tokens
-                    if prefill_budget <= 0:
-                        # Out of budget — skip this request this step
-                        continue
-
-                    n_tokens = min(remaining, self.chunk_size, prefill_budget)
-                    start_pos = req.prefill_pos
-                    end_pos = start_pos + n_tokens
-
-                    chunk_input_ids = req.prompt_tokens[start_pos:end_pos]
-                    total_prefill_tokens += n_tokens
-
-                    req.prefill_pos = end_pos
-
+                result = self._build_prefill_chunk(
+                    req, block_manager, block_tables, total_prefill_tokens
+                )
+                if result is not None:
+                    req_tensor, pos_tensor, n_tokens = result
                     batch_requests.append(req)
-                    input_ids_list.append(torch.tensor(chunk_input_ids, dtype=torch.long))
-                    positions_list.append(torch.arange(start_pos, end_pos, dtype=torch.long))
-
-                    # Allocate KV blocks on first prefill step, reuse thereafter
-                    try:
-                        blocks = block_manager.get_blocks(req.request_id)
-                        # Blocks exist (from cache or prior allocation) — check
-                        # whether they cover the full prompt.
-                        covered = len(blocks) * block_manager.block_size
-                        if covered < len(req.prompt_tokens):
-                            extra = len(req.prompt_tokens) - covered
-                            n_extra = (
-                                (extra + block_manager.block_size - 1)
-                                // block_manager.block_size
-                            )
-                            for _ in range(n_extra):
-                                bid = block_manager.free_blocks.pop()
-                                block_manager.blocks[bid].ref_count = 1
-                                block_manager.block_tables[req.request_id].append(bid)
-                    except KeyError:
-                        # Check if prefix cache already assigned blocks
-                        existing = block_manager.block_tables.get(req.request_id, [])
-                        existing_tokens = len(existing) * block_manager.block_size
-                        suffix_tokens = max(0, len(req.prompt_tokens) - existing_tokens)
-                        if suffix_tokens > 0:
-                            block_manager.allocate(req.request_id, suffix_tokens)
-                        else:
-                            block_manager.block_tables.setdefault(req.request_id, [])
-                        blocks = block_manager.get_blocks(req.request_id)
-                    block_tables[req.request_id] = blocks
-
-                    # If all prompt tokens consumed this step, transition to decode
-                    if end_pos >= len(req.prompt_tokens):
+                    input_ids_list.append(req_tensor)
+                    positions_list.append(pos_tensor)
+                    total_prefill_tokens += n_tokens
+                    if req.prefill_pos >= len(req.prompt_tokens):
                         req.state = "decode"
-                    continue
+                continue
 
             if req.state == "decode":
-                # Decode: one token per step
                 if total_prefill_tokens + num_decode + 1 > self.max_tokens_per_step:
-                    continue  # Budget exhausted
+                    continue
 
                 num_decode += 1
                 batch_requests.append(req)
-
-                if req.output_tokens:
-                    # Use the last generated token as input
-                    last_token = req.output_tokens[-1]
-                    pos = len(req.prompt_tokens) + len(req.output_tokens) - 1
-                else:
-                    # First decode step after prefill — position is last prefill position
-                    last_token = req.prompt_tokens[-1]
-                    pos = len(req.prompt_tokens) - 1
-
-                input_ids_list.append(torch.tensor([last_token], dtype=torch.long))
-                positions_list.append(torch.tensor([pos], dtype=torch.long))
-
-                # Ensure KV blocks exist (may have been allocated during prefill)
-                try:
-                    blocks = block_manager.get_blocks(req.request_id)
-                except KeyError:
-                    # First decode step without prior prefill — allocate now
-                    blocks = block_manager.allocate(req.request_id, pos + 1)
+                tok_tensor, pos_tensor, blocks = self._build_decode_step(req, block_manager)
+                input_ids_list.append(tok_tensor)
+                positions_list.append(pos_tensor)
                 block_tables[req.request_id] = blocks
 
         if not batch_requests:
             return SequenceGroup()
 
-        # Flatten tensors (for backward compatibility / batch forward)
         input_ids = torch.cat(input_ids_list) if input_ids_list else torch.tensor([], dtype=torch.long)
         positions = torch.cat(positions_list) if positions_list else torch.tensor([], dtype=torch.long)
 
@@ -272,19 +183,88 @@ class Scheduler:
             block_tables=block_tables,
         )
 
-    def process_outputs(self, logits: torch.Tensor, batch: SequenceGroup) -> list[GenerationResult]:
-        """Process model outputs: sample tokens and update request state.
+    def _build_prefill_chunk(
+        self,
+        req: Request,
+        block_manager: BlockManager,
+        block_tables: dict[str, list[int]],
+        total_prefill_tokens: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, int] | None:
+        remaining = req.tokens_remaining
+        if remaining <= 0:
+            req.state = "decode"
+            return None
 
-        Returns a list of GenerationResult entries (defined in engine/batch.py).
-        """
+        prefill_budget = self.max_tokens_per_step - total_prefill_tokens
+        if prefill_budget <= 0:
+            return None
+
+        n_tokens = min(remaining, self.chunk_size, prefill_budget)
+        start_pos = req.prefill_pos
+        end_pos = start_pos + n_tokens
+
+        chunk_input_ids = req.prompt_tokens[start_pos:end_pos]
+        req.prefill_pos = end_pos
+
+        try:
+            blocks = block_manager.get_blocks(req.request_id)
+            covered = len(blocks) * block_manager.block_size
+            if covered < len(req.prompt_tokens):
+                extra = len(req.prompt_tokens) - covered
+                n_extra = (
+                    (extra + block_manager.block_size - 1)
+                    // block_manager.block_size
+                )
+                for _ in range(n_extra):
+                    bid = block_manager.free_blocks.pop()
+                    block_manager.blocks[bid].ref_count = 1
+                    block_manager.block_tables[req.request_id].append(bid)
+        except KeyError:
+            existing = block_manager.block_tables.get(req.request_id, [])
+            existing_tokens = len(existing) * block_manager.block_size
+            suffix_tokens = max(0, len(req.prompt_tokens) - existing_tokens)
+            if suffix_tokens > 0:
+                block_manager.allocate(req.request_id, suffix_tokens)
+            else:
+                block_manager.block_tables.setdefault(req.request_id, [])
+            blocks = block_manager.get_blocks(req.request_id)
+
+        block_tables[req.request_id] = blocks
+
+        return (
+            torch.tensor(chunk_input_ids, dtype=torch.long),
+            torch.arange(start_pos, end_pos, dtype=torch.long),
+            n_tokens,
+        )
+
+    def _build_decode_step(
+        self, req: Request, block_manager: BlockManager
+    ) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
+        if req.output_tokens:
+            last_token = req.output_tokens[-1]
+            pos = len(req.prompt_tokens) + len(req.output_tokens) - 1
+        else:
+            last_token = req.prompt_tokens[-1]
+            pos = len(req.prompt_tokens) - 1
+
+        try:
+            blocks = block_manager.get_blocks(req.request_id)
+        except KeyError:
+            blocks = block_manager.allocate(req.request_id, pos + 1)
+
+        return (
+            torch.tensor([last_token], dtype=torch.long),
+            torch.tensor([pos], dtype=torch.long),
+            blocks,
+        )
+
+    def process_outputs(self, logits: torch.Tensor, batch: SequenceGroup) -> list[GenerationResult]:
         from engine.sampler import sample
 
         results: list[GenerationResult] = []
         if batch.is_empty or logits.numel() == 0:
             return results
 
-        # For decode steps: one logit vector per request
-        # For prefill steps: we only need the last position's logits
         offset = 0
         for req in batch.requests:
             sp = req.sampling_params
@@ -292,13 +272,11 @@ class Scheduler:
                 req_logits = logits[offset : offset + 1]
                 offset += 1
             elif req.state == "prefill":
-                # Prefill: take the last token position logits
                 processed = req.num_processed_tokens
                 if processed > 0 and processed <= logits.size(0):
                     req_logits = logits[processed - 1 : processed]
                 else:
                     req_logits = logits[0:1]
-                # Don't advance offset for prefill (position mapping is implicit)
             else:
                 continue
 
@@ -312,7 +290,6 @@ class Scheduler:
             token_val = int(token_id.item())
             req.append_token(token_val)
 
-            # Check stop conditions
             is_finished = False
             if len(req.output_tokens) >= sp.max_tokens:
                 is_finished = True
@@ -331,8 +308,6 @@ class Scheduler:
             )
 
         return results
-
-    # ── Query ───────────────────────────────────────────────
 
     @property
     def waiting_count(self) -> int:

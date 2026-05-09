@@ -213,7 +213,7 @@ def _compile_opt125m(
 ) -> tuple[Any, float]:
     """Compile opt-125m with given pipeline settings.
 
-    Caches compiled artifacts to *output_dir* — if model.ir already
+    Caches compiled artifacts to *output_dir* — if model.mlir already
     exists there, loads it directly (compile_time = 0).
 
     Returns (IrModule, compile_time_seconds).
@@ -222,7 +222,7 @@ def _compile_opt125m(
     from pathlib import Path
 
     out = Path(output_dir)
-    if (out / "model.ir").exists() and (out / "weights.pth").exists():
+    if (out / "model.mlir").exists() and (out / "weights.pth").exists():
         from compiler.serialize import load_artifact
         module = load_artifact(output_dir)
         # Read stored compile time from metadata if available

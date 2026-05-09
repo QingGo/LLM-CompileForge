@@ -7,7 +7,7 @@ these can be lowered to mlir.ir.Module / mlir.ir.FuncOp / mlir.ir.Operation.
 Design rationale (compiler/ir.py):
 - Shape / dtype stored on values, not ops — matching MLIR SSA semantics.
 - Weight tensors are separated from graph ops to keep serialization clean
-  (weights.bin vs model.ir vs metadata.json).
+    (weights.pth vs model.mlir vs metadata.json).
 """
 
 from __future__ import annotations
@@ -178,7 +178,7 @@ class IrModule:
         return cls(functions=functions, metadata=d.get("metadata", {}))
 
 
-# ── Serialization helpers (used by compiler/serialize.py) ───
+# ── Legacy JSON serialization (deprecated — MLIR is canonical) ───
 
 
 def module_to_json(module: IrModule) -> str:

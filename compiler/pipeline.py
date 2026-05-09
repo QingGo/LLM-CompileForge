@@ -21,6 +21,7 @@ from compiler.passes.constant_fold import ConstantFold
 from compiler.passes.cse_pass import CommonSubexpressionElimination
 from compiler.passes.dce_pass import DeadCodeElimination
 from compiler.passes.fuse_attention import FuseAttentionPattern
+from compiler.passes.fuse_attention_block import FuseAttentionBlock
 from compiler.passes.fuse_qkv import FuseQKVProjection
 from compiler.passes.fuse_rms_norm import FuseRMSNorm
 from compiler.passes.fuse_silu import FuseSiLU
@@ -127,6 +128,7 @@ class CompilationPipeline:
             pm.add(FuseRMSNorm())
             pm.add(FuseSiLU())
             pm.add(FuseAttentionPattern())
+            pm.add(FuseAttentionBlock())
 
         return pm.run(module)
 

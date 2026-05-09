@@ -16,20 +16,20 @@ from pathlib import Path
 
 from compiler.ir import IrFunction as IrFunc
 from compiler.ir import IrModule, IrOp, IrType
+from compiler.mlir_artifact import MlirModule
 
 
 def save_artifact(module: IrModule, directory: str) -> None:
-    """Persist a compiled IrModule to disk as MLIR artifact."""
     from compiler.mlir_artifact import save_mlir_artifact
 
     save_mlir_artifact(module, directory)
 
 
-def load_artifact(directory: str) -> IrModule:
-    """Load a compiled IrModule from MLIR artifact.
+def load_artifact(directory: str) -> MlirModule:
+    """Load a compiled model as an MlirModule (canonical MLIR artifact).
 
-    Parses model.mlir, loads weights from weights.pth, and reconstructs
-    an IrModule for downstream consumers (executor, tests, etc.).
+    Parses model.mlir and loads weights from weights.pth.  Returns an
+    MlirModule suitable for MlirExecutor or LLMEngine.
     """
     in_dir = Path(directory)
     if not in_dir.is_dir():
@@ -37,7 +37,17 @@ def load_artifact(directory: str) -> IrModule:
 
     from compiler.mlir_artifact import load_mlir_artifact
 
-    mlir_module = load_mlir_artifact(str(in_dir))
+    return load_mlir_artifact(str(in_dir))
+
+
+def load_artifact_ir(directory: str) -> IrModule:
+    """Load a compiled model as an IrModule (legacy Python IR).
+
+    Deprecated: prefer ``load_artifact()`` which returns MlirModule.
+    This bridge reconstructs an IrModule from the MLIR artifact for
+    code that still requires the Python IR (compiler passes, etc.).
+    """
+    mlir_module = load_artifact(directory)
 
     ir_functions = []
     for mf in mlir_module.functions:

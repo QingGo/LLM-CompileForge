@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 from compiler.ir import IrFunction, IrModule, IrOp
+from compiler.passes._utils import find_consumer_in_list
 from compiler.passes.base import Pass
 
 
@@ -103,23 +104,23 @@ def _match_attention_output(
 
     # Step 1: find the transpose consumer of SDPA output
     sdpa_out = sdpa_op.outputs[0]
-    trans_op = _find_single_consumer(ops, sdpa_idx + 1, sdpa_out, "transpose")
+    trans_op = find_consumer_in_list(ops, sdpa_idx + 1, sdpa_out, "transpose")
     if trans_op is None:
-        trans_op = _find_single_consumer(ops, sdpa_idx + 1, sdpa_out, "permute")
+        trans_op = find_consumer_in_list(ops, sdpa_idx + 1, sdpa_out, "permute")
     if trans_op is None or not trans_op.outputs:
         return None
 
     # Step 2: find the view consumer of transpose output
     trans_out = trans_op.outputs[0]
-    view_op = _find_single_consumer(ops, sdpa_idx + 1, trans_out, "view")
+    view_op = find_consumer_in_list(ops, sdpa_idx + 1, trans_out, "view")
     if view_op is None or not view_op.outputs:
         return None
 
     # Step 3: find the linear consumer of view output
     view_out = view_op.outputs[0]
-    linear_op = _find_single_consumer(ops, sdpa_idx + 1, view_out, "linear")
+    linear_op = find_consumer_in_list(ops, sdpa_idx + 1, view_out, "linear")
     if linear_op is None:
-        linear_op = _find_single_consumer(ops, sdpa_idx + 1, view_out, "matmul")
+        linear_op = find_consumer_in_list(ops, sdpa_idx + 1, view_out, "matmul")
     if linear_op is None or not linear_op.outputs:
         return None
 
@@ -146,17 +147,6 @@ def _match_attention_output(
                 return None  # intermediate used elsewhere — can't fuse
 
     return sdpa_op, trans_op, view_op, linear_op
-
-
-def _find_single_consumer(
-    ops: list[IrOp], start: int, value: str, op_name: str
-) -> IrOp | None:
-    """Find the first op after *start* that consumes *value* and has name *op_name*."""
-    for i in range(start, len(ops)):
-        op = ops[i]
-        if value in op.inputs and op.name == op_name:
-            return op
-    return None
 
 
 # ── emission ──────────────────────────────────────────────────

@@ -59,18 +59,3 @@ class FuseSiLU(Pass):
             new_ops.append(op)
 
         func.ops = new_ops
-
-    @staticmethod
-    def _find_consumer(output_name: str, op_name: str, producer_map: dict[str, IrOp]) -> IrOp | None:
-        for op in producer_map.values():
-            if output_name in op.inputs and op.name == op_name:
-                return op
-        return None
-
-    @staticmethod
-    def _find_producer(output_name: str, op_name: str, producer_map: dict[str, IrOp]) -> IrOp | None:
-        if output_name in producer_map:
-            op = producer_map[output_name]
-            if op.name == op_name:
-                return op
-        return None

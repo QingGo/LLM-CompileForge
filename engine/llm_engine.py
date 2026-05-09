@@ -14,17 +14,61 @@ the per-step scheduling-execution-sampling cycle.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import torch
 
 from compiler.ir import IrModule
+from compiler.mlir_artifact import MlirModule
 from engine.batch import GenerationResult
 from engine.block_manager import BlockManager
-from engine.executor import Executor
 from engine.sampler import sample
 from engine.scheduler import Scheduler
 from hal.interface import OpExecutor
+
+
+@runtime_checkable
+class _ExecutorLike(Protocol):
+    """Protocol for any executor compatible with LLMEngine."""
+
+    _kv_cache: torch.Tensor | None
+    _block_tables: dict[str, list[int]]
+
+    def forward(self, input_ids: torch.Tensor, **kwargs: Any) -> torch.Tensor: ...
+    def forward_with_kv(
+        self, input_ids: torch.Tensor, **kwargs: Any
+    ) -> tuple[torch.Tensor, list[tuple[str, torch.Tensor]]]: ...
+    def set_kv_cache(
+        self,
+        kv_cache: torch.Tensor | None,
+        block_tables: dict[str, list[int]] | None = None,
+        block_size: int = 16,
+        num_kv_heads: int = 0,
+        head_dim: int = 0,
+    ) -> None: ...
+    def prepare_kv_blocks(
+        self,
+        num_layers: int,
+        num_kv_heads: int,
+        head_dim: int,
+        block_size: int,
+        num_blocks: int,
+        dtype: torch.dtype = torch.float16,
+    ) -> torch.Tensor: ...
+    def write_kv_to_cache(
+        self,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        positions: torch.Tensor,
+        block_tables: dict[str, list[int]],
+        layer_idx: int = 0,
+    ) -> None: ...
+    def gather_kv_from_cache(
+        self,
+        block_tables: dict[str, list[int]],
+        max_seq_len: int,
+        layer_idx: int = 0,
+    ) -> tuple[torch.Tensor, torch.Tensor]: ...
 
 
 class LLMEngine:
@@ -38,12 +82,19 @@ class LLMEngine:
         ir_module = load_artifact("./compiled/model")
         engine = LLMEngine(ir_module, backend)
         text = engine.generate("Explain quantum computing", max_tokens=100)
+
+    The engine auto-detects IrModule vs MlirModule and creates the
+    appropriate executor. You can also pass a pre-created executor::
+
+        executor = MlirExecutor(mlir_module, backend)
+        engine = LLMEngine(mlir_module, backend, executor=executor)
     """
 
     def __init__(
         self,
-        module: IrModule,
+        module: IrModule | MlirModule,
         hal_backend: OpExecutor,
+        executor: _ExecutorLike | None = None,
         max_batch_size: int = 32,
         max_tokens_per_step: int = 512,
         chunk_size: int = 256,
@@ -72,7 +123,14 @@ class LLMEngine:
             chunk_size=chunk_size,
             radix_cache=self._radix_cache,
         )
-        self.executor = Executor(module, hal_backend)
+        if executor is not None:
+            self.executor: _ExecutorLike = executor
+        elif isinstance(module, MlirModule):
+            from engine.mlir_executor import MlirExecutor
+            self.executor = MlirExecutor(module, hal_backend)
+        else:
+            from engine.executor import Executor
+            self.executor = Executor(module, hal_backend)
 
         # Tokenizer reference — set by the API server or user
         self._tokenizer: Any = None

@@ -16,11 +16,11 @@ class TestE2ERealModel:
     @pytest.mark.timeout(120)
     def test_compiled_forward_varying_seq(self, module_tiny_llama):
         """Compiled model should accept different seq lengths without error."""
-        from engine.executor import Executor
+        from engine.mlir_executor import MlirExecutor
         from hal.pytorch_backend import PyTorchBackend
 
         backend = PyTorchBackend("cpu")
-        executor = Executor(module_tiny_llama, backend)
+        executor = MlirExecutor(module_tiny_llama, backend)
 
         for seq in [1, 4, 8]:
             x = torch.randint(0, 100, (1, seq))
@@ -83,11 +83,11 @@ class TestE2EOpt125M:
     @pytest.mark.timeout(300)
     def test_compiled_forward_varying_seq(self, module_opt_125m):
         """opt-125m should accept different seq lengths."""
-        from engine.executor import Executor
+        from engine.mlir_executor import MlirExecutor
         from hal.pytorch_backend import PyTorchBackend
 
         backend = PyTorchBackend("cpu")
-        executor = Executor(module_opt_125m, backend)
+        executor = MlirExecutor(module_opt_125m, backend)
 
         for seq in [1, 4]:
             x = torch.randint(0, 1000, (1, seq))

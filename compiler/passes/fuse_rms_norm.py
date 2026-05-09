@@ -12,6 +12,7 @@ From design doc §4.2.2: estimated 5-15% latency reduction on A100.
 from __future__ import annotations
 
 from compiler.ir import IrFunction, IrModule, IrOp
+from compiler.passes._utils import find_consumer
 from compiler.passes.base import Pass
 
 
@@ -44,10 +45,10 @@ class FuseRMSNorm(Pass):
             if op.name == "rms_norm" and len(op.outputs) >= 1:
                 norm_out = op.outputs[0]
                 # Find mul consumer
-                mul_op = FuseRMSNorm._find_consumer(norm_out, "mul", producer_map)
+                mul_op = find_consumer(norm_out, "mul", producer_map)
                 if mul_op and len(mul_op.outputs) >= 1:
                     mul_out = mul_op.outputs[0]
-                    matmul_op = FuseRMSNorm._find_consumer(mul_out, "matmul", producer_map)
+                    matmul_op = find_consumer(mul_out, "matmul", producer_map)
                     if matmul_op:
                         # Fuse: replace rms_norm + mul + matmul with fused op
                         fused = IrOp(
@@ -87,11 +88,3 @@ class FuseRMSNorm(Pass):
             op.inputs = new_inputs
 
         func.ops = fused_ops
-
-    @staticmethod
-    def _find_consumer(output_name: str, op_name: str, producer_map: dict[str, IrOp]) -> IrOp | None:
-        """Find an IrOp that consumes the given output."""
-        for op in producer_map.values():
-            if output_name in op.inputs and op.name == op_name:
-                return op
-        return None

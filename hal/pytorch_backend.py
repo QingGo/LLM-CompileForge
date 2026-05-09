@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -8,7 +9,7 @@ import torch.nn.functional as F  # noqa: N812
 
 from hal.interface import Buffer, Device, OpExecutor
 
-# ── Op registry (validates input counts before dispatch) ────
+# ── Unified op registry (single source of truth) ──────────────
 
 
 @dataclass
@@ -18,21 +19,28 @@ class _OpSpec:
     max_inputs: int | None = None
 
 
-_op_registry: dict[str, _OpSpec] = {}
+_OP_DISPATCH: dict[str, tuple[str, _OpSpec]] = {}
 
 
-def _register_op(name: str, min_inputs: int = 0, max_inputs: int | None = None) -> None:
-    """Register an op with its input-count constraints."""
-    _op_registry[name] = _OpSpec(name=name, min_inputs=min_inputs, max_inputs=max_inputs)
+def _register_handler(
+    name: str,
+    handler: str,
+    min_inputs: int = 0,
+    max_inputs: int | None = None,
+) -> None:
+    _OP_DISPATCH[name] = (handler, _OpSpec(name=name, min_inputs=min_inputs, max_inputs=max_inputs))
+
+
+def _build_dispatch_table(cls: type) -> dict[str, tuple[Callable[..., Any], _OpSpec]]:
+    """Build dispatch table from _OP_DISPATCH, resolving method names on *cls*."""
+    table: dict[str, tuple[Callable[..., Any], _OpSpec]] = {}
+    for name, (method_name, spec) in _OP_DISPATCH.items():
+        handler = getattr(cls, method_name)
+        table[name] = (handler, spec)
+    return table
 
 
 class PyTorchDevice(Device):
-    """PyTorch 设备实现。
-
-    封装 torch.cuda.synchronize() 或 CPU 空操作，
-    作为 HAL Device 的 PyTorch 后端起效。
-    """
-
     def __init__(self, device_type: str = "cpu") -> None:
         self._device_type = device_type
 
@@ -46,11 +54,6 @@ class PyTorchDevice(Device):
 
 
 class PyTorchBuffer(Buffer):
-    """PyTorch 缓冲区实现。
-
-    包装一个 torch.Tensor 作为底层内存，提供数据传输和视图创建。
-    """
-
     def __init__(self, tensor: torch.Tensor) -> None:
         self._tensor = tensor
 
@@ -73,25 +76,11 @@ class PyTorchBuffer(Buffer):
 
 
 class PyTorchBackend(OpExecutor):
-    """PyTorch 算子执行器。
-
-    将 op_name 映射到 torch 原生操作。
-    支持的算子覆盖设计文档算子映射表中定义的全部 14 个 HAL 操作。
-    """
-
     def __init__(self, device: str = "cpu") -> None:
         self._device = torch.device(device)
-        _register_op("add", min_inputs=2, max_inputs=2)
-        _register_op("mul", min_inputs=2, max_inputs=2)
-        _register_op("sub", min_inputs=2, max_inputs=2)
-        _register_op("matmul", min_inputs=2, max_inputs=2)
-        _register_op("neg", min_inputs=1, max_inputs=1)
-        _register_op("cos", min_inputs=1, max_inputs=1)
-        _register_op("sin", min_inputs=1, max_inputs=1)
-        _register_op("zeros", min_inputs=0, max_inputs=10)
-        _register_op("copy_", min_inputs=2, max_inputs=2)
+        self._dispatch: dict[str, tuple[Callable[..., Any], _OpSpec]] = _build_dispatch_table(type(self))
 
-    # ── 算子映射表 ──────────────────────────────────────────
+    # ── Op implementations ────────────────────────────────────
 
     def _op_matmul(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         a, b = inputs[0], inputs[1]
@@ -138,7 +127,6 @@ class PyTorchBackend(OpExecutor):
         weight = inputs[1] if len(inputs) > 1 else None
         eps = kwargs.get("eps", 1e-5)
         orig_dtype = x.dtype
-        # Upcast to float32 for numerical stability (matching HF implementation)
         if x.dtype in (torch.float16, torch.bfloat16):
             x_f32 = x.float()
         else:
@@ -169,29 +157,19 @@ class PyTorchBackend(OpExecutor):
         dim1 = kwargs.get("dim1", 1)
         return inputs[0].transpose(dim0, dim1)
 
-    def _op_scaled_dot_product_attention(
-        self, inputs: list[torch.Tensor], **kwargs: Any
-    ) -> torch.Tensor:
+    def _op_scaled_dot_product_attention(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         query, key, value = inputs[0], inputs[1], inputs[2]
         attn_mask = kwargs.get("attn_mask", None)
         if attn_mask is None and len(inputs) > 3:
             attn_mask = inputs[3]
-        # Normalize attn_mask shape for dynamic batch.
-        # In dynamic batch mode, the mask may be 5D: [batch, ?, 1, seq_q, seq_k]
-        # where dim 1 spuriously got batch size propagated instead of 1.
         if attn_mask is not None and attn_mask.dim() > 4:
             attn_mask = attn_mask.squeeze(2)
         if attn_mask is not None and attn_mask.dim() == 4:
             bsize = query.shape[0]
-            # Fix spurious batch propagation into heads dim: [B, B, S, S] → [B, 1, S, S]
             if attn_mask.shape[1] > 1 and attn_mask.shape[1] == bsize:
                 attn_mask = attn_mask[:, :1, :, :]
         dropout_p = kwargs.get("dropout_p", 0.0)
         is_causal = kwargs.get("is_causal", False)
-        # Honor the IR's scale attribute.  When the model pre-scales Q
-        # (e.g. dynamic-shape exports), scale=1.0 in the IR indicates
-        # "no additional scaling".  When absent, PyTorch's default
-        # (1/√head_dim) is used.
         scale = kwargs.get("scale", None)
         return F.scaled_dot_product_attention(
             query, key, value, attn_mask=attn_mask, dropout_p=dropout_p,
@@ -229,7 +207,6 @@ class PyTorchBackend(OpExecutor):
     def _op_view(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         raw_shape = kwargs["shape"]
         x = inputs[0]
-        # Separate shape dim inputs (SSA name references) from the main tensor
         dim_inputs = list(inputs[1:])
         resolved = []
         for s in raw_shape:
@@ -239,7 +216,6 @@ class PyTorchBackend(OpExecutor):
                 resolved.append(s)
             else:
                 resolved.append(1)
-        # Resolve -1 dimensions
         if -1 in resolved:
             neg_idx = resolved.index(-1)
             total_elements = x.numel()
@@ -252,7 +228,6 @@ class PyTorchBackend(OpExecutor):
             else:
                 resolved[neg_idx] = total_elements // product_other
         else:
-            # No -1 in shape — if sizes don't match, compute a new leading dim
             total_elements = x.numel()
             product = 1
             for s in resolved:
@@ -289,7 +264,6 @@ class PyTorchBackend(OpExecutor):
         return F.relu(inputs[0])
 
     def _op_embedding(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
-        # FX graph order: (weight, indices). F.embedding expects (indices, weight).
         indices = inputs[1].to(torch.long)
         return F.embedding(indices, inputs[0])
 
@@ -301,7 +275,6 @@ class PyTorchBackend(OpExecutor):
         return inputs[0].unsqueeze(dim)
 
     def _op_sub(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
-        # Handle both sub(a, b) and rsub(a, b) → a - b
         if len(inputs) >= 2:
             return inputs[0] - inputs[1]
         return inputs[0]
@@ -333,7 +306,6 @@ class PyTorchBackend(OpExecutor):
     def _op_full_like(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         shape_spec = kwargs.get("shape", (1,))
         value = kwargs.get("fill_value", 0)
-        # Shape may contain SSA name strings (dynamic dims) resolved via inputs
         if isinstance(shape_spec, (list, tuple)):
             resolved: list[int] = []
             dim_inputs = list(inputs)
@@ -346,7 +318,6 @@ class PyTorchBackend(OpExecutor):
                     resolved.append(1)
             if resolved:
                 return torch.full(resolved, value, dtype=torch.float32)
-        # Fallback: use inputs as template (original full_like behavior)
         is_simple = not any(
             isinstance(s, str) for s in (
                 shape_spec if isinstance(shape_spec, (list, tuple)) else ()
@@ -403,15 +374,11 @@ class PyTorchBackend(OpExecutor):
         size_val = inputs[0].shape[dim]
         return torch.tensor(size_val, dtype=torch.int64)
 
-    # ── 比较运算 ────────────────────────────────────────────
-
     def _op_gt(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         return torch.gt(inputs[0], inputs[1])
 
     def _op_lt(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         return torch.lt(inputs[0], inputs[1])
-
-    # ── 掩码和归约 ──────────────────────────────────────────
 
     def _op_masked_fill(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         tensor, mask = inputs[0], inputs[1]
@@ -428,12 +395,9 @@ class PyTorchBackend(OpExecutor):
         for t in inputs[1:]:
             val = int(t.item()) if t.numel() == 1 else 1
             sizes.append(val if val >= 0 else x.shape[len(sizes)])
-        # Pad with -1 on the left if fewer sizes than input dims
         while len(sizes) < x.dim():
             sizes.insert(0, -1)
         return x.expand(*sizes)
-
-    # ── 融合算子 ────────────────────────────────────────────
 
     def _op_fused_rms_norm_matmul(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         x = inputs[0]
@@ -441,7 +405,6 @@ class PyTorchBackend(OpExecutor):
         mat_weight = inputs[-1]
         eps = kwargs.get("eps", 1e-5)
         orig_dtype = x.dtype
-        # Upcast to float32 for numerical stability (matching HF implementation)
         if x.dtype in (torch.float16, torch.bfloat16):
             x_f32 = x.float()
         else:
@@ -462,18 +425,11 @@ class PyTorchBackend(OpExecutor):
         return F.silu(gate) * up
 
     def _op_fused_attention_output(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
-        """Fused SDPA → transpose → view → linear output projection.
-
-        inputs: q, k, v, [attn_mask], o_weight, [o_bias]
-        """
         q_t, k_t, v_t = inputs[0], inputs[1], inputs[2]
-
-        # Parse remaining inputs: [mask] weight [bias]
         remaining = inputs[3:]
         mask: torch.Tensor | None = None
         o_weight: torch.Tensor | None = None
         o_bias: torch.Tensor | None = None
-
         for t in remaining:
             if t.dim() == 4:
                 mask = t
@@ -485,18 +441,13 @@ class PyTorchBackend(OpExecutor):
                 o_weight = t
             else:
                 o_bias = t
-
         if o_weight is None:
             raise ValueError("fused_attention_output: missing output projection weight")
-
-        # 1. SDPA
         sdpa_kwargs: dict[str, Any] = {}
         for key in ("scale", "is_causal", "dropout_p"):
             if key in kwargs:
                 sdpa_kwargs[key] = kwargs[key]
         attn_out = F.scaled_dot_product_attention(q_t, k_t, v_t, attn_mask=mask, **sdpa_kwargs)
-
-        # 2. Transpose (typically dim0=1, dim1=2: [B,heads,S,hd] → [B,S,heads,hd])
         t_attrs = kwargs.get("fuse_transpose_attrs", {})
         if isinstance(t_attrs, str):
             import ast
@@ -508,27 +459,16 @@ class PyTorchBackend(OpExecutor):
         dim1 = t_attrs.get("dim1", 2)
         if isinstance(dim0, int) and isinstance(dim1, int):
             attn_out = attn_out.transpose(dim0, dim1)
-
-        # 3. Reshape: [B, S, heads*head_dim]
         b, s = attn_out.shape[0], attn_out.shape[1]
         hidden = attn_out.shape[2] * attn_out.shape[3]
         attn_out = attn_out.reshape(b, s, hidden)
-
-        # 4. Linear output projection
         return F.linear(attn_out, o_weight, o_bias)
 
     def _op_fused_attention_block(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
-        """Fused RMSNorm + QKV linear + SDPA + out_proj.
-
-        inputs: rms_input, rms_weight, qkv_weight, [q, k, v, mask], o_weight, [o_bias]
-        The implementation decomposes into the sub-operations internally.
-        """
-        # Parse inputs by shape heuristic
-        tensors_1d: list[torch.Tensor] = []  # bias or rms weight
-        tensors_2d: list[torch.Tensor] = []  # weight matrices
-        tensors_3d: list[torch.Tensor] = []  # intermediate
-        tensors_4d: list[torch.Tensor] = []  # Q, K, V, mask
-
+        tensors_1d: list[torch.Tensor] = []
+        tensors_2d: list[torch.Tensor] = []
+        tensors_3d: list[torch.Tensor] = []
+        tensors_4d: list[torch.Tensor] = []
         for t in inputs:
             d = t.dim()
             if d == 1:
@@ -539,59 +479,39 @@ class PyTorchBackend(OpExecutor):
                 tensors_4d.append(t)
             else:
                 tensors_3d.append(t)
-
-        # rms_input is the first non-1d, non-2d tensor (3d typically)
         rms_input = tensors_3d[0] if tensors_3d else inputs[0]
         rms_weight = tensors_1d[0] if tensors_1d else inputs[1]
         qkv_weight = tensors_2d[0] if len(tensors_2d) >= 1 else inputs[2]
         o_weight = tensors_2d[1] if len(tensors_2d) >= 2 else tensors_2d[0]
         o_bias = tensors_1d[1] if len(tensors_1d) >= 2 else None
-
-        import torch.nn.functional as functional
-
-        # 1. RMSNorm
         rms_normed = rms_input * torch.rsqrt(rms_input.pow(2).mean(-1, keepdim=True) + 1e-6)
         rms_normed = rms_normed * rms_weight
-
-        # 2. QKV fused linear → [B, S, 3*hidden]
         orig_dtype = rms_normed.dtype
-        qkv_out = functional.linear(rms_normed.to(qkv_weight.dtype), qkv_weight)
+        qkv_out = torch.nn.functional.linear(rms_normed.to(qkv_weight.dtype), qkv_weight)
         qkv_out = qkv_out.to(orig_dtype)
-
         hidden = qkv_out.shape[-1] // 3
         q = qkv_out[..., :hidden]
-        k = qkv_out[..., hidden:2*hidden]
-        v = qkv_out[..., 2*hidden:]
-
-        # 3. Reshape for SDPA: [B, S, hidden] → [B, heads, S, head_dim]
+        k = qkv_out[..., hidden:2 * hidden]
+        v = qkv_out[..., 2 * hidden:]
         if qkv_weight.dim() == 2:
             total_hidden = qkv_weight.shape[0]
-            n_heads = 4  # default for tiny models
+            n_heads = 4
             head_dim = total_hidden // (3 * n_heads)
         else:
             n_heads = 4
             head_dim = hidden // n_heads
-
         bsz, seq = q.shape[0], q.shape[1]
         q = q.reshape(bsz, seq, n_heads, head_dim).permute(0, 2, 1, 3)
         k = k.reshape(bsz, seq, n_heads, head_dim).permute(0, 2, 1, 3)
         v = v.reshape(bsz, seq, n_heads, head_dim).permute(0, 2, 1, 3)
-
-        # 4. SDPA
         mask_4d = tensors_4d[0] if tensors_4d else None
         sdpa_kwargs: dict[str, Any] = {}
         for key in ("scale", "is_causal", "dropout_p"):
             if key in kwargs:
                 sdpa_kwargs[key] = kwargs[key]
-        attn_out = functional.scaled_dot_product_attention(q, k, v, attn_mask=mask_4d, **sdpa_kwargs)
-
-        # 5. Transpose + reshape back
+        attn_out = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=mask_4d, **sdpa_kwargs)
         attn_out = attn_out.permute(0, 2, 1, 3).reshape(bsz, seq, hidden * n_heads)
-
-        # 6. Output projection
-        return functional.linear(attn_out, o_weight, o_bias)
-
-    # ── Qwen3.5 / extended ops ───────────────────────────────
+        return torch.nn.functional.linear(attn_out, o_weight, o_bias)
 
     def _op_logical_and(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         return torch.logical_and(inputs[0], inputs[1])
@@ -629,7 +549,6 @@ class PyTorchBackend(OpExecutor):
         x = inputs[0]
         chunks = kwargs.get("chunks", 2)
         dim = kwargs.get("dim", 0)
-        # Return stacked chunks as a single tensor
         return torch.stack(torch.chunk(x, chunks, dim=dim), dim=dim)
 
     def _op_split(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
@@ -637,13 +556,11 @@ class PyTorchBackend(OpExecutor):
         split_sizes = kwargs.get("split_sizes", None)
         dim = kwargs.get("dim", 0)
         if split_sizes is not None:
-            # Adjust split_sizes proportionally if input dim doesn't match
             total_expected = sum(split_sizes)
             actual_dim = x.shape[dim]
             if actual_dim != total_expected:
                 ratio = actual_dim / total_expected
                 adjusted = [max(1, int(s * ratio)) for s in split_sizes]
-                # Ensure split sizes sum to actual_dim
                 diff = actual_dim - sum(adjusted)
                 if diff != 0:
                     adjusted[-1] += diff
@@ -665,7 +582,6 @@ class PyTorchBackend(OpExecutor):
         return F.conv1d(x, weight, bias, stride=stride, padding=padding, dilation=dilation, groups=groups)
 
     def _op_diff(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
-        dim = kwargs.get("dim", -1)
         import warnings
         n = kwargs.get("n", 1)
         dim = kwargs.get("dim", -1)
@@ -728,89 +644,89 @@ class PyTorchBackend(OpExecutor):
         index = kwargs.get("index", 0)
         return x.select(dim, index)
 
-    # ── 公开接口 ────────────────────────────────────────────
+    # ── Public interface ──────────────────────────────────────
 
     def execute(self, op_name: str, inputs: list[Any], **kwargs: Any) -> torch.Tensor:
-        spec = _op_registry.get(op_name)
-        if spec is not None:
-            n_in = len(inputs)
-            if n_in < spec.min_inputs:
-                raise ValueError(
-                    f"Op '{op_name}' expects at least {spec.min_inputs} input(s), "
-                    f"got {n_in}."
-                )
-            if spec.max_inputs is not None and n_in > spec.max_inputs:
-                raise ValueError(
-                    f"Op '{op_name}' expects at most {spec.max_inputs} input(s), "
-                    f"got {n_in}."
-                )
+        entry = self._dispatch.get(op_name)
+        if entry is None:
+            raise ValueError(f"Unknown op: {op_name}. Available: {sorted(self._dispatch.keys())}")
+        handler, spec = entry
+        n_in = len(inputs)
+        if n_in < spec.min_inputs:
+            raise ValueError(
+                f"Op '{op_name}' expects at least {spec.min_inputs} input(s), "
+                f"got {n_in}."
+            )
+        if spec.max_inputs is not None and n_in > spec.max_inputs:
+            raise ValueError(
+                f"Op '{op_name}' expects at most {spec.max_inputs} input(s), "
+                f"got {n_in}."
+            )
+        return handler(self, inputs, **kwargs)  # type: ignore[no-any-return]
 
-        dispatch = {
-            "matmul": self._op_matmul,
-            "linear": self._op_linear,
-            "add": self._op_add,
-            "mul": self._op_mul,
-            "gelu": self._op_gelu,
-            "silu": self._op_silu,
-            "softmax": self._op_softmax,
-            "layer_norm": self._op_layer_norm,
-            "rms_norm": self._op_rms_norm,
-            "permute": self._op_permute,
-            "transpose": self._op_transpose,
-            "scaled_dot_product_attention": self._op_scaled_dot_product_attention,
-            "cat": self._op_cat,
-            "slice": self._op_slice,
-            "view": self._op_view,
-            "identity": self._op_identity,
-            "relu": self._op_relu,
-            "embedding": self._op_embedding,
-            "unsqueeze": self._op_unsqueeze,
-            "sub": self._op_sub,
-            "max": self._op_max,
-            "ones_like": self._op_ones_like,
-            "full_like": self._op_full_like,
-            "arange": self._op_arange,
-            "neg": self._op_neg,
-            "cos": self._op_cos,
-            "sin": self._op_sin,
-            "rsqrt": self._op_rsqrt,
-            "mean": self._op_mean,
-            "pow": self._op_pow,
-            "triu": self._op_triu,
-            "sym_size": self._op_sym_size,
-            "gt": self._op_gt,
-            "lt": self._op_lt,
-            "masked_fill": self._op_masked_fill,
-            "cumsum": self._op_cumsum,
-            "expand": self._op_expand,
-            "fused_rms_norm_matmul": self._op_fused_rms_norm_matmul,
-            "fused_silu_mul": self._op_fused_silu_mul,
-            # Qwen3.5 extended ops
-            "logical_and": self._op_logical_and,
-            "eq": self._op_eq,
-            "le": self._op_le,
-            "ne": self._op_ne,
-            "sigmoid": self._op_sigmoid,
-            "softplus": self._op_softplus,
-            "exp": self._op_exp,
-            "sum": self._op_sum,
-            "tril": self._op_tril,
-            "chunk": self._op_chunk,
-            "split": self._op_split,
-            "conv1d": self._op_conv1d,
-            "diff": self._op_diff,
-            "pad": self._op_pad,
-            "index": self._op_index,
-            "eye": self._op_eye,
-            "zeros": self._op_zeros,
-            "zeros_like": self._op_zeros_like,
-            "new_ones": self._op_new_ones,
-            "select": self._op_select,
-            "type_as": self._op_type_as,
-            "copy_": self._op_copy_,
-            "fused_attention_output": self._op_fused_attention_output,
-            "fused_attention_block": self._op_fused_attention_block,
-        }
-        if op_name not in dispatch:
-            raise ValueError(f"Unknown op: {op_name}. Available: {sorted(dispatch.keys())}")
-        return dispatch[op_name](inputs, **kwargs)
+
+# ── Module-level op registration ──────────────────────────────
+
+_register_handler("matmul", "_op_matmul", 2, 2)
+_register_handler("linear", "_op_linear", 2, 3)
+_register_handler("add", "_op_add", 2, 2)
+_register_handler("mul", "_op_mul", 2, 2)
+_register_handler("gelu", "_op_gelu", 1, 1)
+_register_handler("silu", "_op_silu", 1, 1)
+_register_handler("softmax", "_op_softmax", 1, 2)
+_register_handler("layer_norm", "_op_layer_norm", 1, 3)
+_register_handler("rms_norm", "_op_rms_norm", 1, 2)
+_register_handler("permute", "_op_permute", 1, 1)
+_register_handler("transpose", "_op_transpose", 1, 1)
+_register_handler("scaled_dot_product_attention", "_op_scaled_dot_product_attention", 3, 4)
+_register_handler("cat", "_op_cat", 0, None)
+_register_handler("slice", "_op_slice", 1, 4)
+_register_handler("view", "_op_view", 1, None)
+_register_handler("identity", "_op_identity", 1, 2)
+_register_handler("relu", "_op_relu", 1, 1)
+_register_handler("embedding", "_op_embedding", 2, 2)
+_register_handler("unsqueeze", "_op_unsqueeze", 1, 1)
+_register_handler("sub", "_op_sub", 2, 2)
+_register_handler("max", "_op_max", 2, 2)
+_register_handler("ones_like", "_op_ones_like", 0, None)
+_register_handler("full_like", "_op_full_like", 0, None)
+_register_handler("arange", "_op_arange", 0, 2)
+_register_handler("neg", "_op_neg", 1, 1)
+_register_handler("cos", "_op_cos", 1, 1)
+_register_handler("sin", "_op_sin", 1, 1)
+_register_handler("rsqrt", "_op_rsqrt", 1, 1)
+_register_handler("mean", "_op_mean", 1, 1)
+_register_handler("pow", "_op_pow", 1, 2)
+_register_handler("triu", "_op_triu", 1, 1)
+_register_handler("sym_size", "_op_sym_size", 1, 1)
+_register_handler("gt", "_op_gt", 2, 2)
+_register_handler("lt", "_op_lt", 2, 2)
+_register_handler("masked_fill", "_op_masked_fill", 3, 3)
+_register_handler("cumsum", "_op_cumsum", 1, 1)
+_register_handler("expand", "_op_expand", 1, None)
+_register_handler("fused_rms_norm_matmul", "_op_fused_rms_norm_matmul", 2, 3)
+_register_handler("fused_silu_mul", "_op_fused_silu_mul", 2, 2)
+_register_handler("logical_and", "_op_logical_and", 2, 2)
+_register_handler("eq", "_op_eq", 2, 2)
+_register_handler("le", "_op_le", 2, 2)
+_register_handler("ne", "_op_ne", 2, 2)
+_register_handler("sigmoid", "_op_sigmoid", 1, 1)
+_register_handler("softplus", "_op_softplus", 1, 1)
+_register_handler("exp", "_op_exp", 1, 1)
+_register_handler("sum", "_op_sum", 1, 1)
+_register_handler("tril", "_op_tril", 1, 1)
+_register_handler("chunk", "_op_chunk", 1, 1)
+_register_handler("split", "_op_split", 1, 1)
+_register_handler("conv1d", "_op_conv1d", 2, 3)
+_register_handler("diff", "_op_diff", 1, 3)
+_register_handler("pad", "_op_pad", 1, 1)
+_register_handler("index", "_op_index", 1, None)
+_register_handler("eye", "_op_eye", 0, 1)
+_register_handler("zeros", "_op_zeros", 0, 10)
+_register_handler("zeros_like", "_op_zeros_like", 1, 1)
+_register_handler("new_ones", "_op_new_ones", 1, None)
+_register_handler("select", "_op_select", 1, 1)
+_register_handler("type_as", "_op_type_as", 2, 2)
+_register_handler("copy_", "_op_copy_", 2, 2)
+_register_handler("fused_attention_output", "_op_fused_attention_output", 3, None)
+_register_handler("fused_attention_block", "_op_fused_attention_block", 3, None)

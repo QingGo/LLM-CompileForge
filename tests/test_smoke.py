@@ -30,9 +30,3 @@ def test_dependencies_available():
     import numpy  # noqa: F401
     import pydantic  # noqa: F401
     import torch  # noqa: F401
-
-
-@pytest.mark.unit
-def test_placeholder():
-    """Placeholder to make 'make test-unit' pass before real tests exist."""
-    assert True

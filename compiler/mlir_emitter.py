@@ -17,15 +17,10 @@ from typing import Any
 from compiler.ir import IrFunction, IrModule, IrOp
 
 # ── Complete op → MLIR dialect mapping ───────────────────────
-# Covers all 60+ HAL ops defined in fx_to_ir.py:_OP_DEFS.
-# Unmapped ops fall back to ("sf", op_name).
-
-_OP_MLIR_MAP: dict[str, tuple[str, str]] = {
-    # All ops currently map to sf dialect for maximum mlir-opt compatibility.
-    # Standard dialects (arith, math, chlo, linalg) require strict type
-    # consistency that our Python IR cannot guarantee without full type inference.
-    # Ops will be migrated back to standard dialects as type inference improves.
-}
+# All ops currently map to sf dialect for maximum mlir-opt compatibility.
+# Standard dialects (arith, math, chlo, linalg) require strict type
+# consistency that our Python IR cannot guarantee without full type inference.
+# Ops will be migrated back to standard dialects as type inference improves.
 
 # Ops where output type equals the first input type (passthrough)
 _SHAPE_PASSTHROUGH = frozenset({
@@ -97,7 +92,7 @@ def _attr_to_mlir(value: Any) -> str:
 
 
 def _map_op_to_mlir(op_name: str) -> tuple[str, str]:
-    return _OP_MLIR_MAP.get(op_name, ("sf", op_name))
+    return ("sf", op_name)
 
 
 # ── type/shape inference ────────────────────────────────────

@@ -51,11 +51,13 @@ class FuseAttentionBlock(Pass):
 
             rms_op, qkv_op = match
             new_op = _emit_fused_attention_block(func, op, rms_op, qkv_op)
-            # Replace: mark old ops as None, insert new op at the rms_op position
+            # Replace QKV linear + fused_attention_output with the fused block.
+            # Keep the RMSNorm op alive — its output may be consumed by the MLP path.
             new_ops[idx] = None  # old fused_attention_output
             new_ops[producer.get(qkv_op.outputs[0], idx)] = None  # QKV linear
-            new_ops[producer.get(rms_op.outputs[0], idx)] = None  # RMS mul
-            new_ops[producer.get(rms_op.outputs[0], idx) if producer.get(rms_op.outputs[0], idx) > 0 else idx] = new_op
+            # Insert the new fused block at the QKV linear's position
+            insert_pos = producer.get(qkv_op.outputs[0], idx)
+            new_ops[insert_pos] = new_op
 
         func.ops = [o for o in new_ops if o is not None]
 

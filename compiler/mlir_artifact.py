@@ -104,8 +104,8 @@ def save_mlir_artifact(module: IrModule, directory: str) -> None:
 def load_mlir_artifact(directory: str) -> MlirModule:
     """Load a compiled MLIR artifact from disk.
 
-    Parses model.mlir (via pymlir) and loads weights from weights.pth.
-    Falls back to model.ir (legacy JSON) if model.mlir is missing.
+    Parses model.mlir and loads weights from weights.pth.
+    Reads metadata from metadata.json.
 
     Returns an MlirModule with ops, weights, and metadata.
     """

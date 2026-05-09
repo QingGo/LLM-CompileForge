@@ -22,15 +22,26 @@ dependencies = [
 gpu = [
     "torch>=2.4",
 ]
-dev = [
+lint = [
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+test = [
     "pytest>=8",
     "pytest-timeout>=2",
     "pytest-cov>=5",
+    "httpx>=0.28",
+    "psutil>=6",
+]
+dev = [
+    "torch>=2.4",
     "ruff>=0.6",
     "mypy>=1.11",
-    "psutil>=6",
+    "pytest>=8",
+    "pytest-timeout>=2",
+    "pytest-cov>=5",
     "httpx>=0.28",
-    "torch>=2.4",
+    "psutil>=6",
 ]
 
 [tool.ruff]
@@ -62,3 +73,27 @@ markers = [
     "baseline: model-output cosine regression test (>0.999 vs HF)",
     "benchmark: performance benchmark test",
 ]
+
+[tool.coverage.run]
+source = ["hal", "compiler", "engine", "cache", "server"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+fail_under = 65
+exclude_also = [
+    "def __repr__",
+    "if TYPE_CHECKING:",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
+[tool.uv]
+required-environments = [
+    { sys_platform = "darwin", platform_machine = "x86_64" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

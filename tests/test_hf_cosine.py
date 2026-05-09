@@ -94,13 +94,13 @@ class TestHFCosineTinyLlama:
     def test_cosine_similarity_exceeds_threshold(self):
         """Compiled tiny_llama logits must match HF within cos > 0.999."""
         from compiler.serialize import load_artifact
-        from engine.executor import Executor
+        from engine.mlir_executor import MlirExecutor
         from hal.pytorch_backend import PyTorchBackend
 
         hf_model = _load_hf_tiny_llama()
         compiled_module = load_artifact("./compiled/tiny_llama")
         backend = PyTorchBackend("cpu")
-        executor = Executor(compiled_module, backend)
+        executor = MlirExecutor(compiled_module, backend)
 
         input_ids = torch.randint(0, 1000, (1, 4), dtype=torch.long)
 
@@ -124,13 +124,13 @@ class TestHFCosineTinyLlama:
     def test_cosine_similarity_decode_shape(self):
         """Compiled tiny_llama decode shape [1,1] should also match HF."""
         from compiler.serialize import load_artifact
-        from engine.executor import Executor
+        from engine.mlir_executor import MlirExecutor
         from hal.pytorch_backend import PyTorchBackend
 
         hf_model = _load_hf_tiny_llama()
         compiled_module = load_artifact("./compiled/tiny_llama")
         backend = PyTorchBackend("cpu")
-        executor = Executor(compiled_module, backend)
+        executor = MlirExecutor(compiled_module, backend)
 
         input_ids = torch.randint(0, 1000, (1, 1), dtype=torch.long)
 
@@ -156,13 +156,13 @@ class TestHFCosineOpt125M:
     def test_cosine_similarity_exceeds_threshold(self):
         """Compiled opt_125m logits must match HF within cos > 0.999."""
         from compiler.serialize import load_artifact
-        from engine.executor import Executor
+        from engine.mlir_executor import MlirExecutor
         from hal.pytorch_backend import PyTorchBackend
 
         hf_model = _load_hf_opt_125m()
         compiled_module = load_artifact("./compiled/opt_125m")
         backend = PyTorchBackend("cpu")
-        executor = Executor(compiled_module, backend)
+        executor = MlirExecutor(compiled_module, backend)
 
         input_ids = torch.randint(0, 1000, (1, 4), dtype=torch.long)
 
@@ -186,13 +186,13 @@ class TestHFCosineOpt125M:
     def test_cosine_similarity_decode_shape(self):
         """Compiled opt_125m decode shape [1,1] should also match HF."""
         from compiler.serialize import load_artifact
-        from engine.executor import Executor
+        from engine.mlir_executor import MlirExecutor
         from hal.pytorch_backend import PyTorchBackend
 
         hf_model = _load_hf_opt_125m()
         compiled_module = load_artifact("./compiled/opt_125m")
         backend = PyTorchBackend("cpu")
-        executor = Executor(compiled_module, backend)
+        executor = MlirExecutor(compiled_module, backend)
 
         input_ids = torch.randint(0, 1000, (1, 1), dtype=torch.long)
 
@@ -218,13 +218,13 @@ class TestHFCosineOpt125MDynamic:
     def test_cosine_similarity_exceeds_threshold(self):
         """Compiled opt_125m_dynamic logits must match HF within cos > 0.999."""
         from compiler.serialize import load_artifact
-        from engine.executor import Executor
+        from engine.mlir_executor import MlirExecutor
         from hal.pytorch_backend import PyTorchBackend
 
         hf_model = _load_hf_opt_125m()
         compiled_module = load_artifact("./compiled/opt_125m_dynamic")
         backend = PyTorchBackend("cpu")
-        executor = Executor(compiled_module, backend)
+        executor = MlirExecutor(compiled_module, backend)
 
         input_ids = torch.randint(0, 1000, (1, 4), dtype=torch.long)
 
@@ -248,12 +248,12 @@ class TestHFCosineOpt125MDynamic:
     def test_cosine_similarity_batch2(self):
         """Compiled opt_125m_dynamic batch=2 — should not crash and produce valid output."""
         from compiler.serialize import load_artifact
-        from engine.executor import Executor
+        from engine.mlir_executor import MlirExecutor
         from hal.pytorch_backend import PyTorchBackend
 
         compiled_module = load_artifact("./compiled/opt_125m_dynamic")
         backend = PyTorchBackend("cpu")
-        executor = Executor(compiled_module, backend)
+        executor = MlirExecutor(compiled_module, backend)
 
         input_ids = torch.randint(0, 1000, (2, 4), dtype=torch.long)
         compiled_logits = executor.forward(input_ids)
@@ -280,11 +280,11 @@ class TestHFCosineQwen:
     @pytest.mark.timeout(300)
     def test_cosine_similarity_exceeds_threshold(self, hf_qwen, module_qwen):
         """Compiled Qwen3.5-0.8B logits must match HF within cos > 0.999."""
-        from engine.executor import Executor
+        from engine.mlir_executor import MlirExecutor
         from hal.pytorch_backend import PyTorchBackend
 
         hf_model = hf_qwen
-        executor = Executor(module_qwen, PyTorchBackend("cpu"))
+        executor = MlirExecutor(module_qwen, PyTorchBackend("cpu"))
 
         input_ids = torch.randint(0, 1000, (1, 64), dtype=torch.long)
         with torch.no_grad():
@@ -299,10 +299,10 @@ class TestHFCosineQwen:
     @pytest.mark.timeout(300)
     def test_cosine_similarity_decode_shape(self, hf_qwen, module_qwen):
         """Compiled Qwen3.5-0.8B seq=64 — static shape limitation."""
-        from engine.executor import Executor
+        from engine.mlir_executor import MlirExecutor
         from hal.pytorch_backend import PyTorchBackend
 
-        executor = Executor(module_qwen, PyTorchBackend("cpu"))
+        executor = MlirExecutor(module_qwen, PyTorchBackend("cpu"))
         input_ids = torch.randint(0, 1000, (1, 64), dtype=torch.long)
         with torch.no_grad():
             hf_logits = hf_qwen(input_ids).logits
