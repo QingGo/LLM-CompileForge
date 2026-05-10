@@ -208,3 +208,128 @@ class TestMlirAttributeParsing:
     def test_none_attr(self) -> None:
         attrs = _parse_attrs("end = none")
         assert attrs["end"] is None
+
+    def test_quoted_key_attr(self) -> None:
+        """P0-1: MLIR attribute key like "dim" should be stripped to dim."""
+        attrs = _parse_attrs('"dim" = 0 : i64, "name" = "weight"')
+        assert attrs["dim"] == 0
+        assert attrs["name"] == "weight"
+
+    def test_type_suffix_on_int(self) -> None:
+        """P0-2: MLIR attribute value '2 : i64' should resolve to int 2."""
+        attrs = _parse_attrs('"dim" = 2 : i64')
+        assert attrs["dim"] == 2
+        assert isinstance(attrs["dim"], int)
+
+    def test_type_suffix_on_float(self) -> None:
+        """P0-2: MLIR attribute value '5.0e-01 : f64' should resolve to float."""
+        attrs = _parse_attrs('"scale" = 5.000000e-01 : f64')
+        assert abs(attrs["scale"] - 0.5) < 1e-6
+        assert isinstance(attrs["scale"], float)
+
+    def test_mixed_quoted_and_type_suffix(self) -> None:
+        """P0-1+P0-2 combined: realistic MLIR attribute string."""
+        attrs = _parse_attrs(
+            '"dim" = 0 : i64, "folded" = true, '
+            '"name" = "lm_head_weight", "shape" = [1, 32, 64, 64]'
+        )
+        assert attrs["dim"] == 0
+        assert attrs["folded"] is True
+        assert attrs["name"] == "lm_head_weight"
+        assert attrs["shape"] == [1, 32, 64, 64]
+
+
+@pytest.mark.unit
+class TestWeightLoadTied:
+    """P0-3: Tied weights should be filled from source on load."""
+
+    def test_tied_weight_filled_on_load(self) -> None:
+        """lm_head_weight missing from source → filled from embed_tokens via tied_weights."""
+        import tempfile
+
+        w = torch.randn(128, 64)
+        f = MlirFunction(
+            name="main",
+            inputs=[("%x", "tensor<4xf32>")],
+            outputs=[("%o", "tensor<4xf32>")],
+            ops=[MlirOp(name="sf.linear", dialect="sf", op_name="linear",
+                         operands=["%x", "w"], results=["%o"], attributes={})],
+            weights={"model_embed_tokens_weight": w},
+        )
+        # Use backward compat: no classification → all weights go to weights.pth
+        mod = MlirModule(functions=[f], metadata={
+            "weight_classification": {
+                "main": {"params": ["model_embed_tokens_weight", "lm_head_weight"],
+                         "constants": []},
+            },
+            "weight_source": {
+                "path": "/nonexistent.safetensors",
+                "format": "safetensors",
+                "tied_weights": {"lm_head_weight": "model_embed_tokens_weight"},
+            },
+        })
+
+        with tempfile.TemporaryDirectory() as d:
+            save_mlir_module_artifact(mod, d)
+            # weights.pth is written (backward compat), then load_mlir_artifact
+            # reads it + applies tied_weights from metadata
+            loaded = load_mlir_artifact(d)
+            assert "model_embed_tokens_weight" in loaded.main.weights
+            assert "lm_head_weight" in loaded.main.weights
+            assert loaded.main.weights["lm_head_weight"] is loaded.main.weights["model_embed_tokens_weight"]
+
+
+@pytest.mark.unit
+class TestSynthConstClassification:
+    """P0-6: Synthesized constants (_const_*) should be classified as consts."""
+
+    def test_synth_const_in_weight_classification(self) -> None:
+        """Verify fx_to_mlir classifies non-param weights as consts."""
+        from compiler.fx_to_mlir import fx_graph_to_mlir
+
+        class FakeSpec:
+            kind = type("k", (), {"value": -1})()  # not a weight kind
+        class FakeSig:
+            user_inputs = ["input_ids"]
+            input_specs = [FakeSpec()]
+        class FakeConst:
+            pass
+        class FakeProgram:
+            graph_module = type("g", (), {"graph": type("g2", (), {"nodes": []})()})()
+            state_dict = {}
+            graph_signature = FakeSig()
+            constants = FakeConst()
+
+        program = FakeProgram()
+        program.constants = {}  # No export constants
+        program.graph_module.graph.nodes = []
+
+        mod = fx_graph_to_mlir(program)
+        assert len(mod.main.ops) == 0
+        assert len(mod.main.weights) == 0
+        assert len(mod.main.param_weight_names) == 0
+        assert len(mod.main.const_weight_names) == 0  # no synth consts either
+
+
+@pytest.mark.unit
+class TestCandidateNames:
+    """Verify suffix-based name matching for model prefix variations."""
+
+    def test_simple_name_unchanged(self) -> None:
+        from compiler.mlir_artifact import _candidate_names
+        names = _candidate_names("model_embed_tokens_weight")
+        assert "model_embed_tokens_weight" in names
+
+    def test_qwen_prefix_stripped(self) -> None:
+        """model_language_model_embed_tokens → model_embed_tokens via suffix."""
+        from compiler.mlir_artifact import _candidate_names
+        names = _candidate_names("model_language_model_embed_tokens_weight")
+        assert "model_embed_tokens_weight" in names
+
+    def test_full_suffix_chain(self) -> None:
+        from compiler.mlir_artifact import _candidate_names
+        names = _candidate_names("a_b_c_d_e")
+        assert "a_b_c_d_e" in names
+        assert "b_c_d_e" in names
+        assert "c_d_e" in names
+        assert "d_e" in names

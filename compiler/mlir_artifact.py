@@ -15,6 +15,7 @@ parsed by `mlir.parse_string()` (pymlir) for downstream processing.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,8 @@ class MlirFunction:
     outputs: list[tuple[str, str]]  # (ssa_name, mlir_type_string)
     ops: list[MlirOp] = field(default_factory=list)
     weights: dict[str, torch.Tensor] = field(default_factory=dict)
+    param_weight_names: set[str] = field(default_factory=set)
+    const_weight_names: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -137,7 +140,16 @@ def _format_attr(key: str, value: Any) -> str:
 
 
 def save_mlir_module_artifact(module: MlirModule, directory: str) -> None:
-    """Persist an MlirModule as MLIR artifact (model.mlir + weights.pth + metadata.json)."""
+    """Persist an MlirModule as MLIR artifact.
+
+    Output:
+      model.mlir       — MLIR text
+      constants.pth    — export-time constants (scalars, fused weights) only
+      metadata.json    — compilation metadata + weight source + classification
+
+    Model parameters are NOT duplicated — weight_source in metadata points
+    to the original safetensors file for mmap loading at runtime.
+    """
     out_dir = Path(directory)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -145,12 +157,37 @@ def save_mlir_module_artifact(module: MlirModule, directory: str) -> None:
     with open(out_dir / "model.mlir", "w") as f:
         f.write(mlir_text)
 
-    weight_state: dict[str, torch.Tensor] = {}
+    has_classification = any(
+        func.param_weight_names or func.const_weight_names
+        for func in module.functions
+    )
+    if has_classification:
+        const_state: dict[str, torch.Tensor] = {}
+        for func in module.functions:
+            for wname, tensor in func.weights.items():
+                if wname in func.const_weight_names:
+                    key = f"{func.name}.{wname}" if func.name != "main" else wname
+                    const_state[key] = tensor
+        if const_state:
+            torch.save(const_state, out_dir / "constants.pth")
+    else:
+        # Backward compat: no classification info → write all weights
+        weight_state: dict[str, torch.Tensor] = {}
+        for func in module.functions:
+            for wname, tensor in func.weights.items():
+                key = f"{func.name}.{wname}" if func.name != "main" else wname
+                weight_state[key] = tensor
+        torch.save(weight_state, out_dir / "weights.pth")
+
+    classification: dict[str, dict[str, list[str]]] = {}
     for func in module.functions:
-        for wname, tensor in func.weights.items():
-            key = f"{func.name}.{wname}" if func.name != "main" else wname
-            weight_state[key] = tensor
-    torch.save(weight_state, out_dir / "weights.pth")
+        if func.param_weight_names or func.const_weight_names:
+            classification[func.name] = {
+                "params": sorted(func.param_weight_names),
+                "constants": sorted(func.const_weight_names),
+            }
+    if classification:
+        module.metadata["weight_classification"] = classification
 
     with open(out_dir / "metadata.json", "w") as f:
         json.dump(module.metadata, f, indent=2)
@@ -160,8 +197,14 @@ def save_mlir_module_artifact(module: MlirModule, directory: str) -> None:
 def load_mlir_artifact(directory: str) -> MlirModule:
     """Load a compiled MLIR artifact from disk.
 
-    Parses model.mlir and loads weights from weights.pth.
-    Reads metadata from metadata.json.
+    Parses model.mlir and loads weights via one of two paths:
+
+    1. New path (preferred): If metadata.json has ``weight_source`` pointing
+       to a safetensors file, mmap model parameters from that file and load
+       export constants from constants.pth.  No redundant copy on disk.
+
+    2. Old path (backward compat): If ``weight_source`` is absent or the
+       source file is missing, loads weights.pth as before.
 
     Returns an MlirModule with ops, weights, and metadata.
     """
@@ -170,6 +213,7 @@ def load_mlir_artifact(directory: str) -> MlirModule:
         raise FileNotFoundError(f"Directory not found: {directory}")
 
     mlir_path = in_dir / "model.mlir"
+    const_path = in_dir / "constants.pth"
     weights_path = in_dir / "weights.pth"
     meta_path = in_dir / "metadata.json"
 
@@ -183,32 +227,206 @@ def load_mlir_artifact(directory: str) -> MlirModule:
         mlir_text = f.read()
     module = _parse_mlir_text(mlir_text)
 
-    # Load weights
-    if weights_path.exists():
-        raw_weights: dict[str, torch.Tensor] = torch.load(
-            weights_path, map_location="cpu", weights_only=True
-        )
-        # Distribute to functions
-        for key, tensor in raw_weights.items():
-            if "." in key and not key.startswith("_"):
-                func_name, wname = key.split(".", 1)
-            else:
-                func_name = "main"
-                wname = key
-            for func in module.functions:
-                if func.name == func_name:
-                    func.weights[wname] = tensor
-                    break
-            else:
-                if module.functions:
-                    module.functions[0].weights[wname] = tensor
-
-    # Load metadata
     if meta_path.exists():
         with open(meta_path) as f:
             module.metadata = json.load(f)
 
+    # ── Determine loading path ──────────────────────────
+    ws = module.metadata.get("weight_source", {})
+    ws_path = ws.get("path", "")
+    use_new_path = bool(ws_path and os.path.isfile(ws_path))
+
+    if use_new_path and ws.get("format") == "safetensors":
+        _load_weights_via_mmap(module, ws_path, const_path)
+    elif use_new_path and ws.get("format") == "safetensors_sharded":
+        _load_weights_via_sharded(module, ws_path, const_path)
+    elif use_new_path and ws.get("format") == "pytorch_bin":
+        _load_weights_via_bin(module, ws_path, const_path)
+    elif weights_path.exists():
+        _load_weights_legacy(module, weights_path)
+
+    # ── Handle tied weights: lm_head_weight → model_embed_tokens_weight ──
+    tied = ws.get("tied_weights", {})
+    for tied_key, src_key in tied.items():
+        for func in module.functions:
+            if src_key in func.weights and tied_key not in func.weights:
+                func.weights[tied_key] = func.weights[src_key]
+                func.param_weight_names.add(tied_key)
+    classification = module.metadata.get("weight_classification", {})
+    for func in module.functions:
+        info = classification.get(func.name, {})
+        func.param_weight_names = set(info.get("params", []))
+        func.const_weight_names = set(info.get("constants", []))
+
     return module
+
+
+def _load_weights_via_mmap(
+    module: MlirModule,
+    ws_path: str,
+    const_path: Path,
+) -> None:
+    import safetensors
+    import safetensors.torch
+
+    with safetensors.safe_open(ws_path, framework="pt", device="cpu") as f:  # type: ignore[no-untyped-call]
+        for key in f.keys():
+            wname = key.replace(".", "_")
+            func_name = _guess_func(wname, module)
+            for func in module.functions:
+                if func.name == func_name:
+                    func.weights[wname] = f.get_tensor(key)
+                    func.param_weight_names.add(wname)
+                    break
+            else:
+                if module.functions:
+                    module.functions[0].weights[wname] = f.get_tensor(key)
+                    module.functions[0].param_weight_names.add(wname)
+
+    if const_path.exists():
+        raw_c: dict[str, torch.Tensor] = torch.load(
+            str(const_path), map_location="cpu", weights_only=True
+        )
+        for key, tensor in raw_c.items():
+            func_name = _guess_func(key, module)
+            for func in module.functions:
+                if func.name == func_name:
+                    func.weights[key] = tensor
+                    func.const_weight_names.add(key)
+                    break
+            else:
+                if module.functions:
+                    module.functions[0].weights[key] = tensor
+                    module.functions[0].const_weight_names.add(key)
+
+
+def _load_weights_via_sharded(
+    module: MlirModule,
+    ws_path: str,
+    const_path: Path,
+) -> None:
+    import json
+    import os as _os
+
+    ws_dir = _os.path.dirname(ws_path)
+    with open(ws_path) as f:
+        index = json.load(f)
+    weight_map = index.get("weight_map", {})
+
+    shard_files: set[str] = set()
+    for shard_name in weight_map.values():
+        shard_files.add(shard_name)
+
+    for shard_file in sorted(shard_files):
+        sf_path = _os.path.join(ws_dir, shard_file)
+        import safetensors
+        with safetensors.safe_open(sf_path, framework="pt", device="cpu") as f:  # type: ignore[no-untyped-call]
+            for key in f.keys():
+                wname = key.replace(".", "_")
+                tensor = f.get_tensor(key)
+                candidates = _candidate_names(wname)
+                # Store under all candidate names for maximum compatibility
+                stored = False
+                for try_name in candidates:
+                    func_name = _guess_func(try_name, module)
+                    for func in module.functions:
+                        if func.name == func_name:
+                            func.weights[try_name] = tensor
+                            func.param_weight_names.add(try_name)
+                            stored = True
+                    if not stored and module.functions:
+                        module.functions[0].weights[try_name] = tensor
+                        module.functions[0].param_weight_names.add(try_name)
+                        stored = True
+                if not stored and module.functions:
+                    module.functions[0].weights[wname] = tensor
+                    module.functions[0].param_weight_names.add(wname)
+
+    if const_path.exists():
+        raw_c = torch.load(str(const_path), map_location="cpu", weights_only=True)
+        for key, tensor in raw_c.items():
+            func_name = _guess_func(key, module)
+            for func in module.functions:
+                if func.name == func_name:
+                    func.weights[key] = tensor
+                    func.const_weight_names.add(key)
+                    break
+            else:
+                if module.functions:
+                    module.functions[0].weights[key] = tensor
+                    module.functions[0].const_weight_names.add(key)
+
+
+def _load_weights_via_bin(
+    module: MlirModule,
+    ws_path: str,
+    const_path: Path,
+) -> None:
+    raw_bin: dict[str, torch.Tensor] = torch.load(
+        ws_path, map_location="cpu", weights_only=True
+    )
+    for key, tensor in raw_bin.items():
+        wname = key.replace(".", "_")
+        func_name = _guess_func(wname, module)
+        for func in module.functions:
+            if func.name == func_name:
+                func.weights[wname] = tensor
+                func.param_weight_names.add(wname)
+                break
+        else:
+            if module.functions:
+                module.functions[0].weights[wname] = tensor
+                module.functions[0].param_weight_names.add(wname)
+
+    if const_path.exists():
+        raw_c: dict[str, torch.Tensor] = torch.load(
+            str(const_path), map_location="cpu", weights_only=True
+        )
+        for key, tensor in raw_c.items():
+            func_name = _guess_func(key, module)
+            for func in module.functions:
+                if func.name == func_name:
+                    func.weights[key] = tensor
+                    func.const_weight_names.add(key)
+                    break
+            else:
+                if module.functions:
+                    module.functions[0].weights[key] = tensor
+                    module.functions[0].const_weight_names.add(key)
+
+
+def _load_weights_legacy(module: MlirModule, weights_path: Path) -> None:
+    raw_weights: dict[str, torch.Tensor] = torch.load(
+        str(weights_path), map_location="cpu", weights_only=True
+    )
+    for key, tensor in raw_weights.items():
+        func_name = _guess_func(key, module)
+        for func in module.functions:
+            if func.name == func_name:
+                func.weights[key] = tensor
+                break
+        else:
+            if module.functions:
+                module.functions[0].weights[key] = tensor
+
+
+def _guess_func(wname: str, module: MlirModule) -> str:
+    if "." in wname and not wname.startswith("_"):
+        return wname.split(".", 1)[0]
+    return "main"
+
+
+def _candidate_names(wname: str) -> list[str]:
+    """Generate possible cleaned names from a safetensors key.
+
+    Handles model-specific naming mismatches between safetensors and
+    PyTorch state_dict (e.g. Qwen: model.language_model. → model.).
+    """
+    names = [wname]
+    parts = wname.split("_")
+    for i in range(1, min(4, len(parts))):
+        names.append("_".join(parts[i:]))
+    return names
 
 
 # ── Internal parsing ──────────────────────────────────────────
@@ -402,6 +620,9 @@ def _parse_attrs(attrs_str: str) -> dict[str, Any]:
             continue
         k, v = part.split("=", 1)
         k = k.strip()
+        # Strip quotes from attribute keys (emitters quote them)
+        if k.startswith('"') and k.endswith('"'):
+            k = k[1:-1]
         v = v.strip()
         # Parse value
         if v == "true":
@@ -411,19 +632,33 @@ def _parse_attrs(attrs_str: str) -> dict[str, Any]:
         elif v == "none":
             result[k] = None
         elif v.startswith('"') and v.endswith('"'):
-            result[k] = v[1:-1]
+            raw = v[1:-1]
+            if " : " in raw:
+                raw = raw.split(" : ")[0]
+                try:
+                    result[k] = int(raw)
+                except ValueError:
+                    try:
+                        result[k] = float(raw)
+                    except ValueError:
+                        result[k] = raw
+            else:
+                result[k] = raw
         elif v.startswith("[") and v.endswith("]"):
             inner = v[1:-1]
             items = _split_comma(inner)
             result[k] = [_parse_attr_value(item.strip()) for item in items if item.strip()]
         else:
+            raw = v
+            if " : " in v:
+                raw = v.split(" : ")[0]
             try:
-                result[k] = int(v)
+                result[k] = int(raw)
             except ValueError:
                 try:
-                    result[k] = float(v)
+                    result[k] = float(raw)
                 except ValueError:
-                    result[k] = v
+                    result[k] = raw
     return result
 
 
@@ -452,7 +687,7 @@ def _split_attrs(text: str) -> list[str]:
 
 
 def _parse_attr_value(v: str) -> Any:
-    """Parse a single attribute value."""
+    """Parse a single attribute value, stripping MLIR type annotations."""
     v = v.strip()
     if v == "true":
         return True
@@ -461,7 +696,19 @@ def _parse_attr_value(v: str) -> Any:
     if v == "none":
         return None
     if v.startswith('"') and v.endswith('"'):
-        return v[1:-1]
+        raw = v[1:-1]
+        if " : " in raw:
+            raw = raw.split(" : ")[0]
+            try:
+                return int(raw)
+            except ValueError:
+                try:
+                    return float(raw)
+                except ValueError:
+                    return raw
+        return raw
+    if " : " in v:
+        v = v.split(" : ")[0]
     try:
         return int(v)
     except ValueError:

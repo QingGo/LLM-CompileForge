@@ -275,12 +275,18 @@ def fx_graph_to_mlir(
                     weight_name_map[spec.arg.name] = spec.target.replace(".", "_")
 
     weights: dict[str, torch.Tensor] = {}
+    param_names: set[str] = set()
+    const_names: set[str] = set()
     for name, tensor in state_dict.items():
-        weights[name.replace(".", "_")] = tensor
+        clean = name.replace(".", "_")
+        weights[clean] = tensor
+        param_names.add(clean)
     if hasattr(program, "constants"):
         for name, tensor in program.constants.items():
             clean = name.replace(".", "_")
-            weights.setdefault(clean, tensor)
+            if clean not in weights:
+                weights[clean] = tensor
+            const_names.add(clean)
 
     # ── Phase 3: walk operations ──────────────────────────
     mlir_ops: list[MlirOp] = []
@@ -365,11 +371,16 @@ def fx_graph_to_mlir(
         ))
     mlir_ops = wops + mlir_ops
 
+    # Constants: everything NOT from state_dict (synthesised scalars etc.)
+    all_weight_names = set(weights.keys())
+    const_names = (const_names or set()) | (all_weight_names - param_names)
+
     # ── Phase 5: assemble ─────────────────────────────────
     return MlirModule(
         functions=[MlirFunction(
             name=function_name, inputs=func_inputs,
             outputs=func_outputs, ops=mlir_ops, weights=weights,
+            param_weight_names=param_names, const_weight_names=const_names,
         )],
         metadata={"source": "torch.export", "artifact_format": "mlir"},
     )

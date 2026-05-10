@@ -174,3 +174,30 @@ class TestLLMEngineTokenizer:
                     return
             if engine.is_idle:
                 return
+
+
+@pytest.mark.unit
+class TestLLMEngineCachePolicyIntegration:
+    """P0-5: CachePolicy num_blocks injection from engine metadata."""
+
+    def test_num_blocks_injected_into_metadata(self) -> None:
+        """Creating engine with cache_policy should set num_blocks in metadata."""
+        from compiler.cache_policy import CachePolicy
+
+        mod = _make_test_mlir()
+        mod.metadata["cache_policy"] = CachePolicy.for_llama(4, 8, 64).to_dict()
+        assert "num_blocks" not in mod.metadata
+
+        LLMEngine(mod, PyTorchBackend("cpu"), num_blocks=500, block_size=16)
+        assert mod.metadata["num_blocks"] == 500
+
+    def test_executor_uses_cache_manager(self) -> None:
+        """Engine auto-creates executor with cache manager when policy present."""
+        from compiler.cache_policy import CachePolicy
+
+        mod = _make_test_mlir()
+        mod.metadata["cache_policy"] = CachePolicy.for_llama(4, 8, 64).to_dict()
+        assert "num_blocks" not in mod.metadata
+
+        engine = LLMEngine(mod, PyTorchBackend("cpu"), num_blocks=32, block_size=16)
+        assert engine.executor._uses_cache_manager

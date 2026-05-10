@@ -304,3 +304,81 @@ class TestHFCosineQwen:
         assert hf_logits.shape == compiled_logits.shape
         similarity = cosine_similarity(hf_logits, compiled_logits)
         assert similarity > 0.999
+
+
+@pytest.mark.integration
+@pytest.mark.baseline
+class TestHFCosineLlama1B:
+    """Cosine similarity test with compiled Llama-3.2-1B."""
+
+    @pytest.mark.timeout(600)
+    def test_cosine_similarity_exceeds_threshold(self) -> None:
+        _patch_transformers_torch()
+        from transformers import AutoConfig, AutoModelForCausalLM
+
+        from compiler.serialize import load_artifact
+        from engine.mlir_executor import MlirExecutor
+        from hal.pytorch_backend import PyTorchBackend
+
+        model_dir = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..",
+                         "models", "LLM-Research", "Llama-3.2-1B")
+        )
+        config = AutoConfig.from_pretrained(model_dir, trust_remote_code=False)
+        config.use_cache = False
+        hf_model = AutoModelForCausalLM.from_pretrained(
+            model_dir, config=config, torch_dtype=torch.bfloat16,
+        )
+        hf_model.eval()
+
+        compiled = load_artifact("./compiled/llama_1b")
+        executor = MlirExecutor(compiled, PyTorchBackend("cpu"))
+
+        input_ids = torch.randint(0, 5000, (1, 4), dtype=torch.long)
+        with torch.no_grad():
+            hf_logits = hf_model(input_ids).logits.to(torch.float32)
+        compiled_logits = executor.forward(input_ids).to(torch.float32)
+
+        assert hf_logits.shape == compiled_logits.shape
+        similarity = cosine_similarity(hf_logits, compiled_logits)
+        print(f"\n  llama_1b cosine similarity: {similarity:.8f}")
+        assert similarity > 0.999
+
+
+@pytest.mark.integration
+@pytest.mark.baseline
+class TestHFCosineLlama3B:
+    """Cosine similarity test with compiled Llama-3.2-3B."""
+
+    @pytest.mark.timeout(900)
+    def test_cosine_similarity_exceeds_threshold(self) -> None:
+        _patch_transformers_torch()
+        from transformers import AutoConfig, AutoModelForCausalLM
+
+        from compiler.serialize import load_artifact
+        from engine.mlir_executor import MlirExecutor
+        from hal.pytorch_backend import PyTorchBackend
+
+        model_dir = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..",
+                         "models", "LLM-Research", "Llama-3.2-3B")
+        )
+        config = AutoConfig.from_pretrained(model_dir, trust_remote_code=False)
+        config.use_cache = False
+        hf_model = AutoModelForCausalLM.from_pretrained(
+            model_dir, config=config, torch_dtype=torch.bfloat16,
+        )
+        hf_model.eval()
+
+        compiled = load_artifact("./compiled/llama_3b")
+        executor = MlirExecutor(compiled, PyTorchBackend("cpu"))
+
+        input_ids = torch.randint(0, 5000, (1, 4), dtype=torch.long)
+        with torch.no_grad():
+            hf_logits = hf_model(input_ids).logits.to(torch.float32)
+        compiled_logits = executor.forward(input_ids).to(torch.float32)
+
+        assert hf_logits.shape == compiled_logits.shape
+        similarity = cosine_similarity(hf_logits, compiled_logits)
+        print(f"\n  llama_3b cosine similarity: {similarity:.8f}")
+        assert similarity > 0.999

@@ -37,6 +37,13 @@ from utils.logging import get_logger, log_request_lifecycle, log_step_begin, log
 _log = get_logger("engine")
 
 
+def _read_policy_dim(raw_policy: dict[str, Any], key: str) -> int:
+    for slab in raw_policy.get("slabs", []):
+        if key in slab.get("dims", {}):
+            return int(slab["dims"][key])
+    return 0
+
+
 @runtime_checkable
 class _ExecutorLike(Protocol):
     """Protocol for any executor compatible with LLMEngine."""
@@ -164,6 +171,18 @@ class LLMEngine:
         self._module = module
         self._hal_backend = hal_backend
 
+        # ── Auto-detect cache config from module metadata ─
+        raw_policy = module.metadata.get("cache_policy") if module.metadata else None
+        if raw_policy and num_layers <= 0:
+            num_layers = _read_policy_dim(raw_policy, "layers")
+        if raw_policy and num_kv_heads <= 0:
+            num_kv_heads = _read_policy_dim(raw_policy, "heads")
+        if raw_policy and head_dim <= 0:
+            head_dim = _read_policy_dim(raw_policy, "dim")
+        # Ensure the executor sees the correct block count for slab allocation
+        if raw_policy and "num_blocks" not in module.metadata:
+            module.metadata["num_blocks"] = num_blocks
+
         # ── Rust core runtime ────────────────────────────
         self._bm = _rt.PyBlockManager(num_blocks, block_size)
         self._scheduler = _rt.PyScheduler(max_batch_size, max_tokens_per_step, chunk_size)
@@ -202,8 +221,26 @@ class LLMEngine:
 
     # ── KV Cache Lifecycle ─────────────────────────────────
 
+    def _uses_new_cache(self) -> bool:
+        return (
+            hasattr(self.executor, "_uses_cache_manager")
+            and self.executor._uses_cache_manager
+        )
+
+    def _uses_static_model(self) -> bool:
+        return (
+            hasattr(self.executor, "_uses_static_shape")
+            and getattr(self.executor, "_uses_static_shape", False)
+        )
+
     def _ensure_kv_cache(self) -> torch.Tensor:
         if self._kv_cache is not None:
+            return self._kv_cache
+        if self._uses_new_cache():
+            self._kv_cache = torch.zeros(1)
+            return self._kv_cache
+        if self._uses_static_model():
+            self._kv_cache = torch.zeros(1)
             return self._kv_cache
         if self._num_layers <= 0 or self._num_kv_heads <= 0 or self._head_dim <= 0:
             raise RuntimeError(
@@ -226,6 +263,8 @@ class LLMEngine:
         positions: torch.Tensor,
         block_tables: dict[str, list[int]],
     ) -> None:
+        if self._uses_new_cache() or self._uses_static_model():
+            return
         if self._kv_cache is None:
             return
         self.executor.set_kv_cache(
@@ -327,6 +366,10 @@ class LLMEngine:
             batch_requests.append(br)
 
         batch = _Batch(batch_requests)
+        # ── Ensure KV cache is initialized ────────────────
+        if self._uses_new_cache():
+            self._ensure_kv_cache()
+
         kv = self._kv_cache
         bt = batch.block_tables
         use_kv = bool(kv is not None and bt)
@@ -357,6 +400,7 @@ class LLMEngine:
     def _step_batch(self, batch: _Batch, use_kv: bool) -> list[GenerationResult]:
         stacked_input = torch.stack([r.input_ids.flatten() for r in batch._requests])
         stacked_pos = torch.stack([r.positions.flatten() for r in batch._requests])
+        batch_is_decode = batch._requests[0].is_decode if batch._requests else False
 
         if use_kv:
             self.executor.set_kv_cache(
@@ -367,7 +411,7 @@ class LLMEngine:
                 head_dim=self._head_dim,
             )
             logits, kv_tensors = self.executor.forward_with_kv(
-                stacked_input, positions=stacked_pos
+                stacked_input, positions=stacked_pos, is_decode=batch_is_decode,
             )
             self._write_kv_outputs(kv_tensors, stacked_pos, batch.block_tables)
         else:
@@ -392,7 +436,7 @@ class LLMEngine:
 
             if use_kv:
                 logits, kv_tensors = self.executor.forward_with_kv(
-                    req_input, positions=req_pos
+                    req_input, positions=req_pos, is_decode=br.is_decode,
                 )
                 self._write_kv_outputs(kv_tensors, req_pos, batch.block_tables)
             else:
@@ -507,6 +551,9 @@ class LLMEngine:
         top_p: float = 1.0,
         top_k: int = 0,
     ) -> str:
+        if self._uses_static_model():
+            return self._generate_static_model(prompt, max_tokens, temperature, top_p, top_k)
+
         request_id = self.add_request(
             prompt,
             max_tokens=max_tokens,
@@ -535,6 +582,62 @@ class LLMEngine:
         return " ".join(str(t) for t in all_output_tokens)
 
     # ── Tokenizer Support ───────────────────────────────────
+
+    def _generate_static_model(
+        self,
+        prompt: str | list[int],
+        max_tokens: int = 256,
+        temperature: float = 1.0,
+        top_p: float = 1.0,
+        top_k: int = 0,
+    ) -> str:
+        if isinstance(prompt, str):
+            if self._tokenizer is None:
+                raise RuntimeError("Text prompt requires a tokenizer.")
+            prompt_tokens = self._tokenizer.encode(prompt)
+        else:
+            prompt_tokens = list(prompt)
+
+        # Determine model's expected seq_len from function input type
+        import re
+        expected_seq = None
+        for _name, tp in self._module.main.inputs:
+            m = re.search(r"tensor<(\d+)x(\d+)x", tp)
+            if m and m.group(2) != "?":
+                expected_seq = int(m.group(2))
+                break
+
+        all_tokens = list(prompt_tokens)
+        eos_id = self._eos_token_id
+
+        for _ in range(max_tokens):
+            current_seq = all_tokens
+            if expected_seq is not None:
+                current_seq = current_seq[-expected_seq:]
+                if len(current_seq) < expected_seq:
+                    pad_id = getattr(self._tokenizer, "pad_token_id", 0) if self._tokenizer else 0
+                    current_seq = current_seq + [pad_id] * (expected_seq - len(current_seq))
+
+            inp = torch.tensor([current_seq], dtype=torch.long)
+            logits = self.executor.forward(inp)
+            last_pos = expected_seq - 1 if expected_seq else len(current_seq) - 1
+            last_logits = logits[0, last_pos, :]
+
+            from engine.sampler import sample
+            sp = SamplingParams(temperature=temperature, top_p=top_p, top_k=top_k,
+                                max_tokens=max_tokens)
+            token_id = int(sample(last_logits.unsqueeze(0),
+                                  temperature=sp.temperature, top_p=sp.top_p,
+                                  top_k=sp.top_k).item())
+
+            if eos_id is not None and token_id == eos_id:
+                break
+            all_tokens.append(token_id)
+
+        output_tokens = all_tokens[len(prompt_tokens):]
+        if self._tokenizer is not None:
+            return str(self._tokenizer.decode(output_tokens))
+        return " ".join(str(t) for t in output_tokens)
 
     def set_tokenizer(self, tokenizer: Tokenizer, eos_token_id: int | None = None) -> None:
         self._tokenizer = tokenizer

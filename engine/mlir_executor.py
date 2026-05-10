@@ -7,7 +7,8 @@ to the legacy Executor (which walks Python IrModule).
 Key features:
   - Weight tensor lookup from MlirFunction.weights
   - Same HAL dispatch as the Python IR executor
-  - Same PagedAttention SDPA interception for KV cache
+  - CacheManager-based KV cache (policy-driven, no heuristic guessing)
+  - Backward compatible with old compiled models (fallback to legacy path)
   - Full forward() and forward_with_kv() API compatibility
 """
 
@@ -26,6 +27,15 @@ _WEIGHT_OPS = frozenset({"sf.weight", "sf.constant", "constant"})
 
 class MlirExecutor(_KVCacheMixin):
     """Executes a compiled model from MLIR artifact through the HAL.
+
+    Cache Manager (preferred, policy-driven):
+        When the compiled artifact carries a CachePolicy in its metadata,
+        the executor delegates KV cache I/O to CacheManager.  No heuristic
+        op name matching — the policy declares exactly which ops to intercept.
+
+    Legacy path (backward compatible):
+        Old compiled models without cache_policy fall back to the original
+        "sdpa" substring match + _KVCacheMixin path.
 
     Usage:
         module = load_mlir_artifact("./compiled/model")
@@ -47,6 +57,28 @@ class MlirExecutor(_KVCacheMixin):
         for name, tensor in self._function.weights.items():
             self._weights[name] = tensor
 
+        # ── Cache manager (new path) ──────────────────────
+        self._cache_mgr: Any = None
+        self._intercepts_by_op: dict[str, list[Any]] = {}
+        self._intercept_slab_ops: set[str] = set()
+        self._uses_cache_manager = False
+        self._uses_static_shape = self._detect_static_shape()
+
+        raw_policy = module.metadata.get("cache_policy")
+        if raw_policy and not self._uses_static_shape:
+            from compiler.cache_policy import CachePolicy
+            from engine.cache_manager import CacheManager
+
+            policy = CachePolicy.from_dict(raw_policy)
+            if not policy.is_empty:
+                num_blocks = module.metadata.get("num_blocks", 1000)
+                self._cache_mgr = CacheManager(policy, num_blocks=int(num_blocks))
+                self._uses_cache_manager = True
+                for idef in policy.intercepts:
+                    self._intercepts_by_op.setdefault(idef.op_name, []).append(idef)
+                    self._intercept_slab_ops.add(idef.op_name)
+
+        # ── Legacy KV cache state ──────────────────────────
         self._kv_cache: torch.Tensor | None = None
         self._block_tables: dict[str, list[int]] = {}
         self._block_size: int = 16
@@ -54,7 +86,16 @@ class MlirExecutor(_KVCacheMixin):
         self._head_dim: int = 0
 
         self._current_positions: torch.Tensor | None = None
+        self._current_is_decode: bool = False
         self._sda_layer_count: int = 0
+
+    def _detect_static_shape(self) -> bool:
+        for _name, tp in self._function.inputs:
+            import re
+            m = re.search(r"tensor<(\d+)x(\d+)x", tp)
+            if m and m.group(2) != "?":
+                return True
+        return False
 
     @property
     def function(self) -> MlirFunction:
@@ -85,6 +126,10 @@ class MlirExecutor(_KVCacheMixin):
 
         self._reset_forward_state(kwargs)
 
+        # ── Begin cache step if using CacheManager ────────
+        if self._uses_cache_manager and self._cache_mgr is not None:
+            self._cache_mgr.begin_step(self._block_tables)
+
         for op in self._function.ops:
             result = self._execute_op(op, ssa_values)
             if result is not None and op.results:
@@ -113,11 +158,18 @@ class MlirExecutor(_KVCacheMixin):
                 else:
                     kv_tensors.append((out_name, ssa_values[out_name]))
 
+        # Fallback: if outputs not declared in MLIR, use last op result
+        if logits.numel() == 0 and self._function.ops:
+            last_op = self._function.ops[-1]
+            if last_op.results and last_op.results[-1] in ssa_values:
+                logits = ssa_values[last_op.results[-1]]
+
         return logits, kv_tensors
 
     def _reset_forward_state(self, kwargs: dict[str, Any]) -> None:
         self._sda_layer_count = 0
         self._current_positions = kwargs.get("positions", None)
+        self._current_is_decode = kwargs.get("is_decode", False)
 
     def _execute_op(self, op: MlirOp, ssa_values: dict[str, torch.Tensor]) -> torch.Tensor | None:
         if op.name in _WEIGHT_OPS:
@@ -130,8 +182,13 @@ class MlirExecutor(_KVCacheMixin):
                 return self._function.weights[wname]
             return None
 
-        if "sdpa" in op.name.lower() and self._kv_cache is not None and self._block_tables:
-            self._intercept_sdpa(op, ssa_values)
+        # ── Cache Manager path ─────────────────────────
+        if self._uses_cache_manager and op.op_name in self._intercept_slab_ops:
+            self._handle_cache_intercept(op, ssa_values)
+
+        # ── Legacy heuristic path ──────────────────────
+        elif "sdpa" in op.name.lower() and self._kv_cache is not None and self._block_tables:
+            self._intercept_sdpa_legacy(op, ssa_values)
 
         tensor_inputs: list[torch.Tensor] = []
         for inp_name in op.operands:
@@ -175,7 +232,62 @@ class MlirExecutor(_KVCacheMixin):
 
         return result
 
-    def _intercept_sdpa(self, op: MlirOp, ssa_values: dict[str, torch.Tensor]) -> None:
+    # ── Cache Manager intercept ───────────────────────────
+
+    def _handle_cache_intercept(self, op: MlirOp, ssa_values: dict[str, torch.Tensor]) -> None:
+        if self._cache_mgr is None:
+            return
+        for idef in self._intercepts_by_op.get(op.op_name, []):
+            if idef.direction not in ("write", "read_write"):
+                continue
+
+            slab_id = idef.slab_id
+            data = self._extract_source(idef, op, ssa_values)
+            if data is None:
+                continue
+
+            layer_idx = self._cache_mgr.resolve_layer(slab_id)
+            positions = self._current_positions
+            if positions is not None:
+                flat_pos = positions.squeeze(0) if positions.dim() >= 2 else positions
+                self._cache_mgr.write_paged(slab_id, layer_idx, data, flat_pos)
+
+            if idef.direction == "read_write" and self._block_tables and self._current_is_decode:
+                max_seq = self._max_seq_from_tables(self._block_tables)
+                gathered = self._cache_mgr.read_paged(slab_id, layer_idx, max_seq)
+                source_key = self._get_source_ssa_key(idef, op)
+                if source_key and source_key in ssa_values:
+                    orig_dtype = ssa_values[source_key].dtype
+                    if gathered.dim() == 4:
+                        gathered = gathered.permute(0, 2, 1, 3)
+                    ssa_values[source_key] = gathered.to(orig_dtype)
+
+    def _extract_source(self, idef: Any, op: MlirOp, ssa_values: dict[str, torch.Tensor]) -> torch.Tensor | None:
+        source = idef.source
+        if source.startswith("operand["):
+            idx_str = source[len("operand["):-1]
+            idx = int(idx_str)
+            if idx < len(op.operands):
+                key = op.operands[idx]
+                return ssa_values.get(key)
+        elif source == "output":
+            if op.results:
+                key = op.results[0]
+                return ssa_values.get(key)
+        return None
+
+    def _get_source_ssa_key(self, idef: Any, op: MlirOp) -> str | None:
+        source = idef.source
+        if source.startswith("operand["):
+            idx_str = source[len("operand["):-1]
+            idx = int(idx_str)
+            if idx < len(op.operands):
+                return op.operands[idx]
+        return None
+
+    # ── Legacy intercept (backward compat) ─────────────────
+
+    def _intercept_sdpa_legacy(self, op: MlirOp, ssa_values: dict[str, torch.Tensor]) -> None:
         layer_idx = self._sda_layer_count
         self._sda_layer_count += 1
 
@@ -200,7 +312,7 @@ class MlirExecutor(_KVCacheMixin):
             self._write_kv_flat(k_new_sq, v_new_sq, flat_pos, self._block_tables, layer_idx)
 
         token_count = k_new_sq.shape[0] if k_new_sq.dim() >= 1 else 1
-        if token_count == 1 and self._block_tables:
+        if token_count == 1 and self._block_tables and self._current_is_decode:
             max_seq = self._max_seq_from_tables(self._block_tables)
             k_full, v_full = self._gather_kv_flat(self._block_tables, max_seq, layer_idx)
             if k_full.dim() == 4:
@@ -211,3 +323,60 @@ class MlirExecutor(_KVCacheMixin):
                 v_gathered = v_full
             ssa_values[k_name] = k_gathered.to(k_new.dtype)
             ssa_values[v_name] = v_gathered.to(v_new.dtype)
+
+    # ── Backward-compat public interface ──────────────────
+
+    def set_kv_cache(
+        self,
+        kv_cache: torch.Tensor | None,
+        block_tables: dict[str, list[int]] | None = None,
+        block_size: int = 16,
+        num_kv_heads: int = 0,
+        head_dim: int = 0,
+    ) -> None:
+        if self._uses_cache_manager:
+            self._block_tables = block_tables or {}
+            return
+        self._kv_cache = kv_cache
+        self._block_tables = block_tables or {}
+        self._block_size = block_size
+        self._num_kv_heads = num_kv_heads
+        self._head_dim = head_dim
+
+    def prepare_kv_blocks(
+        self,
+        num_layers: int,
+        num_kv_heads: int,
+        head_dim: int,
+        block_size: int,
+        num_blocks: int,
+        dtype: torch.dtype = torch.float16,
+    ) -> torch.Tensor:
+        if self._uses_cache_manager:
+            return torch.zeros(1)
+        shape = (num_blocks, num_layers, 2, block_size, num_kv_heads, head_dim)
+        return torch.zeros(shape, dtype=dtype)
+
+    def write_kv_to_cache(
+        self,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        positions: torch.Tensor,
+        block_tables: dict[str, list[int]],
+        layer_idx: int = 0,
+    ) -> None:
+        if self._uses_cache_manager:
+            return
+        self._write_kv_flat(key, value, positions, block_tables, layer_idx)
+
+    def gather_kv_from_cache(
+        self,
+        block_tables: dict[str, list[int]],
+        max_seq_len: int,
+        layer_idx: int = 0,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self._uses_cache_manager and self._cache_mgr is not None:
+            k = self._cache_mgr.read_paged("k", layer_idx, max_seq_len)
+            v = self._cache_mgr.read_paged("v", layer_idx, max_seq_len)
+            return k, v
+        return self._gather_kv_flat(block_tables, max_seq_len, layer_idx)

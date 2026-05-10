@@ -145,8 +145,8 @@ def compile_qwen(output_dir: str) -> None:
 
     _patch_transformers_torch()
 
+    from compiler.cache_policy import CachePolicy
     from compiler.pipeline import compile_mlir
-    from torch.export import Dim
     from transformers import AutoConfig, AutoModelForCausalLM  # type: ignore[import-untyped]
 
     model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models", "Qwen", "Qwen3.5-0.8B")
@@ -158,23 +158,106 @@ def compile_qwen(output_dir: str) -> None:
     print(f"Loading Qwen3.5-0.8B from: {model_dir}")
 
     config = AutoConfig.from_pretrained(model_dir, trust_remote_code=True)
-    # Qwen3_5 stores use_cache in text_config sub-config
-    if hasattr(config, "text_config") and hasattr(config.text_config, "use_cache"):
-        config.text_config.use_cache = False
-    elif hasattr(config, "use_cache"):
-        config.use_cache = False
+    tc = config.text_config if hasattr(config, "text_config") else config
+    tc.use_cache = False
+    config.use_cache = False
     model = AutoModelForCausalLM.from_pretrained(model_dir, config=config, trust_remote_code=True, torch_dtype=torch.bfloat16)
+    if hasattr(model, "lm_head") and hasattr(model.model, "embed_tokens"):
+        if getattr(config, "tie_word_embeddings", False):
+            model.lm_head.weight = model.model.embed_tokens.weight
     model.eval()
 
+    num_layers = tc.num_hidden_layers if hasattr(tc, "num_hidden_layers") else 24
+    num_heads = tc.num_attention_heads if hasattr(tc, "num_attention_heads") else 8
+    head_dim = getattr(tc, "head_dim", 256)
+    cache_policy = CachePolicy.for_llama(num_layers=num_layers, num_kv_heads=num_heads, head_dim=head_dim)
+
     example_input = torch.randint(0, 248320, (1, 64), dtype=torch.long)
-    print(f"Exporting with example input shape: {list(example_input.shape)} (static shape due to linear attention constraints)")
+    print(f"Exporting with example input shape: {list(example_input.shape)} (static shape)")
 
     mlir_mod = compile_mlir(
         model,
         example_args=(example_input,),
         output_dir=output_dir,
         model_dir=model_dir,
-        cache_export=True,
+        cache_export=False,
+        cache_policy=cache_policy,
+    )
+
+    op_count = len(mlir_mod.functions[0].ops)
+    weight_count = len(mlir_mod.functions[0].weights)
+    print(f"Compiled: {op_count} ops, {weight_count} weight tensors")
+    print(f"Artifact saved to: {output_dir}")
+
+    # ── Self-check ───────────────────────────────────────
+    from compiler.serialize import load_artifact
+    from engine.mlir_executor import MlirExecutor
+    from hal.pytorch_backend import PyTorchBackend
+    reloaded = load_artifact(output_dir)
+    ex = MlirExecutor(reloaded, PyTorchBackend("cpu"))
+    test_in = torch.randint(0, 248320, (1, 64), dtype=torch.long)
+    out = ex.forward(test_in)
+    assert not torch.isnan(out).any(), "NaN in output"
+    assert not torch.isinf(out).any(), "Inf in output"
+    print(f"Self-check OK: output {list(out.shape)}, no NaN/Inf")
+
+
+def compile_llama_1b(output_dir: str) -> None:
+    """Compile Llama-3.2-1B from models/LLM-Research/Llama-3.2-1B."""
+    import os
+    import torch
+
+    _patch_transformers_torch()
+
+    from compiler.cache_policy import CachePolicy
+    from compiler.pipeline import compile_mlir
+    from torch.export import Dim
+
+    model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                              "models", "LLM-Research", "Llama-3.2-1B")
+    model_dir = os.path.abspath(model_dir)
+
+    if not os.path.isdir(model_dir):
+        raise FileNotFoundError(f"Model directory not found: {model_dir}")
+
+    print(f"Loading Llama-3.2-1B from: {model_dir}")
+
+    from transformers import AutoConfig, AutoModelForCausalLM  # type: ignore[import-untyped]
+
+    config = AutoConfig.from_pretrained(model_dir, trust_remote_code=False)
+    config.use_cache = False
+    model = AutoModelForCausalLM.from_pretrained(
+        model_dir, config=config, torch_dtype=torch.bfloat16,
+    )
+    model.eval()
+
+    # Handle tied weights: safetensors omits lm_head.weight when tie_word_embeddings=True,
+    # but torch.export captures both as separate graph inputs. Ensure lm_head has its own
+    # tensor reference so the export sees it and weight_source can locate the canonical key.
+    if hasattr(model, "lm_head") and hasattr(model.model, "embed_tokens"):
+        if config.tie_word_embeddings:
+            model.lm_head.weight = model.model.embed_tokens.weight
+
+    example_input = torch.randint(0, 128256, (1, 8), dtype=torch.long)
+    print(f"Exporting with example input shape: {list(example_input.shape)} (dynamic seq)")
+
+    cache_policy = CachePolicy.for_llama(
+        num_layers=config.num_hidden_layers,
+        num_kv_heads=config.num_attention_heads,
+        head_dim=config.head_dim,
+    )
+
+    from torch.export import Dim as _Dim
+    dynamic_shapes = {"input_ids": {1: _Dim("seq", min=1, max=256)}}
+
+    mlir_mod = compile_mlir(
+        model,
+        example_args=(example_input,),
+        output_dir=output_dir,
+        dynamic_shapes=dynamic_shapes,
+        model_dir=model_dir,
+        cache_export=False,
+        cache_policy=cache_policy,
     )
 
     op_count = len(mlir_mod.functions[0].ops)
@@ -186,6 +269,92 @@ def compile_qwen(output_dir: str) -> None:
     print(f"MLIR output: {mlir_lines} lines")
     print(f"Artifact saved to: {output_dir}")
 
+    # ── Self-check: reload and run quick forward ───────
+    from compiler.serialize import load_artifact
+    from engine.mlir_executor import MlirExecutor
+    from hal.pytorch_backend import PyTorchBackend
+
+    reloaded = load_artifact(output_dir)
+    be = PyTorchBackend("cpu")
+    ex = MlirExecutor(reloaded, be)
+    test_in = torch.randint(0, 128256, (1, 8), dtype=torch.long)
+    out = ex.forward(test_in)
+    assert out.shape[-1] == config.vocab_size, f"Bad vocab {out.shape[-1]}"
+    assert not torch.isnan(out).any(), "NaN in output"
+    assert not torch.isinf(out).any(), "Inf in output"
+    print(f"Self-check OK: output {list(out.shape)}, no NaN/Inf")
+
+    return mlir_mod
+
+
+def compile_llama_3b(output_dir: str) -> None:
+    """Compile Llama-3.2-3B from models/LLM-Research/Llama-3.2-3B."""
+    import os
+    import torch
+
+    _patch_transformers_torch()
+
+    from compiler.cache_policy import CachePolicy
+    from compiler.pipeline import compile_mlir
+    from torch.export import Dim as _Dim
+    from transformers import AutoConfig, AutoModelForCausalLM  # type: ignore[import-untyped]
+
+    model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                              "models", "LLM-Research", "Llama-3.2-3B")
+    model_dir = os.path.abspath(model_dir)
+
+    print(f"Loading Llama-3.2-3B from: {model_dir}")
+    config = AutoConfig.from_pretrained(model_dir, trust_remote_code=False)
+    config.use_cache = False
+    model = AutoModelForCausalLM.from_pretrained(
+        model_dir, config=config, torch_dtype=torch.bfloat16,
+    )
+    if hasattr(model, "lm_head") and hasattr(model.model, "embed_tokens"):
+        if config.tie_word_embeddings:
+            model.lm_head.weight = model.model.embed_tokens.weight
+    model.eval()
+
+    example_input = torch.randint(0, 128256, (1, 8), dtype=torch.long)
+    print(f"Exporting with example input shape: {list(example_input.shape)} (dynamic seq)")
+
+    cache_policy = CachePolicy.for_llama(
+        num_layers=config.num_hidden_layers,
+        num_kv_heads=config.num_attention_heads,
+        head_dim=config.head_dim,
+    )
+    dynamic_shapes = {"input_ids": {1: _Dim("seq", min=1, max=256)}}
+
+    mlir_mod = compile_mlir(
+        model,
+        example_args=(example_input,),
+        output_dir=output_dir,
+        dynamic_shapes=dynamic_shapes,
+        model_dir=model_dir,
+        cache_export=False,
+        cache_policy=cache_policy,
+    )
+
+    op_count = len(mlir_mod.functions[0].ops)
+    weight_count = len(mlir_mod.functions[0].weights)
+    print(f"Compiled: {op_count} ops, {weight_count} weight tensors")
+    print(f"Artifact saved to: {output_dir}")
+
+    # ── Self-check ───────────────────────────────────────
+    from compiler.serialize import load_artifact
+    from engine.mlir_executor import MlirExecutor
+    from hal.pytorch_backend import PyTorchBackend
+
+    reloaded = load_artifact(output_dir)
+    ex = MlirExecutor(reloaded, PyTorchBackend("cpu"))
+    test_in = torch.randint(0, 128256, (1, 8), dtype=torch.long)
+    out = ex.forward(test_in)
+    assert out.shape[-1] == config.vocab_size, f"Bad vocab {out.shape[-1]}"
+    assert not torch.isnan(out).any(), "NaN in output"
+    assert not torch.isinf(out).any(), "Inf in output"
+    print(f"Self-check OK: output {list(out.shape)}, no NaN/Inf")
+
+    return mlir_mod
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -193,8 +362,8 @@ def main() -> None:
     )
     parser.add_argument(
         "model",
-        choices=["opt-125m", "tiny-llama", "qwen"],
-        help="Model to compile (opt-125m, tiny-llama, or qwen)",
+        choices=["opt-125m", "tiny-llama", "qwen", "llama-1b", "llama-3b"],
+        help="Model to compile",
     )
     parser.add_argument(
         "--output-dir",
@@ -208,6 +377,8 @@ def main() -> None:
         "opt-125m": (compile_opt125m, "./compiled/opt_125m"),
         "tiny-llama": (compile_tiny_llama, "./compiled/tiny_llama"),
         "qwen": (compile_qwen, "./compiled/qwen3_0.8b"),
+        "llama-1b": (compile_llama_1b, "./compiled/llama_1b"),
+        "llama-3b": (compile_llama_3b, "./compiled/llama_3b"),
     }
 
     func, default_dir = targets[args.model]

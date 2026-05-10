@@ -171,6 +171,8 @@ def _normalize_kv_for_cache(
     if k.dim() == 3 and k.shape[0] == nkh and k.shape[-1] == hd:
         k = k.permute(1, 0, 2)
         v = v.permute(1, 0, 2)
+    elif k.dim() == 3 and k.shape[1] == nkh and k.shape[-1] == hd:
+        pass  # Already [seq, heads, dim]
     elif k.dim() == 2 and k.shape[-1] == nkh * hd:
         k = k.reshape(-1, nkh, hd)
         v = v.reshape(-1, nkh, hd)

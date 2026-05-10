@@ -10,6 +10,7 @@ Python bindings when available).
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -36,6 +37,7 @@ def compile_mlir(
     model_dir: str = "",
     cache_export: bool = False,
     apply_fusion: bool = True,
+    cache_policy: Any | None = None,
 ) -> MlirModule:
     """Compile a PyTorch model through the MLIR-native pipeline.
 
@@ -46,6 +48,10 @@ def compile_mlir(
       4. Apply MLIR optimization passes (fusion + standard CSE/canonicalize)
       5. Re-parse optimized MLIR back to MlirModule
       6. Serialize to disk (optional)
+
+    Args:
+        cache_policy: Optional CachePolicy for KV cache strategy.
+            Serialized into metadata.json at compile time.
 
     Returns:
         The compiled MlirModule (post-optimization).
@@ -83,11 +89,13 @@ def compile_mlir(
     # Preserve weights through the MLIR text roundtrip
     mlir_mod.metadata["source"] = "torch.export"
     mlir_mod.metadata["artifact_format"] = "mlir"
-    # Restore weights from the original module (parser doesn't handle weight values)
+    # Restore weights and weight metadata from the original module
     for orig_func in orig_mlir_mod.functions:
         for mf in mlir_mod.functions:
             if mf.name == orig_func.name:
                 mf.weights = {wname: orig_func.weights[wname] for wname in orig_func.weights}
+                mf.param_weight_names = set(orig_func.param_weight_names)
+                mf.const_weight_names = set(orig_func.const_weight_names)
                 break
 
     # Step 6: serialize
@@ -95,6 +103,31 @@ def compile_mlir(
         mlir_mod.metadata["passes_applied"] = ["cse", "canonicalize"] + (
             ["fuse_silu", "fuse_rms_norm"] if apply_fusion else []
         )
+        if cache_policy is not None and hasattr(cache_policy, "to_dict"):
+            mlir_mod.metadata["cache_policy"] = cache_policy.to_dict()
+        if model_dir:
+            safetensors_path = os.path.join(os.path.abspath(model_dir), "model.safetensors")
+            bin_path = os.path.join(os.path.abspath(model_dir), "pytorch_model.bin")
+            safetensors_index = os.path.join(os.path.abspath(model_dir), "model.safetensors.index.json")
+            ws: dict[str, Any] = {}
+            if os.path.isfile(safetensors_path):
+                ws = {"path": safetensors_path, "format": "safetensors"}
+            elif os.path.isfile(safetensors_index):
+                ws = {"path": safetensors_index, "format": "safetensors_sharded"}
+            elif os.path.isfile(bin_path):
+                ws = {"path": bin_path, "format": "pytorch_bin"}
+            if ws:
+                # Detect tied weights (same tensor shared under different names)
+                tied: dict[str, str] = {}
+                for func in mlir_mod.functions:
+                    wlist = list(func.weights.items())
+                    for i, (n1, t1) in enumerate(wlist):
+                        for n2, t2 in wlist[i + 1:]:
+                            if t1.data_ptr() == t2.data_ptr():
+                                tied[n2] = n1
+                if tied:
+                    ws["tied_weights"] = tied
+                mlir_mod.metadata["weight_source"] = ws
         save_mlir_module_artifact(mlir_mod, str(output_dir))
 
     elapsed_s = time.perf_counter() - _t0

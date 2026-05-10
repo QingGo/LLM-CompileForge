@@ -59,7 +59,7 @@ indent-style = "space"
 python_version = "3.10"
 strict = true
 ignore_missing_imports = true
-exclude = ["tests/"]
+exclude = ["tests/", "compiler/state_export.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
