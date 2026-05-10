@@ -5,6 +5,10 @@ Phase 1 kernels:
   - paged_attention.py  — PagedAttention with block table
   - rms_norm.py         — RMSNorm + residual fusion
 
+Phase 2 kernels (quantize/):
+  - w4a16_gemm.py       — W4A16 GEMM: INT4 weights × FP16 activations
+  - w8a8_gemm.py        — W8A8 GEMM: INT8 weights × INT8 activations
+
 All kernels support CPU fallback (PyTorch reference) when Triton
 is not available (e.g. macOS, non-GPU environments).
 

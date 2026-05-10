@@ -59,3 +59,14 @@ class OpExecutor(ABC):
     def execute(self, op_name: str, inputs: list[Any], **kwargs: Any) -> torch.Tensor:
         """执行指定算子，返回结果张量。"""
         ...
+
+    # Phase 3 extensions — concrete backends override these when supported.
+
+    def async_copy(self, src: Any, dst: Any, byte_count: int) -> None:  # noqa: B027
+        raise NotImplementedError("async_copy not supported")
+
+    def memory_retrieve(self, key: Any, table: Any) -> torch.Tensor:  # noqa: B027
+        raise NotImplementedError("memory_retrieve not supported")
+
+    def send_kv_cache(self, blocks: Any, target_device: str) -> None:  # noqa: B027
+        raise NotImplementedError("send_kv_cache not supported")

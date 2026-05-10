@@ -11,6 +11,8 @@ import os
 import pytest
 import torch
 
+from tests.helpers import cosine_similarity
+
 
 def _patch_transformers_torch():
     """Patch transformers to recognize the symlinked torch installation."""
@@ -76,15 +78,6 @@ def _load_hf_opt_125m():
     return model
 
 
-def _cosine_similarity(a: torch.Tensor, b: torch.Tensor) -> float:
-    """Compute cosine similarity between two flattened tensors."""
-    a_flat = a.reshape(-1).float()
-    b_flat = b.reshape(-1).float()
-    return float(
-        torch.nn.functional.cosine_similarity(a_flat, b_flat, dim=0).item()
-    )
-
-
 @pytest.mark.integration
 @pytest.mark.baseline
 class TestHFCosineTinyLlama:
@@ -114,7 +107,7 @@ class TestHFCosineTinyLlama:
             f"Shape mismatch: HF {hf_logits.shape} vs compiled {compiled_logits.shape}"
         )
 
-        similarity = _cosine_similarity(hf_logits, compiled_logits)
+        similarity = cosine_similarity(hf_logits, compiled_logits)
         print(f"\n  tiny_llama cosine similarity: {similarity:.8f}")
         assert similarity > 0.999, (
             f"Cosine similarity {similarity:.8f} below threshold 0.999"
@@ -142,7 +135,7 @@ class TestHFCosineTinyLlama:
 
         assert hf_logits.shape == compiled_logits.shape
 
-        similarity = _cosine_similarity(hf_logits, compiled_logits)
+        similarity = cosine_similarity(hf_logits, compiled_logits)
         print(f"\n  tiny_llama decode cos: {similarity:.8f}")
         assert similarity > 0.999
 
@@ -176,7 +169,7 @@ class TestHFCosineOpt125M:
             f"Shape mismatch: HF {hf_logits.shape} vs compiled {compiled_logits.shape}"
         )
 
-        similarity = _cosine_similarity(hf_logits, compiled_logits)
+        similarity = cosine_similarity(hf_logits, compiled_logits)
         print(f"\n  opt_125m cosine similarity: {similarity:.8f}")
         assert similarity > 0.999, (
             f"Cosine similarity {similarity:.8f} below threshold 0.999"
@@ -204,7 +197,7 @@ class TestHFCosineOpt125M:
 
         assert hf_logits.shape == compiled_logits.shape
 
-        similarity = _cosine_similarity(hf_logits, compiled_logits)
+        similarity = cosine_similarity(hf_logits, compiled_logits)
         print(f"\n  opt_125m decode cos: {similarity:.8f}")
         assert similarity > 0.999
 
@@ -238,7 +231,7 @@ class TestHFCosineOpt125MDynamic:
             f"Shape mismatch: HF {hf_logits.shape} vs compiled {compiled_logits.shape}"
         )
 
-        similarity = _cosine_similarity(hf_logits, compiled_logits)
+        similarity = cosine_similarity(hf_logits, compiled_logits)
         print(f"\n  opt_125m_dynamic cosine similarity: {similarity:.8f}")
         assert similarity > 0.999, (
             f"Cosine similarity {similarity:.8f} below threshold 0.999"
@@ -292,7 +285,7 @@ class TestHFCosineQwen:
         compiled_logits = executor.forward(input_ids)
 
         assert hf_logits.shape == compiled_logits.shape
-        similarity = _cosine_similarity(hf_logits, compiled_logits)
+        similarity = cosine_similarity(hf_logits, compiled_logits)
         print(f"\n  qwen3_0.8b cosine similarity: {similarity:.8f}")
         assert similarity > 0.999
 
@@ -309,5 +302,5 @@ class TestHFCosineQwen:
         compiled_logits = executor.forward(input_ids)
 
         assert hf_logits.shape == compiled_logits.shape
-        similarity = _cosine_similarity(hf_logits, compiled_logits)
+        similarity = cosine_similarity(hf_logits, compiled_logits)
         assert similarity > 0.999

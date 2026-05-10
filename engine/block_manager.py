@@ -15,6 +15,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from utils.errors import OutOfMemoryError
+
 
 @dataclass
 class Block:
@@ -26,10 +28,6 @@ class Block:
 
     block_id: int
     ref_count: int = 0
-
-
-class OutOfMemoryError(Exception):
-    """Raised when the block pool is exhausted."""
 
 
 class BlockManager:
@@ -82,10 +80,7 @@ class BlockManager:
 
         needed = math.ceil(num_tokens / self.block_size)
         if needed > len(self.free_blocks):
-            raise OutOfMemoryError(
-                f"Need {needed} blocks but only {len(self.free_blocks)} free "
-                f"(total pool: {self.num_blocks})"
-            )
+            raise OutOfMemoryError(needed, len(self.free_blocks), self.num_blocks)
 
         allocated: list[int] = []
         for _ in range(needed):

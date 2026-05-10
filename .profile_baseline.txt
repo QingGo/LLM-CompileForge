@@ -1,5 +1,5 @@
 === LLM-ServeForge 性能基线 ===
-Sat May  9 12:33:48 CST 2026
+Sun May 10 15:12:03 CST 2026
 模型加载耗时:
-5.41s
+4.90s
 ---

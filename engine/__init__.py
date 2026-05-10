@@ -25,6 +25,7 @@ def __getattr__(name: str) -> Any:
         import engine.llm_engine as _engine
         import engine.sampler as _sampler
         import engine.scheduler as _scheduler
+        from utils.errors import OutOfMemoryError
 
         _globals: dict[str, Any] = {
             "GenerationResult": _batch.GenerationResult,
@@ -32,7 +33,7 @@ def __getattr__(name: str) -> Any:
             "SamplingParams": _batch.SamplingParams,
             "SequenceGroup": _batch.SequenceGroup,
             "BlockManager": _bm.BlockManager,
-            "OutOfMemoryError": _bm.OutOfMemoryError,
+            "OutOfMemoryError": OutOfMemoryError,
             "LLMEngine": _engine.LLMEngine,
             "greedy": _sampler.greedy,
             "sample": _sampler.sample,

@@ -16,13 +16,13 @@ dependencies = [
     "pydantic>=2",
     "pyyaml>=6",
     "numpy>=1.26",
-    "mlir-core",
+    "torch @ https://github.com/QingGo/pytorch/releases/download/torch-2.9.1-macos15-py3.10/torch-2.9.1a0+gitd38164a-cp310-cp310-macosx_11_0_x86_64.whl ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "torch~=2.9 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "mlir-core @ https://github.com/QingGo/llvm-project/releases/download/llvmorg-22.1.5/mlir_core-22.1.5-cp310-cp310-macosx_11_0_x86_64.whl ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "mlir-core @ https://github.com/QingGo/llvm-project/releases/download/llvmorg-22.1.5/mlir_core-22.1.5-cp310-cp310-linux_x86_64.whl ; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
 [project.optional-dependencies]
-gpu = [
-    "torch>=2.4",
-]
 lint = [
     "ruff>=0.6",
     "mypy>=1.11",
@@ -35,7 +35,6 @@ test = [
     "psutil>=6",
 ]
 dev = [
-    "torch>=2.4",
     "ruff>=0.6",
     "mypy>=1.11",
     "pytest>=8",
@@ -92,9 +91,5 @@ exclude_also = [
 [tool.uv]
 required-environments = [
     "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true

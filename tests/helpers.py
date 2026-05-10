@@ -121,3 +121,23 @@ def assert_cosine_above(
     b_f = b.float().flatten()
     cos = torch.nn.functional.cosine_similarity(a_f.unsqueeze(0), b_f.unsqueeze(0)).item()
     assert cos >= threshold, f"{msg} cosine {cos:.6f} < {threshold}"
+
+
+def cosine_similarity(a: Any, b: Any) -> float:
+    """Compute cosine similarity between two tensors."""
+    import torch
+    a_f = a.float().flatten()
+    b_f = b.float().flatten()
+    cos = torch.nn.functional.cosine_similarity(a_f.unsqueeze(0), b_f.unsqueeze(0)).item()
+    return float(cos)
+
+
+def assert_max_diff_below(
+    a: Any,
+    b: Any,
+    threshold: float = 1e-3,
+    msg: str = "",
+) -> None:
+    """Assert max absolute difference between two tensors is below threshold."""
+    diff = float((a.float() - b.float()).abs().max().item())
+    assert diff < threshold, f"{msg} max diff {diff:.6f} >= {threshold}"

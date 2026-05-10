@@ -16,28 +16,7 @@ import math
 import pytest
 import torch
 
-# ── Helpers ──────────────────────────────────────────────
-
-
-def _cosine_similarity(a: torch.Tensor, b: torch.Tensor) -> float:
-    a_f = a.reshape(-1).float()
-    b_f = b.reshape(-1).float()
-    dot = torch.dot(a_f, b_f)
-    norm = torch.norm(a_f) * torch.norm(b_f)
-    if norm == 0:
-        return 1.0 if torch.dot(a_f, a_f) == 0 and torch.dot(b_f, b_f) == 0 else 0.0
-    return float((dot / norm).item())
-
-
-def _assert_cosine_above(a: torch.Tensor, b: torch.Tensor, threshold: float = 0.999) -> None:
-    cos = _cosine_similarity(a, b)
-    assert cos >= threshold, f"cosine {cos:.6f} < {threshold}"
-
-
-def _assert_max_diff_below(a: torch.Tensor, b: torch.Tensor, threshold: float = 1e-3) -> None:
-    diff = float((a.float() - b.float()).abs().max().item())
-    assert diff < threshold, f"max diff {diff:.6f} >= {threshold}"
-
+from tests.helpers import assert_cosine_above, assert_max_diff_below
 
 # ── RMSNorm + Residual Fusion ───────────────────────────
 
@@ -60,8 +39,8 @@ class TestRMSNormFused:
         rms = torch.sqrt(torch.mean(ref * ref, dim=-1, keepdim=True) + 1e-6)
         ref = (ref / rms) * weight
 
-        _assert_cosine_above(result, ref)
-        _assert_max_diff_below(result, ref)
+        assert_cosine_above(result, ref)
+        assert_max_diff_below(result, ref)
 
     def test_batched_input(self) -> None:
         from kernels.rms_norm import fused_rms_norm_add
@@ -116,8 +95,8 @@ class TestFlashAttention:
             q, k, v, attn_mask=None, dropout_p=0.0, is_causal=True, scale=1.0 / math.sqrt(dim),
         )
 
-        _assert_cosine_above(result, ref)
-        _assert_max_diff_below(result, ref)
+        assert_cosine_above(result, ref)
+        assert_max_diff_below(result, ref)
 
     def test_non_causal_mode(self) -> None:
         from kernels.flash_attention import flash_attention_fwd
@@ -134,7 +113,7 @@ class TestFlashAttention:
             q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False,
         )
 
-        _assert_cosine_above(result, ref)
+        assert_cosine_above(result, ref)
 
     def test_custom_scale(self) -> None:
         from kernels.flash_attention import flash_attention_fwd
@@ -150,7 +129,7 @@ class TestFlashAttention:
             q, k, v, attn_mask=None, dropout_p=0.0, is_causal=True, scale=scale,
         )
 
-        _assert_cosine_above(result, ref)
+        assert_cosine_above(result, ref)
 
     def test_single_head(self) -> None:
         from kernels.flash_attention import flash_attention_fwd
@@ -240,7 +219,7 @@ class TestPagedAttention:
             q_ref, k_seq, v_seq, attn_mask=None, dropout_p=0.0, is_causal=False,
         ).squeeze(2)  # [1, num_heads, head_dim]
 
-        _assert_cosine_above(outputs["req_1"], ref[0])
+        assert_cosine_above(outputs["req_1"], ref[0])
 
     def test_multiple_requests(self) -> None:
         from kernels.paged_attention import paged_attention
