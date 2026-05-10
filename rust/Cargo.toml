@@ -1,0 +1,16 @@
+[package]
+name = "llm-serveforge-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Core scheduler and block manager for LLM-ServeForge, implemented in Rust"
+
+[lib]
+name = "llm_serveforge_runtime"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.24", features = ["extension-module"] }
+
+[profile.release]
+lto = true
+codegen-units = 1

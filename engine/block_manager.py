@@ -129,6 +129,11 @@ class BlockManager:
         if block.ref_count == 0:
             self.free_blocks.append(block_id)
 
+    def increment_ref_count(self, block_id: int) -> None:
+        """Increment reference count on a block (used by RadixCache on insert)."""
+        if block_id in self.blocks:
+            self.blocks[block_id].ref_count += 1
+
     def assign_cached_blocks(self, request_id: str, block_ids: list[int]) -> None:
         """Prepend pre-existing cached blocks to a request's block table.
 

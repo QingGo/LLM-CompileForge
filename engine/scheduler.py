@@ -1,5 +1,12 @@
 """Inference scheduler: Continuous Batching + Chunked Prefill.
 
+.. deprecated::
+    The production scheduler is now the Rust `PyScheduler` in
+    ``llm_serveforge_runtime``.  This Python implementation is retained
+    as a reference and for standalone testing, but LLMEngine no longer
+    uses it by default.
+
+
 The scheduler is the runtime's central decision-maker. Each step:
   1. Removes finished requests from the running batch.
   2. Adds new requests from the waiting queue (priority-sorted min-heap).

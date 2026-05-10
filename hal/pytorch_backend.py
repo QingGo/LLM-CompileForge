@@ -430,17 +430,29 @@ class PyTorchBackend(OpExecutor):
         mask: torch.Tensor | None = None
         o_weight: torch.Tensor | None = None
         o_bias: torch.Tensor | None = None
-        for t in remaining:
-            if t.dim() == 4:
-                mask = t
-            elif t.dim() == 2:
-                o_weight = t
-            elif t.dim() == 1:
-                o_bias = t
-            elif o_weight is None and t.dim() <= 2:
-                o_weight = t
-            else:
-                o_bias = t
+        # Use explicit input_roles from compiler when available; fall back to
+        # shape heuristics for models compiled without role tags.
+        roles: list[str] = kwargs.get("input_roles", [])
+        if roles and len(roles) == len(remaining):
+            for t, role in zip(remaining, roles, strict=False):
+                if role == "mask":
+                    mask = t
+                elif role == "weight":
+                    o_weight = t
+                elif role == "bias":
+                    o_bias = t
+        else:
+            for t in remaining:
+                if t.dim() == 4:
+                    mask = t
+                elif t.dim() == 2:
+                    o_weight = t
+                elif t.dim() == 1:
+                    o_bias = t
+                elif o_weight is None and t.dim() <= 2:
+                    o_weight = t
+                else:
+                    o_bias = t
         if o_weight is None:
             raise ValueError("fused_attention_output: missing output projection weight")
         sdpa_kwargs: dict[str, Any] = {}
@@ -465,25 +477,57 @@ class PyTorchBackend(OpExecutor):
         return F.linear(attn_out, o_weight, o_bias)
 
     def _op_fused_attention_block(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
-        tensors_1d: list[torch.Tensor] = []
-        tensors_2d: list[torch.Tensor] = []
-        tensors_3d: list[torch.Tensor] = []
-        tensors_4d: list[torch.Tensor] = []
-        for t in inputs:
-            d = t.dim()
-            if d == 1:
-                tensors_1d.append(t)
-            elif d == 2:
-                tensors_2d.append(t)
-            elif d == 4:
-                tensors_4d.append(t)
-            else:
-                tensors_3d.append(t)
-        rms_input = tensors_3d[0] if tensors_3d else inputs[0]
-        rms_weight = tensors_1d[0] if tensors_1d else inputs[1]
-        qkv_weight = tensors_2d[0] if len(tensors_2d) >= 1 else inputs[2]
-        o_weight = tensors_2d[1] if len(tensors_2d) >= 2 else tensors_2d[0]
-        o_bias = tensors_1d[1] if len(tensors_1d) >= 2 else None
+        # Use explicit input_roles when available; otherwise fall back to dim() heuristics.
+        roles: list[str] = kwargs.get("input_roles", [])
+        rms_input: torch.Tensor | None = None
+        rms_weight: torch.Tensor | None = None
+        qkv_weight: torch.Tensor | None = None
+        o_weight: torch.Tensor | None = None
+        o_bias: torch.Tensor | None = None
+        mask_4d: torch.Tensor | None = None
+
+        if roles and len(roles) == len(inputs):
+            for t, role in zip(inputs, roles, strict=False):
+                if role == "rms_input":
+                    rms_input = t
+                elif role == "rms_weight":
+                    rms_weight = t
+                elif role == "qkv_weight":
+                    qkv_weight = t
+                elif role == "o_weight":
+                    o_weight = t
+                elif role == "o_bias":
+                    o_bias = t
+                elif role == "mask":
+                    mask_4d = t
+        else:
+            tensors_1d: list[torch.Tensor] = []
+            tensors_2d: list[torch.Tensor] = []
+            tensors_3d: list[torch.Tensor] = []
+            tensors_4d: list[torch.Tensor] = []
+            for t in inputs:
+                d = t.dim()
+                if d == 1:
+                    tensors_1d.append(t)
+                elif d == 2:
+                    tensors_2d.append(t)
+                elif d == 4:
+                    tensors_4d.append(t)
+                else:
+                    tensors_3d.append(t)
+            rms_input = tensors_3d[0] if tensors_3d else inputs[0]
+            rms_weight = tensors_1d[0] if tensors_1d else inputs[1]
+            qkv_weight = tensors_2d[0] if len(tensors_2d) >= 1 else inputs[2]
+            o_weight = tensors_2d[1] if len(tensors_2d) >= 2 else tensors_2d[0]
+            o_bias = tensors_1d[1] if len(tensors_1d) >= 2 else None
+            mask_4d = tensors_4d[0] if tensors_4d else None
+
+        if rms_input is None or rms_weight is None or qkv_weight is None or o_weight is None:
+            raise ValueError(
+                "fused_attention_block: missing required inputs. "
+                "Provide input_roles or ensure rms_input, rms_weight, qkv_weight, o_weight "
+                "are present."
+            )
         rms_normed = rms_input * torch.rsqrt(rms_input.pow(2).mean(-1, keepdim=True) + 1e-6)
         rms_normed = rms_normed * rms_weight
         orig_dtype = rms_normed.dtype
@@ -493,23 +537,28 @@ class PyTorchBackend(OpExecutor):
         q = qkv_out[..., :hidden]
         k = qkv_out[..., hidden:2 * hidden]
         v = qkv_out[..., 2 * hidden:]
-        if qkv_weight.dim() == 2:
+
+        # Derive n_heads from kwargs (passed by compiler) or weight shape
+        n_heads: int = kwargs.get("n_heads", 0)
+        if n_heads <= 0 and qkv_weight.dim() == 2:
             total_hidden = qkv_weight.shape[0]
-            n_heads = 4
-            head_dim = total_hidden // (3 * n_heads)
-        else:
-            n_heads = 4
-            head_dim = hidden // n_heads
+            hidden_per_head = qkv_weight.shape[1]
+            n_heads = max(1, total_hidden // (3 * hidden_per_head))
+        if n_heads <= 0:
+            n_heads = 1  # last-resort fallback
+        head_dim = hidden // n_heads
+
         bsz, seq = q.shape[0], q.shape[1]
         q = q.reshape(bsz, seq, n_heads, head_dim).permute(0, 2, 1, 3)
         k = k.reshape(bsz, seq, n_heads, head_dim).permute(0, 2, 1, 3)
         v = v.reshape(bsz, seq, n_heads, head_dim).permute(0, 2, 1, 3)
-        mask_4d = tensors_4d[0] if tensors_4d else None
         sdpa_kwargs: dict[str, Any] = {}
         for key in ("scale", "is_causal", "dropout_p"):
             if key in kwargs:
                 sdpa_kwargs[key] = kwargs[key]
-        attn_out = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=mask_4d, **sdpa_kwargs)
+        attn_out = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, attn_mask=mask_4d, **sdpa_kwargs
+        )
         attn_out = attn_out.permute(0, 2, 1, 3).reshape(bsz, seq, hidden * n_heads)
         return torch.nn.functional.linear(attn_out, o_weight, o_bias)
 

@@ -260,24 +260,10 @@ def _compile_opt125m(
         dynamic_shapes={"input_ids": {0: Dim("batch"), 1: Dim("seq")}},
         apply_fusion=enable_fusion,
     )
-    )
     elapsed = time.perf_counter() - t0
 
     # Stamp compile time in metadata for future cached loads
     ir_module.metadata["bench_compile_time_s"] = elapsed
-
-    # Re-save to persist the metadata stamp (pipeline.compile already
-    # saved once; this update includes bench_compile_time_s).
-    from compiler.serialize import save_artifact as _save
-
-    # If enable_qkv_only, manually apply only FuseQKV after the base pipeline
-    if enable_qkv_only:
-        from compiler.passes.base import PassManager
-        from compiler.passes.fuse_qkv import FuseQKVProjection
-        pm = PassManager()
-        pm.add(FuseQKVProjection())
-        ir_module = pm.run(ir_module)
-    _save(ir_module, output_dir)
     return ir_module, elapsed
 
 
@@ -292,10 +278,10 @@ def _measure_forward_latency(
     Returns dict with mean_ms, median_ms, min_ms, max_ms, stdev_ms.
     """
     from hal.pytorch_backend import PyTorchBackend
-    from engine.executor import Executor
+    from engine.mlir_executor import MlirExecutor
 
     backend = PyTorchBackend("cpu")
-    executor = Executor(module, backend)
+    executor = MlirExecutor(module, backend)
 
     if input_ids is None:
         import torch

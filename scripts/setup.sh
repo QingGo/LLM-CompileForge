@@ -158,8 +158,34 @@ fi
 
 echo -e "  ${GREEN}Dependencies installed.${NC}"
 
+# ── 4b. Install MLIR Python bindings ─────────────────────────
+echo -e "${CYAN}[4b/6] Installing MLIR Python bindings...${NC}"
+if .venv/bin/python -c "import mlir.ir" 2>/dev/null; then
+    echo -e "  ${GREEN}mlir already available.${NC}"
+else
+    echo "  Installing mlir-core from GitHub Release..."
+    .venv/bin/python -m pip install --no-deps \
+        'https://github.com/QingGo/llvm-project/releases/download/llvmorg-22.1.5/mlir_core-22.1.5-cp310-cp310-macosx_11_0_x86_64.whl' \
+        2>&1 | tail -3
+fi
+
+# ── 4c. Build Rust runtime ───────────────────────────────────
+echo -e "${CYAN}[4c/6] Building Rust runtime...${NC}"
+if command -v cargo &>/dev/null; then
+    if .venv/bin/python -c "import llm_serveforge_runtime" 2>/dev/null; then
+        echo -e "  ${GREEN}Rust runtime already available.${NC}"
+    else
+        echo "  Building with maturin..."
+        .venv/bin/pip install maturin 2>&1 | tail -1
+        unset CONDA_PREFIX 2>/dev/null || true
+        .venv/bin/maturin develop -r --manifest-path rust/Cargo.toml 2>&1 | tail -3
+    fi
+else
+    echo -e "  ${YELLOW}cargo not found — skip Rust runtime. Install rustup: https://rustup.rs${NC}"
+fi
+
 # ── 5. Verify ─────────────────────────────────────────────────
-echo -e "${CYAN}[5/5] Verifying setup...${NC}"
+echo -e "${CYAN}[5/6] Verifying setup...${NC}"
 
 # Run lint
 if .venv/bin/ruff check hal/ compiler/ engine/ --quiet 2>/dev/null; then
@@ -170,7 +196,7 @@ fi
 
 # Run unit tests
 echo "  Running unit tests..."
-if .venv/bin/pytest tests/ -m unit -q --tb=line --ignore=tests/test_mlir_passes.py 2>/dev/null; then
+if .venv/bin/pytest tests/ -m unit -q --tb=line 2>/dev/null; then
     echo -e "  ${GREEN}Unit tests: PASS${NC}"
 else
     echo -e "  ${YELLOW}Unit tests: some failures (see above)${NC}"
@@ -203,7 +229,8 @@ echo ""
 echo "  Development commands:"
 echo "    source .venv/bin/activate"
 echo "    make lint              # ruff + mypy"
-echo "    make test-unit         # 298 unit tests (~6s)"
+echo "    make test-unit         # 244 unit tests (~6s)"
+echo "    cargo test             # 46 Rust tests (rust/)"
 echo "    make test-integration  # e2e tests (requires compiled models)"
 echo "    make smoke             # environment sanity check"
 echo ""

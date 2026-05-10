@@ -62,7 +62,10 @@ def mlir_verify_structure(mlir_module: Any, ctx: Any) -> list[str]:
                 func_count = 0
                 for op in block.operations:
                     name = str(op.name)
-                    if "func" in name:
+                    # "func" in name catches func.func (LLVM 20.x) or ops with
+                    # child regions (anonymous functions in LLVM 22.x).
+                    is_func = "func" in name or bool(op.regions)
+                    if is_func:
                         func_count += 1
                         if not op.regions:
                             issues.append(f"{name}: missing body region")

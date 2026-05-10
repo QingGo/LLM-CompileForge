@@ -1,7 +1,7 @@
 """torch.export → ExportedProgram capture.
 
 Phase 1 wraps torch.export to trace a model's forward pass and capture its
-FX graph. The resulting ExportedProgram is fed to fx_to_ir.py for conversion.
+FX graph. The resulting ExportedProgram is fed to fx_to_mlir.py for conversion.
 
 Export results are cached to disk (~/.cache/serveforge/exports/) keyed
 by model directory, input shapes, and dynamic shapes configuration.

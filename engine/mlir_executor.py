@@ -61,42 +61,16 @@ class MlirExecutor(_KVCacheMixin):
         return self._function
 
     def forward(self, input_ids: torch.Tensor, **kwargs: Any) -> torch.Tensor:
-        ssa_values: dict[str, torch.Tensor] = {}
-
-        if self._function.inputs:
-            first_input = self._function.inputs[0][0]
-            ssa_values[first_input] = input_ids
-            ssa_values[first_input.lstrip("%")] = input_ids
-            for named_input, _ in self._function.inputs[1:]:
-                clean = named_input.replace("%", "")
-                if clean in kwargs:
-                    ssa_values[named_input] = kwargs[clean]
-
-        self._reset_forward_state(kwargs)
-
-        output_ssa = None
-        if self._function.outputs:
-            output_ssa = self._function.outputs[0][0]
-        if output_ssa is None and self._function.ops:
-            last_op = self._function.ops[-1]
-            if last_op.results:
-                output_ssa = last_op.results[-1]
-
-        for op in self._function.ops:
-            result = self._execute_op(op, ssa_values)
-            if result is not None and op.results:
-                ssa_values[op.results[0]] = result
-
-        if output_ssa and output_ssa in ssa_values:
-            return ssa_values[output_ssa]
-
-        if ssa_values:
-            return list(ssa_values.values())[-1]
-
-        return torch.tensor([])
+        logits, _ = self._run_forward(input_ids, capture_kv=False, **kwargs)
+        return logits
 
     def forward_with_kv(
         self, input_ids: torch.Tensor, **kwargs: Any
+    ) -> tuple[torch.Tensor, list[tuple[str, torch.Tensor]]]:
+        return self._run_forward(input_ids, capture_kv=True, **kwargs)
+
+    def _run_forward(
+        self, input_ids: torch.Tensor, capture_kv: bool, **kwargs: Any
     ) -> tuple[torch.Tensor, list[tuple[str, torch.Tensor]]]:
         ssa_values: dict[str, torch.Tensor] = {}
 
@@ -115,6 +89,20 @@ class MlirExecutor(_KVCacheMixin):
             result = self._execute_op(op, ssa_values)
             if result is not None and op.results:
                 ssa_values[op.results[0]] = result
+
+        if not capture_kv:
+            output_ssa = None
+            if self._function.outputs:
+                output_ssa = self._function.outputs[0][0]
+            if output_ssa is None and self._function.ops:
+                last_op = self._function.ops[-1]
+                if last_op.results:
+                    output_ssa = last_op.results[-1]
+            if output_ssa and output_ssa in ssa_values:
+                return ssa_values[output_ssa], []
+            if ssa_values:
+                return list(ssa_values.values())[-1], []
+            return torch.tensor([]), []
 
         logits = torch.tensor([])
         kv_tensors: list[tuple[str, torch.Tensor]] = []

@@ -39,7 +39,9 @@ class TestMlirCountOps:
 
         stats = mlir_count_ops_in_module(_SIMPLE_ARITH_MLIR)
         assert stats.get("arith", 0) >= 3  # 2 constants + 1 addi
-        assert stats.get("func", 0) >= 2  # func.func + func.return
+        assert stats.get("func", 0) >= 1  # func.func
+        total = sum(stats.values())
+        assert total >= 4  # func.func + arith ops + return
 
     def test_empty_module_zero_counts(self) -> None:
         from compiler.mlir_passes import mlir_count_ops_in_module

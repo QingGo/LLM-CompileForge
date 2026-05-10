@@ -11,6 +11,7 @@ Python bindings when available).
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +51,10 @@ def compile_mlir(
         The compiled MlirModule (post-optimization).
     """
     from compiler.export_ir import export_model
+    from utils.logging import get_logger
+
+    _log = get_logger("compiler.pipeline")
+    _t0 = time.perf_counter()
 
     args = example_args or ()
     kwargs = example_kwargs or {}
@@ -92,11 +97,20 @@ def compile_mlir(
         )
         save_mlir_module_artifact(mlir_mod, str(output_dir))
 
+    elapsed_s = time.perf_counter() - _t0
+    total_ops = sum(len(f.ops) for f in mlir_mod.functions)
+    _log.info("compile complete | %.1fs, %d ops, %d weights | %s",
+              elapsed_s, total_ops, sum(len(f.weights) for f in mlir_mod.functions),
+              "fusion=on" if apply_fusion else "fusion=off")
+
     return mlir_mod
 
 
 def _apply_mlir_passes(mlir_text: str) -> str:
     """Apply MLIR optimization passes to the given MLIR text."""
+    import logging
+    _log = logging.getLogger("compiler.pipeline")
+
     from compiler.mlir_passes.fusion import _has_bindings, fuse_rms_norm_pass, fuse_silu_pass
 
     if _has_bindings():
@@ -112,17 +126,17 @@ def _apply_mlir_passes(mlir_text: str) -> str:
                 pman = pm.PassManager.parse("builtin.module(canonicalize)", ctx)
                 pman.run(module.operation)
                 mlir_text = str(module)
-        except Exception:
-            pass
+        except Exception as e:
+            _log.warning("canonicalize pass failed, continuing with unoptimized IR: %s", e)
 
     try:
         mlir_text = fuse_silu_pass(mlir_text)
-    except Exception:
-        pass
+    except Exception as e:
+        _log.warning("fuse_silu pass failed, continuing: %s", e)
     try:
         mlir_text = fuse_rms_norm_pass(mlir_text)
-    except Exception:
-        pass
+    except Exception as e:
+        _log.warning("fuse_rms_norm pass failed, continuing: %s", e)
 
     return mlir_text
 

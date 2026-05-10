@@ -11,8 +11,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from utils.logging import get_logger
+
 if TYPE_CHECKING:
-    from engine.block_manager import BlockManager
+    from hal.protocols import BlockManagerLike
+
+_log = get_logger("cache.radix")
 
 
 class RadixTreeNode:
@@ -58,7 +62,7 @@ class RadixCache:
         cache.evict(target_blocks)
     """
 
-    def __init__(self, block_manager: BlockManager) -> None:
+    def __init__(self, block_manager: BlockManagerLike) -> None:
         self._bm = block_manager
         self.root = RadixTreeNode(())
 
@@ -111,6 +115,7 @@ class RadixCache:
         if not token_ids:
             return
 
+        _log.debug("insert | tokens=%d blocks=%d", len(token_ids), len(kv_blocks))
         block_size = self._bm.block_size
         node = self.root
         remaining = list(token_ids)
@@ -247,7 +252,7 @@ class RadixCache:
         node.kv_blocks = kv_blocks
         node.ref_count = 1
         for bid in kv_blocks:
-            self._bm.blocks[bid].ref_count += 1
+            self._bm.increment_ref_count(bid)
         parent.children[token_ids[0]] = node
 
 
