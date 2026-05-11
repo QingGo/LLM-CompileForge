@@ -5,21 +5,22 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["hal", "compiler", "engine", "server"]
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [project]
 name = "llm-serveforge"
 version = "0.1.0-dev"
 description = "Hardware-agnostic LLM inference compilation and runtime"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2",
     "pyyaml>=6",
     "numpy>=1.26",
-    "torch @ https://github.com/QingGo/pytorch/releases/download/torch-2.9.1-macos15-py3.10/torch-2.9.1a0+gitd38164a-cp310-cp310-macosx_11_0_x86_64.whl ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
-    "torch~=2.9 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
-    "mlir-core @ https://github.com/QingGo/llvm-project/releases/download/llvmorg-22.1.5/mlir_core-22.1.5-cp310-cp310-macosx_11_0_x86_64.whl ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
-    "mlir-core @ https://github.com/QingGo/llvm-project/releases/download/llvmorg-22.1.5/mlir_core-22.1.5-cp310-cp310-linux_x86_64.whl ; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "torch @ https://github.com/QingGo/pytorch/releases/download/torch-2.9.1-macos15-py3.10/torch-2.9.1a0+gitd38164a-cp310-cp310-macosx_10_15_x86_64.whl",
+    "mlir-core @ https://github.com/QingGo/llvm-project/releases/download/llvmorg-22.1.5/mlir_core-22.1.5-cp310-cp310-macosx_11_0_x86_64.whl",
 ]
 
 [project.optional-dependencies]
@@ -86,10 +87,4 @@ exclude_also = [
     "raise AssertionError",
     "raise NotImplementedError",
     "if __name__ == .__main__.:",
-]
-
-[tool.uv]
-required-environments = [
-    "sys_platform == 'darwin' and platform_machine == 'x86_64'",
-    "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]

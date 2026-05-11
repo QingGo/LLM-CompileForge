@@ -1,0 +1,58 @@
+# NVIDIA A100 (80GB) — reference GPU
+name: "NVIDIA A100 80GB"
+
+compute_units:
+  - name: "Vector ALU"
+    fp32_tflops: 19.5
+    fp16_tflops: 19.5
+    bf16_tflops: 19.5
+    int8_tops: 0
+    int4_tops: 0
+  - name: "Tensor Core"
+    fp32_tflops: 0
+    fp16_tflops: 312.0
+    bf16_tflops: 312.0
+    int8_tops: 624.0
+    int4_tops: 0
+    fp8_tflops: 624.0
+    applies_to: ["matmul", "linear", "scaled_dot_product_attention", "fused_attention_output", "fused_rms_norm_matmul"]
+
+memory_levels:
+  - name: "Register File"
+    size_gb: 0.0
+    bandwidth_gbs: 8000.0    # internal register bandwidth
+    latency_ns: 0.0
+  - name: "L1/SRAM"
+    size_gb: 0.0192            # 192 KB per SM × 108 SMs
+    bandwidth_gbs: 4000.0
+    latency_ns: 0.02
+  - name: "L2 Cache"
+    size_gb: 0.04               # 40 MB
+    bandwidth_gbs: 3000.0
+    latency_ns: 0.2
+  - name: "HBM2e"
+    size_gb: 80.0
+    bandwidth_gbs: 2039.0
+    latency_ns: 1.0
+
+interconnects:
+  - name: "NVLink 3.0"
+    bandwidth_gbs: 600.0       # bidirectional per link
+    latency_us: 1.0
+    topology: "all_to_all"
+  - name: "PCIe Gen4"
+    bandwidth_gbs: 32.0
+    latency_us: 5.0
+    topology: "tree"
+
+op_latency_us:
+  default: 2.0
+  matmul: 6.0
+  linear: 6.0
+  scaled_dot_product_attention: 12.0
+  fused_attention_output: 10.0
+  layer_norm: 2.0
+  rms_norm: 1.5
+  softmax: 4.0
+  embedding: 2.0
+  weight: 0.1

@@ -26,8 +26,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 def _patch_transformers_torch() -> None:
     """Patch transformers to work with the conda-symlinked torch installation."""
     try:
-        import transformers  # type: ignore[import-untyped]
         from importlib import metadata as _meta
+
+        import transformers  # type: ignore[import-untyped]
 
         for _pkg_name in list(_meta.packages_distributions().keys()):
             if _pkg_name == "torch":
@@ -481,7 +482,7 @@ def main() -> None:
                   f"output={op.outputs}  source={source_node}  [{status}]{marker}")
 
         # Also try to find the op after which everything breaks
-        print(f"\nLast divergence details:")
+        print("\nLast divergence details:")
         for d in divergence_details[-3:]:
             print(f"  [{d['op_idx']:5d}] {d['op_name']:25s}  cos={d['cosine']:.6f}")
     else:

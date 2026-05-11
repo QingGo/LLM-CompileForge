@@ -189,6 +189,52 @@ class _MiscOps:
         shape = [int(t.item()) for t in inputs[1:]]
         return inputs[0].new_ones(shape)
 
+    def _op_div(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return inputs[0] / inputs[1]
+
+    def _op_tanh(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return torch.tanh(inputs[0])
+
+    def _op_sqrt(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return torch.sqrt(inputs[0])
+
+    def _op_clamp_min(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        min_val = kwargs.get("min", 0.0)
+        if len(inputs) > 1:
+            t = inputs[1]
+            if isinstance(t, torch.Tensor) and t.numel() == 1:
+                min_val = float(t.item())
+            else:
+                min_val = float(t)
+        return torch.clamp(inputs[0], min=float(min_val))
+
+    def _op_einsum(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        equation = kwargs.get("equation", "")
+        if not equation:
+            return inputs[0]
+        return torch.einsum(equation, *inputs)
+
+    def _op_stack(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        dim = kwargs.get("dim", 0)
+        if isinstance(dim, torch.Tensor):
+            dim = int(dim.item()) if dim.numel() == 1 else 0
+        return torch.stack(inputs, dim=dim)
+
+    def _op_linalg_norm(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        result: torch.Tensor = torch.linalg.vector_norm(inputs[0], ord=2, dim=-1, keepdim=True)
+        return result
+
+    def _op_var(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        dim = kwargs.get("dim", -1)
+        keepdim = kwargs.get("keepdim", True)
+        return inputs[0].float().var(dim=dim, keepdim=keepdim, unbiased=False)
+
+    def _op_view_as(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return inputs[0].view_as(inputs[1])
+
+    def _op_expand_as(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        return inputs[0].expand_as(inputs[1])
+
 
 from hal.pytorch_backend import _register_handler  # noqa: E402
 
@@ -220,3 +266,13 @@ _register_handler("eye", "_op_eye", 0, 1)
 _register_handler("zeros", "_op_zeros", 0, 10)
 _register_handler("zeros_like", "_op_zeros_like", 1, 1)
 _register_handler("new_ones", "_op_new_ones", 1, None)
+_register_handler("div", "_op_div", 2, 2)
+_register_handler("tanh", "_op_tanh", 1, 1)
+_register_handler("sqrt", "_op_sqrt", 1, 1)
+_register_handler("clamp_min", "_op_clamp_min", 1, 2)
+_register_handler("einsum", "_op_einsum", 1, None)
+_register_handler("stack", "_op_stack", 1, None)
+_register_handler("linalg_norm", "_op_linalg_norm", 1, 3)
+_register_handler("var", "_op_var", 1, 1)
+_register_handler("view_as", "_op_view_as", 2, 2)
+_register_handler("expand_as", "_op_expand_as", 2, 2)

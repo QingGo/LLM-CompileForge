@@ -241,9 +241,17 @@ def load_mlir_artifact(directory: str) -> MlirModule:
     elif use_new_path and ws.get("format") == "safetensors_sharded":
         _load_weights_via_sharded(module, ws_path, const_path)
     elif use_new_path and ws.get("format") == "pytorch_bin":
-        _load_weights_via_bin(module, ws_path, const_path)
+        _load_weights_via_bin(module, ws_path, const_path, ws.get("name_mapping"))
     elif weights_path.exists():
         _load_weights_legacy(module, weights_path)
+    elif const_path.exists():
+        # constants-only artifact (new path without weight_source)
+        raw_c: dict[str, torch.Tensor] = torch.load(
+            str(const_path), map_location="cpu", weights_only=True
+        )
+        for key, tensor in raw_c.items():
+            module.functions[0].weights[key] = tensor
+            module.functions[0].const_weight_names.add(key)
 
     # ── Handle tied weights: lm_head_weight → model_embed_tokens_weight ──
     tied = ws.get("tied_weights", {})
@@ -269,7 +277,7 @@ def _load_weights_via_mmap(
     import safetensors
     import safetensors.torch
 
-    with safetensors.safe_open(ws_path, framework="pt", device="cpu") as f:  # type: ignore[no-untyped-call]
+    with safetensors.safe_open(ws_path, framework="pt", device="cpu") as f:
         for key in f.keys():
             wname = key.replace(".", "_")
             func_name = _guess_func(wname, module)
@@ -320,7 +328,7 @@ def _load_weights_via_sharded(
     for shard_file in sorted(shard_files):
         sf_path = _os.path.join(ws_dir, shard_file)
         import safetensors
-        with safetensors.safe_open(sf_path, framework="pt", device="cpu") as f:  # type: ignore[no-untyped-call]
+        with safetensors.safe_open(sf_path, framework="pt", device="cpu") as f:
             for key in f.keys():
                 wname = key.replace(".", "_")
                 tensor = f.get_tensor(key)
@@ -361,12 +369,16 @@ def _load_weights_via_bin(
     module: MlirModule,
     ws_path: str,
     const_path: Path,
+    name_mapping: dict[str, str] | None = None,
 ) -> None:
     raw_bin: dict[str, torch.Tensor] = torch.load(
         ws_path, map_location="cpu", weights_only=True
     )
+    name_map = name_mapping or {}
     for key, tensor in raw_bin.items():
         wname = key.replace(".", "_")
+        if wname in name_map:
+            wname = name_map[wname]
         func_name = _guess_func(wname, module)
         for func in module.functions:
             if func.name == func_name:

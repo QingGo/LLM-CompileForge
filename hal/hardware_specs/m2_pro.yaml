@@ -1,0 +1,35 @@
+# Apple M2 Pro — single-user development baseline
+name: "Apple M2 Pro (CPU)"
+
+compute_units:
+  - name: "CPU Core"
+    fp32_tflops: 0.5
+    fp16_tflops: 0.0
+
+memory_levels:
+  - name: "L1 Cache"
+    size_gb: 0.0
+    bandwidth_gbs: 200.0
+    latency_ns: 0.003
+  - name: "L2 Cache"
+    size_gb: 0.036
+    bandwidth_gbs: 150.0
+    latency_ns: 0.01
+  - name: "LPDDR5"
+    size_gb: 32.0
+    bandwidth_gbs: 100.0
+    latency_ns: 0.1
+
+op_latency_us:
+  default: 20.0
+  matmul: 50.0
+  linear: 50.0
+  scaled_dot_product_attention: 120.0
+  fused_attention_output: 80.0
+  fused_rms_norm_matmul: 40.0
+  fused_silu_mul: 15.0
+  layer_norm: 10.0
+  rms_norm: 8.0
+  softmax: 15.0
+  embedding: 5.0
+  weight: 0.2

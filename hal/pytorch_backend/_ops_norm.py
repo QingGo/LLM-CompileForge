@@ -12,12 +12,15 @@ class _NormOps:
         return F.softmax(inputs[0], dim=dim)
 
     def _op_layer_norm(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
-        x = inputs[0]
+        x = inputs[0].float()
         normalized_shape = kwargs.get("normalized_shape", x.shape[-1:])
-        weight = inputs[1] if len(inputs) > 1 else None
-        bias = inputs[2] if len(inputs) > 2 else None
+        weight = inputs[1].float() if len(inputs) > 1 and inputs[1] is not None else None
+        bias = inputs[2].float() if len(inputs) > 2 and inputs[2] is not None else None
         eps = kwargs.get("eps", 1e-5)
-        return F.layer_norm(x, normalized_shape, weight, bias, eps=eps)
+        result = F.layer_norm(x, normalized_shape, weight, bias, eps=eps)
+        if len(inputs) > 1 and inputs[1] is not None:
+            result = result.to(inputs[1].dtype)
+        return result
 
     def _op_rms_norm(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         x = inputs[0]

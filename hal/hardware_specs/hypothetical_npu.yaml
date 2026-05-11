@@ -1,0 +1,37 @@
+# Hypothetical Edge NPU — bandwidth-limited ASIC
+name: "Hypothetical Edge NPU"
+
+compute_units:
+  - name: "Vector Unit"
+    fp32_tflops: 4.0
+    fp16_tflops: 8.0
+    int8_tops: 16.0
+  - name: "Matrix Engine"
+    fp16_tflops: 8.0
+    int8_tops: 16.0
+    int4_tops: 32.0
+    applies_to: ["matmul", "linear"]
+
+memory_levels:
+  - name: "On-Chip SRAM"
+    size_gb: 0.002              # 2 MB
+    bandwidth_gbs: 200.0
+    latency_ns: 0.01
+  - name: "LPDDR4x"
+    size_gb: 8.0
+    bandwidth_gbs: 30.0
+    latency_ns: 0.5
+
+interconnects:
+  - name: "PCIe Gen3"
+    bandwidth_gbs: 16.0
+    latency_us: 8.0
+    topology: "tree"
+
+op_latency_us:
+  default: 30.0
+  matmul: 80.0
+  linear: 80.0
+  scaled_dot_product_attention: 200.0
+  layer_norm: 18.0
+  rms_norm: 12.0

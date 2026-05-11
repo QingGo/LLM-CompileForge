@@ -62,8 +62,10 @@ MODEL_PRESETS: dict[str, dict[str, Any]] = {
 
 def _load_hf_model(preset: dict[str, Any]):
     if preset.get("local"):
+        import os
+
+        import torch
         from transformers import AutoConfig, AutoModelForCausalLM
-        import torch, os
         model_dir = os.path.abspath(preset["local"])
         config = AutoConfig.from_pretrained(model_dir, trust_remote_code=False)
         config.use_cache = False
@@ -92,6 +94,7 @@ def measure_latency(fn, warmup=3, iters=10) -> LatencyStats:
 
 def compare(model_name: str, prompt_len: int, max_tokens: int) -> ComparisonResult:
     import torch
+
     from compiler.serialize import load_artifact
     from engine.mlir_executor import MlirExecutor
     from hal.pytorch_backend import PyTorchBackend

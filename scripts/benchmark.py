@@ -184,7 +184,6 @@ def benchmark_prefix_cache_ttft(
 def _patch_transformers_torch() -> None:
     """Patch transformers to recognize the symlinked torch installation."""
     import torch
-
     import transformers.utils.generic as _generic  # type: ignore[import-untyped]
     import transformers.utils.import_utils as _iu  # type: ignore[import-untyped]
 
@@ -231,9 +230,10 @@ def _compile_opt125m(
 
     import torch
     from torch.export import Dim
-    from compiler.pipeline import compile_mlir
     from transformers.models.opt.configuration_opt import OPTConfig  # type: ignore[import-untyped]
     from transformers.models.opt.modeling_opt import OPTForCausalLM  # type: ignore[import-untyped]
+
+    from compiler.pipeline import compile_mlir
 
     _patch_transformers_torch()
 
@@ -277,8 +277,8 @@ def _measure_forward_latency(
 
     Returns dict with mean_ms, median_ms, min_ms, max_ms, stdev_ms.
     """
-    from hal.pytorch_backend import PyTorchBackend
     from engine.mlir_executor import MlirExecutor
+    from hal.pytorch_backend import PyTorchBackend
 
     backend = PyTorchBackend("cpu")
     executor = MlirExecutor(module, backend)

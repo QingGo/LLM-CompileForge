@@ -1,0 +1,27 @@
+# High-bandwidth hypothetical accelerator — compute-light, bandwidth-heavy
+name: "High-BW Accelerator"
+
+compute_units:
+  - name: "Vector Unit"
+    fp32_tflops: 8.0
+    fp16_tflops: 8.0
+
+memory_levels:
+  - name: "HBM3"
+    size_gb: 64.0
+    bandwidth_gbs: 800.0
+    latency_ns: 0.5
+
+interconnects:
+  - name: "CXL 3.0"
+    bandwidth_gbs: 64.0
+    latency_us: 3.0
+    topology: "all_to_all"
+
+op_latency_us:
+  default: 8.0
+  matmul: 30.0
+  linear: 30.0
+  scaled_dot_product_attention: 60.0
+  layer_norm: 6.0
+  rms_norm: 5.0

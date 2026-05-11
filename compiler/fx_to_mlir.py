@@ -61,7 +61,8 @@ _OP_DEFS: list[_OpDef] = [
             scalar_kwargs={1: "dim"}),
     _OpDef("expand", ("aten.expand", "aten.expand.default"),
             list_arg_attr=None),
-    _OpDef("permute", ("aten.permute", "aten.permute.default")),
+    _OpDef("permute", ("aten.permute", "aten.permute.default"),
+            list_arg_attr="dims"),
     _OpDef("transpose", ("aten.transpose", "aten.transpose.int"),
             scalar_kwargs={1: "dim0", 2: "dim1"}),
     _OpDef("slice", ("aten.slice.Tensor", "aten.slice_copy.Tensor"),
@@ -135,6 +136,18 @@ _OP_DEFS: list[_OpDef] = [
     ), scalar_kwargs={1: "dtype"}),
     _OpDef("getitem", ("getitem",)),
     _OpDef("_skip_wrap", ("wrap_with_set_grad_enabled",)),
+    # ── RWKV ops ─────────────────────────────────
+    _OpDef("div", ("aten.div.Tensor", "aten.div.default")),
+    _OpDef("tanh", ("aten.tanh.default",)),
+    _OpDef("sqrt", ("aten.sqrt.default",)),
+    _OpDef("clamp_min", ("aten.clamp_min.default",)),
+    _OpDef("einsum", ("aten.einsum.default",),
+            scalar_kwargs={0: "equation"}, list_arg_attr=None),
+    _OpDef("stack", ("aten.stack.default",)),
+    _OpDef("linalg_norm", ("aten.linalg_vector_norm.default",)),
+    _OpDef("var", ("aten.var.dim",)),
+    _OpDef("view_as", ("aten.view_as.default",)),
+    _OpDef("expand_as", ("aten.expand_as.default",)),
 ]
 
 _ATEN_TO_HAL: dict[str, str] = {}
@@ -529,6 +542,15 @@ def _collect_input_args(
                 scalar_val = 1
             weights[const_name] = torch.tensor(scalar_val)
             input_names.append(const_name)
+        elif isinstance(arg, str):
+            kwarg_name = scalar_kwargs_map.get(i)
+            if kwarg_name:
+                extra_kwargs.setdefault(kwarg_name, arg)
+            else:
+                const_name = f"_const_{name_counter}"
+                name_counter += 1
+                weights[const_name] = torch.tensor(0)
+                input_names.append(const_name)
         elif isinstance(arg, (torch.dtype, torch.memory_format, torch.layout)):
             kwarg_name = scalar_kwargs_map.get(i)
             if kwarg_name:

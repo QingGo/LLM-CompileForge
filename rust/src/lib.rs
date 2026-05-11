@@ -9,10 +9,12 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 pub mod block_manager;
+pub mod radix_cache;
 pub mod scheduler;
 pub mod types;
 
 use block_manager::BlockManager;
+use radix_cache::RadixCache;
 use scheduler::Scheduler;
 use types::{Batch, PrefixCacheHit};
 
@@ -193,11 +195,57 @@ impl PyScheduler {
     }
 }
 
+// ── PyRadixCache ────────────────────────────────────────────
+
+#[pyclass]
+pub struct PyRadixCache {
+    inner: RadixCache,
+}
+
+// SAFETY: RadixCache is single-threaded (Python GIL protects access).
+unsafe impl Sync for PyRadixCache {}
+
+#[pymethods]
+impl PyRadixCache {
+    #[new]
+    fn new(block_size: usize) -> PyResult<Self> {
+        Ok(Self {
+            inner: RadixCache::new(block_size),
+        })
+    }
+
+    fn match_prefix(&self, token_ids: Vec<u32>) -> (Vec<usize>, usize) {
+        self.inner.match_prefix(&token_ids)
+    }
+
+    fn insert(
+        &mut self,
+        token_ids: Vec<u32>,
+        kv_blocks: Vec<usize>,
+        block_manager: &mut PyBlockManager,
+    ) {
+        self.inner.insert(&token_ids, &kv_blocks, &mut block_manager.inner);
+    }
+
+    fn evict(&mut self, target_blocks: usize, block_manager: &mut PyBlockManager) -> usize {
+        self.inner.evict(target_blocks, &mut block_manager.inner)
+    }
+
+    fn cached_blocks(&self) -> usize {
+        self.inner.cached_blocks()
+    }
+
+    fn node_count(&self) -> usize {
+        self.inner.node_count()
+    }
+}
+
 // ── Module initialisation ───────────────────────────────────
 
 #[pymodule]
 fn llm_serveforge_runtime(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyScheduler>()?;
     m.add_class::<PyBlockManager>()?;
+    m.add_class::<PyRadixCache>()?;
     Ok(())
 }

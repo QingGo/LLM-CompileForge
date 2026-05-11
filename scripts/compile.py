@@ -22,7 +22,6 @@ sys.path.insert(0, str(_project_root))
 def _patch_transformers_torch() -> None:
     """Patch transformers to recognize the symlinked torch installation."""
     import torch
-
     import transformers.utils.generic as _generic  # type: ignore[import-untyped]
     import transformers.utils.import_utils as _iu  # type: ignore[import-untyped]
 
@@ -44,14 +43,16 @@ def _patch_transformers_torch() -> None:
 def compile_opt125m(output_dir: str) -> None:
     """Compile facebook/opt-125m through the full pipeline."""
     import os
+
     import torch
 
     _patch_transformers_torch()
 
-    from compiler.pipeline import compile_mlir
     from torch.export import Dim
     from transformers.models.opt.configuration_opt import OPTConfig  # type: ignore[import-untyped]
     from transformers.models.opt.modeling_opt import OPTForCausalLM  # type: ignore[import-untyped]
+
+    from compiler.pipeline import compile_mlir
 
     # HF cache path for opt-125m
     hub_dir = os.path.expanduser("~/.cache/huggingface/hub/models--facebook--opt-125m")
@@ -80,6 +81,7 @@ def compile_opt125m(output_dir: str) -> None:
         model,
         example_args=(example_input,),
         output_dir=output_dir,
+        model_dir=os.path.join(snapshots, snap),
         dynamic_shapes={"input_ids": {0: Dim("batch"), 1: Dim("seq")}},
     )
 
@@ -92,14 +94,16 @@ def compile_opt125m(output_dir: str) -> None:
 def compile_tiny_llama(output_dir: str) -> None:
     """Compile hf-internal-testing/tiny-random-LlamaForCausalLM."""
     import os
+
     import torch
 
     _patch_transformers_torch()
 
-    from compiler.pipeline import compile_mlir
     from torch.export import Dim
     from transformers.models.llama.configuration_llama import LlamaConfig  # type: ignore[import-untyped]
     from transformers.models.llama.modeling_llama import LlamaForCausalLM  # type: ignore[import-untyped]
+
+    from compiler.pipeline import compile_mlir
 
     model_name = "hf-internal-testing/tiny-random-LlamaForCausalLM"
     print(f"Loading {model_name} weights...")
@@ -141,13 +145,15 @@ def compile_tiny_llama(output_dir: str) -> None:
 def compile_qwen(output_dir: str) -> None:
     """Compile Qwen/Qwen3.5-0.8B through the full pipeline."""
     import os
+
     import torch
 
     _patch_transformers_torch()
 
+    from transformers import AutoConfig, AutoModelForCausalLM  # type: ignore[import-untyped]
+
     from compiler.cache_policy import CachePolicy
     from compiler.pipeline import compile_mlir
-    from transformers import AutoConfig, AutoModelForCausalLM  # type: ignore[import-untyped]
 
     model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models", "Qwen", "Qwen3.5-0.8B")
     model_dir = os.path.abspath(model_dir)
@@ -205,13 +211,14 @@ def compile_qwen(output_dir: str) -> None:
 def compile_llama_1b(output_dir: str) -> None:
     """Compile Llama-3.2-1B from models/LLM-Research/Llama-3.2-1B."""
     import os
+
     import torch
 
     _patch_transformers_torch()
 
+
     from compiler.cache_policy import CachePolicy
     from compiler.pipeline import compile_mlir
-    from torch.export import Dim
 
     model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                               "models", "LLM-Research", "Llama-3.2-1B")
@@ -290,14 +297,16 @@ def compile_llama_1b(output_dir: str) -> None:
 def compile_llama_3b(output_dir: str) -> None:
     """Compile Llama-3.2-3B from models/LLM-Research/Llama-3.2-3B."""
     import os
+
     import torch
 
     _patch_transformers_torch()
 
-    from compiler.cache_policy import CachePolicy
-    from compiler.pipeline import compile_mlir
     from torch.export import Dim as _Dim
     from transformers import AutoConfig, AutoModelForCausalLM  # type: ignore[import-untyped]
+
+    from compiler.cache_policy import CachePolicy
+    from compiler.pipeline import compile_mlir
 
     model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                               "models", "LLM-Research", "Llama-3.2-3B")
@@ -356,13 +365,80 @@ def compile_llama_3b(output_dir: str) -> None:
     return mlir_mod
 
 
+def compile_rwkv(output_dir: str) -> None:
+    """Compile RWKV-7 g1d-0.4b from models/RWKV/."""
+    import json
+    import os
+
+    import torch
+
+    _patch_transformers_torch()
+
+    from compiler.cache_policy import CachePolicy
+    from compiler.pipeline import compile_mlir
+    from models.RWKV.rwkv_model import RWKV7Config, RWKV7Model
+
+    pth_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "models", "RWKV", "rwkv7-g1",
+    )
+    pth_dir = os.path.abspath(pth_dir)
+    pth_path = os.path.join(pth_dir, "rwkv7-g1d-0.4b-20260210-ctx8192.pth")
+    if not os.path.isfile(pth_path):
+        raise FileNotFoundError(f"Model weights not found: {pth_path}")
+
+    print(f"Loading RWKV-7 weights from: {pth_path}")
+    config = RWKV7Config(vocab_size=65536, hidden_size=1024, num_layers=24)
+    model = RWKV7Model(config)
+    model.load_weights_from_pth(pth_path)
+    model.eval()
+
+    example_input = torch.randint(0, config.vocab_size, (1, 4), dtype=torch.long)
+    print(f"Exporting RWKV-7 with input shape: {list(example_input.shape)} (static seq=4)")
+
+    cache_policy = CachePolicy.for_rwkv(
+        num_layers=config.num_layers,
+        state_dim=config.hidden_size,
+    )
+
+    mlir_mod = compile_mlir(
+        model,
+        example_args=(example_input,),
+        output_dir=output_dir,
+        cache_export=False,
+        cache_policy=cache_policy,
+    )
+
+    # Write weight_source with name mapping
+    meta_path = os.path.join(output_dir, "metadata.json")
+    if os.path.isfile(meta_path):
+        with open(meta_path) as f:
+            meta = json.load(f)
+        meta["weight_source"] = {
+            "path": pth_path,
+            "format": "pytorch_bin",
+            "name_mapping": {
+                "blocks_0_ln0_weight": "ln0_weight",
+                "blocks_0_ln0_bias": "ln0_bias",
+            },
+        }
+        with open(meta_path, "w") as f:
+            json.dump(meta, f, indent=2)
+
+    op_count = len(mlir_mod.functions[0].ops)
+    weight_count = len(mlir_mod.functions[0].weights)
+    print(f"Compiled: {op_count} ops, {weight_count} weight tensors")
+    print(f"Artifact saved to: {output_dir}")
+    return mlir_mod
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Compile a PyTorch model through LLM-ServeForge compiler",
     )
     parser.add_argument(
         "model",
-        choices=["opt-125m", "tiny-llama", "qwen", "llama-1b", "llama-3b"],
+        choices=["opt-125m", "tiny-llama", "qwen", "llama-1b", "llama-3b", "rwkv"],
         help="Model to compile",
     )
     parser.add_argument(
@@ -379,6 +455,7 @@ def main() -> None:
         "qwen": (compile_qwen, "./compiled/qwen3_0.8b"),
         "llama-1b": (compile_llama_1b, "./compiled/llama_1b"),
         "llama-3b": (compile_llama_3b, "./compiled/llama_3b"),
+        "rwkv": (compile_rwkv, "./compiled/rwkv7_g1d_0.4b"),
     }
 
     func, default_dir = targets[args.model]

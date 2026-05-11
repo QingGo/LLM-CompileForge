@@ -24,8 +24,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 def _patch_transformers_torch() -> None:
     """Patch transformers to work with the conda-symlinked torch."""
     try:
-        import transformers
         from importlib import metadata as _meta
+
+        import transformers
         for _pkg_name in list(_meta.packages_distributions().keys()):
             if _pkg_name == "torch":
                 if not hasattr(transformers, "is_torch_available"):
@@ -120,6 +121,7 @@ def main() -> None:
     _patch_transformers_torch()
 
     from transformers import AutoConfig, AutoModelForCausalLM
+
     from compiler.fx_to_mlir import fx_graph_to_mlir
     from hal.pytorch_backend import PyTorchBackend
 
@@ -225,7 +227,7 @@ def main() -> None:
                     result = backend.execute(op.name, ti, **attrs)
                 else:
                     result = backend.execute(op.name, [], **attrs)
-            except Exception as e:
+            except Exception:
                 exec_errors += 1
                 result = None
 
@@ -277,7 +279,7 @@ def main() -> None:
         print(f"{hf_name:<20s} {best_name:<40s} {best_cos:>10.6f}  {status}")
 
     # ── Also check final output ──────────────────────────────
-    print(f"\n=== Final output comparison ===")
+    print("\n=== Final output comparison ===")
     output_names = [n for n, _ in ir_func.outputs]
     if output_names and output_names[0] in ssa_values:
         ir_logits = ssa_values[output_names[0]]

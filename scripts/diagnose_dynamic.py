@@ -18,7 +18,6 @@ sys.path.insert(0, str(_project_root))
 
 def _patch_transformers_torch() -> None:
     import torch
-
     import transformers.utils.generic as _generic  # type: ignore[import-untyped]
     import transformers.utils.import_utils as _iu  # type: ignore[import-untyped]
 
@@ -37,7 +36,6 @@ def _patch_transformers_torch() -> None:
 
 
 def _load_tiny_llama():
-    import torch
     from transformers.models.llama.configuration_llama import LlamaConfig  # type: ignore[import-untyped]
     from transformers.models.llama.modeling_llama import LlamaForCausalLM  # type: ignore[import-untyped]
 
@@ -81,7 +79,6 @@ def _load_opt125m():
 
 def _build_simple_model():
     """Build a minimal transformer-like model for baseline testing."""
-    import torch
     import torch.nn as nn
 
     class TinyModel(nn.Module):
@@ -105,7 +102,6 @@ def test_config(label: str, model_fn, model_name: str,
                 dynamic_shapes: Any = None, strict: bool = True) -> bool:
     """Test one dynamic_shapes configuration. Returns True on success."""
     import torch
-    from torch.export import Dim
 
     print(f"\n{'='*60}")
     print(f"  TEST: {label}")
@@ -149,10 +145,10 @@ def test_config(label: str, model_fn, model_name: str,
         return True
 
     except Exception as e:
-        print(f"  FAILED!")
+        print("  FAILED!")
         print(f"  Error type: {type(e).__name__}")
         print(f"  Error message: {str(e)[:500]}")
-        print(f"\n  Full traceback (last 30 lines):")
+        print("\n  Full traceback (last 30 lines):")
         tb_lines = traceback.format_exc().splitlines()
         for line in tb_lines[-30:]:
             print(f"    {line}")
