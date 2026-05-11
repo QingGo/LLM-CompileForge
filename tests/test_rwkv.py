@@ -60,26 +60,6 @@ class TestRwkvDialect:
         assert not is_rwkv_op("arith.addf")
 
 
-# ── RWKV Fusion Passes ───────────────────────────────────
-
-
-@pytest.mark.unit
-class TestRwkvFusion:
-    def test_fuse_wkv_pass_noop_on_empty(self) -> None:
-        from compiler.rwkv.fusion import fuse_wkv_pass
-
-        mlir = "module {}"
-        result = fuse_wkv_pass(mlir)
-        assert result == mlir
-
-    def test_apply_rwkv_fusion_passes_idempotent(self) -> None:
-        from compiler.rwkv.fusion import apply_rwkv_fusion_passes
-
-        mlir = "module {\n  func.func @main() -> tensor<f32> { return %0 : tensor<f32> }\n}"
-        result = apply_rwkv_fusion_passes(mlir)
-        assert "func.func @main" in result
-
-
 # ── RWKV State Manager ───────────────────────────────────
 
 

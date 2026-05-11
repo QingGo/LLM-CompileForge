@@ -15,6 +15,7 @@ import torch.fx
 from torch.export import ExportedProgram
 
 from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp
+from compiler.mlir_dialect.shape_inference import infer_output_shape
 
 # ── Unified operator definition ─────────────────────────────
 # _OpDef is the single source of truth for FX→MLIR op conversion.
@@ -210,6 +211,69 @@ def _resolve_shape_tuple(raw_shape: Any) -> tuple[int | None, ...]:
     return tuple(result)
 
 
+def _parse_mlir_type_to_shape(type_str: str) -> tuple[tuple[int | None, ...], str]:
+    """Parse MLIR type string like 'tensor<1x64xf32>' → ((1,64), 'f32')."""
+    if not type_str.startswith("tensor<"):
+        return ((1,), "f32")
+    inner = type_str[len("tensor<"):-1]  # remove tensor<...>
+    parts = inner.split("x")
+    elt = parts[-1]
+    shape: list[int | None] = []
+    for p in parts[:-1]:
+        shape.append(None if p == "?" else int(p))
+    return (tuple(shape), elt)
+
+
+def _resolve_op_types(
+    hal_op: str,
+    input_names: list[str],
+    ssa_map: dict[str, str],
+    shape_map: dict[str, tuple[tuple[int | None, ...], str]],
+    weights: dict[str, torch.Tensor],
+    kwargs: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    """Compute input/output MLIR type strings for an sf operation."""
+    input_shapes: list[tuple[int | None, ...]] = []
+    input_elts: list[str] = []
+
+    for inp_name in input_names:
+        # Resolve operand to original node name for shape lookup
+        resolved = inp_name
+        for node_name, ssa_name in ssa_map.items():
+            if ssa_name == inp_name or node_name == inp_name or inp_name.startswith(f"%{node_name}"):
+                resolved = node_name
+                break
+
+        if resolved in shape_map:
+            s, e = shape_map[resolved]
+        elif inp_name in weights:
+            t = weights[inp_name]
+            s = tuple(t.shape)
+            e = _fake_to_shape_tuple(t)[1]
+        elif inp_name.startswith("%") and inp_name[1:] in weights:
+            # Weight SSA names have % prefix, strip before lookup
+            t = weights[inp_name[1:]]
+            s = tuple(t.shape)
+            e = _fake_to_shape_tuple(t)[1]
+        else:
+            s = (2, 64)
+            e = "f32"
+        input_shapes.append(s)
+        input_elts.append(e)
+
+    try:
+        out = infer_output_shape(hal_op, input_shapes, input_elts, **kwargs)
+    except Exception:
+        if input_elts:
+            out = [(input_shapes[0], input_elts[0])]
+        else:
+            out = [((1,), "f32")]
+
+    in_type_strs = [_shape_to_mlir_type(s, e) for s, e in zip(input_shapes, input_elts, strict=False)]
+    out_type_strs = [_shape_to_mlir_type(s, e) for s, e in out]
+    return in_type_strs, out_type_strs
+
+
 def _map_aten_op(target: Any) -> str | None:
     if isinstance(target, str):
         target_str = target
@@ -260,6 +324,25 @@ def _type_from_fake(fake: torch.Tensor) -> str:
     return _tensor_type_str(dtype, shape)
 
 
+def _fake_to_shape_tuple(fake: torch.Tensor) -> tuple[tuple[int | None, ...], str]:
+    """Extract (shape, elt_str) from a fake tensor for shape inference."""
+    shape = _resolve_shape_tuple(fake.shape)
+    elt = str(fake.dtype).replace("torch.", "")
+    return shape, elt
+
+
+def _shape_to_mlir_type(shape: tuple[int | None, ...], elt: str) -> str:
+    """Convert (shape, element_type) to MLIR type string like tensor<1x64xf32>."""
+    dims = "x".join(str(d) if d is not None else "?" for d in shape)
+    elt_map = {
+        "float32": "f32", "float16": "f16", "bfloat16": "bf16",
+        "float64": "f64", "int32": "i32", "int64": "i64",
+        "int8": "i8", "uint8": "ui8", "bool": "i1",
+    }
+    mlir_elt = elt_map.get(elt, "f32")
+    return f"tensor<{dims}x{mlir_elt}>" if dims else f"tensor<{mlir_elt}>"
+
+
 def fx_graph_to_mlir(
     program: ExportedProgram,
     function_name: str = "main",
@@ -307,15 +390,21 @@ def fx_graph_to_mlir(
     name_counter = 0
     ssa_map: dict[str, str] = {}
     tuple_outputs: dict[str, list[str]] = {}
+    # Shape tracking: SSA name → (shape_tuple, element_type_str)
+    shape_map: dict[str, tuple[tuple[int | None, ...], str]] = {}
 
     for node in graph.nodes:
         if node.op == "placeholder":
             ssa_map[node.name] = f"%{weight_name_map.get(node.name, node.name)}"
+            if "val" in node.meta:
+                shape_map[node.name] = _fake_to_shape_tuple(node.meta["val"])
             continue
 
         if node.op == "get_attr":
             attr_name = str(node.target).replace(".", "_")
-            ssa_map[node.name] = f"%{attr_name}"  # SSA reference to weight constant result
+            ssa_map[node.name] = f"%{attr_name}"
+            if "val" in node.meta:
+                shape_map[node.name] = _fake_to_shape_tuple(node.meta["val"])
             continue
 
         if node.op == "call_function":
@@ -356,10 +445,19 @@ def fx_graph_to_mlir(
             ssa_map[node.name] = output_name
             kwargs["source_node"] = node.name
 
+            # Compute output types via shape inference
+            input_types, output_types = _resolve_op_types(
+                hal_op, input_names, ssa_map, shape_map, weights, kwargs,
+            )
+            # Record output shape for downstream ops
+            if output_types:
+                shape_map[node.name] = _parse_mlir_type_to_shape(output_types[0])
+
             mlir_ops.append(MlirOp(
                 name=f"sf.{hal_op}", dialect="sf", op_name=hal_op,
                 operands=input_names, results=[output_name],
                 attributes=kwargs,
+                input_types=input_types, output_types=output_types,
             ))
             continue
 
@@ -376,11 +474,15 @@ def fx_graph_to_mlir(
 
     # ── Phase 4: prepend weight constants ─────────────────
     wops: list[MlirOp] = []
-    for wname in weights:
+    for wname, tensor in weights.items():
+        s = tuple(tensor.shape) if len(tensor.shape) > 0 else (1,)
+        elt = _fake_to_shape_tuple(tensor)[1]
+        tp_str = _shape_to_mlir_type(s, elt)
         wops.append(MlirOp(
             name="sf.weight", dialect="sf", op_name="weight",
             operands=[wname], results=[f"%{wname}"],
             attributes={"name": wname},
+            input_types=[], output_types=[tp_str],
         ))
     mlir_ops = wops + mlir_ops
 

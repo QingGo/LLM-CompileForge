@@ -18,8 +18,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from compiler.mlir_artifact import MlirModule
-
 
 def _setup_mlir_path() -> None:
     _mlir_pkg = Path(__file__).resolve().parent.parent.parent / "mlir_binding" / "mlir_package"
@@ -36,29 +34,7 @@ def _has_bindings() -> bool:
         return False
 
 
-def apply_fusion_passes(mlir_module: MlirModule) -> MlirModule:
-    """Apply all fusion passes to an MlirModule using official MLIR bindings.
 
-    If official bindings aren't available, returns the module unchanged
-    (passes can't run on the lightweight MlirModule data classes).
-    """
-    if not _has_bindings():
-        return mlir_module
-
-    import mlir.ir as ir
-
-    ctx = ir.Context()
-    ctx.allow_unregistered_dialects = True
-
-    with ctx, ir.Location.unknown(ctx):
-        # Parse model.mlir text (we have it from mlir_emitter or can emit)
-        # Actually, we need the MLIR text first.  The pipeline should:
-        #   1. fx_to_mlir → MlirModule
-        #   2. Emit MLIR text from MlirModule (or emit directly)
-        #   3. Parse + run passes
-        pass
-
-    return mlir_module
 
 
 def _run_pattern(

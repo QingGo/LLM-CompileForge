@@ -25,11 +25,7 @@ import torch
 
 @dataclass
 class MlirOp:
-    """A single MLIR operation parsed from model.mlir.
-
-    Mirrors IrOp structure so the executor can walk the graph
-    without depending on IrModule.
-    """
+    """A single MLIR operation parsed from model.mlir."""
 
     name: str  # full qualified name: "sf.linear", "sf.weight", etc.
     dialect: str  # "sf", "arith", etc.
@@ -37,6 +33,8 @@ class MlirOp:
     operands: list[str]  # SSA names of inputs
     results: list[str]  # SSA names of outputs
     attributes: dict[str, Any] = field(default_factory=dict)
+    input_types: list[str] = field(default_factory=list)  # MLIR type strings for each operand
+    output_types: list[str] = field(default_factory=list)  # MLIR type strings for each result
 
 
 @dataclass
@@ -93,8 +91,10 @@ def mlir_module_to_text(module: MlirModule) -> str:
             # Weight constants: no operands, just attribute
             if op.op_name == "weight":
                 wname = op.attributes.get("name", "")
-                lines.append(f'    {op.results[0]} = "{op.name}"() {{"name" = "{wname}"}} : '
-                             f'() -> tensor<f32>')
+                tp = op.output_types[0] if op.output_types else "tensor<f32>"
+                attrs = f'{{name = "{wname}"}}' if wname else ""
+                lines.append(f'    {op.results[0]} = "{op.name}"() {attrs} : '
+                             f'() -> {tp}')
                 continue
 
             results_str = ", ".join(op.results)
@@ -108,13 +108,25 @@ def mlir_module_to_text(module: MlirModule) -> str:
                     attr_parts.append(_format_attr(k, v))
                 if attr_parts:
                     attrs_str = " {" + ", ".join(attr_parts) + "}"
+            # Type signature
+            if op.input_types and op.output_types:
+                in_types = ", ".join(op.input_types)
+                out_tp = op.output_types[0] if len(op.output_types) == 1 else f"({', '.join(op.output_types)})"
+                type_sig = f"({in_types}) -> {out_tp}"
+            else:
+                type_sig = "(...) -> (...)"
             lines.append(f'    {results_str} = "{op.name}"({operands_str}){attrs_str} : '
-                         f'(...) -> (...)')
+                         f'{type_sig}')
 
         # Return
         ret_names = [name for name, _ in func.outputs]
         ret_str = ", ".join(ret_names)
-        lines.append(f"    func.return {ret_str}")
+        ret_types = [tp for _, tp in func.outputs]
+        if len(ret_types) == 1:
+            ret_type_str = f" : {ret_types[0]}"
+        else:
+            ret_type_str = f" : ({', '.join(ret_types)})"
+        lines.append(f"    func.return {ret_str}{ret_type_str}")
         lines.append("  }")
 
     lines.append("}")
@@ -124,19 +136,19 @@ def mlir_module_to_text(module: MlirModule) -> str:
 def _format_attr(key: str, value: Any) -> str:
     """Format a single attribute key=value pair for MLIR text."""
     if isinstance(value, bool):
-        return f'"{key}" = {"true" if value else "false"}'
+        return f'{key} = {"true" if value else "false"}'
     if isinstance(value, int):
-        return f'"{key}" = {value} : i64'
+        return f"{key} = {value} : i64"
     if isinstance(value, float):
-        return f'"{key}" = {value} : f64'
+        return f"{key} = {value} : f64"
     if isinstance(value, str):
-        return f'"{key}" = "{value}"'
+        return f'{key} = "{value}"'
     if isinstance(value, (list, tuple)):
         items = ", ".join(str(v) for v in value)
-        return f'"{key}" = [{items}]'
+        return f"{key} = [{items}]"
     if value is None:
-        return f'"{key}" = none'
-    return f'"{key}" = "{value}"'
+        return f"{key} = none"
+    return f'{key} = "{value}"'
 
 
 def save_mlir_module_artifact(module: MlirModule, directory: str) -> None:

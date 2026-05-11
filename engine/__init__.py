@@ -3,13 +3,10 @@
 from typing import Any
 
 __all__ = [
-    "BlockManager",
     "GenerationResult",
     "LLMEngine",
-    "OutOfMemoryError",
     "Request",
     "SamplingParams",
-    "Scheduler",
     "SequenceGroup",
     "greedy",
     "sample",
@@ -21,23 +18,17 @@ _LAZY_ATTRS = frozenset(__all__)
 def __getattr__(name: str) -> Any:
     if name in _LAZY_ATTRS:
         import engine.batch as _batch
-        import engine.block_manager as _bm
         import engine.llm_engine as _engine
         import engine.sampler as _sampler
-        import engine.scheduler as _scheduler
-        from utils.errors import OutOfMemoryError
 
         _globals: dict[str, Any] = {
             "GenerationResult": _batch.GenerationResult,
             "Request": _batch.Request,
             "SamplingParams": _batch.SamplingParams,
             "SequenceGroup": _batch.SequenceGroup,
-            "BlockManager": _bm.BlockManager,
-            "OutOfMemoryError": OutOfMemoryError,
             "LLMEngine": _engine.LLMEngine,
             "greedy": _sampler.greedy,
             "sample": _sampler.sample,
-            "Scheduler": _scheduler.Scheduler,
         }
         if name in _globals:
             value = _globals[name]
