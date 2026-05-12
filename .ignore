@@ -3,3 +3,4 @@
 !.agent_memory.md
 !rust/target/
 !.venv/
+!compiled/

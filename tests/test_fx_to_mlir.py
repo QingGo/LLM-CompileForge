@@ -108,3 +108,116 @@ class TestExtractNodeKwargs:
         # Just verify import works and returns dict
         from compiler.fx_to_mlir import _extract_node_kwargs
         assert callable(_extract_node_kwargs)
+
+
+@pytest.mark.unit
+class TestResolveOpTypes:
+
+    def test_exact_ssa_match_takes_priority(self) -> None:
+        """ssa_map has both a short name ('reshape') and long name ('reshape_5').
+        An input referring to '%reshape_5' should match 'reshape_5' exactly,
+        not the shorter prefix 'reshape'."""
+        from compiler.fx_to_mlir import _resolve_op_types
+
+        shapes: dict[str, tuple[tuple[int | None, ...], str]] = {}
+        shapes["reshape"] = ((1, 16, 1, 64, 128), "f32")
+        shapes["reshape_5"] = ((1, 8, 64), "f32")
+
+        ssa_map = {
+            "reshape": "%reshape",
+            "reshape_5": "%reshape_5",
+        }
+
+        in_types, out_types = _resolve_op_types(
+            "add", ["%reshape_5"], ssa_map, shapes, {}, {},
+        )
+        assert "8x64" in in_types[0], (
+            f"Expected shape from reshape_5, got {in_types}"
+        )
+
+    def test_missing_shape_fallback_produces_warning(self) -> None:
+        """When shape is not found in shape_map, the fallback (2,64) should
+        produce a warning so resolution failures are visible."""
+        import warnings
+
+        from compiler.fx_to_mlir import _resolve_op_types
+
+        warnings.simplefilter("always")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            _resolve_op_types(
+                "add", ["%unknown_ssa"], {}, {}, {}, {},
+            )
+
+        found = [x for x in w if "shape" in str(x.message).lower() and "unknown_ssa" in str(x.message)]
+        assert found, (
+            "Expected a warning about missing shape for %unknown_ssa"
+        )
+
+
+@pytest.mark.unit
+class TestAdjustOpAttributesOnSplit:
+
+    def test_dim_adjustment_for_rank_change(self) -> None:
+        """When a function input has rank 2 but the original op had dim=3
+        (from rank-5 context), the dim attribute must be clamped to rank-1."""
+        from compiler.fx_to_mlir import (
+            MlirOp,
+            _adjust_op_attributes,
+        )
+
+        op = MlirOp(
+            name="sf.slice", dialect="sf", op_name="slice",
+            operands=["select_23"], results=["slice_47"],
+            attributes={"dim": 3, "start": 0, "end": 10},
+            input_types=["tensor<1x?xf32>"],
+            output_types=["tensor<1x?xf32>"],
+        )
+
+        input_rank = {"select_23": 2}
+        adjusted = _adjust_op_attributes(op, input_rank)
+
+        # dim=3 on rank-2 tensor is out of bounds → clamped to 1
+        assert adjusted.attributes["dim"] == 1, (
+            f"dim should be clamped to rank-1 (1), "
+            f"got {adjusted.attributes['dim']}"
+        )
+        assert adjusted.attributes["start"] == 0
+        assert adjusted.attributes["end"] == 10
+
+    def test_dim_unaffected_when_already_in_bounds(self) -> None:
+        """dim=1 on rank-3 should stay 1 (already within 0..2)."""
+        from compiler.fx_to_mlir import (
+            MlirOp,
+            _adjust_op_attributes,
+        )
+
+        op = MlirOp(
+            name="sf.slice", dialect="sf", op_name="slice",
+            operands=["x"], results=["y"],
+            attributes={"dim": 1, "start": 0, "end": 5},
+            input_types=["tensor<2x4x8xf32>"],
+            output_types=["tensor<2x4x8xf32>"],
+        )
+        input_rank = {"x": 3}
+        adjusted = _adjust_op_attributes(op, input_rank)
+        assert adjusted.attributes["dim"] == 1
+
+    def test_dims_list_attribute_clamped(self) -> None:
+        """dims=[2, 3] on rank-2 input gets clamped to rank-1 = 1."""
+        from compiler.fx_to_mlir import (
+            MlirOp,
+            _adjust_op_attributes,
+        )
+
+        op = MlirOp(
+            name="sf.permute", dialect="sf", op_name="permute",
+            operands=["x"], results=["y"],
+            attributes={"dims": (2, 3)},
+            input_types=["tensor<1x?xf32>"],
+            output_types=["tensor<1x?xf32>"],
+        )
+        input_rank = {"x": 2}
+        adjusted = _adjust_op_attributes(op, input_rank)
+        # 2 and 3 are >= rank 2 → both clamped to 1
+        assert adjusted.attributes["dims"] == (1, 1)

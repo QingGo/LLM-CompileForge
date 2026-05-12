@@ -233,16 +233,27 @@ def _resolve_op_types(
     kwargs: dict[str, Any],
 ) -> tuple[list[str], list[str]]:
     """Compute input/output MLIR type strings for an sf operation."""
+    import warnings
+
     input_shapes: list[tuple[int | None, ...]] = []
     input_elts: list[str] = []
 
     for inp_name in input_names:
-        # Resolve operand to original node name for shape lookup
-        resolved = inp_name
+        # Resolve operand to original node name for shape lookup.
+        # Exact match first, then longest-prefix as fallback to avoid
+        # false resolver matches (e.g. '%reshape_5' matching 'reshape'
+        # before 'reshape_5').
+        resolved: str | None = None
         for node_name, ssa_name in ssa_map.items():
-            if ssa_name == inp_name or node_name == inp_name or inp_name.startswith(f"%{node_name}"):
+            if ssa_name == inp_name or node_name == inp_name:
                 resolved = node_name
                 break
+        if resolved is None:
+            candidates = sorted(
+                (n for n in ssa_map if inp_name.startswith(f"%{n}")),
+                key=len, reverse=True,
+            )
+            resolved = candidates[0] if candidates else inp_name
 
         if resolved in shape_map:
             s, e = shape_map[resolved]
@@ -251,11 +262,15 @@ def _resolve_op_types(
             s = tuple(t.shape)
             e = _fake_to_shape_tuple(t)[1]
         elif inp_name.startswith("%") and inp_name[1:] in weights:
-            # Weight SSA names have % prefix, strip before lookup
             t = weights[inp_name[1:]]
             s = tuple(t.shape)
             e = _fake_to_shape_tuple(t)[1]
         else:
+            warnings.warn(
+                f"Shape not found for operand {inp_name!r} in op {hal_op!r}, "
+                f"using fallback shape (2, 64)",
+                stacklevel=2,
+            )
             s = (2, 64)
             e = "f32"
         input_shapes.append(s)
@@ -341,6 +356,60 @@ def _shape_to_mlir_type(shape: tuple[int | None, ...], elt: str) -> str:
     }
     mlir_elt = elt_map.get(elt, "f32")
     return f"tensor<{dims}x{mlir_elt}>" if dims else f"tensor<{mlir_elt}>"
+
+
+# ── Dimension-position attribute names ─────────────────────
+# These encode axis/dim indices that must be adjusted when tensor
+# rank changes at a function boundary during per-function splitting.
+
+_DIM_ATTR_NAMES: set[str] = {
+    "dim", "dim0", "dim1", "dimensions", "axis",
+}
+
+_DIM_LIST_ATTR_NAMES: set[str] = {
+    "dims",
+}
+
+
+def _adjust_op_attributes(op: MlirOp, input_rank_map: dict[str, int]) -> MlirOp:
+    """Clamp dim/axis attributes that are out-of-bounds for the op's
+    declared input ranks at a function boundary.
+
+    When the full CFG is split into per-function chunks, some ops
+    retain ``dim``-like attributes from the original higher-rank
+    context.  This clamps such values into the valid ``[0, rank-1]``
+    range so the op can execute in isolation.
+    """
+    if op.op_name in ("weight", "constant", "_func_boundary"):
+        return op
+
+    new_attrs = dict(op.attributes)
+
+    for _i, operand in enumerate(op.operands):
+        key = operand.lstrip("%")
+        rank = input_rank_map.get(key)
+        if rank is None or rank <= 0:
+            continue
+
+        for attr_name in _DIM_ATTR_NAMES & set(new_attrs.keys()):
+            val = new_attrs[attr_name]
+            if isinstance(val, int) and val >= rank:
+                new_attrs[attr_name] = rank - 1
+
+        for attr_name in _DIM_LIST_ATTR_NAMES & set(new_attrs.keys()):
+            vals = new_attrs[attr_name]
+            if isinstance(vals, (list, tuple)):
+                new_attrs[attr_name] = tuple(
+                    (rank - 1) if isinstance(v, int) and v >= rank else v
+                    for v in vals
+                )
+
+    return MlirOp(
+        name=op.name, dialect=op.dialect, op_name=op.op_name,
+        operands=list(op.operands), results=list(op.results),
+        attributes=new_attrs,
+        input_types=list(op.input_types), output_types=list(op.output_types),
+    )
 
 
 def _split_into_functions(
@@ -470,11 +539,19 @@ def _make_multi_functions(
         if not f_outputs:
             f_outputs = [(f"%{list(produced_here)[0]}", type_map.get(list(produced_here)[0], "tensor<f32>"))]
 
+        # Compute rank of each function input from its type string
+        input_rank_map: dict[str, int] = {}
+        for name, tp in f_inputs:
+            rank = 1 if "x" not in tp and "tensor<" in tp else tp.count("x")
+            input_rank_map[name.lstrip("%")] = max(rank, 1) if "tensor<" in tp else 0
+
+        adjusted_block = [_adjust_op_attributes(op, input_rank_map) for op in block]
+
         funcs.append(MlirFunction(
             name=f"{base_name}_{fi}",
             inputs=f_inputs,
             outputs=f_outputs,
-            ops=list(block),
+            ops=adjusted_block,
             weights={k: v for k, v in weights.items() if k in weight_refs_per_func[fi]},
             param_weight_names=param_names & weight_refs_per_func[fi],
             const_weight_names=const_names & weight_refs_per_func[fi],
@@ -511,11 +588,13 @@ def fx_graph_to_mlir(
                     weight_name_map[spec.arg.name] = spec.target.replace(".", "_")
 
     weights: dict[str, torch.Tensor] = {}
+    hf_key_map: dict[str, str] = {}  # clean name → original HF safetensors key
     param_names: set[str] = set()
     const_names: set[str] = set()
     for name, tensor in state_dict.items():
         clean = name.replace(".", "_")
         weights[clean] = tensor
+        hf_key_map[clean] = name  # original HF key
         param_names.add(clean)
     if hasattr(program, "constants"):
         for name, tensor in program.constants.items():
@@ -638,6 +717,10 @@ def fx_graph_to_mlir(
         func_count = 1
 
     # ── Phase 6: assemble ─────────────────────────────────
+    meta: dict[str, Any] = {"source": "torch.export", "artifact_format": "mlir"}
+    if hf_key_map:
+        meta["hf_key_map"] = hf_key_map
+
     if func_count == 1:
         return MlirModule(
             functions=[MlirFunction(
@@ -645,7 +728,7 @@ def fx_graph_to_mlir(
                 outputs=func_outputs, ops=mlir_ops, weights=weights,
                 param_weight_names=param_names, const_weight_names=const_names,
             )],
-            metadata={"source": "torch.export", "artifact_format": "mlir"},
+            metadata=meta,
         )
     else:
         # Multi-function: split by function boundaries computed by _split_into_functions
@@ -653,9 +736,10 @@ def fx_graph_to_mlir(
             mlir_ops, func_inputs, func_outputs, weights,
             param_names, const_names, function_name,
         )
+        meta["num_functions"] = func_count
         return MlirModule(
             functions=functions,
-            metadata={"source": "torch.export", "artifact_format": "mlir", "num_functions": func_count},
+            metadata=meta,
         )
 
 

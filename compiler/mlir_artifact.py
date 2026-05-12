@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -177,9 +178,10 @@ def save_mlir_module_artifact(module: MlirModule, directory: str) -> None:
     """Persist an MlirModule as MLIR artifact.
 
     Output:
-      model.mlir       — MLIR text
-      constants.pth    — export-time constants (scalars, fused weights) only
-      metadata.json    — compilation metadata + weight source + classification
+      model.mlir         — MLIR text
+      constants.pth      — export-time constants (scalars, fused weights) only
+      constants.bin      — embedded data for .dylib: name_mapping + constants
+      metadata.json      — compilation metadata + weight source + classification
 
     Model parameters are NOT duplicated — weight_source in metadata points
     to the original safetensors file for mmap loading at runtime.
@@ -212,6 +214,16 @@ def save_mlir_module_artifact(module: MlirModule, directory: str) -> None:
                 key = f"{func.name}.{wname}" if func.name != "main" else wname
                 weight_state[key] = tensor
         torch.save(weight_state, out_dir / "weights.pth")
+
+    # ── Build name mapping and embedded constants binary ──
+    name_mapping = _build_name_mapping(module)
+    if name_mapping:
+        const_bin = _build_constants_binary(module, name_mapping)
+        with open(out_dir / "constants.bin", "wb") as f:
+            f.write(const_bin)
+        module.metadata["weight_source"] = module.metadata.get("weight_source", {})
+        module.metadata["weight_source"]["embedded_data"] = "constants.bin"
+        module.metadata["weight_source"]["name_mapping"] = name_mapping
 
     classification: dict[str, dict[str, list[str]]] = {}
     for func in module.functions:
@@ -473,6 +485,119 @@ def _candidate_names(wname: str) -> list[str]:
     for i in range(1, min(4, len(parts))):
         names.append("_".join(parts[i:]))
     return names
+
+
+_DTYPE_TO_CODE: dict[Any, int] = {}
+
+
+def _init_dtype_codes() -> dict[Any, int]:
+    global _DTYPE_TO_CODE
+    if _DTYPE_TO_CODE:
+        return _DTYPE_TO_CODE
+    _DTYPE_TO_CODE = {
+        torch.float32: 0,
+        torch.float16: 1,
+        torch.bfloat16: 2,
+        torch.int64: 3,
+        torch.int32: 4,
+        torch.int8: 5,
+        torch.uint8: 6,
+    }
+    return _DTYPE_TO_CODE
+
+
+def _build_name_mapping(module: MlirModule) -> dict[str, str]:
+    """Build a compiled weight name → original HF safetensors key mapping.
+
+    Uses ``hf_key_map`` from module metadata (stored at compile time by
+    ``fx_graph_to_mlir``) to obtain the original HF key for each weight.
+    """
+    hf_key_map: dict[str, str] = module.metadata.get("hf_key_map", {})
+    mapping: dict[str, str] = {}
+
+    for func in module.functions:
+        for op in func.ops:
+            if op.op_name != "weight":
+                continue
+            short = op.attributes.get("name", "")
+            if not short or short in mapping:
+                continue
+            for full, hf in hf_key_map.items():
+                candidates = _candidate_names(full)
+                if short in candidates or full.endswith(short):
+                    mapping[short] = hf
+                    break
+    return mapping
+
+
+def _build_constants_binary(module: MlirModule, name_mapping: dict[str, str]) -> bytes:
+    """Build a self-contained binary blob with name mapping + constants.
+
+    Format (all integers little-endian):
+        Magic:    4 bytes  "SFCF"
+        Version:  u32      = 1
+        ── name mapping ──
+        Mapping entries: u32
+        For each entry:
+            compiled_name_len: u16
+            compiled_name:     UTF-8
+            hf_key_len:        u16
+            hf_key:            UTF-8
+        ── constants ──
+        Constant tensors: u32
+        For each tensor:
+            name_len:   u16
+            name:       UTF-8
+            dtype:      u8  (0=f32,1=f16,2=bf16,3=i64,4=i32,5=i8,6=u8)
+            ndim:       u8
+            shape[ndim]: u64 repeated
+            data_len:   u64
+            data:       raw bytes
+    """
+    _init_dtype_codes()
+    parts: list[bytes] = []
+
+    # Header
+    parts.append(b"SFCF")
+    parts.append(struct.pack("<I", 1))  # version
+
+    # Name mapping
+    parts.append(struct.pack("<I", len(name_mapping)))
+    for short, full in sorted(name_mapping.items()):
+        s = short.encode("utf-8")
+        f = full.encode("utf-8")
+        parts.append(struct.pack("<H", len(s)))
+        parts.append(s)
+        parts.append(struct.pack("<H", len(f)))
+        parts.append(f)
+
+    # Constants (const_weight_names tensors only)
+    const_tensors: list[tuple[str, torch.Tensor]] = []
+    for func in module.functions:
+        for wname in func.const_weight_names:
+            if wname in func.weights:
+                t = func.weights[wname]
+                # Store short name for constants too
+                candidates = _candidate_names(wname)
+                short_name = candidates[-1] if len(candidates) > 1 else candidates[0]
+                const_tensors.append((short_name, t))
+
+    parts.append(struct.pack("<I", len(const_tensors)))
+    for name, tensor in const_tensors:
+        n = name.encode("utf-8")
+        parts.append(struct.pack("<H", len(n)))
+        parts.append(n)
+        dtype_code = _DTYPE_TO_CODE.get(tensor.dtype, 0)
+        parts.append(struct.pack("<B", dtype_code))
+        shape = tuple(tensor.shape)
+        parts.append(struct.pack("<B", len(shape)))
+        for dim in shape:
+            parts.append(struct.pack("<Q", dim))
+        data = tensor.detach().cpu().numpy().tobytes()
+        parts.append(struct.pack("<Q", len(data)))
+        parts.append(data)
+
+    return b"".join(parts)
 
 
 # ── Internal parsing ──────────────────────────────────────────

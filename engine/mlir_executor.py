@@ -123,6 +123,7 @@ class MlirExecutor(_KVCacheMixin):
                 clean = named_input.replace("%", "")
                 if clean in kwargs:
                     ssa_values[named_input] = kwargs[clean]
+                    ssa_values[clean] = kwargs[clean]
 
         self._reset_forward_state(kwargs)
 

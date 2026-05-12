@@ -3,13 +3,25 @@ name = "llm-serveforge-runtime"
 version = "0.1.0"
 edition = "2021"
 description = "Core scheduler and block manager for LLM-ServeForge, implemented in Rust"
+default-run = "serveforge"
 
 [lib]
 name = "llm_serveforge_runtime"
 crate-type = ["cdylib"]
 
+[[bin]]
+name = "serveforge"
+path = "src/main.rs"
+
 [dependencies]
 pyo3 = { version = "0.24", features = ["extension-module"] }
+clap = { version = "4", features = ["derive"] }
+libloading = "0.8"
+memmap2 = "0.9"
+safetensors = "0.6"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [profile.release]
 lto = true
