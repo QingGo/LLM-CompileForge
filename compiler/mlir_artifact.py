@@ -553,7 +553,7 @@ def _type_str_to_ir_type(type_str: str) -> ir.Type:
         ) from e
 
 
-def mlir_module_to_ir_module(module: MlirModule) -> Any:
+def mlir_module_to_ir_module(module: MlirModule, ctx: Any = None) -> Any:
     """Build an ir.Module from an MlirModule using MLIR Python API.
 
     This bypasses the MLIR text round-trip entirely, creating a valid
@@ -564,8 +564,9 @@ def mlir_module_to_ir_module(module: MlirModule) -> Any:
     """
     import mlir.ir as _ir
 
-    ctx = _ir.Context()
-    ctx.allow_unregistered_dialects = True
+    if ctx is None:
+        ctx = _ir.Context()
+        ctx.allow_unregistered_dialects = True
 
     with ctx, _ir.Location.unknown(ctx):
         ir_mod = _ir.Module.create()
@@ -784,13 +785,39 @@ def _parse_mlir_text(text: str) -> MlirModule:
                 if ":" in arg:
                     ssa, tp = arg.split(":", 1)
                     inputs.append((ssa.strip(), tp.strip()))
-            current_func = MlirFunction(name=func_name, inputs=inputs, outputs=[])
+            # Parse return type: -> type after )
+            ret_start = rest.find("->")
+            ret_types: list[str] = []
+            if ret_start > 0:
+                ret_part = rest[ret_start + 2:].strip()
+                if ret_part.endswith("{"):
+                    ret_part = ret_part[:-1].strip()
+                if ret_part and ret_part != "()":
+                    # Could be single type or (type1, type2, ...)
+                    if ret_part.startswith("("):
+                        ret_part = ret_part[1:-1]  # strip parens
+                    for tp in _split_comma(ret_part):
+                        ret_types.append(tp.strip())
+            outputs: list[tuple[str, str]] = [("", tp) for tp in ret_types]
+            current_func = MlirFunction(name=func_name, inputs=inputs, outputs=outputs)
             ssa_to_name = {}
             ssa_types = {}
             continue
 
-        # Skip func.return lines for now
+        # Parse func.return: extract output names and match with output types
         if stripped.startswith("func.return"):
+            if current_func is not None:
+                ret_content = stripped[len("func.return"):].strip()
+                if ":" in ret_content:
+                    ret_content = ret_content[:ret_content.rfind(":")].strip()
+                ret_names = [n.strip() for n in _split_comma(ret_content) if n.strip()]
+                if current_func.outputs and ret_names:
+                    new_outputs = []
+                    for i, name in enumerate(ret_names):
+                        tp = current_func.outputs[i][1] if i < len(current_func.outputs) else "tensor<f32>"
+                        new_outputs.append((name, tp))
+                    if new_outputs:
+                        current_func.outputs = new_outputs
             continue
 
         # Wrapper lines: { or } within function

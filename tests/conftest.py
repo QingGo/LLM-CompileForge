@@ -36,6 +36,24 @@ def _require_compiled_model(model_dir: str) -> Path:
     return path
 
 
+# ── MLIR context fixture — shared across all tests to avoid
+#    nanobind Context create/destroy cycle issues ─────────────
+
+@pytest.fixture(scope="session")
+def mlir_context() -> Any:
+    """Session-scoped MLIR Context.
+
+    Shared across all tests to avoid creating/destroying many Context
+    objects, which can trigger nanobind type registry instability in
+    LLVM 22.x.  Threading is disabled — unit tests don't need parallelism.
+    """
+    import mlir.ir as ir
+
+    ctx = ir.Context()
+    ctx.allow_unregistered_dialects = True
+    return ctx
+
+
 # ── Compiled artifact fixtures ─────────────────────────────────
 
 

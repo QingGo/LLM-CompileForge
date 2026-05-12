@@ -55,7 +55,8 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
         pipeline = (
             "builtin.module("
             "func.func(linalg-fuse-elementwise-ops),"
-            "func.func(linalg-generalize-named-ops),"
+            "canonicalize,"
+            "cse,"
             "one-shot-bufferize{bufferize-function-boundaries},"
             "convert-linalg-to-loops,"
             "lower-affine,"

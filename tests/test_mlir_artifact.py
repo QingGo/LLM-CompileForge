@@ -333,3 +333,48 @@ class TestCandidateNames:
         assert "b_c_d_e" in names
         assert "c_d_e" in names
         assert "d_e" in names
+
+
+@pytest.mark.unit
+class TestMultiFunctionRoundtrip:
+    """P0: verify MlirModule emit→parse roundtrip preserves multi-function outputs."""
+
+    @pytest.mark.timeout(5)
+    def test_roundtrip_preserves_function_outputs(self) -> None:
+        from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp, _parse_mlir_text, mlir_module_to_text
+
+        mod = MlirModule(functions=[
+            MlirFunction(name="f0", inputs=[("%x", "tensor<2x4xf32>")],
+                         outputs=[("%mid", "tensor<2x4xf32>")],
+                         ops=[MlirOp(name="sf.add", dialect="sf", op_name="add",
+                                     operands=["%x", "%x"], results=["%mid"],
+                                     output_types=["tensor<2x4xf32>"], attributes={})]),
+            MlirFunction(name="f1", inputs=[("%mid", "tensor<2x4xf32>")],
+                         outputs=[("%out", "tensor<2x4xf32>")],
+                         ops=[MlirOp(name="sf.mul", dialect="sf", op_name="mul",
+                                     operands=["%mid", "%mid"], results=["%out"],
+                                     output_types=["tensor<2x4xf32>"], attributes={})]),
+        ])
+        text = mlir_module_to_text(mod)
+        reparsed = _parse_mlir_text(text)
+        assert len(reparsed.functions) == 2
+        for orig, parsed in zip(mod.functions, reparsed.functions, strict=True):
+            assert len(parsed.outputs) == len(orig.outputs), \
+                f"{parsed.name}: expected {len(orig.outputs)} outputs, got {len(parsed.outputs)}"
+
+    @pytest.mark.timeout(5)
+    def test_roundtrip_preserves_function_inputs(self) -> None:
+        from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp, _parse_mlir_text, mlir_module_to_text
+
+        mod = MlirModule(functions=[
+            MlirFunction(name="f0", inputs=[("%in", "tensor<1x64xf32>")],
+                         outputs=[("%out", "tensor<1x64xf32>")],
+                         ops=[MlirOp(name="sf.relu", dialect="sf", op_name="relu",
+                                     operands=["%in"], results=["%out"],
+                                     output_types=["tensor<1x64xf32>"], attributes={})]),
+        ])
+        text = mlir_module_to_text(mod)
+        reparsed = _parse_mlir_text(text)
+        assert len(reparsed.functions) == 1
+        assert len(reparsed.functions[0].inputs) == 1
+        assert reparsed.functions[0].inputs[0][0] == "%in"

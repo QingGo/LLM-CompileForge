@@ -343,6 +343,146 @@ def _shape_to_mlir_type(shape: tuple[int | None, ...], elt: str) -> str:
     return f"tensor<{dims}x{mlir_elt}>" if dims else f"tensor<{mlir_elt}>"
 
 
+def _split_into_functions(
+    mlir_ops: list[MlirOp],
+    func_inputs: list[tuple[str, str]],
+    weights: dict[str, torch.Tensor],
+    ops_per_func: int,
+) -> tuple[list[MlirOp], int]:
+    """Insert sentinel ops marking function boundaries every ops_per_func ops.
+
+    Returns (augmented_ops, num_functions).
+    """
+    if len(mlir_ops) <= ops_per_func:
+        return mlir_ops, 1
+
+    result: list[MlirOp] = []
+    for i, op in enumerate(mlir_ops):
+        if i > 0 and i % ops_per_func == 0:
+            result.append(MlirOp(
+                name="_sentinel", dialect="_sentinel", op_name="_func_boundary",
+                operands=[], results=[], attributes={},
+                input_types=[], output_types=[],
+            ))
+        result.append(op)
+    return result, (len(mlir_ops) + ops_per_func - 1) // ops_per_func
+
+
+def _make_multi_functions(
+    mlir_ops: list[MlirOp],
+    global_inputs: list[tuple[str, str]],
+    global_outputs: list[tuple[str, str]],
+    weights: dict[str, torch.Tensor],
+    param_names: set[str],
+    const_names: set[str],
+    base_name: str,
+) -> list[MlirFunction]:
+    """Split mlir_ops at sentinel boundaries into separate MlirFunction objects."""
+
+    # Remove sentinel ops and partition into blocks
+    blocks: list[list[MlirOp]] = []
+    current: list[MlirOp] = []
+    for op in mlir_ops:
+        if op.op_name == "_func_boundary":
+            if current:
+                blocks.append(current)
+                current = []
+        else:
+            current.append(op)
+    if current:
+        blocks.append(current)
+
+    if len(blocks) <= 1:
+        return [MlirFunction(
+            name=base_name, inputs=global_inputs, outputs=global_outputs,
+            ops=mlir_ops, weights=weights,
+            param_weight_names=param_names, const_weight_names=const_names,
+        )]
+
+    # Build type map: SSA name → MLIR type string (normalize % prefix)
+    type_map: dict[str, str] = {}
+    for op in mlir_ops:
+        for idx, r in enumerate(op.results):
+            key = r.lstrip("%")
+            if idx < len(op.output_types):
+                type_map[key] = op.output_types[idx]
+            else:
+                type_map[key] = "tensor<f32>"
+
+    # Track which function produces each result (normalize % prefix)
+    producer: dict[str, int] = {}
+    for fi, block in enumerate(blocks):
+        for op in block:
+            for r in op.results:
+                producer[r.lstrip("%")] = fi
+
+    # Track weight references per function (normalize % prefix)
+    weight_refs_per_func: list[set[str]] = [set() for _ in blocks]
+    for fi, block in enumerate(blocks):
+        for op in block:
+            for operand in op.operands:
+                key = operand.lstrip("%")
+                if key in weights:
+                    weight_refs_per_func[fi].add(key)
+
+    funcs: list[MlirFunction] = []
+
+    for fi, block in enumerate(blocks):
+        # External inputs needed by this block (normalize %)
+        needed: set[str] = set()
+        for op in block:
+            for operand in op.operands:
+                key = operand.lstrip("%")
+                if key in producer and producer[key] != fi:
+                    needed.add(key)
+
+        # Function inputs with proper types
+        f_inputs: list[tuple[str, str]]
+        if fi == 0:
+            f_inputs = list(global_inputs)
+        else:
+            f_inputs = []
+            for val in sorted(needed, key=lambda v: (producer.get(v, 0), v)):
+                tp = type_map.get(val, "tensor<f32>")
+                f_inputs.append((f"%{val}", tp))
+
+        # Values produced here that are consumed elsewhere (normalize %)
+        produced_here: set[str] = set()
+        for op in block:
+            for r in op.results:
+                produced_here.add(r.lstrip("%"))
+
+        exported: set[str] = set()
+        for val in produced_here:
+            for fi2 in range(fi + 1, len(blocks)):
+                for op2 in blocks[fi2]:
+                    for operand in op2.operands:
+                        if operand.lstrip("%") == val:
+                            exported.add(val)
+                            break
+
+        # Include global outputs
+        for name, _ in global_outputs:
+            if name.lstrip("%") in produced_here:
+                exported.add(name.lstrip("%"))
+
+        f_outputs = [(f"%{v}", type_map.get(v, "tensor<f32>")) for v in sorted(exported)]
+        if not f_outputs:
+            f_outputs = [(f"%{list(produced_here)[0]}", type_map.get(list(produced_here)[0], "tensor<f32>"))]
+
+        funcs.append(MlirFunction(
+            name=f"{base_name}_{fi}",
+            inputs=f_inputs,
+            outputs=f_outputs,
+            ops=list(block),
+            weights={k: v for k, v in weights.items() if k in weight_refs_per_func[fi]},
+            param_weight_names=param_names & weight_refs_per_func[fi],
+            const_weight_names=const_names & weight_refs_per_func[fi],
+        ))
+
+    return funcs
+
+
 def fx_graph_to_mlir(
     program: ExportedProgram,
     function_name: str = "main",
@@ -490,15 +630,33 @@ def fx_graph_to_mlir(
     all_weight_names = set(weights.keys())
     const_names = (const_names or set()) | (all_weight_names - param_names)
 
-    # ── Phase 5: assemble ─────────────────────────────────
-    return MlirModule(
-        functions=[MlirFunction(
-            name=function_name, inputs=func_inputs,
-            outputs=func_outputs, ops=mlir_ops, weights=weights,
-            param_weight_names=param_names, const_weight_names=const_names,
-        )],
-        metadata={"source": "torch.export", "artifact_format": "mlir"},
-    )
+    # ── Phase 5: split into per-function chunks (bufferization scaling) ──
+    ops_per_func = 500
+    if len(mlir_ops) > ops_per_func:
+        mlir_ops, func_count = _split_into_functions(mlir_ops, func_inputs, weights, ops_per_func)
+    else:
+        func_count = 1
+
+    # ── Phase 6: assemble ─────────────────────────────────
+    if func_count == 1:
+        return MlirModule(
+            functions=[MlirFunction(
+                name=function_name, inputs=func_inputs,
+                outputs=func_outputs, ops=mlir_ops, weights=weights,
+                param_weight_names=param_names, const_weight_names=const_names,
+            )],
+            metadata={"source": "torch.export", "artifact_format": "mlir"},
+        )
+    else:
+        # Multi-function: split by function boundaries computed by _split_into_functions
+        functions: list[MlirFunction] = _make_multi_functions(
+            mlir_ops, func_inputs, func_outputs, weights,
+            param_names, const_names, function_name,
+        )
+        return MlirModule(
+            functions=functions,
+            metadata={"source": "torch.export", "artifact_format": "mlir", "num_functions": func_count},
+        )
 
 
 # ── handler functions ─────────────────────────────────────

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -43,7 +44,7 @@ def sf_to_linalg_pass_on_module(ir_module: Any) -> str:
     ctx = ir_module.operation.context
     _CTX = ctx
     ctx.allow_unregistered_dialects = True
-    with ir.Location.unknown(ctx):
+    with ctx, ir.Location.unknown(ctx):
         _lower_sf_ops(ir_module.operation, None)
         return str(ir_module)
 
@@ -78,26 +79,20 @@ def _lower_sf_ops(op: Any, pass_: Any) -> None:
         return ir.WalkResult.ADVANCE
 
     op.walk(_collect)
-    errors = 0
+    errors_by_op: dict[str, int] = {}
+    first_error_msg: dict[str, str] = {}
     lowered = 0
     finalized = 0
     for sf_op in sf_ops:
+        op_name: str = sf_op.name  # cache: op may be invalidated after erase
         try:
-            new_op = _LOWER_TABLE.get(sf_op.name, lambda _o: None)(sf_op)
+            new_op = _LOWER_TABLE.get(op_name, lambda _o: None)(sf_op)
         except Exception as e:
-            errors += 1
-            if errors <= 5:
-                import logging
-                _log = logging.getLogger("compiler.lowering")
-                _log.warning(
-                    "sf_to_linalg: failed lowering '%s' (result type: %s): %s",
-                    sf_op.name,
-                    sf_op.operation.results[0].type if sf_op.operation.results else "none",
-                    e,
-                )
+            errors_by_op[op_name] = errors_by_op.get(op_name, 0) + 1
+            if op_name not in first_error_msg:
+                first_error_msg[op_name] = str(e)
             continue
         if new_op is None and sf_op.operation.results:
-            # Finalize: sf op with results → linalg.generic passthrough
             try:
                 if sf_op.operation.operands:
                     new_op = _lower_passthrough(sf_op)
@@ -109,15 +104,19 @@ def _lower_sf_ops(op: Any, pass_: Any) -> None:
             try:
                 sf_op.operation.results[0].replace_all_uses_with(new_op.operation.results[0])
                 sf_op.operation.erase()
-                if sf_op.name not in ("sf.weight", "sf.constant"):
+                if op_name not in ("sf.weight", "sf.constant"):
                     lowered += 1
             except Exception:
-                errors += 1
-    if errors or finalized:
-        import logging
-        _log = logging.getLogger("compiler.lowering")
-        _log.info("sf_to_linalg: %d lowered, %d finalized (passthrough), %d/%d ops failed",
-                  lowered, finalized, errors - finalized, len(sf_ops))
+                errors_by_op[op_name + " (replace)"] = errors_by_op.get(op_name + " (replace)", 0) + 1
+    total_errors = sum(errors_by_op.values())
+    total_collected = len(sf_ops)
+    _log = logging.getLogger("compiler.lowering")
+    _log.info("sf_to_linalg: %d lowered, %d finalized (passthrough), %d errors across %d ops (total: %d)",
+              lowered, finalized, len(errors_by_op), total_errors, total_collected)
+    if errors_by_op:
+        for op_name, cnt in sorted(errors_by_op.items(), key=lambda x: -x[1]):
+            msg = first_error_msg.get(op_name, "unknown")
+            _log.warning("  %s: %d failures — %s", op_name, cnt, msg[:120])
 
 
 def _ip(op: Any) -> ir.InsertionPoint:
@@ -129,6 +128,34 @@ def _el(rt: ir.Type) -> ir.Type:
 
 
 # ── linalg.generic builders ───────────────────────────────────
+
+
+def _make_empty(rt: ir.Type, inputs: list[ir.Value], ip: ir.InsertionPoint) -> ir.Value:
+    """Create tensor.empty with dynamic size operands.
+
+    For dynamic output dimensions (<0), uses tensor.dim on the first input
+    to obtain runtime sizes.  This is required by one-shot-bufferize.
+    """
+    dynamic_operands: list[ir.Value] = []
+    if isinstance(rt, ir.RankedTensorType) and inputs:
+        in_val = inputs[0]
+        in_type = in_val.type
+        if isinstance(in_type, ir.RankedTensorType):
+            for i, s in enumerate(rt.shape):
+                if s < 0:
+                    idx_val = ir.Operation.create(
+                        "arith.constant", results=[ir.IndexType.get()],
+                        attributes={"value": ir.IntegerAttr.get(ir.IndexType.get(), i)},
+                        ip=ip,
+                    )
+                    dim_val = ir.Operation.create(
+                        "tensor.dim", operands=[in_val, idx_val.result],
+                        results=[ir.IndexType.get()], ip=ip,
+                    )
+                    dynamic_operands.append(dim_val.result)
+    return ir.Operation.create(
+        "tensor.empty", operands=dynamic_operands, results=[rt], ip=ip,
+    ).result
 
 
 def _make_generic(
@@ -204,10 +231,18 @@ def _lower_binary(arith_op: str) -> Callable[[Any], Any | None]:
             return None
         a, b = op.operation.operands[0], op.operation.operands[1]
         rt = op.result.type
+        # Skip broadcast ops: output rank must match all input ranks
+        a_type = a.type
+        b_type = b.type
+        if (isinstance(rt, ir.RankedTensorType)
+                and isinstance(a_type, ir.RankedTensorType)
+                and isinstance(b_type, ir.RankedTensorType)):
+            if len(rt.shape) != len(a_type.shape) or len(rt.shape) != len(b_type.shape):
+                return None
         ip = _ip(op)
-        empty = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
+        empty_val = _make_empty(rt, [a], ip)
         return _make_generic(
-            [a, b], empty.result, rt, 2, ip,
+            [a, b], empty_val, rt, 2, ip,
             lambda ia: ir.Operation.create(arith_op, operands=[ia[0], ia[1]], infer_type=True).result,
         )
     return lower
@@ -219,29 +254,130 @@ def _lower_unary(arith_op: str) -> Callable[[Any], Any | None]:
             return None
         a = op.operation.operands[0]
         rt = op.result.type
+        # Skip if output rank differs from input rank
+        a_type = a.type
+        if isinstance(rt, ir.RankedTensorType) and isinstance(a_type, ir.RankedTensorType):
+            if len(rt.shape) != len(a_type.shape):
+                return None
         ip = _ip(op)
-        empty = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
+        empty_val = _make_empty(rt, [a], ip)
         return _make_generic(
-            [a], empty.result, rt, 1, ip,
+            [a], empty_val, rt, 1, ip,
             lambda ia: ir.Operation.create(arith_op, operands=[ia[0]], infer_type=True).result,
         )
     return lower
 
 
 def _lower_passthrough(op: Any) -> Any | None:
-    """Passthrough → linalg.generic with identity body."""
+    """Passthrough → linalg.copy or tensor.reshape (or linalg.generic fallback)."""
     if len(op.operation.operands) < 1:
         return None
     a = op.operation.operands[0]
     rt = op.result.type
     if isinstance(a.type, ir.RankedTensorType) and isinstance(rt, ir.RankedTensorType):
         if len(a.type.shape) != len(rt.shape):
-            return None
+            return _lower_reshape(op)
         if list(a.type.shape) != list(rt.shape):
-            return None
+            return _lower_reshape(op)
     ip = _ip(op)
-    empty = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
-    return _make_generic([a], empty.result, rt, 1, ip, lambda ia: ia[0])
+    empty_val = _make_empty(rt, [a], ip)
+    if isinstance(a.type, ir.RankedTensorType) and isinstance(rt, ir.RankedTensorType) and len(rt.shape) > 0:
+        import mlir.dialects.linalg as _lin
+        copy_op = _lin.CopyOp(result_tensors=[rt], inputs=[a], outputs=[empty_val], ip=ip)
+        _lin.fill_builtin_region(copy_op.operation)
+        return copy_op
+    return _make_generic([a], empty_val, rt, 1, ip, lambda ia: ia[0])
+
+
+def _lower_reshape(op: Any) -> Any | None:
+    """sf.identity/copy_/view with rank change → tensor.reshape (static or dynamic)."""
+    if len(op.operation.operands) < 1:
+        return None
+    a = op.operation.operands[0]
+    rt = op.result.type
+    in_type = a.type
+    if not isinstance(in_type, ir.RankedTensorType) or not isinstance(rt, ir.RankedTensorType):
+        return None
+    if in_type.element_type != rt.element_type:
+        return None
+    if list(in_type.shape) == list(rt.shape):
+        return None  # same shape, should use linalg.copy
+
+    ip = _ip(op)
+    idx_type = ir.IndexType.get()
+    has_dynamic = any(s < 0 for s in rt.shape) or any(s < 0 for s in in_type.shape)
+
+    if not has_dynamic:
+        # Static path: use DenseIntElementsAttr
+        import numpy as np
+        shape_dims = [int(s) for s in rt.shape]
+        shape_type = ir.RankedTensorType.get([len(shape_dims)], ir.IntegerType.get_signless(64))
+        shape_attr = ir.DenseIntElementsAttr.get(
+            np.array(shape_dims, dtype=np.int64), type=ir.IntegerType.get_signless(64),
+        )
+        shape_const = ir.Operation.create(
+            "arith.constant", results=[shape_type], attributes={"value": shape_attr}, ip=ip,
+        )
+        return ir.Operation.create("tensor.reshape", operands=[a, shape_const.result], results=[rt], ip=ip)
+
+    # Dynamic path: build shape tensor from tensor.dim + arith
+    # Parse target dims from the shape attribute; -1 means "infer from total elements"
+    shape_attr = op.operation.attributes.get("shape")
+    if shape_attr is not None and hasattr(shape_attr, "__iter__"):
+        target_raw = [int(x) for x in shape_attr]
+    else:
+        target_raw = [int(s) if s >= 0 else -1 for s in rt.shape]
+
+    in_rank = len(in_type.shape)
+
+    # Compute total source elements
+    total_val = _make_index_constant(ip, idx_type, 1).result
+    for i in range(in_rank):
+        if in_type.shape[i] >= 0:
+            dim_val = _make_index_constant(ip, idx_type, in_type.shape[i]).result
+        else:
+            c = _make_index_constant(ip, idx_type, i)
+            dim_val = ir.Operation.create("tensor.dim", operands=[a, c.result],
+                                          results=[idx_type], ip=ip).result
+        total_val = ir.Operation.create("arith.muli", operands=[total_val, dim_val],
+                                         results=[idx_type], ip=ip).result
+
+    # Compute product of known target dims and track -1 positions
+    one_val = _make_index_constant(ip, idx_type, 1).result
+    known_prod_val = one_val
+    neg_one_idx = -1
+    shape_vals: list[Any] = []
+    for i, s in enumerate(target_raw):
+        if s == -1:
+            neg_one_idx = i
+            shape_vals.append(None)
+        else:
+            v = _make_index_constant(ip, idx_type, s).result
+            shape_vals.append(v)
+            known_prod_val = ir.Operation.create("arith.muli", operands=[known_prod_val, v],
+                                                  results=[idx_type], ip=ip).result
+
+    if neg_one_idx >= 0:
+        shape_vals[neg_one_idx] = ir.Operation.create(
+            "arith.divui", operands=[total_val, known_prod_val],
+            results=[idx_type], ip=ip,
+        ).result
+    if any(v is None for v in shape_vals):
+        return None
+
+    shape_rt = ir.RankedTensorType.get([len(shape_vals)], idx_type)
+    from_elements = ir.Operation.create(
+        "tensor.from_elements", operands=shape_vals, results=[shape_rt], ip=ip,
+    )
+    return ir.Operation.create("tensor.reshape", operands=[a, from_elements.result], results=[rt], ip=ip)
+
+
+def _make_index_constant(ip: Any, idx_type: ir.Type, value: int) -> Any:
+    return ir.Operation.create(
+        "arith.constant", results=[idx_type],
+        attributes={"value": ir.IntegerAttr.get(idx_type, int(value))},
+        ip=ip,
+    )
 
 
 # ── Activations ───────────────────────────────────────────────
@@ -255,13 +391,38 @@ def _lower_relu(op: Any) -> Any | None:
     rt = op.result.type
     elt = _el(rt)
     ip = _ip(op)
-    empty = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
+    empty_val = _make_empty(rt, [a], ip)
 
     def body(ia: list[ir.Value]) -> ir.Value:
         zero = ir.Operation.create("arith.constant", results=[elt], attributes={"value": ir.FloatAttr.get(elt, 0.0)})
         return ir.Operation.create("arith.maxnumf", operands=[ia[0], zero.result], infer_type=True).result
 
-    return _make_generic([a], empty.result, rt, 1, ip, body)
+    return _make_generic([a], empty_val, rt, 1, ip, body)
+
+
+def _lower_sigmoid(op: Any) -> Any | None:
+    """sf.sigmoid → 1/(1+exp(-x)) — math.sigmoid not available in mlir-core 22.1.5."""
+    if len(op.operation.operands) < 1:
+        return None
+    a = op.operation.operands[0]
+    rt = op.result.type
+    elt = _el(rt)
+    ip = _ip(op)
+    empty_val = _make_empty(rt, [a], ip)
+    import mlir.dialects.linalg as _lin
+    out_rank = len(rt.shape) if isinstance(rt, ir.RankedTensorType) else 1
+
+    def body(ia: list[ir.Value]) -> ir.Value:
+        neg = ir.Operation.create("arith.negf", operands=[ia[0]], infer_type=True)
+        exp = ir.Operation.create("math.exp", operands=[neg.result], infer_type=True)
+        one = ir.Operation.create("arith.constant", results=[elt], attributes={"value": ir.FloatAttr.get(elt, 1.0)})
+        denom = ir.Operation.create("arith.addf", operands=[one.result, exp.result], infer_type=True)
+        return ir.Operation.create("arith.divf", operands=[one.result, denom.result], infer_type=True).result
+
+    return _make_generic(
+        [a], empty_val, rt, 1, ip, body,
+        iterator_types=[_lin.IteratorType.parallel] * out_rank,
+    )
 
 
 def _lower_silu(op: Any) -> Any | None:
@@ -271,7 +432,7 @@ def _lower_silu(op: Any) -> Any | None:
     rt = op.result.type
     elt = _el(rt)
     ip = _ip(op)
-    empty = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
+    empty_val = _make_empty(rt, [a], ip)
 
     def body(ia: list[ir.Value]) -> ir.Value:
         x = ia[0]
@@ -282,7 +443,7 @@ def _lower_silu(op: Any) -> Any | None:
         sig = ir.Operation.create("arith.divf", operands=[one.result, denom.result], infer_type=True)
         return ir.Operation.create("arith.mulf", operands=[x, sig.result], infer_type=True).result
 
-    return _make_generic([a], empty.result, rt, 1, ip, body)
+    return _make_generic([a], empty_val, rt, 1, ip, body)
 
 
 def _lower_gelu(op: Any) -> Any | None:
@@ -292,7 +453,7 @@ def _lower_gelu(op: Any) -> Any | None:
     rt = op.result.type
     elt = _el(rt)
     ip = _ip(op)
-    empty = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
+    empty_val = _make_empty(rt, [a], ip)
 
     def body(ia: list[ir.Value]) -> ir.Value:
         x = ia[0]
@@ -313,7 +474,7 @@ def _lower_gelu(op: Any) -> Any | None:
         hx = ir.Operation.create("arith.mulf", operands=[half.result, x], infer_type=True)
         return ir.Operation.create("arith.mulf", operands=[hx.result, p1.result], infer_type=True).result
 
-    return _make_generic([a], empty.result, rt, 1, ip, body)
+    return _make_generic([a], empty_val, rt, 1, ip, body)
 
 
 # ── Matmul / Linear ───────────────────────────────────────────
@@ -326,8 +487,8 @@ def _lower_matmul(op: Any) -> Any | None:
     rt = op.result.type
     ip = _ip(op)
     op_name = "linalg.batch_matmul" if len(rt.shape) > 2 else "linalg.matmul"
-    empty = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
-    return _make_matmul([a, b], empty.result, rt, ip, op_name)
+    empty_val = _make_empty(rt, [a], ip)
+    return _make_matmul([a, b], empty_val, rt, ip, op_name)
 
 
 def _lower_linear(op: Any) -> Any | None:
@@ -369,8 +530,8 @@ def _lower_linear(op: Any) -> Any | None:
         w_transposed = w_val
 
     op_name = "linalg.batch_matmul" if len(rt.shape) > 2 else "linalg.matmul"
-    empty = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
-    return _make_matmul([x_val, w_transposed], empty.result, rt, ip, op_name)
+    empty_val = _make_empty(rt, [x_val], ip)
+    return _make_matmul([x_val, w_transposed], empty_val, rt, ip, op_name)
 
 
 # ── Transpose ─────────────────────────────────────────────────
@@ -393,13 +554,13 @@ def _lower_transpose(op: Any) -> Any | None:
     perm[d0], perm[d1] = perm[d1], perm[d0]
     import mlir.dialects.linalg as _lin
     ip = _ip(op)
-    output = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
+    output_val = _make_empty(rt, [a], ip)
     perm_map = ir.AffineMap.get_permutation(perm)
     ident_map = ir.AffineMap.get_identity(rank)
     maps = ir.ArrayAttr.get([ir.AffineMapAttr.get(perm_map), ir.AffineMapAttr.get(ident_map)])
     iters = _lin._IteratorTypeArrayAttr([_lin.IteratorType.parallel] * rank, context=_CTX)
     t_op = ir.Operation.create(
-        "linalg.generic", operands=[a, output.result], results=[rt],
+        "linalg.generic", operands=[a, output_val], results=[rt],
         attributes={
             "indexing_maps": maps,
             "iterator_types": iters,
@@ -450,10 +611,10 @@ def _lower_mean(op: Any) -> Any | None:
     import mlir.dialects.linalg as _lin
 
     div_rt = sum_result.operation.results[0].type
-    empty = ir.Operation.create("tensor.empty", results=[div_rt], ip=ip)
+    empty_val = _make_empty(div_rt, [a], ip)
     rank = len(div_rt.shape) if isinstance(div_rt, ir.RankedTensorType) else 1
     return _make_generic(
-        [sum_result.result], empty.result, div_rt, 1, ip,
+        [sum_result.result], empty_val, div_rt, 1, ip,
         lambda ia: ir.Operation.create(
             "arith.divf",
             operands=[
@@ -511,9 +672,9 @@ def _lower_reduction(reduce_op: str) -> Callable[[Any], Any | None]:
         maps = ir.ArrayAttr.get([ir.AffineMapAttr.get(in_map), ir.AffineMapAttr.get(out_map)])
         iters = _lin._IteratorTypeArrayAttr(iter_types, context=_CTX)
         elt = rt.element_type
-        empty = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
+        empty_val = _make_empty(rt, [a], ip)
         gop = ir.Operation.create(
-            "linalg.generic", operands=[a, empty.result], results=[rt],
+            "linalg.generic", operands=[a, empty_val], results=[rt],
             attributes={
                 "indexing_maps": maps,
                 "iterator_types": iters,
@@ -539,13 +700,21 @@ def _lower_copy(op: Any) -> Any | None:
 
 
 def _lower_slice(op: Any) -> Any | None:
-    """sf.slice → tensor.extract_slice."""
+    """sf.slice → linalg.copy (same shape) or tensor.extract_slice (different shape).
+
+    Uses linalg.copy for the common case of same-shape slices with dynamic dims,
+    avoiding tensor.extract_slice bufferization issues in mlir-core 22.1.5.
+    """
     if len(op.operation.operands) < 1:
         return None
     a = op.operation.operands[0]
     rt = op.result.type
     in_type = a.type
     if not isinstance(in_type, ir.RankedTensorType) or not isinstance(rt, ir.RankedTensorType):
+        return _lower_passthrough(op)
+
+    # Same shape → use linalg.copy (fast, no bufferize issues)
+    if list(in_type.shape) == list(rt.shape):
         return _lower_passthrough(op)
 
     attrs = op.operation.attributes
@@ -557,6 +726,15 @@ def _lower_slice(op: Any) -> Any | None:
     if dim_v < 0:
         dim_v = in_rank + dim_v
 
+    # If the slice has dynamic size, fall back to passthrough
+    size = end_v - start_v
+    if size < 0:
+        return _lower_passthrough(op)
+    for i, s in enumerate(in_type.shape):
+        if i != dim_v and s < 0:
+            return _lower_passthrough(op)
+
+    # Static slice: tensor.extract_slice is safe
     static_offsets: list[int] = [0] * in_rank
     static_sizes: list[int] = []
     static_strides: list[int] = [1] * in_rank
@@ -564,7 +742,7 @@ def _lower_slice(op: Any) -> Any | None:
     for i in range(in_rank):
         if i == dim_v:
             static_offsets[i] = start_v
-            static_sizes.append(end_v - start_v)
+            static_sizes.append(size)
         else:
             static_sizes.append(in_type.shape[i])
 
@@ -613,9 +791,9 @@ def _lower_select(op: Any) -> Any | None:
 
     import mlir.dialects.linalg as _lin
     ip = _ip(op)
-    empty = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
+    empty_val = _make_empty(rt, [a], ip)
     return _make_generic(
-        [a], empty.result, rt, 1, ip, lambda ia: ia[0],
+        [a], empty_val, rt, 1, ip, lambda ia: ia[0],
         iterator_types=[_lin.IteratorType.parallel] * out_rank, indexing_maps=[in_map, out_map],
     )
 
@@ -632,6 +810,8 @@ def _lower_unsqueeze(op: Any) -> Any | None:
     attrs = op.operation.attributes
     dim_v = _get_int(attrs.get("dim")) or 0
     out_rank = len(rt.shape)
+    if dim_v < 0:
+        dim_v = out_rank + dim_v
 
     from mlir.ir import AffineExpr
     in_exprs: list[AffineExpr] = []
@@ -643,16 +823,16 @@ def _lower_unsqueeze(op: Any) -> Any | None:
 
     import mlir.dialects.linalg as _lin
     ip = _ip(op)
-    empty = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
+    empty_val = _make_empty(rt, [a], ip)
     return _make_generic(
-        [a], empty.result, rt, 1, ip, lambda ia: ia[0],
+        [a], empty_val, rt, 1, ip, lambda ia: ia[0],
         iterator_types=[_lin.IteratorType.parallel] * out_rank, indexing_maps=[in_map, out_map],
     )
 
 
 def _lower_view(op: Any) -> Any | None:
-    """sf.view → keep as sf (needs tensor.reshape — rank/shape changing)."""
-    return None
+    """sf.view → tensor.reshape (rank/shape changing)."""
+    return _lower_reshape(op)
 
 
 def _lower_expand(op: Any) -> Any | None:
@@ -684,9 +864,9 @@ def _lower_expand(op: Any) -> Any | None:
 
     import mlir.dialects.linalg as _lin
     ip = _ip(op)
-    empty = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
+    empty_val = _make_empty(rt, [a], ip)
     return _make_generic(
-        [a], empty.result, rt, 1, ip, lambda ia: ia[0],
+        [a], empty_val, rt, 1, ip, lambda ia: ia[0],
         iterator_types=[_lin.IteratorType.parallel] * out_rank, indexing_maps=[in_map, out_map],
     )
 
@@ -717,8 +897,8 @@ def _lower_cat(op: Any) -> Any | None:
             offset += o_val.type.shape[dim_v] if 0 <= dim_v < len(o_val.type.shape) else 1
 
     from mlir.ir import AffineExpr
-    empty = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
-    generic_operands = list(operands) + [empty.result]
+    empty_val = _make_empty(rt, [operands[0]], ip)
+    generic_operands = list(operands) + [empty_val]
     generic_result_types = [rt]
 
     maps_list: list[ir.AffineMap] = []
@@ -778,13 +958,13 @@ def _lower_softmax(op: Any) -> Any | None:
     if 0 <= dim_v < in_rank:
         iter_types[dim_v] = _lin.IteratorType.reduction
 
-    empty_max = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
+    empty_max_val = _make_empty(rt, [a], ip)
     ident_map = ir.AffineMap.get_identity(in_rank)
     maps = ir.ArrayAttr.get([ir.AffineMapAttr.get(ident_map)] * 2)
     iters = _lin._IteratorTypeArrayAttr(iter_types, context=_CTX)
     elt = rt.element_type
     max_op = ir.Operation.create(
-        "linalg.generic", operands=[a, empty_max.result], results=[rt],
+        "linalg.generic", operands=[a, empty_max_val], results=[rt],
         attributes={
             "indexing_maps": maps,
             "iterator_types": iters,
@@ -800,25 +980,25 @@ def _lower_softmax(op: Any) -> Any | None:
         ir.Operation.create("linalg.yield", operands=[r.result])
 
     # Step 2: subtract max (stable softmax)
-    empty_sub = ir.Operation.create("tensor.empty", results=[in_type], ip=ip)
+    empty_sub_val = _make_empty(in_type, [a], ip)
     sub_op = _make_generic(
-        [a, max_op.result], empty_sub.result, in_type, 2, ip,
+        [a, max_op.result], empty_sub_val, in_type, 2, ip,
         lambda ia: ir.Operation.create("arith.subf", operands=[ia[0], ia[1]], infer_type=True).result,
         iterator_types=[_lin.IteratorType.parallel] * in_rank,
     )
 
     # Step 3: exp
-    empty_exp = ir.Operation.create("tensor.empty", results=[in_type], ip=ip)
+    empty_exp_val = _make_empty(in_type, [sub_op.result], ip)
     exp_op = _make_generic(
-        [sub_op.result], empty_exp.result, in_type, 1, ip,
+        [sub_op.result], empty_exp_val, in_type, 1, ip,
         lambda ia: ir.Operation.create("math.exp", operands=[ia[0]], infer_type=True).result,
         iterator_types=[_lin.IteratorType.parallel] * in_rank,
     )
 
     # Step 4: sum reduction on exp
-    empty_sum = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
+    empty_sum_val = _make_empty(rt, [a], ip)
     sum_op = ir.Operation.create(
-        "linalg.generic", operands=[exp_op.result, empty_sum.result], results=[rt],
+        "linalg.generic", operands=[exp_op.result, empty_sum_val], results=[rt],
         attributes={
             "indexing_maps": maps,
             "iterator_types": iters,
@@ -834,9 +1014,9 @@ def _lower_softmax(op: Any) -> Any | None:
         ir.Operation.create("linalg.yield", operands=[r2.result])
 
     # Step 5: divide exp by sum
-    empty_div = ir.Operation.create("tensor.empty", results=[in_type], ip=ip)
+    empty_div_val = _make_empty(in_type, [exp_op.result], ip)
     return _make_generic(
-        [exp_op.result, sum_op.result], empty_div.result, in_type, 2, ip,
+        [exp_op.result, sum_op.result], empty_div_val, in_type, 2, ip,
         lambda ia: ir.Operation.create("arith.divf", operands=[ia[0], ia[1]], infer_type=True).result,
         iterator_types=[_lin.IteratorType.parallel] * in_rank,
     )
@@ -849,7 +1029,7 @@ def _lower_comparison(cmp_pred: int) -> Callable[[Any], Any | None]:
         a, b = op.operation.operands[0], op.operation.operands[1]
         rt = op.result.type
         ip = _ip(op)
-        empty = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
+        empty_val = _make_empty(rt, [a], ip)
         import mlir.dialects.linalg as _lin
         out_rank = len(rt.shape) if isinstance(rt, ir.RankedTensorType) else 1
         ident = ir.AffineMap.get_identity(out_rank)
@@ -860,7 +1040,7 @@ def _lower_comparison(cmp_pred: int) -> Callable[[Any], Any | None]:
         in_elt_b = b.type.element_type if isinstance(b.type, ir.ShapedType) else _el(b.type)
         out_elt = rt.element_type if isinstance(rt, ir.ShapedType) else rt
         gop = ir.Operation.create(
-            "linalg.generic", operands=[a, b, empty.result], results=[rt],
+            "linalg.generic", operands=[a, b, empty_val], results=[rt],
             attributes={
                 "indexing_maps": maps,
                 "iterator_types": iters,
@@ -890,7 +1070,7 @@ def _lower_logical_and(op: Any) -> Any | None:
 
 
 def _lower_zeros_op(op: Any) -> Any | None:
-    """sf.zeros → tensor.empty + linalg.generic with 0.0 constant."""
+    """sf.zeros → tensor.empty + linalg.fill(0.0)."""
     rt = op.result.type
     if not isinstance(rt, ir.RankedTensorType):
         return _lower_passthrough(op)
@@ -898,31 +1078,34 @@ def _lower_zeros_op(op: Any) -> Any | None:
     ip = _ip(op)
     empty = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
     zero_attr = ir.FloatAttr.get(elt, 0.0) if "f" in str(elt).lower() else ir.IntegerAttr.get(elt, 0)
-    return _make_generic(
-        [], empty.result, rt, 0, ip,
-        lambda _ia: ir.Operation.create(
-            "arith.constant", results=[elt], attributes={"value": zero_attr},
-        ).result,
+    const = ir.Operation.create(
+        "arith.constant", results=[elt], attributes={"value": zero_attr}, ip=ip,
     )
+    import mlir.dialects.linalg as _lin
+    fill_op = _lin.FillOp(result_tensors=[rt], inputs=[const.result], outputs=[empty.result], ip=ip)
+    _lin.fill_builtin_region(fill_op.operation)
+    return fill_op
 
 
 def _lower_ones_like(op: Any) -> Any | None:
-    """sf.ones_like → tensor.empty + linalg.generic with 1.0 constant."""
+    """sf.ones_like → tensor.empty + linalg.fill(1.0)."""
+    if len(op.operation.operands) < 1:
+        return _lower_passthrough(op)
+    at = op.operation.operands[0]
     rt = op.result.type
     if not isinstance(rt, ir.RankedTensorType):
         return _lower_passthrough(op)
     ip = _ip(op)
-    empty = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
+    empty_val = _make_empty(rt, [at], ip)
     elt = rt.element_type
     one_attr = ir.FloatAttr.get(elt, 1.0) if "f" in str(elt).lower() else ir.IntegerAttr.get(elt, 1)
-    import mlir.dialects.linalg as _lin
-    return _make_generic(
-        [], empty.result, rt, 0, ip,
-        lambda _ia: ir.Operation.create(
-            "arith.constant", results=[elt], attributes={"value": one_attr},
-        ).result,
-        iterator_types=[_lin.IteratorType.parallel] * len(rt.shape),
+    const = ir.Operation.create(
+        "arith.constant", results=[elt], attributes={"value": one_attr}, ip=ip,
     )
+    import mlir.dialects.linalg as _lin
+    fill_op = _lin.FillOp(result_tensors=[rt], inputs=[const.result], outputs=[empty_val], ip=ip)
+    _lin.fill_builtin_region(fill_op.operation)
+    return fill_op
 
 
 def _lower_softplus(op: Any) -> Any | None:
@@ -933,7 +1116,7 @@ def _lower_softplus(op: Any) -> Any | None:
     rt = op.result.type
     elt = rt.element_type if isinstance(rt, ir.RankedTensorType) else ir.F32Type.get()
     ip = _ip(op)
-    empty = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
+    empty_val = _make_empty(rt, [a], ip)
     one_val = ir.FloatAttr.get(elt, 1.0)
     import mlir.dialects.linalg as _lin
     out_rank = len(rt.shape) if isinstance(rt, ir.RankedTensorType) else 1
@@ -945,7 +1128,7 @@ def _lower_softplus(op: Any) -> Any | None:
         return ir.Operation.create("math.log", operands=[add.result], infer_type=True).result
 
     return _make_generic(
-        [a], empty.result, rt, 1, ip, body,
+        [a], empty_val, rt, 1, ip, body,
         iterator_types=[_lin.IteratorType.parallel] * out_rank,
     )
 
@@ -960,7 +1143,7 @@ def _lower_clamp_min(op: Any) -> Any | None:
     ip = _ip(op)
     min_val_attr = op.operation.attributes.get("min")
     min_val = _get_int(min_val_attr) if min_val_attr is not None else 0
-    empty = ir.Operation.create("tensor.empty", results=[rt], ip=ip)
+    empty_val = _make_empty(rt, [a], ip)
     import mlir.dialects.linalg as _lin
     out_rank = len(rt.shape) if isinstance(rt, ir.RankedTensorType) else 1
     min_float = ir.FloatAttr.get(elt, float(min_val))
@@ -970,7 +1153,7 @@ def _lower_clamp_min(op: Any) -> Any | None:
         return ir.Operation.create("arith.maxnumf", operands=[ia[0], c.result], infer_type=True).result
 
     return _make_generic(
-        [a], empty.result, rt, 1, ip, body,
+        [a], empty_val, rt, 1, ip, body,
         iterator_types=[_lin.IteratorType.parallel] * out_rank,
     )
 
@@ -1048,7 +1231,7 @@ _LOWER_TABLE: dict[str, Callable[[Any], Any | None]] = {
     "sf.relu": _lower_relu,
     "sf.silu": _lower_silu,
     "sf.gelu": _lower_gelu,
-    "sf.sigmoid": _lower_unary("math.sigmoid"),
+    "sf.sigmoid": _lower_sigmoid,
     "sf.exp": _lower_unary("math.exp"),
     "sf.neg": _lower_unary("arith.negf"),
     "sf.rsqrt": _lower_unary("math.rsqrt"),

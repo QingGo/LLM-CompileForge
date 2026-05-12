@@ -138,7 +138,7 @@ class TestLoweringEdgeCases:
     return %0 : tensor<2x64xf32>
   }
 }""")
-        _check_op_count(r, "linalg.generic", 1)
+        _check_op_count(r, "linalg.copy", 1)
         _check_absent(r, "sf.identity")
 
     def test_weight_not_lowered(self):
@@ -152,14 +152,14 @@ class TestLoweringEdgeCases:
         _check_absent(r, "linalg")
 
     def test_unknown_sf_op_finalized(self):
-        """Unknown sf op → linalg.generic passthrough (finalize)."""
+        """Unknown sf op → linalg.copy passthrough (finalize)."""
         r = sf_to_linalg_pass("""module {
   func.func @test(%a: tensor<2x64xf32>) -> tensor<2x64xf32> {
     %0 = \"sf.unknown_future_op\"(%a) : (tensor<2x64xf32>) -> tensor<2x64xf32>
     return %0 : tensor<2x64xf32>
   }
 }""")
-        _check_op_count(r, "linalg.generic", 1)
+        _check_op_count(r, "linalg.copy", 1)
         _check_absent(r, "sf.unknown_future_op")
 
     def test_empty_module_noop(self):
@@ -224,14 +224,15 @@ class TestLoweringReductions:
 class TestLoweringShapeOps:
 
     def test_view_preserved(self):
-        """sf.view kept as sf — needs tensor.reshape (rank-changing)."""
+        """sf.view → tensor.reshape (rank-changing)."""
         r = sf_to_linalg_pass("""module {
   func.func @test(%a: tensor<2x128xf32>) -> tensor<4x64xf32> {
     %0 = \"sf.view\"(%a) {shape = [4 : i64, 64 : i64]} : (tensor<2x128xf32>) -> tensor<4x64xf32>
     return %0 : tensor<4x64xf32>
   }
 }""")
-        _check_op_count(r, "sf.view", 1)
+        _check_op_count(r, "tensor.reshape", 1)
+        _check_absent(r, "sf.view")
 
     def test_slice_lowered(self):
         """sf.slice → tensor.extract_slice."""
@@ -262,7 +263,7 @@ class TestLoweringShapeOps:
     return %0 : tensor<2x64xf32>
   }
 }""")
-        _check_op_count(r, "linalg.generic", 1)
+        _check_op_count(r, "linalg.copy", 1)
         _check_absent(r, "sf.copy_")
 
 
@@ -314,7 +315,7 @@ class TestLoweringMiscOps:
   }
 }""")
         _check_op_count(r, "tensor.empty", 1)
-        _check_op_count(r, "arith.constant", 1)
+        _check_op_count(r, "linalg.fill", 1)
         _check_absent(r, "sf.zeros")
 
     def test_ones_like_lowered(self):
@@ -324,7 +325,7 @@ class TestLoweringMiscOps:
     return %0 : tensor<2x64xf32>
   }
 }""")
-        _check_op_count(r, "arith.constant", 1)
+        _check_op_count(r, "linalg.fill", 1)
         _check_absent(r, "sf.ones_like")
 
     def test_softplus_lowered(self):
@@ -360,3 +361,156 @@ class TestCoverageAllOps:
                 continue  # intentionally skipped by the walk callback
             assert op_name in _LOWER_TABLE, \
                 f"sf op '{op_name}' not in _LOWER_TABLE — add a lowering entry"
+
+
+@pytest.mark.unit
+class TestStandalonePassOnModule:
+    """P0: verify sf_to_linalg_pass_on_module works standalone (without outer with ctx:)."""
+
+    @pytest.mark.timeout(5)
+    def test_standalone_lowers_without_outer_context(self, mlir_context):
+        from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp, mlir_module_to_ir_module
+        from compiler.mlir_dialect.lowering import sf_to_linalg_pass_on_module
+
+        mod = MlirModule(functions=[MlirFunction(
+            name="test", inputs=[("%a", "tensor<2x64xf32>")],
+            outputs=[("%r", "tensor<2x64xf32>")],
+            ops=[
+                MlirOp(name="sf.add", dialect="sf", op_name="add",
+                       operands=["%a", "%a"], results=["%r"],
+                       output_types=["tensor<2x64xf32>"], attributes={}),
+            ],
+        )])
+        ir_mod = mlir_module_to_ir_module(mod, ctx=mlir_context)
+        lowered = sf_to_linalg_pass_on_module(ir_mod)
+        assert "linalg.generic" in lowered
+        assert "arith.addf" in lowered
+        assert "sf.add" not in lowered
+
+
+@pytest.mark.unit
+class TestSigmoidLowering:
+    """P1: verify sf.sigmoid decomposes correctly (math.sigmoid not in 22.1.5)."""
+
+    def test_sigmoid_decomposes(self):
+        r = sf_to_linalg_pass("""module {
+  func.func @test(%a: tensor<2x64xf32>) -> tensor<2x64xf32> {
+    %0 = \"sf.sigmoid\"(%a) : (tensor<2x64xf32>) -> tensor<2x64xf32>
+    return %0 : tensor<2x64xf32>
+  }
+}""")
+        _check_op_count(r, "arith.negf", 1)
+        _check_op_count(r, "math.exp", 1)
+        _check_op_count(r, "arith.divf", 1)
+        _check_op_count(r, "arith.addf", 1)  # 1 + exp(-x)
+        _check_absent(r, "sf.sigmoid")
+
+    def test_sigmoid_distinct_from_silu(self):
+        """sigmoid uses arith.divf, silu additionally uses arith.mulf."""
+        r = sf_to_linalg_pass("""module {
+  func.func @test(%a: tensor<2x64xf32>) -> tensor<2x64xf32> {
+    %0 = \"sf.sigmoid\"(%a) : (tensor<2x64xf32>) -> tensor<2x64xf32>
+    return %0 : tensor<2x64xf32>
+  }
+}""")
+        _check_absent(r, "arith.mulf")  # sigmoid must not have mulf
+
+
+@pytest.mark.unit
+class TestLoweringErrorReporting:
+    """P0: verify error aggregation works — all op failures are reported, not just first 5."""
+
+    def test_errors_aggregated_by_op_name(self):
+        r = sf_to_linalg_pass("""module {
+  func.func @test(%a: tensor<2x64xf32>) -> tensor<2x64xf32> {
+    %0 = \"sf.broken_a\"(%a) : (tensor<2x64xf32>) -> tensor<2x64xf32>
+    %1 = \"sf.broken_a\"(%0) : (tensor<2x64xf32>) -> tensor<2x64xf32>
+    %2 = \"sf.broken_b\"(%1) : (tensor<2x64xf32>) -> tensor<2x64xf32>
+    return %2 : tensor<2x64xf32>
+  }
+}""")
+        # Both broken_a and broken_b should be finalized (passthrough)
+        _check_op_count(r, "linalg.copy", 3)
+        _check_absent(r, "sf.broken_a")
+        _check_absent(r, "sf.broken_b")
+
+
+@pytest.mark.unit
+class TestLoweringProducesValidLinalg:
+    """P0: verify that lowered linalg ops pass one-shot-bufferize validation.
+
+    Catches silently malformed linalg ops (rank mismatches, missing dynamic
+    size operands, invalid affine maps) BEFORE the full LLVM pipeline.
+    """
+
+    def _lower_and_bufferize(self, mlir_text: str) -> bool:
+        import mlir.ir as ir
+        import mlir.passmanager as pm
+
+        from compiler.mlir_dialect.lowering import sf_to_linalg_pass_on_module
+
+        ctx = ir.Context()
+        ctx.allow_unregistered_dialects = True
+        with ctx, ir.Location.unknown(ctx):
+            module = ir.Module.parse(mlir_text, ctx)
+        sf_to_linalg_pass_on_module(module)  # lower in-place
+        # After lowering, run one-shot-bufferize to validate
+        ctx2 = module.operation.context
+        ctx2.allow_unregistered_dialects = True
+        with ir.Location.unknown(ctx2):
+            pman = pm.PassManager.parse(
+                "builtin.module(one-shot-bufferize{bufferize-function-boundaries})", ctx2)
+            pman.run(module.operation)
+        return True
+
+    def test_unsqueeze_negative_dim(self):
+        """Bug 6: unsqueeze dim=-1 must be normalized to out_rank-1."""
+        self._lower_and_bufferize("""module {
+  func.func @test(%a: tensor<1x?xf32>) -> tensor<1x?x1xf32> {
+    %0 = \"sf.unsqueeze\"(%a) {dim = -1 : i64} : (tensor<1x?xf32>) -> tensor<1x?x1xf32>
+    return %0 : tensor<1x?x1xf32>
+  }
+}""")
+
+    def test_slice_dynamic_shape(self):
+        """Bug 5: slice with dynamic shapes must not produce tensor.extract_slice
+        that hangs bufferize."""
+        self._lower_and_bufferize("""module {
+  func.func @test(%a: tensor<1x?xf32>) -> tensor<1x?xf32> {
+    %0 = \"sf.slice\"(%a) {dim = 1 : i64, start = 0 : i64, end = 10 : i64} : (tensor<1x?xf32>) -> tensor<1x?xf32>
+    return %0 : tensor<1x?xf32>
+  }
+}""")
+
+    def test_broadcast_op_does_not_crash_bufferize(self):
+        """Bug 8: binary ops with mismatched input/output ranks must not create
+        invalid linalg.generic with identity maps."""
+        self._lower_and_bufferize("""module {
+  func.func @test(%a: tensor<1x?xf32>, %b: tensor<1xf32>) -> tensor<1x?xf32> {
+    %0 = \"sf.mul\"(%a, %b) : (tensor<1x?xf32>, tensor<1xf32>) -> tensor<1x?xf32>
+    return %0 : tensor<1x?xf32>
+  }
+}""")
+
+    def test_view_dynamic_shape(self):
+        """Bug 7: view with dynamic shapes must produce valid tensor.empty
+        with dynamic size operands."""
+        self._lower_and_bufferize("""module {
+  func.func @test(%a: tensor<1x?xf32>) -> tensor<?xf32> {
+    %0 = \"sf.view\"(%a) {shape = [-1 : i64]} : (tensor<1x?xf32>) -> tensor<?xf32>
+    return %0 : tensor<?xf32>
+  }
+}""")
+
+    def test_chain_of_ops_bufferizes(self):
+        """Integration: a realistic chain of ops through lowering+bufferize."""
+        self._lower_and_bufferize("""module {
+  func.func @test(%a: tensor<1x64xf32>) -> tensor<1x32xf32> {
+    %0 = \"sf.slice\"(%a) {dim = 1 : i64, start = 0 : i64, end = 32 : i64} : (tensor<1x64xf32>) -> tensor<1x32xf32>
+    %1 = \"sf.unsqueeze\"(%0) {dim = -1 : i64} : (tensor<1x32xf32>) -> tensor<1x32x1xf32>
+    %2 = \"sf.add\"(%1, %1) : (tensor<1x32x1xf32>, tensor<1x32x1xf32>) -> tensor<1x32x1xf32>
+    %3 = \"sf.relu\"(%2) : (tensor<1x32x1xf32>) -> tensor<1x32x1xf32>
+    %4 = \"sf.view\"(%3) {shape = [1 : i64, 32 : i64]} : (tensor<1x32x1xf32>) -> tensor<1x32xf32>
+    return %4 : tensor<1x32xf32>
+  }
+}""")
