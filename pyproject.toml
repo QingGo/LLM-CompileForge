@@ -12,29 +12,18 @@ allow-direct-references = true
 name = "llm-serveforge"
 version = "0.1.0-dev"
 description = "Hardware-agnostic LLM inference compilation and runtime"
-requires-python = ">=3.10,<3.13"
+requires-python = "==3.10.*"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2",
     "pyyaml>=6",
     "numpy>=1.26",
-    "torch @ https://github.com/QingGo/pytorch/releases/download/torch-2.9.1-macos15-py3.10/torch-2.9.1a0+gitd38164a-cp310-cp310-macosx_10_15_x86_64.whl",
+    "torch @ https://github.com/QingGo/pytorch/releases/download/torch-2.9.1-macos15-py3.10-accelerate/torch-2.9.1a0+gitd38164a-cp310-cp310-macosx_11_0_x86_64.whl",
     "mlir-core @ https://github.com/QingGo/llvm-project/releases/download/llvmorg-22.1.5/mlir_core-22.1.5-cp310-cp310-macosx_11_0_x86_64.whl",
 ]
 
-[project.optional-dependencies]
-lint = [
-    "ruff>=0.6",
-    "mypy>=1.11",
-]
-test = [
-    "pytest>=8",
-    "pytest-timeout>=2",
-    "pytest-cov>=5",
-    "httpx>=0.28",
-    "psutil>=6",
-]
+[dependency-groups]
 dev = [
     "ruff>=0.6",
     "mypy>=1.11",
@@ -43,6 +32,11 @@ dev = [
     "pytest-cov>=5",
     "httpx>=0.28",
     "psutil>=6",
+]
+compile = [
+    "transformers>=4.50",
+    "safetensors>=0.4",
+    "sentencepiece>=0.2",
 ]
 
 [tool.ruff]

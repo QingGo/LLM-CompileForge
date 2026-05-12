@@ -151,14 +151,16 @@ class TestLoweringEdgeCases:
         _check_op_count(r, "sf.weight", 1)
         _check_absent(r, "linalg")
 
-    def test_unknown_sf_op_preserved(self):
+    def test_unknown_sf_op_finalized(self):
+        """Unknown sf op → linalg.generic passthrough (finalize)."""
         r = sf_to_linalg_pass("""module {
   func.func @test(%a: tensor<2x64xf32>) -> tensor<2x64xf32> {
     %0 = \"sf.unknown_future_op\"(%a) : (tensor<2x64xf32>) -> tensor<2x64xf32>
     return %0 : tensor<2x64xf32>
   }
 }""")
-        _check_op_count(r, "sf.unknown_future_op", 1)
+        _check_op_count(r, "linalg.generic", 1)
+        _check_absent(r, "sf.unknown_future_op")
 
     def test_empty_module_noop(self):
         r = sf_to_linalg_pass("""module {
@@ -192,30 +194,37 @@ class TestLoweringEdgeCases:
 @pytest.mark.unit
 class TestLoweringReductions:
 
-    def test_mean_preserved(self):
-        """sf.mean kept: needs keepdim logic for reduction iterators."""
+    def test_mean_lowered(self):
+        """sf.mean → linalg.generic + arith.addf reduction + arith.divf."""
         r = sf_to_linalg_pass("""module {
   func.func @test(%a: tensor<4x32x64xf32>) -> tensor<4x64xf32> {
     %0 = \"sf.mean\"(%a) {dim = 1 : i64} : (tensor<4x32x64xf32>) -> tensor<4x64xf32>
     return %0 : tensor<4x64xf32>
   }
 }""")
-        _check_op_count(r, "sf.mean", 1)
+        _check_op_count(r, "linalg.generic", 2)
+        _check_op_count(r, "arith.addf", 1)
+        _check_op_count(r, "arith.divf", 1)
+        _check_absent(r, "sf.mean")
 
-    def test_sum_preserved(self):
+    def test_sum_lowered(self):
+        """sf.sum → linalg.generic with arith.addf reduction."""
         r = sf_to_linalg_pass("""module {
   func.func @test(%a: tensor<4x32x64xf32>) -> tensor<4x64xf32> {
     %0 = \"sf.sum\"(%a) {dim = 1 : i64} : (tensor<4x32x64xf32>) -> tensor<4x64xf32>
     return %0 : tensor<4x64xf32>
   }
 }""")
-        _check_op_count(r, "sf.sum", 1)
+        _check_op_count(r, "linalg.generic", 1)
+        _check_op_count(r, "arith.addf", 1)
+        _check_absent(r, "sf.sum")
 
 
 @pytest.mark.unit
 class TestLoweringShapeOps:
 
     def test_view_preserved(self):
+        """sf.view kept as sf — needs tensor.reshape (rank-changing)."""
         r = sf_to_linalg_pass("""module {
   func.func @test(%a: tensor<2x128xf32>) -> tensor<4x64xf32> {
     %0 = \"sf.view\"(%a) {shape = [4 : i64, 64 : i64]} : (tensor<2x128xf32>) -> tensor<4x64xf32>
@@ -224,23 +233,27 @@ class TestLoweringShapeOps:
 }""")
         _check_op_count(r, "sf.view", 1)
 
-    def test_slice_preserved(self):
+    def test_slice_lowered(self):
+        """sf.slice → tensor.extract_slice."""
         r = sf_to_linalg_pass("""module {
   func.func @test(%a: tensor<2x100xf32>) -> tensor<2x50xf32> {
     %0 = \"sf.slice\"(%a) {dim = 1 : i64, start = 0 : i64, end = 50 : i64} : (tensor<2x100xf32>) -> tensor<2x50xf32>
     return %0 : tensor<2x50xf32>
   }
 }""")
-        _check_op_count(r, "sf.slice", 1)
+        _check_op_count(r, "tensor.extract_slice", 1)
+        _check_absent(r, "sf.slice")
 
-    def test_select_preserved(self):
+    def test_select_lowered(self):
+        """sf.select → linalg.generic with constant-index affine map."""
         r = sf_to_linalg_pass("""module {
   func.func @test(%a: tensor<2x100x64xf32>) -> tensor<2x64xf32> {
     %0 = \"sf.select\"(%a) {dim = 1 : i64, index = 5 : i64} : (tensor<2x100x64xf32>) -> tensor<2x64xf32>
     return %0 : tensor<2x64xf32>
   }
 }""")
-        _check_op_count(r, "sf.select", 1)
+        _check_op_count(r, "linalg.generic", 1)
+        _check_absent(r, "sf.select")
 
     def test_copy_to_linalg(self):
         r = sf_to_linalg_pass("""module {
@@ -251,6 +264,89 @@ class TestLoweringShapeOps:
 }""")
         _check_op_count(r, "linalg.generic", 1)
         _check_absent(r, "sf.copy_")
+
+
+@pytest.mark.unit
+class TestLoweringComparisonOps:
+
+    def test_eq_to_arith_cmpf(self):
+        r = sf_to_linalg_pass("""module {
+  func.func @test(%a: tensor<2x64xf32>, %b: tensor<2x64xf32>) -> tensor<2x64xi1> {
+    %0 = \"sf.eq\"(%a, %b) : (tensor<2x64xf32>, tensor<2x64xf32>) -> tensor<2x64xi1>
+    return %0 : tensor<2x64xi1>
+  }
+}""")
+        _check_op_count(r, "arith.cmpf", 1)
+        _check_absent(r, "sf.eq")
+
+    def test_gt_to_arith_cmpf(self):
+        r = sf_to_linalg_pass("""module {
+  func.func @test(%a: tensor<2x64xf32>, %b: tensor<2x64xf32>) -> tensor<2x64xi1> {
+    %0 = \"sf.gt\"(%a, %b) : (tensor<2x64xf32>, tensor<2x64xf32>) -> tensor<2x64xi1>
+    return %0 : tensor<2x64xi1>
+  }
+}""")
+        _check_op_count(r, "arith.cmpf", 1)
+        _check_absent(r, "sf.gt")
+
+
+@pytest.mark.unit
+class TestLoweringMiscOps:
+
+    def test_softmax_lowered(self):
+        """sf.softmax → exp/sum/div decomposition."""
+        r = sf_to_linalg_pass("""module {
+  func.func @test(%a: tensor<4x16xf32>) -> tensor<4x16xf32> {
+    %0 = \"sf.softmax\"(%a) {dim = 1 : i64} : (tensor<4x16xf32>) -> tensor<4x16xf32>
+    return %0 : tensor<4x16xf32>
+  }
+}""")
+        _check_op_count(r, "math.exp", 1)
+        _check_op_count(r, "arith.addf", 1)
+        _check_op_count(r, "arith.divf", 1)
+        _check_absent(r, "sf.softmax")
+
+    def test_zeros_lowered(self):
+        r = sf_to_linalg_pass("""module {
+  func.func @test() -> tensor<2x64xf32> {
+    %0 = \"sf.zeros\"() : () -> tensor<2x64xf32>
+    return %0 : tensor<2x64xf32>
+  }
+}""")
+        _check_op_count(r, "tensor.empty", 1)
+        _check_op_count(r, "arith.constant", 1)
+        _check_absent(r, "sf.zeros")
+
+    def test_ones_like_lowered(self):
+        r = sf_to_linalg_pass("""module {
+  func.func @test(%a: tensor<2x64xf32>) -> tensor<2x64xf32> {
+    %0 = \"sf.ones_like\"(%a) : (tensor<2x64xf32>) -> tensor<2x64xf32>
+    return %0 : tensor<2x64xf32>
+  }
+}""")
+        _check_op_count(r, "arith.constant", 1)
+        _check_absent(r, "sf.ones_like")
+
+    def test_softplus_lowered(self):
+        r = sf_to_linalg_pass("""module {
+  func.func @test(%a: tensor<2x64xf32>) -> tensor<2x64xf32> {
+    %0 = \"sf.softplus\"(%a) : (tensor<2x64xf32>) -> tensor<2x64xf32>
+    return %0 : tensor<2x64xf32>
+  }
+}""")
+        _check_op_count(r, "math.exp", 1)
+        _check_op_count(r, "math.log", 1)
+        _check_absent(r, "sf.softplus")
+
+    def test_clamp_min_lowered(self):
+        r = sf_to_linalg_pass("""module {
+  func.func @test(%a: tensor<2x64xf32>) -> tensor<2x64xf32> {
+    %0 = \"sf.clamp_min\"(%a) {min = 0 : i64} : (tensor<2x64xf32>) -> tensor<2x64xf32>
+    return %0 : tensor<2x64xf32>
+  }
+}""")
+        _check_op_count(r, "arith.maxnumf", 1)
+        _check_absent(r, "sf.clamp_min")
 
 
 @pytest.mark.unit

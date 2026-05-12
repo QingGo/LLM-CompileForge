@@ -40,7 +40,7 @@ def _patch_transformers_torch() -> None:
     _generic._model_output_unflatten = _unflatten  # type: ignore[attr-defined]
 
 
-def compile_opt125m(output_dir: str) -> None:
+def compile_opt125m(output_dir: str, apply_lowering: bool = False) -> None:
     """Compile facebook/opt-125m through the full pipeline."""
     import os
 
@@ -83,6 +83,7 @@ def compile_opt125m(output_dir: str) -> None:
         output_dir=output_dir,
         model_dir=os.path.join(snapshots, snap),
         dynamic_shapes={"input_ids": {0: Dim("batch"), 1: Dim("seq")}},
+        apply_lowering=apply_lowering,
     )
 
     op_count = len(mlir_mod.functions[0].ops)
@@ -91,7 +92,7 @@ def compile_opt125m(output_dir: str) -> None:
     print(f"Artifact saved to: {output_dir}")
 
 
-def compile_tiny_llama(output_dir: str) -> None:
+def compile_tiny_llama(output_dir: str, apply_lowering: bool = False) -> None:
     """Compile hf-internal-testing/tiny-random-LlamaForCausalLM."""
     import os
 
@@ -134,6 +135,7 @@ def compile_tiny_llama(output_dir: str) -> None:
         example_args=(example_input,),
         output_dir=output_dir,
         dynamic_shapes={"input_ids": {0: Dim("batch"), 1: Dim("seq")}},
+        apply_lowering=apply_lowering,
     )
 
     op_count = len(mlir_mod.functions[0].ops)
@@ -142,7 +144,7 @@ def compile_tiny_llama(output_dir: str) -> None:
     print(f"Artifact saved to: {output_dir}")
 
 
-def compile_qwen(output_dir: str) -> None:
+def compile_qwen(output_dir: str, apply_lowering: bool = False) -> None:
     """Compile Qwen/Qwen3.5-0.8B through the full pipeline."""
     import os
 
@@ -188,6 +190,7 @@ def compile_qwen(output_dir: str) -> None:
         model_dir=model_dir,
         cache_export=False,
         cache_policy=cache_policy,
+        apply_lowering=apply_lowering,
     )
 
     op_count = len(mlir_mod.functions[0].ops)
@@ -208,7 +211,7 @@ def compile_qwen(output_dir: str) -> None:
     print(f"Self-check OK: output {list(out.shape)}, no NaN/Inf")
 
 
-def compile_llama_1b(output_dir: str) -> None:
+def compile_llama_1b(output_dir: str, apply_lowering: bool = False) -> None:
     """Compile Llama-3.2-1B from models/LLM-Research/Llama-3.2-1B."""
     import os
 
@@ -265,6 +268,7 @@ def compile_llama_1b(output_dir: str) -> None:
         model_dir=model_dir,
         cache_export=False,
         cache_policy=cache_policy,
+        apply_lowering=apply_lowering,
     )
 
     op_count = len(mlir_mod.functions[0].ops)
@@ -294,7 +298,7 @@ def compile_llama_1b(output_dir: str) -> None:
     return mlir_mod
 
 
-def compile_llama_3b(output_dir: str) -> None:
+def compile_llama_3b(output_dir: str, apply_lowering: bool = False) -> None:
     """Compile Llama-3.2-3B from models/LLM-Research/Llama-3.2-3B."""
     import os
 
@@ -341,6 +345,7 @@ def compile_llama_3b(output_dir: str) -> None:
         model_dir=model_dir,
         cache_export=False,
         cache_policy=cache_policy,
+        apply_lowering=apply_lowering,
     )
 
     op_count = len(mlir_mod.functions[0].ops)
@@ -365,7 +370,7 @@ def compile_llama_3b(output_dir: str) -> None:
     return mlir_mod
 
 
-def compile_rwkv(output_dir: str) -> None:
+def compile_rwkv(output_dir: str, apply_lowering: bool = False) -> None:
     """Compile RWKV-7 g1d-0.4b from models/RWKV/."""
     import json
     import os
@@ -407,6 +412,7 @@ def compile_rwkv(output_dir: str) -> None:
         output_dir=output_dir,
         cache_export=False,
         cache_policy=cache_policy,
+        apply_lowering=apply_lowering,
     )
 
     # Write weight_source with name mapping
@@ -447,6 +453,12 @@ def main() -> None:
         default=None,
         help="Output directory for compiled artifacts",
     )
+    parser.add_argument(
+        "--lowering",
+        action="store_true",
+        default=False,
+        help="Apply sf→linalg lowering pass after fusion",
+    )
     args = parser.parse_args()
 
     targets = {
@@ -460,7 +472,7 @@ def main() -> None:
 
     func, default_dir = targets[args.model]
     output_dir = args.output_dir or default_dir
-    func(output_dir)
+    func(output_dir, apply_lowering=args.lowering)
 
 
 if __name__ == "__main__":

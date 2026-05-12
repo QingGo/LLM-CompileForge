@@ -333,7 +333,7 @@ def _fake_to_shape_tuple(fake: torch.Tensor) -> tuple[tuple[int | None, ...], st
 
 def _shape_to_mlir_type(shape: tuple[int | None, ...], elt: str) -> str:
     """Convert (shape, element_type) to MLIR type string like tensor<1x64xf32>."""
-    dims = "x".join(str(d) if d is not None else "?" for d in shape)
+    dims = "x".join(str(d) if (d is not None and d > 0) else "?" for d in shape)
     elt_map = {
         "float32": "f32", "float16": "f16", "bfloat16": "bf16",
         "float64": "f64", "int32": "i32", "int64": "i64",
