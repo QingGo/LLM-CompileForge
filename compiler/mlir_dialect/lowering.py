@@ -124,7 +124,9 @@ def _ip(op: Any) -> ir.InsertionPoint:
 
 
 def _el(rt: ir.Type) -> ir.Type:
-    return rt.element_type
+    if isinstance(rt, ir.ShapedType):
+        return rt.element_type
+    return rt
 
 
 # ── linalg.generic builders ───────────────────────────────────
@@ -136,6 +138,9 @@ def _make_empty(rt: ir.Type, inputs: list[ir.Value], ip: ir.InsertionPoint) -> i
     For dynamic output dimensions (<0), uses tensor.dim on the first input
     to obtain runtime sizes.  This is required by one-shot-bufferize.
     """
+    if not isinstance(rt, ir.ShapedType):
+        rt = ir.RankedTensorType.get([], rt)
+
     dynamic_operands: list[ir.Value] = []
     if isinstance(rt, ir.RankedTensorType) and inputs:
         in_val = inputs[0]
@@ -486,7 +491,9 @@ def _lower_matmul(op: Any) -> Any | None:
     a, b = op.operation.operands[0], op.operation.operands[1]
     rt = op.result.type
     ip = _ip(op)
-    op_name = "linalg.batch_matmul" if len(rt.shape) > 2 else "linalg.matmul"
+    op_name = "linalg.matmul"
+    if isinstance(rt, ir.RankedTensorType) and len(rt.shape) > 2:
+        op_name = "linalg.batch_matmul"
     empty_val = _make_empty(rt, [a], ip)
     return _make_matmul([a, b], empty_val, rt, ip, op_name)
 
@@ -529,7 +536,9 @@ def _lower_linear(op: Any) -> Any | None:
     else:
         w_transposed = w_val
 
-    op_name = "linalg.batch_matmul" if len(rt.shape) > 2 else "linalg.matmul"
+    op_name = "linalg.matmul"
+    if isinstance(rt, ir.RankedTensorType) and len(rt.shape) > 2:
+        op_name = "linalg.batch_matmul"
     empty_val = _make_empty(rt, [x_val], ip)
     return _make_matmul([x_val, w_transposed], empty_val, rt, ip, op_name)
 

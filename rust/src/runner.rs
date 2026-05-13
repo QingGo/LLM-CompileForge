@@ -10,7 +10,7 @@ use crate::block_manager::BlockManager;
 use crate::executor::ModelExecutor;
 use crate::sampler::{Sampler, SamplerConfig};
 use crate::scheduler::Scheduler;
-use crate::tokenizer::Tokenizer;
+use crate::tokenizer::{ChatMessage, Tokenizer};
 
 pub struct GenerationResult {
     pub text: String,
@@ -22,6 +22,7 @@ pub struct InferenceRunner<'a> {
     sampler: Sampler,
     tokenizer: Tokenizer,
     max_tokens: usize,
+    use_chat_template: bool,
 }
 
 impl<'a> InferenceRunner<'a> {
@@ -36,7 +37,13 @@ impl<'a> InferenceRunner<'a> {
             sampler: Sampler::new(seed),
             tokenizer,
             max_tokens,
+            use_chat_template: true,
         }
+    }
+
+    pub fn with_chat_template(mut self, enabled: bool) -> Self {
+        self.use_chat_template = enabled;
+        self
     }
 
     pub fn generate(
@@ -46,7 +53,14 @@ impl<'a> InferenceRunner<'a> {
         top_p: f32,
         top_k: usize,
     ) -> Result<GenerationResult, anyhow::Error> {
-        let input_ids = self.tokenizer.encode(prompt)?;
+        let formatted_prompt = if self.use_chat_template && self.tokenizer.has_chat_template() {
+            let messages = vec![ChatMessage::user(prompt)];
+            self.tokenizer.apply_chat_template(&messages, true)?
+        } else {
+            prompt.to_string()
+        };
+
+        let input_ids = self.tokenizer.encode(&formatted_prompt)?;
         if input_ids.is_empty() {
             return Ok(GenerationResult {
                 text: String::new(),

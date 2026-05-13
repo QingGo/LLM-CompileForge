@@ -109,7 +109,9 @@ def compile_mlir(
     # Preserve weights through the MLIR text roundtrip
     mlir_mod.metadata["source"] = "torch.export"
     mlir_mod.metadata["artifact_format"] = "mlir"
-    # Restore weights and weight metadata from the original module
+    # Restore metadata and weights from the original module
+    if "hf_key_map" in orig_mlir_mod.metadata:
+        mlir_mod.metadata["hf_key_map"] = orig_mlir_mod.metadata["hf_key_map"]
     for orig_func in orig_mlir_mod.functions:
         for mf in mlir_mod.functions:
             if mf.name == orig_func.name:

@@ -55,7 +55,8 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
         # First, finalize sf.weight → func.func extra arguments
         _promote_sf_weight_to_args(ir_module)
 
-        pipeline = (
+        # Run bufferization and linalg/math lowering first
+        pipeline_pre = (
             "builtin.module("
             "func.func(linalg-fuse-elementwise-ops),"
             "canonicalize,"
@@ -68,13 +69,29 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
             "finalize-memref-to-llvm,"
             "convert-cf-to-llvm,"
             "convert-math-to-llvm,"
-            "convert-arith-to-llvm,"
+            "convert-arith-to-llvm"
+            ")"
+        )
+        pman = pm.PassManager.parse(pipeline_pre, ctx)
+        pman.run(ir_module.operation)
+
+        # Add emit_c_interface to all func.func ops AFTER bufferization
+        # (trap #31: must be on func.func, not llvm.func)
+        for region in ir_module.operation.regions:
+            for block in region.blocks:
+                for op in block:
+                    if str(op.operation.name) == 'func.func':
+                        op.operation.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get(ctx)
+
+        # Run func-to-llvm lowering
+        pipeline_llvm = (
+            "builtin.module("
             "convert-func-to-llvm,"
             "reconcile-unrealized-casts"
             ")"
         )
-        pman = pm.PassManager.parse(pipeline, ctx)
-        pman.run(ir_module.operation)
+        pman2 = pm.PassManager.parse(pipeline_llvm, ctx)
+        pman2.run(ir_module.operation)
 
     return str(ir_module)
 

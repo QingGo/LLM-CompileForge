@@ -769,7 +769,10 @@ def _type_str_to_ir_type(type_str: str) -> ir.Type:
 
     m = _re.match(r"tensor<\s*(.+?)\s*>$", type_str.strip())
     if not m:
-        return elt_map.get("f32", _ir.F32Type.get())
+        elt = elt_map.get(type_str.strip())
+        if elt is not None:
+            return _ir.UnrankedTensorType.get(elt)
+        return _ir.UnrankedTensorType.get(_ir.F32Type.get())
 
     inner = m.group(1).strip()
     parts = inner.split("x")
@@ -873,6 +876,10 @@ def mlir_module_to_ir_module(module: MlirModule, ctx: Any = None) -> Any:
                             val = ir_op.operation.results[i]
                             ssa_map[rname] = val
                             ssa_map[rname.lstrip("%")] = val
+                    # Also map the weight name attribute so operand resolution works
+                    wname = op.attributes.get("name")
+                    if wname:
+                        ssa_map[wname] = ir_op.operation.results[0]
                     continue
 
                 # Regular compute ops: resolve operands from ssa_map
@@ -1141,8 +1148,12 @@ def _parse_mlir_op(
                 in_type_strs = _parse_type_list(in_types_part[1:-1])
             elif in_types_part:
                 in_type_strs = [in_types_part]
+            # Filter out '...' placeholder
+            in_type_strs = [t for t in in_type_strs if t != "..."]
             out_types_str = type_part[arrow_idx + 2:].strip()
             out_type_strs = _parse_type_list(out_types_str)
+            # Filter out '...' placeholder
+            out_type_strs = [t for t in out_type_strs if t != "..."]
         else:
             out_type_strs = [type_part]
 

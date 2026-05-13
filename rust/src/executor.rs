@@ -24,7 +24,8 @@ impl ModelExecutor {
         dylib_path: &str,
         safetensors_path: Option<&str>,
     ) -> Result<Self, anyhow::Error> {
-        let executable = Executable::load(dylib_path)?;
+        let executable = Executable::load(dylib_path)
+            .map_err(|e| anyhow::anyhow!("Failed to load dylib '{}': {}", dylib_path, e))?;
         let lib = executable.lib();
 
         // SAFETY: `serveforge_constants_data` is a symbol embedded at compile time
