@@ -13,15 +13,23 @@ crate-type = ["cdylib"]
 name = "serveforge"
 path = "src/main.rs"
 
+[features]
+default = ["cli"]
+cli = ["clap", "tokenizers", "rand"]
+python-bindings = ["pyo3/extension-module"]
+
 [dependencies]
-pyo3 = { version = "0.24", features = ["extension-module"] }
-clap = { version = "4", features = ["derive"] }
+pyo3 = { version = "0.24", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
 libloading = "0.8"
 memmap2 = "0.9"
 safetensors = "0.6"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rand = { version = "0.8", optional = true }
+tokenizers = { version = "0.21", optional = true }
+thiserror = "2"
 
 [profile.release]
 lto = true

@@ -9,7 +9,7 @@
 
 #[cfg(test)]
 mod m1_tests {
-    use crate::hal_cpu::{CifaceFn3, MemRefDescriptor};
+    use crate::hal_cpu::{CifaceFn3, MemRefDesc2};
 
     const DYLIB_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/data/test_m1.dylib");
 
@@ -24,26 +24,32 @@ mod m1_tests {
                 .expect("symbol _mlir_ciface_add_two not found")
         };
 
-        // Input data: a = all 1.0, b = all 2.0, expected = all 3.0
         let rows = 2usize;
         let cols = 64usize;
         let n = rows * cols;
         let a: Vec<f32> = vec![1.0; n];
         let b: Vec<f32> = vec![2.0; n];
 
-        let a_desc = MemRefDescriptor::from_f32_slice(&a, rows, cols);
-        let b_desc = MemRefDescriptor::from_f32_slice(&b, rows, cols);
-        let mut out_desc = MemRefDescriptor::zeroed(rows, cols);
+        let a_desc = MemRefDesc2::from_f32_slice(&a, [rows, cols]);
+        let b_desc = MemRefDesc2::from_f32_slice(&b, [rows, cols]);
+        let mut out_desc = MemRefDesc2::zeroed([rows, cols]);
 
-        // Call: result_ptr, in0_ptr, in1_ptr
-        unsafe { func(&mut out_desc, &a_desc, &b_desc) };
+        unsafe {
+            func(
+                &mut out_desc as *mut MemRefDesc2 as *mut std::ffi::c_void,
+                &a_desc as *const MemRefDesc2 as *const std::ffi::c_void,
+                &b_desc as *const MemRefDesc2 as *const std::ffi::c_void,
+            )
+        };
 
         let out = unsafe { out_desc.read_output_f32() };
         assert_eq!(out.len(), n, "output size mismatch");
         for (i, &val) in out.iter().enumerate() {
             assert!(
                 (val - 3.0).abs() < 1e-5,
-                "mismatch at index {}: expected 3.0, got {}", i, val
+                "mismatch at index {}: expected 3.0, got {}",
+                i,
+                val
             );
         }
     }

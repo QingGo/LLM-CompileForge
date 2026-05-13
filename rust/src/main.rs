@@ -1,14 +1,21 @@
 //! ServeForge — CLI for AOT-compiled LLM inference.
 //!
 //! Usage:
-//!   serveforge run <model> --prompt <text>
+//!   serveforge run <model> --prompt <text> [--tokenizer <path>] [--safetensors <path>]
 //!   serveforge info <model>
 
 mod block_manager;
+mod compute_graph;
+mod error;
 mod executor;
 mod hal_cpu;
 mod radix_cache;
+mod runner;
+mod sampler;
 mod scheduler;
+mod sfcf;
+mod tensor;
+mod tokenizer;
 mod types;
 mod weight_loader;
 
@@ -26,25 +33,29 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run inference on a compiled model.
     Run {
-        /// Model name (e.g. qwen3.5-0.8b).
         model: String,
-        /// The input prompt text (UTF-8).
         #[arg(short, long)]
         prompt: String,
-        /// Path to compiled artifacts directory.
         #[arg(short, long, default_value = "compiled")]
         compiled_dir: String,
-        /// Maximum number of tokens to generate.
         #[arg(long, default_value = "64")]
         max_tokens: usize,
+        #[arg(long, default_value = "1.0")]
+        temperature: f32,
+        #[arg(long, default_value = "1.0")]
+        top_p: f32,
+        #[arg(long, default_value = "0")]
+        top_k: usize,
+        #[arg(long)]
+        tokenizer: Option<String>,
+        #[arg(long)]
+        safetensors: Option<String>,
+        #[arg(long, default_value = "42")]
+        seed: u64,
     },
-    /// Show compiled model info.
     Info {
-        /// Model name.
         model: String,
-        /// Path to compiled artifacts directory.
         #[arg(short, long, default_value = "compiled")]
         compiled_dir: String,
     },
@@ -59,14 +70,28 @@ fn main() -> Result<(), anyhow::Error> {
             prompt,
             compiled_dir,
             max_tokens,
+            temperature,
+            top_p,
+            top_k,
+            tokenizer,
+            safetensors,
+            seed,
         } => {
             let artifact_path = format!("{}/{}", compiled_dir, model);
-            println!("Loading model from: {}", artifact_path);
-            println!("Prompt: {}", prompt);
+            let dylib_path = format!("{}/lib{}.dylib", artifact_path, model);
+            let st_path = safetensors
+                .clone()
+                .unwrap_or_else(|| format!("{}/weights.safetensors", artifact_path));
+            let tok_path = tokenizer
+                .clone()
+                .unwrap_or_else(|| format!("{}/tokenizer.json", artifact_path));
+
+            eprintln!("Loading model from: {}", artifact_path);
+            eprintln!("Prompt: {}", prompt);
 
             let executor = executor::ModelExecutor::load(
-                &format!("{}/lib{}.dylib", artifact_path, model),
-                Some(&format!("{}/weights.safetensors", artifact_path)),
+                &dylib_path,
+                Some(&st_path),
             )
             .map_err(|e| {
                 anyhow::anyhow!(
@@ -75,39 +100,36 @@ fn main() -> Result<(), anyhow::Error> {
                 )
             })?;
 
-            println!(
-                "Model loaded: {} weight tensors, {} alloc",
-                executor
-                    .weight_provider
-                    .as_ref()
-                    .map(|_w| "ok")
-                    .unwrap_or("0"),
-                executor.allocated_bytes(),
+            eprintln!(
+                "Model loaded: {} functions, {} weight mappings, {} constants",
+                executor.compute_graph.functions.len(),
+                executor.weight_provider.name_mapping().len(),
+                executor.weight_provider.constants().len(),
             );
 
-            // Stub: run inference loop
-            // In the next phase, this will:
-            //  1. Tokenize the prompt
-            //  2. Embed tokens → input tensor
-            //  3. For each function: build input memrefs, call func, collect output
-            //  4. Sample next token
-            //  5. Loop until max_tokens or EOS
+            let tok = tokenizer::Tokenizer::from_file(&tok_path)
+                .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
 
-            println!("[stub] Would generate up to {} tokens", max_tokens);
-            println!("[stub] Done — run the full compiler pipeline first.");
+            let mut runner = runner::InferenceRunner::new(
+                &executor,
+                tok,
+                seed,
+                max_tokens,
+            );
+
+            let result = runner.generate(&prompt, temperature, top_p, top_k)?;
+            print!("{}", result.text);
         }
         Commands::Info { model, compiled_dir } => {
             let artifact_path = format!("{}/{}", compiled_dir, model);
             println!("Model: {}", model);
             println!("Artifact dir: {}", artifact_path);
 
-            if std::path::Path::new(&format!(
-                "{}/lib{}.dylib",
-                artifact_path, model
-            ))
-            .exists()
-            {
+            let dylib = format!("{}/lib{}.dylib", artifact_path, model);
+            if std::path::Path::new(&dylib).exists() {
                 println!("Status: compiled (.dylib present)");
+                let meta = std::fs::metadata(&dylib).map(|m| m.len()).unwrap_or(0);
+                println!("Size: {} bytes", meta);
             } else {
                 println!("Status: not yet compiled");
             }

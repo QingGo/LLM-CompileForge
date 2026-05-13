@@ -531,44 +531,63 @@ def _build_name_mapping(module: MlirModule) -> dict[str, str]:
 
 
 def _build_constants_binary(module: MlirModule, name_mapping: dict[str, str]) -> bytes:
-    """Build a self-contained binary blob with name mapping + constants.
+    """Build a self-contained binary blob with name mapping + constants + compute graph.
 
     Format (all integers little-endian):
         Magic:    4 bytes  "SFCF"
-        Version:  u32      = 1
+        Version:  u32      = 2
         ── name mapping ──
         Mapping entries: u32
         For each entry:
-            compiled_name_len: u16
+            compiled_name_len: u32
             compiled_name:     UTF-8
-            hf_key_len:        u16
+            hf_key_len:        u32
             hf_key:            UTF-8
         ── constants ──
         Constant tensors: u32
         For each tensor:
-            name_len:   u16
+            name_len:   u32
             name:       UTF-8
             dtype:      u8  (0=f32,1=f16,2=bf16,3=i64,4=i32,5=i8,6=u8)
             ndim:       u8
             shape[ndim]: u64 repeated
             data_len:   u64
             data:       raw bytes
+        ── compute graph ──
+        num_functions: u32
+        For each function:
+            symbol: string
+            num_inputs: u32
+            num_outputs: u32
+            For each input:
+                binding_type: u8 (0=weight, 1=ssa, 2=global_input)
+                if weight: key: string
+                if ssa: producer_func: u32, output_idx: u32
+                rank: u8
+                num_dims: u32
+                shape: [u64; num_dims] (0 = dynamic)
+            For each output:
+                rank: u8
+                num_dims: u32
+                shape: [u64; num_dims]
+        global_input: func_idx: u32, arg_idx: u32
+        global_output: func_idx: u32, output_idx: u32
     """
     _init_dtype_codes()
     parts: list[bytes] = []
 
     # Header
     parts.append(b"SFCF")
-    parts.append(struct.pack("<I", 1))  # version
+    parts.append(struct.pack("<I", 2))  # version
 
     # Name mapping
     parts.append(struct.pack("<I", len(name_mapping)))
     for short, full in sorted(name_mapping.items()):
         s = short.encode("utf-8")
         f = full.encode("utf-8")
-        parts.append(struct.pack("<H", len(s)))
+        parts.append(struct.pack("<I", len(s)))
         parts.append(s)
-        parts.append(struct.pack("<H", len(f)))
+        parts.append(struct.pack("<I", len(f)))
         parts.append(f)
 
     # Constants (const_weight_names tensors only)
@@ -585,7 +604,7 @@ def _build_constants_binary(module: MlirModule, name_mapping: dict[str, str]) ->
     parts.append(struct.pack("<I", len(const_tensors)))
     for name, tensor in const_tensors:
         n = name.encode("utf-8")
-        parts.append(struct.pack("<H", len(n)))
+        parts.append(struct.pack("<I", len(n)))
         parts.append(n)
         dtype_code = _DTYPE_TO_CODE.get(tensor.dtype, 0)
         parts.append(struct.pack("<B", dtype_code))
@@ -597,7 +616,111 @@ def _build_constants_binary(module: MlirModule, name_mapping: dict[str, str]) ->
         parts.append(struct.pack("<Q", len(data)))
         parts.append(data)
 
+    # ── Compute graph section ──
+    _emit_compute_graph_section(parts, module, name_mapping)
+
     return b"".join(parts)
+
+
+def _emit_compute_graph_section(
+    parts: list[bytes], module: MlirModule, name_mapping: dict[str, str]
+) -> None:
+    """Emit the compute graph section: function list with I/O bindings."""
+
+    # Build producer map: SSA name → (func_idx, output_idx)
+    producer: dict[str, tuple[int, int]] = {}
+    all_weight_names: set[str] = set(name_mapping.keys())
+    for func in module.functions:
+        all_weight_names |= set(func.weights.keys())
+
+    for fi, func in enumerate(module.functions):
+        for oi, (out_name, _out_type) in enumerate(func.outputs):
+            clean = out_name.lstrip("%")
+            producer[clean] = (fi, oi)
+
+    # Determine global input: first input of first function
+    global_input_func: int = 0
+    global_input_arg: int = 0
+    global_output_func: int = len(module.functions) - 1
+    global_output_idx: int = 0
+
+    num_funcs = len(module.functions)
+    parts.append(struct.pack("<I", num_funcs))
+
+    for fi, func in enumerate(module.functions):
+        _emit_string(parts, f"_mlir_ciface_{func.name}")
+        num_inputs = len(func.inputs)
+        num_outputs = len(func.outputs)
+        parts.append(struct.pack("<I", num_inputs))
+        parts.append(struct.pack("<I", num_outputs))
+
+        for in_idx, (in_name, in_type_str) in enumerate(func.inputs):
+            clean = in_name.lstrip("%")
+            rank, shape_dims = _parse_type_shape(in_type_str)
+
+            if fi == 0 and in_idx == 0:
+                # First input of first function → global input (token ids)
+                parts.append(struct.pack("<B", 2))  # global_input
+            elif clean in all_weight_names:
+                parts.append(struct.pack("<B", 0))  # weight
+                _emit_string(parts, clean)
+            elif clean in producer:
+                parts.append(struct.pack("<B", 1))  # ssa
+                pfi, poi = producer[clean]
+                parts.append(struct.pack("<I", pfi))
+                parts.append(struct.pack("<I", poi))
+            else:
+                # Fallback: treat as ssa from previous function
+                parts.append(struct.pack("<B", 1))  # ssa
+                parts.append(struct.pack("<I", 0))
+                parts.append(struct.pack("<I", 0))
+
+            parts.append(struct.pack("<B", rank))
+            parts.append(struct.pack("<I", len(shape_dims)))
+            for d in shape_dims:
+                parts.append(struct.pack("<Q", d))
+
+        for _out_idx, (_out_name, out_type_str) in enumerate(func.outputs):
+            rank, shape_dims = _parse_type_shape(out_type_str)
+            parts.append(struct.pack("<B", rank))
+            parts.append(struct.pack("<I", len(shape_dims)))
+            for d in shape_dims:
+                parts.append(struct.pack("<Q", d))
+
+    parts.append(struct.pack("<I", global_input_func))
+    parts.append(struct.pack("<I", global_input_arg))
+    parts.append(struct.pack("<I", global_output_func))
+    parts.append(struct.pack("<I", global_output_idx))
+
+
+def _emit_string(parts: list[bytes], s: str) -> str:
+    """Emit a u32-prefixed UTF-8 string. Returns the string for chaining."""
+    encoded = s.encode("utf-8")
+    parts.append(struct.pack("<I", len(encoded)))
+    parts.append(encoded)
+    return s
+
+
+def _parse_type_shape(type_str: str) -> tuple[int, list[int]]:
+    """Return (rank, shape_dims) from MLIR type string. 0 = dynamic dim."""
+    import re as _re
+    m = _re.match(r"(?:tensor|memref)<\s*(.+?)\s*>$", type_str.strip())
+    if not m:
+        return (0, [])
+    inner = m.group(1).strip()
+    parts = inner.split("x")
+    dims: list[int] = []
+    for p in parts:
+        p = p.strip()
+        if p == "?" or p.startswith("?"):
+            dims.append(0)
+            continue
+        try:
+            dims.append(int(p))
+        except ValueError:
+            break
+    rank = len(dims)
+    return (rank, [0 if d < 0 else d for d in dims])
 
 
 # ── Internal parsing ──────────────────────────────────────────

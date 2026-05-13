@@ -1,32 +1,32 @@
 //! Safetensors weight loader with embedded name mapping and constants.
 //!
 //! The compiled .dylib contains two exported symbols:
-//!   ``serveforge_constants_data`` — binary blob (name mapping + constants)
+//!   ``serveforge_constants_data`` — binary SFCF blob (name mapping + constants)
 //!   ``serveforge_constants_size`` — byte size of the blob
 //!
 //! The Rust runtime reads these symbols at load time and uses the
 //! name mapping to resolve compiled weight names → original HF safetensors
 //! keys, falling back to the embedded constants for compiler-synthesized
-//! tensors.
+//! tensors.  Weights are accessed via zero-copy mmap.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::path::Path;
 
-use crate::hal_cpu::MemRefDescriptor;
+use crate::hal_cpu::MemRefDesc2;
+use crate::sfcf;
+use crate::tensor::Dtype;
 
-/// Parsed weight lookup table from the embedded binary blob.
+// ── Weight registry ────────────────────────────────────────────────
+
 pub struct WeightRegistry {
-    /// Compiled short name → original HF safetensors key.
     pub name_mapping: HashMap<String, String>,
-    /// Embedded constant tensors (compiler-synthesized).
     pub constants: HashMap<String, ConstantTensor>,
 }
 
-/// A constant tensor embedded in the .dylib.
 #[derive(Debug, Clone)]
 pub struct ConstantTensor {
-    pub dtype: u8,
+    pub dtype: Dtype,
     pub shape: Vec<usize>,
     pub data: Vec<u8>,
 }
@@ -37,10 +37,9 @@ impl ConstantTensor {
     }
 }
 
-// ── Binary format parsing (SFCF) ──────────────────────────────────
+// ── Binary format parsing (SFCF v2) ────────────────────────────────
 
-/// Parse the embedded SFCF binary format.
-pub fn parse_embedded(data: &[u8]) -> Result<WeightRegistry, anyhow::Error> {
+pub fn parse_embedded(data: &[u8]) -> Result<(WeightRegistry, usize), anyhow::Error> {
     if data.len() < 8 {
         anyhow::bail!("embedded data too short: {} bytes", data.len());
     }
@@ -48,121 +47,116 @@ pub fn parse_embedded(data: &[u8]) -> Result<WeightRegistry, anyhow::Error> {
         anyhow::bail!("bad magic: {:?}", &data[0..4]);
     }
     let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
-    if version != 1 {
-        anyhow::bail!("unsupported binary version: {}", version);
+    if version != 2 {
+        anyhow::bail!("unsupported binary version: {} (expected 2)", version);
     }
 
     let mut pos = 8usize;
 
-    // Name mapping
-    let nm_count = read_u32(data, &mut pos)? as usize;
+    let nm_count = sfcf::read_u32(data, &mut pos)? as usize;
     let mut name_mapping = HashMap::with_capacity(nm_count);
     for _ in 0..nm_count {
-        let compiled = read_string(data, &mut pos)?;
-        let hf_key = read_string(data, &mut pos)?;
+        let compiled = sfcf::read_string(data, &mut pos)?;
+        let hf_key = sfcf::read_string(data, &mut pos)?;
         name_mapping.insert(compiled, hf_key);
     }
 
-    // Constants
-    let const_count = read_u32(data, &mut pos)? as usize;
+    let const_count = sfcf::read_u32(data, &mut pos)? as usize;
     let mut constants = HashMap::with_capacity(const_count);
     for _ in 0..const_count {
-        let name = read_string(data, &mut pos)?;
+        let name = sfcf::read_string(data, &mut pos)?;
         if pos >= data.len() {
             anyhow::bail!("truncated constant: {}", name);
         }
-        let dtype = data[pos];
+        let dtype_code = data[pos];
         pos += 1;
+        let dtype = Dtype::from_code(dtype_code).ok_or_else(|| {
+            anyhow::anyhow!("unknown dtype code {} for constant {}", dtype_code, name)
+        })?;
         let ndim = data[pos] as usize;
         pos += 1;
         let mut shape = Vec::with_capacity(ndim);
         for _ in 0..ndim {
-            shape.push(read_u64(data, &mut pos)? as usize);
+            shape.push(sfcf::read_u64(data, &mut pos)? as usize);
         }
-        let data_len = read_u64(data, &mut pos)? as usize;
+        let data_len = sfcf::read_u64(data, &mut pos)? as usize;
         if pos + data_len > data.len() {
             anyhow::bail!("truncated constant data: {} (need {} bytes)", name, data_len);
         }
         let tensor_data = data[pos..pos + data_len].to_vec();
         pos += data_len;
-        constants.insert(name, ConstantTensor {
-            dtype,
-            shape,
-            data: tensor_data,
-        });
+        constants.insert(
+            name,
+            ConstantTensor {
+                dtype,
+                shape,
+                data: tensor_data,
+            },
+        );
     }
 
-    Ok(WeightRegistry { name_mapping, constants })
-}
-
-fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32, anyhow::Error> {
-    if *pos + 4 > data.len() {
-        anyhow::bail!("truncated at pos {} (need u32)", pos);
-    }
-    let val = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap());
-    *pos += 4;
-    Ok(val)
-}
-
-fn read_u64(data: &[u8], pos: &mut usize) -> Result<u64, anyhow::Error> {
-    if *pos + 8 > data.len() {
-        anyhow::bail!("truncated at pos {} (need u64)", pos);
-    }
-    let val = u64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
-    *pos += 8;
-    Ok(val)
-}
-
-fn read_string(data: &[u8], pos: &mut usize) -> Result<String, anyhow::Error> {
-    let len = read_u32(data, pos)? as usize;
-    if *pos + len > data.len() {
-        anyhow::bail!("truncated string at pos {} (need {} bytes)", pos, len);
-    }
-    let s = String::from_utf8(data[*pos..*pos + len].to_vec())?;
-    *pos += len;
-    Ok(s)
+    Ok((
+        WeightRegistry {
+            name_mapping,
+            constants,
+        },
+        pos,
+    ))
 }
 
 // ── Dylib loading ─────────────────────────────────────────────────
 
-/// Load the embedded weight registry from a compiled .dylib.
-///
-/// Looks up the ``serveforge_constants_data`` and ``serveforge_constants_size``
-/// symbols via libloading.
-pub fn load_registry_from_dylib(lib: &libloading::Library) -> Result<WeightRegistry, anyhow::Error> {
-    // Safety: libloading provides raw symbol addresses; we trust the dylib.
+pub fn load_registry_from_dylib(
+    lib: &libloading::Library,
+) -> Result<(WeightRegistry, usize), anyhow::Error> {
+    // SAFETY: `serveforge_constants_data` is a `const uint8_t[]` symbol
+    // embedded in the .dylib at compile time. It points to static data
+    // in the dylib's read-only data section, valid for the Library lifetime.
     let data_ptr: *const u8 = {
         let sym: libloading::Symbol<*const c_void> = unsafe {
             lib.get(b"serveforge_constants_data")
                 .map_err(|e| anyhow::anyhow!("{}", e))?
         };
-        unsafe { *sym as *const u8 }
+        *sym as *const u8
     };
 
+    // SAFETY: `serveforge_constants_size` is a `const uint64_t` symbol.
+    // `lib.get::<*const u64>` returns a pointer to the symbol's address.
+    // `*(*sym)` reads the u64 value. Both indirections are valid because
+    // the symbol is a static global in the dylib's data section.
     let size_val: u64 = {
         let sym = unsafe {
             lib.get::<*const u64>(b"serveforge_constants_size")
                 .map_err(|e| anyhow::anyhow!("{}", e))?
         };
-        let ptr: *const u64 = unsafe { *sym };
-        unsafe { *ptr }
+        unsafe { *(*sym) }
     };
 
     if size_val == 0 || data_ptr.is_null() {
         anyhow::bail!("embedded data empty or missing");
     }
 
+    // SAFETY: `data_ptr` and `size_val` come from the same dylib.
+    // The size bounds the data region and the pointer is to static memory.
     let data: &[u8] = unsafe { std::slice::from_raw_parts(data_ptr, size_val as usize) };
     parse_embedded(data)
 }
 
-// ── High-level weight lookup ──────────────────────────────────────
+// ── WeightProvider ─────────────────────────────────────────────────
 
-/// Combined weight source: mmap'd HF safetensors + embedded constants.
+/// Pre-parsed safetensors tensor metadata (cached for O(1) lookup).
+struct CachedTensorInfo {
+    data_start: usize,
+    data_end: usize,
+    shape: Vec<usize>,
+}
+
 pub struct WeightProvider {
     registry: WeightRegistry,
-    /// mmap'd HF safetensors data (if available).
-    safetensors_mmap: Option<Vec<u8>>,
+    safetensors_mmap: Option<memmap2::Mmap>,
+    /// Cached header info: HF key → (start_offset, end_offset, shape).
+    /// Parsed once in `new()` to avoid O(n×header_size) on every lookup.
+    safetensors_index: HashMap<String, CachedTensorInfo>,
 }
 
 impl WeightProvider {
@@ -170,86 +164,175 @@ impl WeightProvider {
         registry: WeightRegistry,
         safetensors_path: Option<&Path>,
     ) -> Result<Self, anyhow::Error> {
-        let safetensors_mmap = if let Some(p) = safetensors_path {
-            let file = std::fs::File::open(p)?;
-            // Safety: the file is opened read-only, we only read from the mmap.
-            let mmap = unsafe { memmap2::Mmap::map(&file)? };
-            Some(mmap.to_vec())
-        } else {
-            None
-        };
-        Ok(Self { registry, safetensors_mmap })
+        let (safetensors_mmap, safetensors_index) =
+            if let Some(p) = safetensors_path {
+                let file = std::fs::File::open(p)?;
+                // SAFETY: The file is opened read-only. The mmap provides
+                // immutable access to the file contents.
+                let mmap = unsafe { memmap2::Mmap::map(&file)? };
+                let index = build_safetensors_index(&mmap)?;
+                (Some(mmap), index)
+            } else {
+                (None, HashMap::new())
+            };
+        Ok(Self {
+            registry,
+            safetensors_mmap,
+            safetensors_index,
+        })
     }
 
-    /// Look up a weight by compiled short name.
-    ///
-    /// Returns a MemRefDescriptor pointing to the weight data, or None
-    /// if the name is unknown.
-    pub fn get_memref(&self, compiled_name: &str) -> Option<MemRefDescriptor> {
-        // --- Embedded constants first ---
+    pub fn has_safetensors(&self) -> bool {
+        self.safetensors_mmap.is_some()
+    }
+
+    pub fn get_weight_memref(&self, compiled_name: &str) -> Option<MemRefDesc2> {
         if let Some(ct) = self.registry.constants.get(compiled_name) {
-            return Some(Self::constant_as_memref(ct));
+            return Some(constant_as_memref(ct));
         }
 
-        // --- HF safetensors ---
         let hf_key = self.registry.name_mapping.get(compiled_name)?;
-        if let Some(ref mmap_data) = self.safetensors_mmap {
-            Self::lookup_safetensors(mmap_data, hf_key)
-        } else {
-            None
-        }
-    }
-
-    fn constant_as_memref(ct: &ConstantTensor) -> MemRefDescriptor {
-        let p = ct.data.as_ptr();
-        let rows = *ct.shape.first().unwrap_or(&1);
-        let cols = ct.shape.get(1).copied().unwrap_or(1);
-        MemRefDescriptor {
-            allocated: p as usize as i64,
-            aligned: p as *mut c_void,
-            offset: 0,
-            sizes: [rows as i64, cols as i64],
-            strides: [cols as i64, 1],
-        }
-    }
-
-    fn lookup_safetensors(mmap_data: &[u8], hf_key: &str) -> Option<MemRefDescriptor> {
-        // Parse safetensors header to find the tensor offset/size
-        if mmap_data.len() < 8 {
-            return None;
-        }
-        let header_len = u64::from_le_bytes(mmap_data[..8].try_into().ok()?) as usize;
-        if mmap_data.len() < 8 + header_len {
-            return None;
-        }
-        let header_bytes = &mmap_data[8..8 + header_len];
-        let header: serde_json::Value = serde_json::from_slice(header_bytes).ok()?;
-        let info = header.get(hf_key)?;
-        let _dtype_str = info.get("dtype")?.as_str()?;
-        let shape: Vec<usize> = info
-            .get("shape")?
-            .as_array()?
-            .iter()
-            .map(|v| v.as_u64().unwrap_or(1) as usize)
-            .collect();
-        let offsets = info.get("data_offsets")?.as_array()?;
-        let start = offsets.first()?.as_u64()? as usize + 8 + header_len;
-        let end = offsets.get(1)?.as_u64()? as usize + 8 + header_len;
-
-        if end > mmap_data.len() {
-            return None;
-        }
-        let p = &mmap_data[start..end];
-        let rows = *shape.first().unwrap_or(&1);
-        let cols = shape.get(1).copied().unwrap_or(1);
-        // Note: memref descriptor is for float-like data; we treat all as raw.
-        // Element size is determined by dtype — but for now we assume f32.
-        Some(MemRefDescriptor {
-            allocated: p.as_ptr() as usize as i64,
-            aligned: p.as_ptr() as *mut c_void,
+        let mmap = self.safetensors_mmap.as_ref()?;
+        let info = self.safetensors_index.get(hf_key)?;
+        let data_slice = &mmap[info.data_start..info.data_end];
+        let rows = *info.shape.first().unwrap_or(&1);
+        let cols = info.shape.get(1).copied().unwrap_or(1);
+        Some(MemRefDesc2 {
+            allocated: data_slice.as_ptr() as *mut c_void,
+            aligned: data_slice.as_ptr() as *mut c_void,
             offset: 0,
             sizes: [rows as i64, cols as i64],
             strides: [cols as i64, 1],
         })
+    }
+
+    pub fn name_mapping(&self) -> &HashMap<String, String> {
+        &self.registry.name_mapping
+    }
+
+    pub fn constants(&self) -> &HashMap<String, ConstantTensor> {
+        &self.registry.constants
+    }
+}
+
+/// Parse the safetensors JSON header once and build an index of
+/// (start_offset, end_offset, shape) for every tensor.
+fn build_safetensors_index(
+    mmap: &[u8],
+) -> Result<HashMap<String, CachedTensorInfo>, anyhow::Error> {
+    if mmap.len() < 8 {
+        anyhow::bail!("safetensors file too short");
+    }
+    let header_len = u64::from_le_bytes(mmap[..8].try_into()?);
+    let header_len = header_len as usize;
+    if mmap.len() < 8 + header_len {
+        anyhow::bail!("safetensors header truncated");
+    }
+    let header_bytes = &mmap[8..8 + header_len];
+    let header: serde_json::Value = serde_json::from_slice(header_bytes)?;
+
+    let mut index = HashMap::new();
+    if let Some(obj) = header.as_object() {
+        for (key, info) in obj {
+            let shape: Vec<usize> = info
+                .get("shape")
+                .and_then(|s| s.as_array())
+                .map(|a| a.iter().map(|v| v.as_u64().unwrap_or(1) as usize).collect())
+                .unwrap_or_default();
+            let offsets = match info.get("data_offsets").and_then(|o| o.as_array()) {
+                Some(arr) if arr.len() >= 2 => arr,
+                _ => continue,
+            };
+            let start = offsets[0].as_u64().unwrap_or(0) as usize + 8 + header_len;
+            let end = offsets[1].as_u64().unwrap_or(0) as usize + 8 + header_len;
+            if end <= start || end > mmap.len() {
+                continue;
+            }
+            index.insert(
+                key.clone(),
+                CachedTensorInfo {
+                    data_start: start,
+                    data_end: end,
+                    shape,
+                },
+            );
+        }
+    }
+    Ok(index)
+}
+
+fn constant_as_memref(ct: &ConstantTensor) -> MemRefDesc2 {
+    let p = ct.data.as_ptr();
+    let rows = *ct.shape.first().unwrap_or(&1);
+    let cols = ct.shape.get(1).copied().unwrap_or(1);
+    MemRefDesc2 {
+        allocated: p as *mut c_void,
+        aligned: p as *mut c_void,
+        offset: 0,
+        sizes: [rows as i64, cols as i64],
+        strides: [cols as i64, 1],
+    }
+}
+
+// ── Tests ──────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sfcf_v2_empty() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"SFCF");
+        buf.extend_from_slice(&2u32.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes()); // 0 name mappings
+        buf.extend_from_slice(&0u32.to_le_bytes()); // 0 constants
+        buf
+    }
+
+    #[test]
+    fn test_parse_empty() {
+        let data = sfcf_v2_empty();
+        let (reg, pos) = parse_embedded(&data).expect("parse");
+        assert!(reg.name_mapping.is_empty());
+        assert!(reg.constants.is_empty());
+        assert!(pos > 0);
+    }
+
+    #[test]
+    fn test_parse_bad_magic() {
+        let data = b"XXXX".to_vec();
+        assert!(parse_embedded(&data).is_err());
+    }
+
+    #[test]
+    fn test_parse_bad_version() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"SFCF");
+        buf.extend_from_slice(&1u32.to_le_bytes()); // old version
+        assert!(parse_embedded(&buf).is_err());
+    }
+
+    #[test]
+    fn test_parse_name_mapping_roundtrip() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"SFCF");
+        buf.extend_from_slice(&2u32.to_le_bytes()); // version
+        buf.extend_from_slice(&2u32.to_le_bytes()); // 2 entries
+        for (short, long) in [("a", "model.a.weight"), ("b", "model.b.weight")] {
+            let s = short.as_bytes();
+            buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            buf.extend_from_slice(s);
+            let l = long.as_bytes();
+            buf.extend_from_slice(&(l.len() as u32).to_le_bytes());
+            buf.extend_from_slice(l);
+        }
+        buf.extend_from_slice(&0u32.to_le_bytes()); // 0 constants
+
+        let (reg, _pos) = parse_embedded(&buf).expect("parse");
+        assert_eq!(reg.name_mapping.len(), 2);
+        assert_eq!(
+            reg.name_mapping.get("a").map(|s| s.as_str()),
+            Some("model.a.weight")
+        );
     }
 }
