@@ -1434,8 +1434,23 @@ struct SfTransposeOpLowering : public OpConversionPattern<sf::TransposeOp> {
     SmallVector<int64_t> perm(rank);
     for (int64_t i = 0; i < rank; ++i) perm[i] = i;
     std::swap(perm[d0], perm[d1]);
-    Value empty = makeEmpty(rewriter, loc, resultType, {input});
+
+    // Build inverse permutation: for each output dim j, which input dim
+    // provides its size.  makeEmpty({input}) at line 1437 used same-index
+    // matching which is WRONG for transpose — dynamic dims move positions.
+    SmallVector<int64_t> invPerm(rank);
+    for (int64_t i = 0; i < rank; ++i)
+      invPerm[perm[i]] = i;
+
+    SmallVector<Value> dynSizes;
+    for (int64_t i = 0; i < rank; ++i) {
+      if (!rt.isDynamicDim(i)) continue;
+      int64_t srcDim = invPerm[i];
+      dynSizes.push_back(rewriter.create<tensor::DimOp>(loc, input, srcDim));
+    }
+    Value empty = rewriter.create<tensor::EmptyOp>(loc, rt, dynSizes);
     if (!empty) return failure();
+
     auto transposeOp = rewriter.create<linalg::TransposeOp>(
         loc, input, empty, rewriter.getDenseI64ArrayAttr(perm));
     rewriter.replaceOp(op, transposeOp->getResult(0));
