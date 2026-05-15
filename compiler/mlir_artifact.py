@@ -834,7 +834,7 @@ def mlir_module_to_ir_module(module: MlirModule, ctx: Any = None) -> Any:
 
     if ctx is None:
         ctx = _ir.Context()
-        ctx.allow_unregistered_dialects = True
+    ctx.allow_unregistered_dialects = True
 
     with ctx, _ir.Location.unknown(ctx):
         ir_mod = _ir.Module.create()

@@ -52,47 +52,80 @@ def _make_ranked_type(shape: tuple[int | None, ...], elt: str) -> ir.RankedTenso
     )
 
 
+# ── Broadcasting helpers ─────────────────────────────────────
+
+
+def _broadcast_shapes(*shapes: tuple[int | None, ...]) -> tuple[int | None, ...]:
+    """NumPy/MLIR-style broadcasting: align right, size-1 broadcasts to any.
+
+    Each dim must be 1, equal, or one can be None (dynamic, which is compatible
+    with anything).  Returns the broadcasted shape.
+    """
+    if not shapes:
+        return ()
+    max_rank = max(len(s) for s in shapes)
+    result: list[int | None] = []
+    for i in range(max_rank):
+        dims = []
+        for s in shapes:
+            idx = len(s) - max_rank + i
+            dims.append(s[idx] if idx >= 0 else 1)
+        non_one = [d for d in dims if d != 1 and d is not None]
+        if not non_one:
+            result.append(dims[0])
+        elif len(non_one) == 1:
+            result.append(non_one[0])
+        else:
+            if len(set(non_one)) > 1:
+                raise ValueError(
+                    f"Incompatible dims for broadcast: {dims}"
+                )
+            result.append(non_one[0])
+    return tuple(result)
+
+
+def _broadcast_types(*types: ir.Type) -> tuple[int | None, ...]:
+    """Broadcast shapes from MLIR tensor types, returning a shape tuple."""
+    shapes: list[tuple[int | None, ...]] = []
+    for t in types:
+        s = _ranked_shape(t)
+        if s is None:
+            return (None,) * max(len(shapes) + 1, 1)
+        shapes.append(s)
+    return _broadcast_shapes(*shapes)
+
+
 # ── Shape inference functions ────────────────────────────────
 
 
-def infer_add(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
-    """Element-wise add with broadcast."""
+def _infer_broadcast(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
+    """Element-wise binary op with full broadcasting support."""
     if not input_types:
         return []
-    return [input_types[0]]
+    et = _elt_type_str(input_types[0])
+    b = _broadcast_types(*input_types)
+    return [_make_ranked_type(b, et)]
 
 
-def infer_mul(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
-    return infer_add(input_types)
-
-
-def infer_sub(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
-    return infer_add(input_types)
-
-
-def infer_div(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
-    return infer_add(input_types)
-
-
-def infer_neg(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
-    return infer_add(input_types)
-
-
-def infer_pow(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
-    return infer_add(input_types)
-
-
-def infer_max(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
-    return infer_add(input_types)
+infer_add = _infer_broadcast
+infer_mul = _infer_broadcast
+infer_sub = _infer_broadcast
+infer_div = _infer_broadcast
+infer_neg = _infer_broadcast
+infer_pow = _infer_broadcast
+infer_max = _infer_broadcast
 
 
 # ── Activations: shape-preserving ────────────────────────────
 
 
 def _infer_elementwise(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
-    if input_types:
-        return [input_types[0]]
-    return []
+    """Element-wise op: broadcast all inputs, use first input's element type."""
+    if not input_types:
+        return []
+    b = _broadcast_types(*input_types)
+    et = _elt_type_str(input_types[0])
+    return [_make_ranked_type(b, et)]
 
 
 infer_relu = _infer_elementwise
@@ -114,16 +147,20 @@ def infer_softmax(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
 
 
 def infer_layer_norm(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
-    # input, weight, bias → output (same shape as input)
-    if input_types:
-        return [input_types[0]]
-    return []
+    """input, weight, bias → output (same shape as broadcasted input)."""
+    if not input_types:
+        return []
+    b = _broadcast_types(input_types[0])
+    et = _elt_type_str(input_types[0])
+    return [_make_ranked_type(b, et)]
 
 
 def infer_rms_norm(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
-    if input_types:
-        return [input_types[0]]
-    return []
+    if not input_types:
+        return []
+    b = _broadcast_types(input_types[0])
+    et = _elt_type_str(input_types[0])
+    return [_make_ranked_type(b, et)]
 
 
 # ── Matmul / Linear ──────────────────────────────────────────
@@ -379,15 +416,22 @@ def infer_linalg_norm(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type
     return _infer_reduce(input_types, **kwargs)
 
 
-# ── Comparison (output is bool/int) ──────────────────────────
+# ── Comparison (output is f32, consistent with C++ lowering) ──
+# C++ sf-lower-to-linalg always produces f32 for compare ops
+# (to avoid i1→f32 unrealized_conversion_cast blocking bufferization).
 
 
 def _infer_compare(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
-    if input_types:
-        s = _ranked_shape(input_types[0])
-        if s:
-            return [_make_ranked_type(s, "bool")]
-    return [_make_ranked_type((None,), "bool")]
+    """Compare op: broadcast all inputs, output f32.
+
+    Note: the C++ lowering pass always produces f32 output for compare
+    ops (LeOp, LogicalAndOp, etc.) to avoid i1→f32 conversion casts
+    that block bufferization.  The Python type inference must match.
+    """
+    if not input_types:
+        return [_make_ranked_type((None,), "f32")]
+    b = _broadcast_types(*input_types)
+    return [_make_ranked_type(b, "f32")]
 
 
 infer_gt = _infer_compare
@@ -677,9 +721,11 @@ def _infer_elementwise_pure(
     elts: list[str],
     **kwargs: Any,
 ) -> list[tuple[tuple[int | None, ...], str]]:
-    if shapes:
-        return [(shapes[0], elts[0])]
-    return [((1,), "f32")]
+    """Element-wise op: broadcast all input shapes, use first input's element type."""
+    if not shapes:
+        return [((1,), "f32")]
+    b = _broadcast_shapes(*shapes)
+    return [(b, elts[0])]
 
 
 def _infer_scalar_pure(
@@ -863,9 +909,11 @@ def _infer_compare_pure(
     elts: list[str],
     **kwargs: Any,
 ) -> list[tuple[tuple[int | None, ...], str]]:
-    if shapes:
-        return [(shapes[0], "bool")]
-    return [((1,), "bool")]
+    """Compare op: broadcast all inputs, output f32 to match C++ lowering."""
+    if not shapes:
+        return [((1,), "f32")]
+    b = _broadcast_shapes(*shapes)
+    return [(b, "f32")]
 
 
 # ── Pure Python inference table (no MLIR context needed) ───

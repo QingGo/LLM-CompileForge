@@ -2107,26 +2107,9 @@ struct SfLowerToLinalgPass
       return false;
     };
     target.addDynamicallyLegalOp<sf::RmsNormOp>(hasDynamicNormalizedDim);
-    // Ops with pre-existing Python type inference bugs: operand rank > output rank
-    auto rankMismatch = [](Operation *op) {
-      for (auto r : op->getResults())
-        if (auto t = dyn_cast<RankedTensorType>(r.getType()))
-          for (auto o : op->getOperands())
-            if (auto ot = dyn_cast<RankedTensorType>(o.getType()))
-              if (ot.getRank() > t.getRank()) {
-                // Only dynamically legal if extra leading dims are NOT all size 1
-                // (otherwise SfBinaryLowering's squeeze logic handles it)
-                int64_t squeeze = ot.getRank() - t.getRank();
-                bool allOnes = true;
-                for (int64_t i = 0; i < squeeze; ++i)
-                  if (ot.getDimSize(i) != 1) { allOnes = false; break; }
-                if (!allOnes) return true;
-              }
-      return false;
-    };
-    target.addDynamicallyLegalOp<sf::SubOp, sf::AddOp, sf::MulOp, sf::DivOp, sf::MaxOp,
-        sf::ReluOp,
-        sf::GeluOp, sf::SiluOp, sf::SigmoidOp, sf::ExpOp, sf::NegOp, sf::TanhOp>(rankMismatch);
+    // All binary/activation ops are fully lowered — Python type inference
+    // now correctly produces broadcasted output shapes, so no dynamic
+    // legal ops are needed.
     RewritePatternSet patterns(&getContext());
     // Register all lowering patterns
     patterns.add<SfBinaryLowering<sf::AddOp, arith::AddFOp>,

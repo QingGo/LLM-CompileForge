@@ -86,85 +86,10 @@ def main() -> None:
         compile_module_to_dylib,
     )
     # Step 1: Load model.mlir → MlirModule
-    print(f"[1/6] Parsing {mlir_path} ...")
+    print(f"[1/5] Parsing {mlir_path} ...")
     mlir_text = mlir_path.read_text()
     module = _parse_mlir_text(mlir_text)
     print(f"   {len(module.functions)} functions, {sum(len(f.ops) for f in module.functions)} ops")
-
-    # Fix all known type inference bugs in the MlirModule.
-    # The model was exported with wrong types due to shape_inference bugs.
-    # Fix them by recomputing dependent ops' types from operand types.
-    import re as _re
-    for func in module.functions:
-        # Build SSA → type map from function inputs + all op outputs
-        ssa_to_type: dict[str, str] = {}
-        for inp_name, inp_type in func.inputs:
-            ssa_to_type[f"%{inp_name}"] = inp_type
-
-        # Phase 1: Fix embedding op types (weight_first → correct)
-        for op in func.ops:
-            if op.op_name != "embedding" or len(op.output_types) != 1 or len(op.input_types) < 2:
-                continue
-            weight_type = op.input_types[0]
-            indices_type = op.input_types[1]
-            wm = _re.match(r"tensor<([^>]+)>", weight_type)
-            im = _re.match(r"tensor<([^>]+)>", indices_type)
-            if not wm or not im or len(wm.group(1).split("x")) < 2:
-                continue
-            w_dims = wm.group(1).split("x")
-            i_dims = im.group(1).split("x")
-            embed = w_dims[1]
-            last = i_dims[-1]
-            if last in ("i64", "f32", "bf16", "f16", "i32", "i8"):
-                i_dims = i_dims[:-1]
-            new_dims = i_dims + [embed]
-            op.output_types[0] = f"tensor<{'x'.join(new_dims)}xf32>"
-
-        # Phase 2: Propagate types through the function (fixes cascade bugs).
-        # Build a new SSA→type map from the fixed types
-        for op in func.ops:
-            for res, ot in zip(op.results, op.output_types):
-                ssa_to_type[f"%{res}"] = ot
-
-        # Phase 3: Fix binary ops with wrong output types by recomputing
-        # via simple broadcasting: output = broadcast(operand0, operand1).
-        # Only fix cases where op has 2 inputs and 1 output of the same type.
-        for op in func.ops:
-            if len(op.input_types) == 2 and len(op.output_types) == 1 and op.op_name not in ("weight", "constant", "embedding"):
-                t0 = op.input_types[0]
-                t1 = op.input_types[1]
-                out = op.output_types[0]
-                # Parse dims from each type
-                def _parse_dims(t: str):
-                    m = _re.match(r"tensor<([^>]+)>", t)
-                    if not m: return []
-                    parts = m.group(1).split("x")
-                    if parts[-1] in ("f32", "bf16", "i64", "i32", "f16"): parts = parts[:-1]
-                    return parts
-                d0 = _parse_dims(t0)
-                d1 = _parse_dims(t1)
-                d_out = _parse_dims(out)
-                if not d0 or not d1 or not d_out:
-                    continue
-                # Broadcast: align trailing dims
-                max_rank = max(len(d0), len(d1), len(d_out))
-                while len(d0) < max_rank: d0.insert(0, "1")
-                while len(d1) < max_rank: d1.insert(0, "1")
-                while len(d_out) < max_rank: d_out.insert(0, "1")
-                new_dims = []
-                changed = False
-                for i in range(max_rank):
-                    a, b, c = d0[i], d1[i], d_out[i]
-                    if a != "?" and b != "?" and a != b:
-                        continue  # known mismatch — keep old
-                    expected = a if a != "?" else (b if b != "?" else c)
-                    if c != expected:
-                        d_out[i] = expected
-                        changed = True
-                if changed:
-                    while d_out and d_out[0] == "1" and any(d != "1" for d in d_out[1:]):
-                        d_out.pop(0)
-                    op.output_types[0] = f"tensor<{'x'.join(d_out)}xf32>"
 
     # Step 2: Reconstruct hf_key_map
     metadata = {}
@@ -177,7 +102,7 @@ def main() -> None:
         fmt = ws.get("format", "")
 
         if idx_path and os.path.isfile(idx_path) and "safetensors" in fmt:
-            print(f"[2/6] Reconstructing hf_key_map from {idx_path} ...")
+            print(f"[2/5] Reconstructing hf_key_map from {idx_path} ...")
             with open(idx_path) as f:
                 index = json.load(f)
 
@@ -221,10 +146,10 @@ def main() -> None:
             module.metadata["hf_key_map"] = final_map
             print(f"   Matched {matched}/{len(weight_names)} weight names")
         else:
-            print(f"[2/6] No safetensors index found, skipping hf_key_map")
+            print(f"[2/5] No safetensors index found, skipping hf_key_map")
 
     # Step 3: Generate constants.bin
-    print("[3/6] Generating constants.bin ...")
+    print("[3/5] Generating constants.bin ...")
     name_mapping = _build_name_mapping(module)
     if name_mapping:
         print(f"   Name mapping: {len(name_mapping)} entries")
@@ -236,7 +161,7 @@ def main() -> None:
     print(f"   Written {len(const_bin)} bytes to {bin_path}")
 
     # Step 4: MlirModule → ir.Module → register sf dialect → C++ lowering
-    print("[4/6] Converting MlirModule → ir.Module → sf→linalg lowering ...")
+    print("[4/5] Converting MlirModule → ir.Module → sf→linalg lowering ...")
     _setup_mlir_path()
     import mlir.ir as ir
     import mlir.passmanager as pm
@@ -276,83 +201,24 @@ def main() -> None:
         print(f"   VERIFICATION FAILED:\n{e}")
         print("   (continuing anyway for debugging purposes)")
 
-    # Step 5: Lower linalg → LLVM using Python API (with verifier disabled)
-    print("[5/6] Lowering linalg → LLVM ...")
-    from compiler.mlir_dialect.llvm_backend import lower_linalg_to_llvm_ir, mlir_module_to_llvm_ir
+    # Step 5: Lower LLVM dialect → LLVM IR (.ll) + compile to .dylib
+    # lower_linalg_to_llvm_ir runs: bufferize → linalg→loops → scf→cf → memref→llvm → func→llvm
+    print("[5/5] Lowering linalg → LLVM + compiling to .dylib ...")
+    from compiler.mlir_dialect.llvm_backend import lower_linalg_to_llvm_ir
     ctx_llvm = ir.Context()
     ctx_llvm.allow_unregistered_dialects = True
     with ctx_llvm:
         ir_mod = ir.Module.parse(lowered_text, ctx_llvm)
         lower_linalg_to_llvm_ir(ir_mod)
-        llvm_text = str(ir_mod)
-    print("   LLVM lowering succeeded")
+    print("   LLVM dialect lowering succeeded")
 
-    # Step 5b: Translate LLVM dialect → LLVM IR text
-    print("[5b/6] Translating LLVM dialect → LLVM IR text ...")
-    ctx_llvm2 = ir.Context()
-    ctx_llvm2.allow_unregistered_dialects = True
-    with ctx_llvm2:
-        ir_mod_llvm = ir.Module.parse(llvm_text, ctx_llvm2)
-
-    # Step 6: Compile to .dylib
-    print("[6/6] Compiling to .dylib ...")
     dylib_path = compile_module_to_dylib(
-        ir_mod_llvm,
-        str(compiled_path),
-        model_name=model_name,
-    )
-    with tempfile.TemporaryDirectory() as td:
-        in_file = os.path.join(td, "input.mlir")
-        out_file = os.path.join(td, "output.mlir")
-        with open(in_file, "w") as f:
-            f.write(lowered_text)
-        proc = subprocess.run(
-            [mlir_opt_path, "--allow-unregistered-dialect",
-             f"--pass-pipeline={llvm_pipeline}", in_file, "-o", out_file],
-            capture_output=True, text=True, timeout=120)
-        if proc.returncode != 0:
-            print(f"   mlir-opt failed (exit {proc.returncode}), trying with text fixup...")
-            # Fall back to string-based fixes + Python API
-            import re
-            # Replace tensor.cast from incompatible types with unrealized_conversion_cast
-            def fix_casts(text):
-                return re.sub(
-                    r'"tensor\.cast"\((%\w+)\)\s*:\s*\(([^)]+)\)\s*->\s*(\S+)',
-                    r'"builtin.unrealized_conversion_cast"(\1) : (\2) -> \3',
-                    text)
-            fixed_text = fix_casts(lowered_text)
-            with open(in_file, "w") as f:
-                f.write(fixed_text)
-            proc = subprocess.run(
-                [mlir_opt_path, "--allow-unregistered-dialect",
-                 f"--pass-pipeline={llvm_pipeline}", in_file, "-o", out_file],
-                capture_output=True, text=True, timeout=120)
-            if proc.returncode != 0:
-                print(f"   mlir-opt still failed. Saving lowered IR for debugging...")
-                # Save error output for inspection
-                lowered_path.write_text(lowered_text)
-                raise RuntimeError(
-                    f"LLVM lowering failed:\n{proc.stderr[:1000]}")
-        with open(out_file) as f:
-            llvm_text = f.read()
-    print("   LLVM lowering succeeded")
-
-    # Step 5b: Translate LLVM dialect → LLVM IR text
-    print("[5b/6] Translating LLVM dialect → LLVM IR text ...")
-    ctx_llvm = ir.Context()
-    ctx_llvm.allow_unregistered_dialects = True
-    with ctx_llvm:
-        ir_mod_llvm = ir.Module.parse(llvm_text, ctx_llvm)
-
-    # Step 6: Compile to .dylib
-    print("[6/6] Compiling to .dylib ...")
-    dylib_path = compile_module_to_dylib(
-        ir_mod_llvm,
+        ir_mod,
         str(compiled_path),
         model_name=model_name,
     )
 
-    print(f"\nDone! Compiled to: {dylib_path}")
+    print(f"\nCompilation complete: {dylib_path}")
     for fname in [f"lib{model_name}.dylib", "constants.bin"]:
         fpath = compiled_path / fname
         if fpath.exists():

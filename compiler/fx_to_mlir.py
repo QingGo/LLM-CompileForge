@@ -283,16 +283,8 @@ def _resolve_op_types(
         input_shapes.append(s)
         input_elts.append(e)
 
-    try:
-        out = infer_output_shape(hal_op, input_shapes, input_elts, **kwargs)
-    except Exception:
-        if input_elts:
-            out = [(input_shapes[0], input_elts[0])]
-        else:
-            out = [((1,), "f32")]
-
-    # For binary float ops, coerce non-float input element types to f32
-    # (scalar integers used as float operands, e.g. _const_7 in sf.sub)
+    # Coerce non-float element types to f32 BEFORE inference, so shape inference
+    # receives the correct element type (e.g. scalar i64 → f32 for float ops).
     float_ops = {"add", "mul", "sub", "div", "max", "le", "logical_and",
                    "linear", "matmul", "layer_norm", "rms_norm",
                    "relu", "gelu", "silu", "sigmoid", "exp", "neg", "tanh",
@@ -302,9 +294,16 @@ def _resolve_op_types(
         for i in range(len(input_elts)):
             if input_elts[i] not in ("f32", "f16", "bf16", "f64"):
                 input_elts[i] = "f32"
-                # Also update shape_map if this is a weight
                 if i < len(input_names) and input_names[i] in weights:
                     weights[input_names[i]] = weights[input_names[i]].float()
+
+    try:
+        out = infer_output_shape(hal_op, input_shapes, input_elts, **kwargs)
+    except Exception:
+        if input_elts:
+            out = [(input_shapes[0], input_elts[0])]
+        else:
+            out = [((1,), "f32")]
 
     in_type_strs = [_shape_to_mlir_type(s, e) for s, e in zip(input_shapes, input_elts, strict=False)]
     out_type_strs = [_shape_to_mlir_type(s, e) for s, e in out]
