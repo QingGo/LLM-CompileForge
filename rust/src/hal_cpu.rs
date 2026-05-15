@@ -160,67 +160,32 @@ impl Executable {
         &self.lib
     }
 
-    /// Look up a kernel function by symbol name with a specific arity.
-    ///
-    /// Uses ``libloading::Symbol`` with the correctly-typed ``CifaceFnN``
-    /// signature, avoiding transmute on function pointers.
+        /// Look up a kernel function by symbol name with a specific arity.
     pub fn lookup_typed(
         &self,
         name: &str,
         arity: usize,
     ) -> Result<KernelFn, anyhow::Error> {
-        // SAFETY: Each `lib.get` call loads a symbol by name and casts
-        // it to the expected `CifaceFnN` type. The symbol name must
-        // correspond to a compiled MLIR function with the exact C ABI
-        // signature implied by the arity. The arity comes from the
-        // compute_graph metadata, which is emitted by the same compiler
-        // that generated the .dylib.
-        let lookup = |arity: usize| -> Result<KernelFn, anyhow::Error> {
-            match arity {
-                1 => {
-                    let sym: libloading::Symbol<CifaceFn1> =
-                        unsafe { self.lib.get(name.as_bytes()) }?;
-                    Ok(KernelFn::Arity1(*sym))
-                }
-                2 => {
-                    let sym: libloading::Symbol<CifaceFn2> =
-                        unsafe { self.lib.get(name.as_bytes()) }?;
-                    Ok(KernelFn::Arity2(*sym))
-                }
-                3 => {
-                    let sym: libloading::Symbol<CifaceFn3> =
-                        unsafe { self.lib.get(name.as_bytes()) }?;
-                    Ok(KernelFn::Arity3(*sym))
-                }
-                4 => {
-                    let sym: libloading::Symbol<CifaceFn4> =
-                        unsafe { self.lib.get(name.as_bytes()) }?;
-                    Ok(KernelFn::Arity4(*sym))
-                }
-                5 => {
-                    let sym: libloading::Symbol<CifaceFn5> =
-                        unsafe { self.lib.get(name.as_bytes()) }?;
-                    Ok(KernelFn::Arity5(*sym))
-                }
-                6 => {
-                    let sym: libloading::Symbol<CifaceFn6> =
-                        unsafe { self.lib.get(name.as_bytes()) }?;
-                    Ok(KernelFn::Arity6(*sym))
-                }
-                7 => {
-                    let sym: libloading::Symbol<CifaceFn7> =
-                        unsafe { self.lib.get(name.as_bytes()) }?;
-                    Ok(KernelFn::Arity7(*sym))
-                }
-                8 => {
-                    let sym: libloading::Symbol<CifaceFn8> =
-                        unsafe { self.lib.get(name.as_bytes()) }?;
-                    Ok(KernelFn::Arity8(*sym))
-                }
-                _ => anyhow::bail!("unsupported kernel arity: {}", arity),
+        if arity > 300 {
+            anyhow::bail!("unsupported kernel arity: {} (max 300)", arity);
+        }
+        // SAFETY: libloading::Symbol casts the symbol to the expected type.
+        // For arities 1..8 we use typed CifaceFnN for direct calls.
+        // For arities 9..300 we use a raw fn pointer + C trampoline.
+        match arity {
+            1 => { let sym: libloading::Symbol<CifaceFn1> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity1(*sym)) }
+            2 => { let sym: libloading::Symbol<CifaceFn2> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity2(*sym)) }
+            3 => { let sym: libloading::Symbol<CifaceFn3> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity3(*sym)) }
+            4 => { let sym: libloading::Symbol<CifaceFn4> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity4(*sym)) }
+            5 => { let sym: libloading::Symbol<CifaceFn5> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity5(*sym)) }
+            6 => { let sym: libloading::Symbol<CifaceFn6> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity6(*sym)) }
+            7 => { let sym: libloading::Symbol<CifaceFn7> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity7(*sym)) }
+            8 => { let sym: libloading::Symbol<CifaceFn8> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity8(*sym)) }
+             _ => {
+                let sym: libloading::Symbol<unsafe extern "C" fn()> = unsafe { self.lib.get(name.as_bytes()) }?;
+                Ok(KernelFn::HighArity(crate::ciface_high::FnPtr(*sym)))
             }
-        };
-        lookup(arity)
+        }
     }
 }
 
@@ -235,6 +200,7 @@ pub enum KernelFn {
     Arity6(CifaceFn6),
     Arity7(CifaceFn7),
     Arity8(CifaceFn8),
+    HighArity(crate::ciface_high::FnPtr),
 }
 
 impl KernelFn {
@@ -248,6 +214,7 @@ impl KernelFn {
             KernelFn::Arity6(_) => 6,
             KernelFn::Arity7(_) => 7,
             KernelFn::Arity8(_) => 8,
+            KernelFn::HighArity(_) => 0,
         }
     }
 
@@ -289,6 +256,10 @@ impl KernelFn {
                     inputs[5],
                     inputs[6],
                 )
+            }
+            (KernelFn::HighArity(f), _) if inputs.len() >= 1 && inputs.len() <= 300 => {
+                let ptr = f.0 as *const ();
+                crate::ciface_high::call_high_arity(ptr, out, inputs);
             }
             _ => panic!(
                 "kernel arity mismatch: fn arity={}, input_count={}",

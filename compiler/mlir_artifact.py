@@ -511,8 +511,20 @@ def _build_name_mapping(module: MlirModule) -> dict[str, str]:
 
     Uses ``hf_key_map`` from module metadata (stored at compile time by
     ``fx_graph_to_mlir``) to obtain the original HF key for each weight.
+    Resolves tied weights: if two weights share the same data tensor,
+    both map to the SINGLE survivor HF key in the safetensors file.
     """
     hf_key_map: dict[str, str] = module.metadata.get("hf_key_map", {})
+    tied_weights: dict[str, str] = module.metadata.get("weight_source", {}).get("tied_weights", {})
+    # tied_weights maps survivor → alias, e.g. "lm_head_weight" → "model_decoder_embed_tokens_weight"
+    # meaning lm_head_weight and model_decoder_embed_tokens_weight share the same tensor.
+    # The alias (model_decoder_embed_tokens_weight) should map to the survivor's HF key.
+
+    # Build reverse map: alias → survivor
+    alias_to_survivor: dict[str, str] = {}
+    for survivor, alias in tied_weights.items():
+        alias_to_survivor[alias] = survivor
+
     mapping: dict[str, str] = {}
 
     for func in module.functions:
@@ -522,6 +534,15 @@ def _build_name_mapping(module: MlirModule) -> dict[str, str]:
             short = op.attributes.get("name", "")
             if not short or short in mapping:
                 continue
+
+            # If this weight is an alias for a tied weight, use the survivor's HF key
+            if short in alias_to_survivor:
+                survivor = alias_to_survivor[short]
+                if survivor in hf_key_map:
+                    mapping[short] = hf_key_map[survivor]
+                    continue
+
+            # Normal lookup
             for full, hf in hf_key_map.items():
                 candidates = _candidate_names(full)
                 if short in candidates or full.endswith(short):

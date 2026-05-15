@@ -97,11 +97,17 @@ def main() -> None:
         metadata = json.loads(metadata_path.read_text())
 
     if "hf_key_map" not in module.metadata:
-        ws = metadata.get("weight_source", {})
-        idx_path = ws.get("path", "")
-        fmt = ws.get("format", "")
+        # First try metadata.json (stored at compile time)
+        hf_from_meta = metadata.get("hf_key_map", {})
+        if hf_from_meta:
+            print(f"[2/5] Loading hf_key_map from metadata.json ({len(hf_from_meta)} entries)")
+            module.metadata["hf_key_map"] = hf_from_meta
+        else:
+            ws = metadata.get("weight_source", {})
+            idx_path = ws.get("path", "")
+            fmt = ws.get("format", "")
 
-        if idx_path and os.path.isfile(idx_path) and "safetensors" in fmt:
+        if not hf_from_meta and idx_path and os.path.isfile(idx_path) and "safetensors" in fmt:
             print(f"[2/5] Reconstructing hf_key_map from {idx_path} ...")
             with open(idx_path) as f:
                 index = json.load(f)
@@ -149,6 +155,10 @@ def main() -> None:
             print(f"[2/5] No safetensors index found, skipping hf_key_map")
 
     # Step 3: Generate constants.bin
+    # Inject tied_weights from metadata.json into module.metadata for name_mapping
+    ws = metadata.get("weight_source", {})
+    if "weight_source" not in module.metadata:
+        module.metadata["weight_source"] = ws
     print("[3/5] Generating constants.bin ...")
     name_mapping = _build_name_mapping(module)
     if name_mapping:

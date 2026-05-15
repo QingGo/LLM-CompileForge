@@ -4,6 +4,7 @@
 //!   serveforge run <model> --prompt <text> [--tokenizer <path>] [--safetensors <path>]
 //!   serveforge info <model>
 
+mod ciface_high;
 mod block_manager;
 mod compute_graph;
 mod error;
