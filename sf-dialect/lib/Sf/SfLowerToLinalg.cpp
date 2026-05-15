@@ -594,14 +594,79 @@ struct SfViewOpLowering : public OpConversionPattern<sf::ViewOp> {
       rewriter.replaceOp(op, input);
       return success();
     }
-    // Rank-changing view: use tensor.reshape with shape extracted from outType
+    // Rank-changing view: use tensor.reshape with the correct shape.
+    // The shape attribute tells which output dims come from dyn_shape operands,
+    // which are static, and which are -1 (inferred from element count).
+    auto shapeAttr = op->getAttrOfType<ArrayAttr>("shape");
+    auto dynShapeOperands = adaptor.getDynShape();
+
+    // Pass 1: collect shape values and track the -1 (inferred) dimension.
     SmallVector<Value> shapeVals;
+    int64_t inferredIdx = -1;
+    int64_t dynIdx = 0;  // counter into dynShapeOperands
+
     for (int64_t i = 0; i < outType.getRank(); ++i) {
-      if (outType.isDynamicDim(i))
-        shapeVals.push_back(rewriter.create<tensor::DimOp>(loc, input, 0));
-      else
+      if (!outType.isDynamicDim(i)) {
+        // Static dim → constant index
         shapeVals.push_back(rewriter.create<arith::ConstantIndexOp>(loc, outType.getDimSize(i)));
+        continue;
+      }
+      // Dynamic dim — consult the shape attribute
+      if (shapeAttr && i < (int64_t)shapeAttr.size()) {
+        Attribute elem = shapeAttr[i];
+        if (auto intAttr = dyn_cast<IntegerAttr>(elem)) {
+          int64_t val = intAttr.getInt();
+          if (val == -1) {
+            inferredIdx = i;
+            shapeVals.push_back(nullptr);  // placeholder for pass 2
+          } else {
+            shapeVals.push_back(rewriter.create<arith::ConstantIndexOp>(loc, val));
+          }
+        } else if (dyn_cast<StringAttr>(elem)) {
+          // SSA reference → use corresponding dyn_shape operand.
+          // dyn_shape values are 0D f32 tensors (from sf.sym_size).
+          // Extract the scalar and cast to index.
+          if (dynIdx < (int64_t)dynShapeOperands.size()) {
+            Value dynVal = dynShapeOperands[dynIdx++];
+            auto dynTy = dyn_cast<RankedTensorType>(dynVal.getType());
+            if (dynTy && dynTy.getRank() == 0) {
+              Value extracted = rewriter.create<tensor::ExtractOp>(loc, dynVal, ValueRange{});
+              Value asInt = rewriter.create<arith::FPToUIOp>(loc, rewriter.getIntegerType(64), extracted);
+              dynVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), asInt);
+            } else if (!dynVal.getType().isIndex()) {
+              dynVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), dynVal);
+            }
+            shapeVals.push_back(dynVal);
+          } else {
+            return failure();
+          }
+        } else {
+          return failure();
+        }
+      } else {
+        return failure();
+      }
     }
+
+    // Pass 2: compute the -1 inferred dimension if present.
+    if (inferredIdx >= 0) {
+      // Compute total input elements = product of input dims
+      Value total = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      for (int64_t i = 0; i < inType.getRank(); ++i)
+        total = rewriter.create<arith::MulIOp>(loc, total,
+                    rewriter.create<tensor::DimOp>(loc, input, i));
+
+      // Compute product of known output dims
+      Value known = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      for (int64_t i = 0; i < outType.getRank(); ++i) {
+        if (i != inferredIdx && shapeVals[i])
+          known = rewriter.create<arith::MulIOp>(loc, known, shapeVals[i]);
+      }
+
+      // Inferred dim value: total / known (must be exact)
+      shapeVals[inferredIdx] = rewriter.create<arith::DivUIOp>(loc, total, known);
+    }
+
     auto shapeTensorType = RankedTensorType::get({(int64_t)shapeVals.size()},
                                                   rewriter.getIndexType());
     auto shapeTensor = rewriter.create<tensor::FromElementsOp>(loc, shapeTensorType, shapeVals);
@@ -628,14 +693,24 @@ struct SfUnsqueezeOpLowering : public OpConversionPattern<sf::UnsqueezeOp> {
     if (inType.getRank() == outType.getRank()) {
       rewriter.replaceOp(op, input); return success();
     }
-    // Rank-changing: use tensor.reshape with output shape values
-    // (avoids linalg.copy rank mismatch verifier error)
+    // Rank-changing: use tensor.reshape with output shape values.
+    // For unsqueeze, dims before `dim` map 1:1, a new 1 is inserted at `dim`,
+    // and dims after `dim` are shifted by 1.
+    int64_t unsqueezeDim = 0;
+    if (auto dimAttr = op->getAttrOfType<IntegerAttr>("dim"))
+      unsqueezeDim = dimAttr.getInt();
     SmallVector<Value> shapeVals;
     for (int64_t i = 0; i < outType.getRank(); ++i) {
-      if (outType.isDynamicDim(i))
-        shapeVals.push_back(rewriter.create<tensor::DimOp>(loc, input, 0));
-      else
+      if (outType.isDynamicDim(i)) {
+        if (i < unsqueezeDim)
+          shapeVals.push_back(rewriter.create<tensor::DimOp>(loc, input, i));
+        else if (i == unsqueezeDim)
+          shapeVals.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 1));
+        else
+          shapeVals.push_back(rewriter.create<tensor::DimOp>(loc, input, i - 1));
+      } else {
         shapeVals.push_back(rewriter.create<arith::ConstantIndexOp>(loc, outType.getDimSize(i)));
+      }
     }
     auto shapeTensorType = RankedTensorType::get({(int64_t)shapeVals.size()},
                                                   rewriter.getIndexType());
