@@ -633,6 +633,15 @@ struct SfViewOpLowering : public OpConversionPattern<sf::ViewOp> {
               Value extracted = rewriter.create<tensor::ExtractOp>(loc, dynVal, ValueRange{});
               Value asInt = rewriter.create<arith::FPToUIOp>(loc, rewriter.getIntegerType(64), extracted);
               dynVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), asInt);
+            } else if (dynTy && dynTy.getRank() == 1 && dynTy.getDimSize(0) == 1) {
+              Value extracted = rewriter.create<tensor::ExtractOp>(loc, dynVal,
+                  ValueRange{rewriter.create<arith::ConstantIndexOp>(loc, 0)});
+              if (dynTy.getElementType().isF32() || dynTy.getElementType().isF64()) {
+                Value asInt = rewriter.create<arith::FPToUIOp>(loc, rewriter.getIntegerType(64), extracted);
+                dynVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), asInt);
+              } else {
+                dynVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), extracted);
+              }
             } else if (!dynVal.getType().isIndex()) {
               dynVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), dynVal);
             }
@@ -678,7 +687,83 @@ struct SfExpandOpLowering : public OpConversionPattern<sf::ExpandOp> {
   using OpConversionPattern::OpConversionPattern;
   LogicalResult matchAndRewrite(sf::ExpandOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOp(op, adaptor.getInput());
+    auto loc = op.getLoc(); Value input = adaptor.getInput();
+    auto inType = dyn_cast<RankedTensorType>(input.getType());
+    auto outType = dyn_cast<RankedTensorType>(op.getResult().getType());
+    if (!inType || !outType) return failure();
+    int64_t outRank = outType.getRank(), inRank = inType.getRank();
+
+    // Build tensor.empty with dynamic dims from shape attribute / dyn_shape operands
+    auto shapeAttr = op->getAttrOfType<ArrayAttr>("shape");
+    auto dynShapeOperands = adaptor.getDynShape();
+    SmallVector<Value> dynSizes;
+    int64_t dynIdx = 0;
+    for (int64_t i = 0; i < outRank; ++i) {
+      if (!outType.isDynamicDim(i)) continue;
+      if (shapeAttr && i < (int64_t)shapeAttr.size()) {
+        Attribute elem = shapeAttr[i];
+        if (dyn_cast<StringAttr>(elem)) {
+          // SSA reference → dyn_shape operand
+          if (dynIdx >= (int64_t)dynShapeOperands.size()) return failure();
+          Value dynVal = dynShapeOperands[dynIdx++];
+          auto dynTy = dyn_cast<RankedTensorType>(dynVal.getType());
+          if (dynTy && dynTy.getRank() == 0) {
+            Value extracted = rewriter.create<tensor::ExtractOp>(loc, dynVal, ValueRange{});
+            Value asInt = rewriter.create<arith::FPToUIOp>(loc, rewriter.getIntegerType(64), extracted);
+            dynVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), asInt);
+          } else if (dynTy && dynTy.getRank() == 1 && dynTy.getDimSize(0) == 1) {
+            Value extracted = rewriter.create<tensor::ExtractOp>(loc, dynVal,
+                ValueRange{rewriter.create<arith::ConstantIndexOp>(loc, 0)});
+            if (dynTy.getElementType().isF32() || dynTy.getElementType().isF64()) {
+              Value asInt = rewriter.create<arith::FPToUIOp>(loc, rewriter.getIntegerType(64), extracted);
+              dynVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), asInt);
+            } else {
+              dynVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), extracted);
+            }
+          } else if (!dynVal.getType().isIndex()) {
+            dynVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), dynVal);
+          }
+          dynSizes.push_back(dynVal);
+        } else if (auto intAttr = dyn_cast<IntegerAttr>(elem)) {
+          int64_t val = intAttr.getInt();
+          if (val == -1) {
+            // -1 means "keep input dim at this position" → get from input
+            int64_t inIdx = i - (outRank - inRank);
+            if (inIdx >= 0 && inIdx < inRank && inType.isDynamicDim(inIdx))
+              dynSizes.push_back(rewriter.create<tensor::DimOp>(loc, input, inIdx));
+            else
+              dynSizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 1));
+          } else {
+            dynSizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, val));
+          }
+        }
+      }
+    }
+    Value empty = rewriter.create<tensor::EmptyOp>(loc, outType, dynSizes);
+
+    // linalg.generic with broadcast: input maps to trailing output dims.
+    // Size-1 input dims must use affine constant 0, not the loop dim,
+    // to be compatible with linalg-to-loops conversion.
+    SmallVector<AffineExpr> inExprs;
+    for (int64_t i = 0; i < outRank; ++i) {
+      int64_t inIdx = i - (outRank - inRank);
+      if (inIdx < 0) continue;
+      int64_t outDimSize = outType.getDimSize(i);
+      int64_t inDimSize = inType.getDimSize(inIdx);
+      if (inDimSize == 1 && (outDimSize == ShapedType::kDynamic || outDimSize > 1))
+        inExprs.push_back(getAffineConstantExpr(0, rewriter.getContext()));
+      else
+        inExprs.push_back(getAffineDimExpr(i, rewriter.getContext()));
+    }
+    auto inMap = AffineMap::get(outRank, 0, inExprs, rewriter.getContext());
+    auto outMap = AffineMap::getMultiDimIdentityMap(outRank, rewriter.getContext());
+    SmallVector<utils::IteratorType> iters(outRank, utils::IteratorType::parallel);
+    auto g = linalg::GenericOp::create(rewriter, loc, outType,
+        ValueRange{input}, ValueRange{empty}, {inMap, outMap}, iters);
+    populateBody(g, [&](OpBuilder &b, Location loc, ValueRange args) {
+      b.create<linalg::YieldOp>(loc, args[0]);
+    });
+    rewriter.replaceOp(op, g.getResult(0));
     return success();
   }
 };
@@ -761,13 +846,13 @@ static Value makeBinaryOp(OpBuilder &builder, Location loc, Value lhs, Value rhs
     int64_t rhsI = i - (outRank - rhsRank);
     if (lhsI >= 0) {
       int64_t lhsDim = lhsType.getDimSize(lhsI);
-      lhsExprs.push_back((lhsDim == 1 && outDim > 1)
+      lhsExprs.push_back((lhsDim == 1 && (outDim == ShapedType::kDynamic || outDim > 1))
           ? getAffineConstantExpr(0, builder.getContext())
           : getAffineDimExpr(i, builder.getContext()));
     }
     if (rhsI >= 0) {
       int64_t rhsDim = rhsType.getDimSize(rhsI);
-      rhsExprs.push_back((rhsDim == 1 && outDim > 1)
+      rhsExprs.push_back((rhsDim == 1 && (outDim == ShapedType::kDynamic || outDim > 1))
           ? getAffineConstantExpr(0, builder.getContext())
           : getAffineDimExpr(i, builder.getContext()));
     }
@@ -801,7 +886,7 @@ static Value makeUnaryOp(OpBuilder &builder, Location loc, Value in, Type outTyp
     if (inI >= 0) {
       int64_t outDim = cast<ShapedType>(outType).getDimSize(i);
       int64_t inDim = inType.getDimSize(inI);
-      inExprs.push_back((inDim == 1 && outDim > 1)
+      inExprs.push_back((inDim == 1 && (outDim == ShapedType::kDynamic || outDim > 1))
           ? getAffineConstantExpr(0, builder.getContext())
           : getAffineDimExpr(i, builder.getContext()));
     }
@@ -1158,7 +1243,7 @@ struct SfLayerNormOpLowering : public OpConversionPattern<sf::LayerNormOp> {
         if (inI >= 0) {
           int64_t outDim = ::mlir::cast<::mlir::ShapedType>(outType).getDimSize(i);
           int64_t inDim = inType.getDimSize(inI);
-          inExprs.push_back((inDim == 1 && outDim > 1)
+          inExprs.push_back((inDim == 1 && (outDim == ShapedType::kDynamic || outDim > 1))
               ? getAffineConstantExpr(0, rewriter.getContext())
               : getAffineDimExpr(i, rewriter.getContext()));
         }
@@ -1321,7 +1406,7 @@ struct SfRmsNormOpLowering : public OpConversionPattern<sf::RmsNormOp> {
         if (inI >= 0) {
           int64_t outDim = ::mlir::cast<::mlir::ShapedType>(outType).getDimSize(i);
           int64_t inDim = inType.getDimSize(inI);
-          inExprs.push_back((inDim == 1 && outDim > 1)
+          inExprs.push_back((inDim == 1 && (outDim == ShapedType::kDynamic || outDim > 1))
               ? getAffineConstantExpr(0, rewriter.getContext())
               : getAffineDimExpr(i, rewriter.getContext()));
         }
@@ -1694,12 +1779,13 @@ struct SfArangeOpLowering : public OpConversionPattern<sf::ArangeOp> {
     Value zeroI64 = rewriter.create<arith::ConstantIntOp>(loc, 0, 64);
     auto forOp = rewriter.create<scf::ForOp>(loc, c0, nIdx, c1, empty);
     Value iv = forOp.getInductionVar();
-    Value initOut = forOp.getInitArgs()[0];
 
     rewriter.setInsertionPointToStart(forOp.getBody());
+    // Region iter arg (not init value) — required for bufferization correctness
+    Value iterArg = forOp.getBody()->getArgument(1);
     Value ivI64 = rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), iv);
     Value ivF32 = rewriter.create<arith::UIToFPOp>(loc, eltType, ivI64);
-    Value outVal = rewriter.create<tensor::InsertOp>(loc, eltType, ivF32, initOut, iv);
+    Value outVal = rewriter.create<tensor::InsertOp>(loc, eltType, ivF32, iterArg, iv);
     rewriter.create<scf::YieldOp>(loc, outVal);
 
     rewriter.setInsertionPointAfter(forOp);
@@ -1778,7 +1864,8 @@ struct SfCumsumOpLowering : public OpConversionPattern<sf::CumsumOp> {
         outerFor = rewriter.create<scf::ForOp>(loc, c0, total, c1, iterVal);
         auto outerIv = outerFor.getInductionVar();
         rewriter.setInsertionPointToStart(outerFor.getBody());
-        Value curOut = outerFor.getInitArgs()[0];
+        rewriter.setInsertionPointToStart(outerFor.getBody());
+        Value curOut = outerFor.getBody()->getArgument(1);
 
         // Convert linear index to multi-dimensional coords
         // For position [..., i, ...]: we need to compute coordinates
@@ -1924,37 +2011,46 @@ struct SfIndexOpLowering : public OpConversionPattern<sf::IndexOp> {
       outNumel *= d;
     }
 
-    Value empty = rewriter.create<tensor::EmptyOp>(loc, outType, ValueRange{});
+    Value empty = !outType.hasStaticShape()
+        ? rewriter.create<tensor::EmptyOp>(loc, outType, ValueRange{})
+        : Value(rewriter.create<tensor::EmptyOp>(loc, outType, ValueRange{}));
+
+    // Pre-compute output dimension sizes outside the loop (tensor.dim inside
+    // scf.for would capture tensor values from outside, blocking bufferization).
+    SmallVector<Value> outDims;
+    for (int64_t i = 0; i < outType.getRank(); ++i) {
+      if (outType.isDynamicDim(i))
+        outDims.push_back(rewriter.create<tensor::DimOp>(loc, empty, i));
+      else
+        outDims.push_back(rewriter.create<arith::ConstantIndexOp>(loc, outType.getDimSize(i)));
+    }
+
     Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
     Value total;
     if (hasDynamic) {
       total = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-      // Dynamic: use size from first operand as total
-      auto dataOpnd = op->getOperand(0);
-      for (int64_t i = 0; i < outType.getRank(); ++i) {
-        Value dimV = rewriter.create<tensor::DimOp>(loc, dataOpnd, i);
-        if (i == 0) total = dimV;
-        else total = rewriter.create<arith::MulIOp>(loc, total, dimV);
-      }
+      for (int64_t i = 0; i < outType.getRank(); ++i)
+        total = (i == 0) ? outDims[i]
+                         : rewriter.create<arith::MulIOp>(loc, total, outDims[i]);
     } else {
       total = rewriter.create<arith::ConstantIndexOp>(loc, outNumel);
     }
 
     auto forOp = rewriter.create<scf::ForOp>(loc, c0, total, c1, ValueRange{empty});
     Value iv = forOp.getInductionVar();
-    Value curOut = forOp.getInitArgs()[0];
 
     rewriter.setInsertionPointToStart(forOp.getBody());
+    // Region iter arg (not init value) for bufferization correctness
+    Value curOut = forOp.getBody()->getArgument(1);
 
-    // Convert linear index to multi-dimensional output coordinates
+    // Convert linear index to multi-dimensional output coordinates using
+    // pre-computed dim sizes (no tensor.dim inside the loop body).
     SmallVector<Value> outCoords(outType.getRank());
     Value remaining = iv;
     for (int64_t j = 0; j < outType.getRank(); ++j) {
-      // Use tensor.dim for each output dimension (handles dynamic dims)
-      Value dSz = rewriter.create<tensor::DimOp>(loc, empty, j);
-      outCoords[j] = rewriter.create<arith::RemSIOp>(loc, remaining, dSz);
-      remaining = rewriter.create<arith::DivSIOp>(loc, remaining, dSz);
+      outCoords[j] = rewriter.create<arith::RemSIOp>(loc, remaining, outDims[j]);
+      remaining = rewriter.create<arith::DivSIOp>(loc, remaining, outDims[j]);
     }
 
     // Read values from index tensors. idxCoords must match index tensor's rank (not outType's).

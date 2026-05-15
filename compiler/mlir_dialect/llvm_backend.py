@@ -58,7 +58,6 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
         # Run bufferization and linalg/math lowering first
         pipeline_pre = (
             "builtin.module("
-            "func.func(linalg-fuse-elementwise-ops),"
             "canonicalize,"
             "cse,"
             "one-shot-bufferize{allow-unknown-ops bufferize-function-boundaries},"
@@ -69,6 +68,7 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
             "lower-affine,"
             "convert-scf-to-cf,"
             "expand-strided-metadata,"
+            "lower-affine,"
             "finalize-memref-to-llvm,"
             "convert-cf-to-llvm,"
             "convert-math-to-llvm,"

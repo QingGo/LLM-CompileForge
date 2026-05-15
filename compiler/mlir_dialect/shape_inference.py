@@ -250,9 +250,42 @@ def infer_squeeze(input_types: list[ir.Type], dim: int | None = None, **kwargs: 
 
 
 def infer_expand(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
+    """Expand (broadcast) input to a larger shape.
+
+    The output type is determined by the shape attribute and dyn_shape operands.
+    New leading dims are inserted, -1 means "keep from input", explicit values
+    set the dim size.  SSA-referenced dims are dynamic (?).
+    """
     if not input_types:
         return []
-    return [input_types[0]]
+    inp = input_types[0]
+    s = _ranked_shape(inp)
+    et = _elt_type_str(inp)
+    if s is None:
+        return [_make_ranked_type((None,), et)]
+    # shape attr from kwargs contains the target shape with -1 for "keep"
+    shape = kwargs.get("shape")
+    if shape:
+        out_dims: list[int | None] = []
+        in_idx = len(shape) - len(s)  # leading dims are new
+        for i, dim_entry in enumerate(shape):
+            if isinstance(dim_entry, int):
+                if dim_entry == -1:
+                    # Keep from input (right-aligned)
+                    if in_idx < len(s):
+                        val = s[in_idx]
+                        out_dims.append(val)
+                    else:
+                        out_dims.append(None)
+                    in_idx += 1
+                else:
+                    out_dims.append(dim_entry)
+            else:
+                # SSA reference → dynamic
+                out_dims.append(None)
+                in_idx += 1
+        return [_make_ranked_type(tuple(out_dims), et)]
+    return [inp]
 
 
 def infer_permute(input_types: list[ir.Type], dims: tuple[int, ...] | None = None, **kwargs: Any) -> list[ir.Type]:
@@ -890,6 +923,41 @@ def _infer_reduce_pure(
     return [(tuple(s), elts[0])]
 
 
+def _infer_expand_pure(
+    shapes: list[tuple[int | None, ...]],
+    elts: list[str],
+    **kwargs: Any,
+) -> list[tuple[tuple[int | None, ...], str]]:
+    """Expand: broadcast input to the target shape.
+
+    shape attr is a tuple with ints (explicit or -1 for keep) and
+    strings (SSA references, meaning dynamic).
+    """
+    if not shapes:
+        return [((1,), elts[0] if elts else "f32")]
+    inp = shapes[0]
+    shape = kwargs.get("shape")
+    if shape:
+        out: list[int | None] = []
+        in_idx = len(shape) - len(inp)  # leading dims are new
+        for entry in shape:
+            if isinstance(entry, int):
+                if entry == -1:
+                    if in_idx < len(inp):
+                        out.append(inp[in_idx])
+                    else:
+                        out.append(None)
+                    in_idx += 1
+                else:
+                    out.append(entry)
+            else:
+                # String (SSA ref) → dynamic
+                out.append(None)
+                in_idx += 1
+        return [(tuple(out), elts[0])]
+    return [(inp, elts[0])]
+
+
 def _infer_embedding_pure(
     shapes: list[tuple[int | None, ...]],
     elts: list[str],
@@ -947,7 +1015,7 @@ _PURE_TABLE: dict[str, Any] = {
     "type_as": _infer_elementwise_pure,
     "identity": _infer_elementwise_pure,
     "conv1d": _infer_elementwise_pure,
-    "expand": _infer_elementwise_pure,
+    "expand": _infer_expand_pure,
     "zeros_like": _infer_elementwise_pure,
     "new_ones": _infer_elementwise_pure,
     "diff": _infer_elementwise_pure,

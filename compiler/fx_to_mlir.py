@@ -939,14 +939,21 @@ def _collect_input_args(
                 if kwarg_name and kwarg_name not in extra_kwargs:
                     extra_kwargs[kwarg_name] = list(arg)
             elif list_arg_attr is None:
+                # This path (expand/arange) uses the list items as both operands
+                # and as the shape attribute for C++ lowering.
+                # Only SSA refs become operands; static ints stay in shape attr.
+                resolved_shape: list[Any] = []
                 for item in arg:
                     if isinstance(item, torch.fx.Node):
-                        input_names.append(ssa_map.get(item.name, item.name))
+                        ssa_name = ssa_map.get(item.name, item.name)
+                        input_names.append(ssa_name)
+                        resolved_shape.append(ssa_name)
                     else:
-                        const_name = f"_const_{name_counter}"
-                        name_counter += 1
-                        weights[const_name] = torch.tensor(item)
-                        input_names.append(const_name)
+                        # Static value (int, -1, etc.): store in shape attr only,
+                        # NOT as operand — C++ lowering reads from shape attr.
+                        resolved_shape.append(item)
+                if resolved_shape:
+                    extra_kwargs.setdefault("shape", tuple(resolved_shape))
             elif list_arg_attr not in extra_kwargs:
                 resolved: list[str | int] = []
                 use_view = hal_op == "view"
