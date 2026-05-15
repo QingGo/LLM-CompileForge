@@ -18,14 +18,131 @@ NC='\033[0m'
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WITH_MODELS=false
 LINT_ONLY=false
+QUICK=false
 
 for arg in "$@"; do
     case "$arg" in
         --with-models) WITH_MODELS=true ;;
         --lint-only)   LINT_ONLY=true ;;
+        --quick)        QUICK=true ;;
         *) echo "Unknown option: $arg"; exit 1 ;;
     esac
 done
+
+# ── 0. Helper: build LLVM/MLIR from source ──────────────────────
+build_llvm() {
+    echo -e "${CYAN}[LLVM] Building MLIR from source...${NC}"
+    source "$PROJECT_ROOT/.llvm-version"
+    LLVM_DIR="$PROJECT_ROOT/llvm-project"
+    BUILD_DIR="$LLVM_DIR/build"
+
+    if [ ! -d "$LLVM_DIR" ]; then
+        echo "  Cloning $FORK ..."
+        git clone "$FORK" "$LLVM_DIR"
+    fi
+
+    cd "$LLVM_DIR"
+    git fetch origin
+    git checkout "$COMMIT"
+    echo "  LLVM at $(git rev-parse --short HEAD)"
+
+    if [ -d "$BUILD_DIR" ] && [ -f "$BUILD_DIR/build.ninja" ]; then
+        echo "  Build directory exists — running ninja (incremental)..."
+    else
+        echo "  Configuring cmake ..."
+        cmake -G Ninja \
+            -S llvm \
+            -B build \
+            -DLLVM_ENABLE_PROJECTS=mlir \
+            -DLLVM_TARGETS_TO_BUILD=Native \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_ENABLE_ASSERTIONS=ON \
+            -DLLVM_INSTALL_UTILS=ON \
+            -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
+            -DPython3_EXECUTABLE="$PROJECT_ROOT/.venv/bin/python3" \
+            -DLLVM_CCACHE_BUILD=ON \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DLLVM_USE_LINKER=lld
+    fi
+
+    ninja -C build tools/mlir/python_packages/mlir_core/mlir/_mlir_libs/_mlir.cpython-310-darwin.so
+    echo -e "  ${GREEN}MLIR Python bindings built.${NC}"
+
+    # Generate a minimal setup.py so this directory is pip-installable
+    MLIR_PKG="$BUILD_DIR/tools/mlir/python_packages/mlir_core"
+    cat > "$MLIR_PKG/setup.py" << 'SETUPEOF'
+from setuptools import setup
+setup(
+    name="mlir-core",
+    version="23.0.0",
+    description="MLIR Python bindings (self-compiled)",
+    packages=["mlir", "mlir._mlir_libs", "mlir._mlir_libs._mlir",
+              "mlir.dialects", "mlir.extras"],
+    package_data={"mlir": ["_mlir_libs/*", "_mlir_libs/_mlir/*",
+                           "_mlir_libs/_mlir/dialects/*",
+                           "py.typed"]},
+    include_package_data=True,
+    zip_safe=False,
+)
+SETUPEOF
+
+    $PROJECT_ROOT/.venv/bin/pip install --force-reinstall --no-deps -e "$MLIR_PKG" 2>&1 | tail -3
+    echo -e "  ${GREEN}mlir-core installed in .venv (editable).${NC}"
+}
+
+# ── 0b. Helper: build sf-dialect ─────────────────────────────────
+build_sf_dialect() {
+    echo -e "${CYAN}[sf] Building sf-dialect...${NC}"
+    SF_DIR="$PROJECT_ROOT/sf-dialect"
+    BUILD_DIR="$SF_DIR/build"
+    LLVM_BUILD="$PROJECT_ROOT/llvm-project/build"
+    VENV_PYTHON="$PROJECT_ROOT/.venv/bin/python3"
+
+    mkdir -p "$BUILD_DIR"
+    cmake -G Ninja \
+        -S "$SF_DIR" \
+        -B "$BUILD_DIR" \
+        -DPython3_EXECUTABLE="$VENV_PYTHON" \
+        -DMLIR_DIR="$LLVM_BUILD/lib/cmake/mlir" \
+        -DLLVM_DIR="$LLVM_BUILD/lib/cmake/llvm" \
+        -DLLVM_ENABLE_ASSERTIONS=ON \
+        -DCMAKE_BUILD_TYPE=Release
+
+    # Build the static library and Python package structure (sources, tablegen).
+    ninja -C "$BUILD_DIR" SfDialect SfPythonModules 2>&1 | tail -3
+
+    # Build the extension .so manually — cmake's built-in extension links
+    # MLIR core static libraries which cause dialect re-registration with
+    # the LLVM build's libMLIRPythonCAPI.dylib.
+    # We link only libSfDialect.a and resolve all MLIR core symbols at
+    # runtime via -undefined dynamic_lookup.
+    _PY_INC=$($VENV_PYTHON -c 'import sysconfig; print(sysconfig.get_path("include"))')
+    _NB_INC=$($VENV_PYTHON -c 'import nanobind, os; print(os.path.dirname(nanobind.__file__))')/include
+
+    clang++ -std=c++17 -fPIC -shared \
+        -o "$BUILD_DIR/python_packages/sf/mlir_sf/_mlir_libs/_sfDialectsNanobind.cpython-310-darwin.so" \
+        -DMLIR_BINDINGS_PYTHON_DOMAIN=mlir_sf \
+        -I"$SF_DIR/include" \
+        -I"$LLVM_BUILD/include" \
+        -I"$LLVM_BUILD/tools/mlir/include" \
+        -I"$PROJECT_ROOT/llvm-project/llvm/include" \
+        -I"$PROJECT_ROOT/llvm-project/mlir/include" \
+        -I"$SF_DIR" \
+        -I"$BUILD_DIR/include" \
+        -I"$_PY_INC" \
+        -isystem "$_NB_INC" \
+        "$SF_DIR/python/SfExtensionNanobind.cpp" \
+        "$SF_DIR/lib/CAPI/Dialects.cpp" \
+        "$BUILD_DIR/lib/Sf/libSfDialect.a" \
+        -undefined dynamic_lookup
+
+    # Write .pth file so .venv can find mlir_sf
+    SITE_PKG="$PROJECT_ROOT/.venv/lib/python3.10/site-packages"
+    echo "$BUILD_DIR/python_packages/sf" > "$SITE_PKG/sf_dialect.pth"
+
+    echo -e "  ${GREEN}sf-dialect built and mlir_sf available.${NC}"
+}
 
 echo -e "${CYAN}=== LLM-CompileForge Dev Setup ===${NC}"
 echo ""
@@ -160,13 +277,17 @@ echo -e "  ${GREEN}Dependencies installed.${NC}"
 
 # ── 4b. Install MLIR Python bindings ─────────────────────────
 echo -e "${CYAN}[4b/6] Installing MLIR Python bindings...${NC}"
-if .venv/bin/python -c "import mlir.ir" 2>/dev/null; then
-    echo -e "  ${GREEN}mlir already available.${NC}"
-else
-    echo "  Installing mlir-core from GitHub Release..."
+if .venv/bin/python -c "import mlir.ir; import mlir_sf" 2>/dev/null; then
+    echo -e "  ${GREEN}mlir + mlir_sf already available.${NC}"
+elif $QUICK; then
+    echo "  --quick: installing mlir-core from GitHub Release (no local build)."
     .venv/bin/python -m pip install --no-deps \
         'https://github.com/QingGo/llvm-project/releases/download/llvmorg-22.1.5/mlir_core-22.1.5-cp310-cp310-macosx_11_0_x86_64.whl' \
         2>&1 | tail -3
+    echo -e "  ${YELLOW}mlir_sf not available. C++ lowering will fall back to Python.${NC}"
+else
+    build_llvm
+    build_sf_dialect
 fi
 
 # ── 4c. Build Rust runtime ───────────────────────────────────

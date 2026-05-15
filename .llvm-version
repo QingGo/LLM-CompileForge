@@ -1,0 +1,5 @@
+# LLVM/MLIR fork used for ServeForge.
+# This file is read by scripts/setup.sh to clone/checkout the exact commit.
+# Update when a newer LLVM version is needed.
+FORK=https://github.com/QingGo/llvm-project
+COMMIT=5ea218a153f4d2f815b8244eab3e4b4ba5e00e6c

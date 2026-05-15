@@ -332,11 +332,11 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "mlir-core", url = "https://github.com/QingGo/llvm-project/releases/download/llvmorg-22.1.5/mlir_core-22.1.5-cp310-cp310-macosx_11_0_x86_64.whl" },
+    { name = "mlir-core", url = "https://github.com/QingGo/llvm-project/releases/download/llvmorg-23-init/mlir_core-23.0.0.dev0-cp310-cp310-macosx_11_0_x86_64.whl" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pydantic", specifier = ">=2" },
     { name = "pyyaml", specifier = ">=6" },
-    { name = "torch", url = "https://github.com/QingGo/pytorch/releases/download/torch-2.9.1-macos15-py3.10-accelerate/torch-2.9.1a0+gitd38164a-cp310-cp310-macosx_11_0_x86_64.whl" },
+    { name = "torch", url = "https://github.com/QingGo/pytorch/releases/download/torch-2.9.1-macos15-py3.10-accelerate/torch-2.9.1a0+gitd38164a-cp310-cp310-macosx_10_15_x86_64.whl" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 
@@ -398,10 +398,10 @@ wheels = [
 
 [[package]]
 name = "mlir-core"
-version = "22.1.5"
-source = { url = "https://github.com/QingGo/llvm-project/releases/download/llvmorg-22.1.5/mlir_core-22.1.5-cp310-cp310-macosx_11_0_x86_64.whl" }
+version = "23.0.0.dev0"
+source = { url = "https://github.com/QingGo/llvm-project/releases/download/llvmorg-23-init/mlir_core-23.0.0.dev0-cp310-cp310-macosx_11_0_x86_64.whl" }
 wheels = [
-    { url = "https://github.com/QingGo/llvm-project/releases/download/llvmorg-22.1.5/mlir_core-22.1.5-cp310-cp310-macosx_11_0_x86_64.whl", hash = "sha256:27769def26cdc695088a075b252ab6906b27a1d3de94d9dd9349e22e1575f940" },
+    { url = "https://github.com/QingGo/llvm-project/releases/download/llvmorg-23-init/mlir_core-23.0.0.dev0-cp310-cp310-macosx_11_0_x86_64.whl", hash = "sha256:dd65f93b31b4f9ddb8c75231606152a26098824b73d6c966e6a14ee5c52e0d73" },
 ]
 
 [[package]]
@@ -820,7 +820,7 @@ wheels = [
 [[package]]
 name = "torch"
 version = "2.9.1a0+gitd38164a"
-source = { url = "https://github.com/QingGo/pytorch/releases/download/torch-2.9.1-macos15-py3.10-accelerate/torch-2.9.1a0+gitd38164a-cp310-cp310-macosx_11_0_x86_64.whl" }
+source = { url = "https://github.com/QingGo/pytorch/releases/download/torch-2.9.1-macos15-py3.10-accelerate/torch-2.9.1a0+gitd38164a-cp310-cp310-macosx_10_15_x86_64.whl" }
 dependencies = [
     { name = "filelock" },
     { name = "fsspec" },
@@ -830,7 +830,7 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://github.com/QingGo/pytorch/releases/download/torch-2.9.1-macos15-py3.10-accelerate/torch-2.9.1a0+gitd38164a-cp310-cp310-macosx_11_0_x86_64.whl", hash = "sha256:55d286d3f74eace13ad8e107512d486b988117ce42494cf4823edf316e078279" },
+    { url = "https://github.com/QingGo/pytorch/releases/download/torch-2.9.1-macos15-py3.10-accelerate/torch-2.9.1a0+gitd38164a-cp310-cp310-macosx_10_15_x86_64.whl", hash = "sha256:77a2cccc602b82655fa1d4f149b050203eddcd3c0c89031bd73f328c54bf7026" },
 ]
 
 [package.metadata]
