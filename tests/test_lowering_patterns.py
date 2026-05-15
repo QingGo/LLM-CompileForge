@@ -578,3 +578,106 @@ def test_add_squeeze_rank_mismatch():
   }
 }""")
     _check_lowered(lowered)
+
+
+# ── Regression tests for this session's bugs ─────────────────────
+
+def test_binary_broadcast_3d_1d():
+    """Regression: sf.add(3D, 1D) must produce 3D output (not 1D).
+
+    Bug: _infer_elementwise_pure used shapes[0] (first operand's shape),
+    so sf.add(tensor<?x?x768xf32>, tensor<768xf32>) → tensor<768xf32> (1D)
+    instead of tensor<?x?x768xf32> (3D).  The C++ SfBinaryLowering then
+    failed because operand rank 3 > output rank 1.
+    """
+    lowered = _lower("""module {
+  func.func @test(%a: tensor<?x?x768xf32>, %b: tensor<768xf32>) -> tensor<?x?x768xf32> {
+    %0 = "sf.add"(%a, %b) : (tensor<?x?x768xf32>, tensor<768xf32>) -> tensor<?x?x768xf32>
+    return %0 : tensor<?x?x768xf32>
+  }
+}""")
+    _check_lowered(lowered)
+
+
+def test_view_dyn_shape_infer():
+    """Regression: sf.view with dyn_shape operands and -1 inference.
+
+    Bug: SfViewOpLowering used tensor.dim(input, 0) for ALL dynamic output
+    dims.  For view(tensor<?x?x12x64xf32>, batch, seq) → tensor<?x?x?xf32>
+    with shape=[batch, seq, -1], output dim 1 got batch size instead of seq.
+    """
+    lowered = _lower("""module {
+  func.func @test(%a: tensor<?x?x12x64xf32>, %b: tensor<f32>, %c: tensor<f32>) -> tensor<?x?x?xf32> {
+    %0 = "sf.view"(%a, %b, %c) {shape = [%b, %c, -1]} : (tensor<?x?x12x64xf32>, tensor<f32>, tensor<f32>) -> tensor<?x?x?xf32>
+    return %0 : tensor<?x?x?xf32>
+  }
+}""")
+    _check_lowered(lowered)
+
+
+def test_transpose_permuted_dynamic():
+    """Regression: sf.transpose with permuted dynamic dims.
+
+    Bug: SfTransposeOpLowering used makeEmpty({input}) which matches dims
+    at same index only.  For transpose(perm=[0,2,1,3]) on tensor<?x?x12x64>,
+    output dim 2 is dynamic but makeEmpty checks input dim 2 (static 12),
+    leaves it unfilled → constant(0) → bufferization fail.
+    """
+    lowered = _lower("""module {
+  func.func @test(%a: tensor<?x?x12x64xf32>) -> tensor<?x12x?x64xf32> {
+    %0 = "sf.transpose"(%a) {dim0 = 1 : i64, dim1 = 2 : i64} : (tensor<?x?x12x64xf32>) -> tensor<?x12x?x64xf32>
+    return %0 : tensor<?x12x?x64xf32>
+  }
+}""")
+    _check_lowered(lowered)
+
+
+def test_expand_broadcast():
+    """Regression: sf.expand with shape attr and rank-increasing broadcast.
+
+    Bug: SfExpandOpLowering was passthrough (replaceOp with input), causing
+    type mismatch between 3D input and 4D output → scf.yield type error
+    during bufferization.  Also, the input map used dim expressions for
+    size-1 dims instead of affine constant 0 → linalg verifier failure.
+    """
+    lowered = _lower("""module {
+  func.func @test(%a: tensor<1x1x1xf32>, %b: tensor<f32>) -> tensor<?x1x?x?xf32> {
+    %0 = "sf.expand"(%a, %b) {shape = [%b, -1, %b, %b]} : (tensor<1x1x1xf32>, tensor<f32>) -> tensor<?x1x?x?xf32>
+    return %0 : tensor<?x1x?x?xf32>
+  }
+}""")
+    _check_lowered(lowered)
+
+
+def test_binary_broadcast_dynamic_out():
+    """Regression: binary op where outDim = kDynamic and rhs has size-1 dim.
+
+    Bug: binary ops' broadcast maps checked outDim > 1 but not outDim ==
+    kDynamic.  For softmax attn = exp / sum, sum has shape [..., S, 1]
+    and scoresType has [? at dim 3], so outDim == kDynamic → broadcast
+    map used dim expression instead of constant 0 → linalg.generic
+    verifier: shapes 4 vs 1 mismatch.
+    """
+    lowered = _lower("""module {
+  func.func @test(%a: tensor<?x12x?x4xf32>, %b: tensor<?x12x?x1xf32>) -> tensor<?x12x?x?xf32> {
+    %0 = "sf.add"(%a, %b) : (tensor<?x12x?x4xf32>, tensor<?x12x?x1xf32>) -> tensor<?x12x?x?xf32>
+    return %0 : tensor<?x12x?x?xf32>
+  }
+}""")
+    _check_lowered(lowered)
+
+
+def test_compare_broadcast_3d_1d():
+    """Regression: compare op (sf.le) with ranked broadcast like 3D+1D.
+
+    Bug: _infer_compare_pure used shapes[0] only, producing wrong output
+    rank.  Also, the C++ LeOp lowering must output f32 (not i1) to avoid
+    unrealized_conversion_cast blocking bufferization.
+    """
+    lowered = _lower("""module {
+  func.func @test(%a: tensor<?x?x768xf32>, %b: tensor<768xf32>) -> tensor<?x?x768xf32> {
+    %0 = "sf.le"(%a, %b) : (tensor<?x?x768xf32>, tensor<768xf32>) -> tensor<?x?x768xf32>
+    return %0 : tensor<?x?x768xf32>
+  }
+}""")
+    _check_lowered(lowered)
