@@ -1,0 +1,53 @@
+cmake_minimum_required(VERSION 3.20.0)
+project(sf-dialect LANGUAGES CXX C)
+
+set(CMAKE_BUILD_WITH_INSTALL_NAME_DIR ON)
+set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard to conform to")
+
+set(EXTERNAL_PROJECT_BUILD FALSE)
+find_package(MLIR REQUIRED CONFIG)
+
+message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
+message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
+
+list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
+list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
+
+include(TableGen)
+include(AddLLVM)
+include(AddMLIR)
+include(HandleLLVMOptions)
+
+set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
+if(NOT MLIR_MAIN_SRC_DIR)
+  set(MLIR_MAIN_SRC_DIR ${MLIR_INCLUDE_DIR}/..)
+endif()
+
+set(SF_SOURCE_DIR ${PROJECT_SOURCE_DIR})
+set(SF_BINARY_DIR ${PROJECT_BINARY_DIR})
+include_directories(${LLVM_INCLUDE_DIRS})
+include_directories(${MLIR_INCLUDE_DIRS})
+include_directories(${SF_SOURCE_DIR}/include)
+include_directories(${SF_SOURCE_DIR})
+include_directories(${SF_BINARY_DIR}/include)
+link_directories(${LLVM_BUILD_LIBRARY_DIR})
+add_definitions(${LLVM_DEFINITIONS})
+
+if(MLIR_ENABLE_BINDINGS_PYTHON)
+  message(STATUS "Enabling Python API for sf-dialect")
+  include(MLIRDetectPythonEnv)
+  mlir_configure_python_dev_packages()
+  if(NOT MLIR_PYTHON_PACKAGE_PREFIX)
+    set(MLIR_PYTHON_PACKAGE_PREFIX "mlir_sf" CACHE STRING "" FORCE)
+  endif()
+  if(NOT MLIR_BINDINGS_PYTHON_NB_DOMAIN)
+    set(MLIR_BINDINGS_PYTHON_NB_DOMAIN "mlir_sf" CACHE STRING "" FORCE)
+  endif()
+  if(NOT MLIR_BINDINGS_PYTHON_INSTALL_PREFIX)
+    set(MLIR_BINDINGS_PYTHON_INSTALL_PREFIX "python_packages/sf/${MLIR_PYTHON_PACKAGE_PREFIX}" CACHE STRING "" FORCE)
+  endif()
+  add_subdirectory(python)
+endif()
+
+add_subdirectory(include)
+add_subdirectory(lib)

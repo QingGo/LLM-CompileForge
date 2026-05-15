@@ -13,3 +13,5 @@ mlir_binding/
 rust/target/
 .profile_baseline.txt
 benchmark_results.json
+llvm-project/
+sf-dialect/build/

@@ -58,6 +58,11 @@ def _run_pattern(
 
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
+    try:
+        from mlir_sf._mlir_libs._sfDialectsNanobind import sf
+        sf.register_dialects(ctx._CAPIPtr, load=True)
+    except ImportError:
+        pass
 
     with ctx, ir.Location.unknown(ctx):
         module = ir.Module.parse(mlir_text, ctx)

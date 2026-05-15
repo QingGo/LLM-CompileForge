@@ -117,7 +117,8 @@ class TestShapeInference:
             ctx.allow_unregistered_dialects = True
             with ir.Location.unknown(ctx):
                 from compiler.mlir_dialect.shape_inference import infer_output_type
-                r = infer_output_type("embedding", [_t((1, 64), "i64"), _t((32000, 1024))])
+                # Arguments: [weight, indices] (weight first, then indices)
+                r = infer_output_type("embedding", [_t((32000, 1024)), _t((1, 64), "i64")])
                 assert tuple(r[0].shape) == (1, 64, 1024)
 
     def test_sdpa(self):

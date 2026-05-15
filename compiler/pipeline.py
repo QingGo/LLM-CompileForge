@@ -169,32 +169,35 @@ def _apply_mlir_passes(
 ) -> tuple[str, str | None]:
     """Apply MLIR optimization passes.
 
-    Phase 1: canonicalize (standard MLIR pass)
+    Phase 1: canonicalize + CSE (standard MLIR pass, enabled by sf dialect traits)
     Phase 2: fusion (fuse_silu, fuse_rms_norm)
-    Phase 3: sf→linalg lowering (optional, after fusion, via API path)
+    Phase 3: sf→linalg lowering (via C++ DialectConversion pass)
 
     Returns:
         (optimized_sf_text, lowered_linalg_text_or_None).
         optimized_sf_text is always sf-dialect (suitable for MlirModule re-parse).
-        lowered_linalg_text is the mixed-dialect output of sf_to_linalg_pass.
+        lowered_linalg_text is the mixed-dialect output of sf-to-linalg pass.
     """
     import logging
     _log = logging.getLogger("compiler.pipeline")
 
     from compiler.mlir_passes.fusion import _has_bindings, fuse_rms_norm_pass, fuse_silu_pass
 
-    # Phase 1: canonicalize
+    # Phase 0: register sf dialect (must happen before parsing MLIR text)
     if _has_bindings():
         _setup_mlir_path()
         try:
             import mlir.ir as ir
             import mlir.passmanager as pm
+            from mlir_sf._mlir_libs._sfDialectsNanobind import sf
 
             ctx = ir.Context()
-            ctx.allow_unregistered_dialects = True
+            sf.register_dialects(ctx._CAPIPtr, load=True)
+
+            # Phase 1: canonicalize + CSE (DCE/CSE/constant folding enabled by sf op traits)
             with ctx:
                 module = ir.Module.parse(mlir_text, ctx)
-                pman = pm.PassManager.parse("builtin.module(canonicalize)", ctx)
+                pman = pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx)
                 pman.run(module.operation)
                 mlir_text = str(module)
         except Exception as e:
@@ -210,7 +213,7 @@ def _apply_mlir_passes(
     except Exception as e:
         _log.warning("fuse_rms_norm pass failed, continuing: %s", e)
 
-    # Phase 3: sf→linalg lowering (optional, after fusion, via API path)
+    # Phase 3: sf→linalg lowering (optional, after fusion, via C++ DialectConversion)
     lowered_text: str | None = None
     if apply_lowering:
         lowered_text = _apply_sf_to_linalg(mlir_text, orig_mlir_mod=orig_mlir_mod)
@@ -219,33 +222,31 @@ def _apply_mlir_passes(
 
 
 def _apply_sf_to_linalg(mlir_text: str, orig_mlir_mod: Any = None) -> str:
-    """Apply sf→linalg lowering pass.
+    """Apply sf→linalg lowering pass using C++ passes only.
 
-    Uses API-based ir.Module construction when an MlirModule is available
-    (bypasses MLIR text round-trip parse issues). Falls back to text-based
-    path otherwise.
+    Uses C++ passes: sf-promote-weights → canonicalize/cse → sf-lower-to-linalg.
+    Raises RuntimeError if C++ bindings are unavailable or pass fails.
     """
-    import logging
-    _log = logging.getLogger("compiler.pipeline")
+    _setup_mlir_path()
+    import mlir.ir as ir
+    import mlir.passmanager as pm
+    from mlir_sf._mlir_libs._sfDialectsNanobind import sf
 
-    # Preferred path: API-based, uses MlirModule directly
-    if orig_mlir_mod is not None:
-        try:
+    ctx = ir.Context()
+    sf.register_dialects(ctx._CAPIPtr, load=True)
+    with ctx:
+        if orig_mlir_mod is not None:
             from compiler.mlir_artifact import mlir_module_to_ir_module
-            from compiler.mlir_dialect.lowering import sf_to_linalg_pass_on_module
-            ir_mod = mlir_module_to_ir_module(orig_mlir_mod)
-            return _post_lowering_canonicalize(sf_to_linalg_pass_on_module(ir_mod))
-        except Exception as e:
-            _log.warning("API-based sf_to_linalg failed, falling back: %s", e)
-
-    # Fallback: text-based path
-    from compiler.mlir_dialect.lowering import sf_to_linalg_pass
-    try:
-        mlir_text = sf_to_linalg_pass(mlir_text)
-    except Exception as e:
-        _log.warning("sf_to_linalg pass failed, continuing: %s", e)
-        return mlir_text
-
+            ir_mod = mlir_module_to_ir_module(orig_mlir_mod, ctx=ctx)
+        else:
+            ir_mod = ir.Module.parse(mlir_text, ctx)
+        pman = pm.PassManager.parse(
+            "builtin.module(sf-promote-weights,canonicalize,cse,sf-lower-to-linalg)",
+            ctx)
+        pman.enable_verifier(False)
+        pman.enable_timing()
+        pman.run(ir_mod.operation)
+        mlir_text = ir_mod.operation.get_asm(print_generic_op_form=True)
     return _post_lowering_canonicalize(mlir_text)
 
 
@@ -262,7 +263,7 @@ def _post_lowering_canonicalize(mlir_text: str) -> str:
             import mlir.passmanager as pm
 
             ctx = ir.Context()
-            ctx.allow_unregistered_dialects = True
+            # linalg/arith/math 等标准方言已注册，不需要 allow_unregistered
             with ctx:
                 module = ir.Module.parse(mlir_text, ctx)
                 pman = pm.PassManager.parse("builtin.module(canonicalize)", ctx)

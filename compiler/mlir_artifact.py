@@ -649,11 +649,18 @@ def _emit_compute_graph_section(
 
     for fi, func in enumerate(module.functions):
         _emit_string(parts, f"_mlir_ciface_{func.name}")
-        num_inputs = len(func.inputs)
+
+        # Collect weight/constant ops in this function — these become additional
+        # function arguments after C++ lowering promotes them from ops to args.
+        weight_ops = [op for op in func.ops if op.op_name in ("weight", "constant")]
+        weight_ops_with_names = [op for op in weight_ops if op.attributes.get("name", "")]
+
+        num_inputs = len(func.inputs) + len(weight_ops_with_names)
         num_outputs = len(func.outputs)
         parts.append(struct.pack("<I", num_inputs))
         parts.append(struct.pack("<I", num_outputs))
 
+        # 1. Emit bindings for real function parameters (from func.inputs)
         for in_idx, (in_name, in_type_str) in enumerate(func.inputs):
             clean = in_name.lstrip("%")
             rank, shape_dims = _parse_type_shape(in_type_str)
@@ -661,9 +668,6 @@ def _emit_compute_graph_section(
             if fi == 0 and in_idx == 0:
                 # First input of first function → global input (token ids)
                 parts.append(struct.pack("<B", 2))  # global_input
-            elif clean in all_weight_names:
-                parts.append(struct.pack("<B", 0))  # weight
-                _emit_string(parts, clean)
             elif clean in producer:
                 parts.append(struct.pack("<B", 1))  # ssa
                 pfi, poi = producer[clean]
@@ -675,6 +679,19 @@ def _emit_compute_graph_section(
                 parts.append(struct.pack("<I", 0))
                 parts.append(struct.pack("<I", 0))
 
+            parts.append(struct.pack("<B", rank))
+            parts.append(struct.pack("<I", len(shape_dims)))
+            for d in shape_dims:
+                parts.append(struct.pack("<Q", d))
+
+        # 2. Emit bindings for weight/constant ops (promoted to func args in C++ pass)
+        #    These appear AFTER the real function parameters in the arg list.
+        for wop in weight_ops_with_names:
+            wname = wop.attributes.get("name", "")
+            wtype_str = wop.output_types[0] if wop.output_types else "tensor<f32>"
+            rank, shape_dims = _parse_type_shape(wtype_str)
+            parts.append(struct.pack("<B", 0))  # weight
+            _emit_string(parts, wname)
             parts.append(struct.pack("<B", rank))
             parts.append(struct.pack("<I", len(shape_dims)))
             for d in shape_dims:
@@ -908,6 +925,8 @@ def mlir_module_to_ir_module(module: MlirModule, ctx: Any = None) -> Any:
                     result_types: list[ir.Type] = []
                     if op.output_types:
                         result_types = [_type_str_to_ir_type(t) for t in op.output_types]
+                    elif op.op_name == "sym_size":
+                        result_types = [_ir.RankedTensorType.get([], _ir.F32Type.get(ctx))]
                     elif operands:
                         opnd_type = operands[0].type
                         try:

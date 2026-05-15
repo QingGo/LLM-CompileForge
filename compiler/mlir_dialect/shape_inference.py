@@ -404,12 +404,13 @@ infer_logical_and = _infer_compare
 def infer_embedding(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
     if len(input_types) < 2:
         return input_types
-    inp = input_types[0]
-    w = input_types[1]
-    inp_s = _ranked_shape(inp)
+    w = input_types[0]   # weight tensor: [vocab, embed_dim]
+    inp = input_types[1]  # indices tensor: [batch, seq, ...]
     w_s = _ranked_shape(w)
+    inp_s = _ranked_shape(inp)
     et = _elt_type_str(w)
-    if inp_s and w_s:
+    if w_s and inp_s and len(w_s) >= 2:
+        # Output: indices_shape + [embed_dim]
         return [_make_ranked_type(tuple(list(inp_s) + [w_s[1]]), et)]
     return [_make_ranked_type((None, None), et)]
 
@@ -681,6 +682,15 @@ def _infer_elementwise_pure(
     return [((1,), "f32")]
 
 
+def _infer_scalar_pure(
+    shapes: list[tuple[int | None, ...]],
+    elts: list[str],
+    **kwargs: Any,
+) -> list[tuple[tuple[int | None, ...], str]]:
+    """SymSize: return scalar tensor (empty shape tuple) with f32 element type."""
+    return [((), "f32")]
+
+
 def _infer_matmul_pure(
     shapes: list[tuple[int | None, ...]],
     elts: list[str],
@@ -841,8 +851,11 @@ def _infer_embedding_pure(
 ) -> list[tuple[tuple[int | None, ...], str]]:
     if len(shapes) < 2:
         return [(shapes[0], elts[0]) if shapes else ((1,), "f32")]
-    inp_s, w_s = shapes[0], shapes[1]
-    return [(tuple(list(inp_s) + [w_s[1]]), elts[1] if len(elts) > 1 else elts[0])]
+    w_s, inp_s = shapes[0], shapes[1]  # weight=[vocab, embed], indices=[batch, seq, ...]
+    if len(w_s) >= 2:
+        # Output: indices_shape + [embed_dim]
+        return [(tuple(list(inp_s) + [w_s[1]]), elts[0] if elts else "f32")]
+    return [(shapes[0], elts[0] if elts else "f32")]
 
 
 def _infer_compare_pure(
@@ -922,7 +935,7 @@ _PURE_TABLE: dict[str, Any] = {
     "zeros": _infer_elementwise_pure,
     "eye": _infer_elementwise_pure,
     "pad": _infer_elementwise_pure,
-    "sym_size": _infer_elementwise_pure,
+    "sym_size": _infer_scalar_pure,
     "einsum": _infer_elementwise_pure,
     "stack": _infer_elementwise_pure,
     "view_as": _infer_elementwise_pure,

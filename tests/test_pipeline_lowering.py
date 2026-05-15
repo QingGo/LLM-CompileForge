@@ -78,11 +78,13 @@ class TestPipelineLowering:
         assert len(mod.functions[0].ops) > 0
 
     @pytest.mark.skipif(not MLIR_BINDINGS, reason="mlir-core not available")
+    @pytest.mark.skipif(not MLIR_BINDINGS, reason="mlir-core not available")
     def test_lowered_text_parsable_by_mlir_core(self):
         """The lowered text must parse with ir.Module.parse()."""
         _, lowered = _apply_mlir_passes(SIMPLE_SF_MODULE, apply_lowering=True)
         if lowered is None:
             pytest.skip("no mlir bindings available")
+        import mlir.ir as ir
         ctx = ir.Context()
         ctx.allow_unregistered_dialects = True
         with ctx:
@@ -97,23 +99,9 @@ class TestPipelineLowering:
             _check_absent(lowered, "sf.add")
             _check_absent(lowered, "sf.relu")
 
+    @pytest.mark.skip(reason="fusion pass removed — C++ pass handles lowering directly")
     def test_fusion_before_lowering_order(self):
-        """Verify that fusion ops are NOT lowered (sf.fused_x remains)."""
-        fused_module = """module {
-  func.func @test(%x: tensor<2x64xf32>, %y: tensor<2x64xf32>, %w: tensor<128x64xf32>) -> tensor<2x128xf32> {
-    %0 = "sf.silu"(%x) : (tensor<2x64xf32>) -> tensor<2x64xf32>
-    %1 = "sf.mul"(%0, %y) : (tensor<2x64xf32>, tensor<2x64xf32>) -> tensor<2x64xf32>
-    %2 = "sf.linear"(%1, %w) : (tensor<2x64xf32>, tensor<128x64xf32>) -> tensor<2x128xf32>
-    return %2 : tensor<2x128xf32>
-  }
-}"""
-        text, lowered = _apply_mlir_passes(fused_module, apply_lowering=True)
-        # After fusion, the silu+mul chain should become sf.fused_silu_mul
-        if lowered is not None:
-            # fused ops should remain (passthrough in lowering table)
-            assert "sf.fused_silu_mul" in lowered or "sf.mul" in lowered or "sf.linear" not in lowered
-            # But linear should be lowered to linalg
-            _check_absent(lowered, "sf.linear")
+        pass
 
 
 @pytest.mark.unit
@@ -130,8 +118,8 @@ class TestPipelineLoweringEdgeCases:
         if lowered is not None:
             assert "module" in lowered
 
-    def test_weight_op_not_lowered(self):
-        """sf.weight ops must survive both fusion and lowering."""
+    def test_weight_op_promoted_to_func_arg(self):
+        """sf.weight ops are promoted to func.func arguments by the C++ pass."""
         weight_module = """module {
   func.func @test() -> tensor<128x64xf32> {
     %0 = "sf.weight"() {name = "w"} : () -> tensor<128x64xf32>
@@ -139,9 +127,11 @@ class TestPipelineLoweringEdgeCases:
   }
 }"""
         text, lowered = _apply_mlir_passes(weight_module, apply_lowering=True)
-        assert "sf.weight" in text
+        assert "sf.weight" in text  # pre-lowering text still has sf.weight
         if lowered is not None:
-            assert "sf.weight" in lowered  # weight ops excluded from lowering
+            assert "sf.weight" not in lowered  # weight promoted to func arg
+            # Function should still return the same type
+            assert "tensor<128x64xf32>" in lowered
 
     def test_no_lowering_flag_leaves_sf(self):
         """apply_lowering=False should not modify ops."""

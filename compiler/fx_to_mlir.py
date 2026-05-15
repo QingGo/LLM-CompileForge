@@ -187,12 +187,19 @@ def _symint_to_int(val: Any) -> int | None:
         if hasattr(val, "node") and val.node is not None:
             hint = getattr(val.node, "hint", None)
             if hint is not None:
-                return int(hint)
+                result = int(hint)
+                # MLIR kDynamic sentinel (INT64_MAX) means dynamic dimension
+                if result == 9223372036854775807:
+                    return None
+                return result
         return None
     if isinstance(val, int):
-        return val
+        return None if val == 9223372036854775807 else val
+    if isinstance(val, str):
+        return None
     try:
-        return int(val)
+        result = int(val)
+        return None if result == 9223372036854775807 else result
     except (TypeError, ValueError):
         return None
 
@@ -284,6 +291,21 @@ def _resolve_op_types(
         else:
             out = [((1,), "f32")]
 
+    # For binary float ops, coerce non-float input element types to f32
+    # (scalar integers used as float operands, e.g. _const_7 in sf.sub)
+    float_ops = {"add", "mul", "sub", "div", "max", "le", "logical_and",
+                   "linear", "matmul", "layer_norm", "rms_norm",
+                   "relu", "gelu", "silu", "sigmoid", "exp", "neg", "tanh",
+                   "identity", "sum", "mean", "softmax",
+                   "transpose", "slice", "ones_like", "cumsum"}
+    if hal_op in float_ops:
+        for i in range(len(input_elts)):
+            if input_elts[i] not in ("f32", "f16", "bf16", "f64"):
+                input_elts[i] = "f32"
+                # Also update shape_map if this is a weight
+                if i < len(input_names) and input_names[i] in weights:
+                    weights[input_names[i]] = weights[input_names[i]].float()
+
     in_type_strs = [_shape_to_mlir_type(s, e) for s, e in zip(input_shapes, input_elts, strict=False)]
     out_type_strs = [_shape_to_mlir_type(s, e) for s, e in out]
     return in_type_strs, out_type_strs
@@ -346,9 +368,16 @@ def _fake_to_shape_tuple(fake: torch.Tensor) -> tuple[tuple[int | None, ...], st
     return shape, elt
 
 
-def _shape_to_mlir_type(shape: tuple[int | None, ...], elt: str) -> str:
+def _shape_to_mlir_type(shape: tuple, elt: str) -> str:
     """Convert (shape, element_type) to MLIR type string like tensor<1x64xf32>."""
-    dims = "x".join(str(d) if (d is not None and d > 0) else "?" for d in shape)
+    def _dim_str(d: Any) -> str:
+        if d is None:
+            return "?"
+        try:
+            return str(int(d)) if int(d) > 0 else "?"
+        except (TypeError, ValueError):
+            return "?"
+    dims = "x".join(_dim_str(d) for d in shape)
     elt_map = {
         "float32": "f32", "float16": "f16", "bfloat16": "bf16",
         "float64": "f64", "int32": "i32", "int64": "i64",
@@ -884,7 +913,11 @@ def _collect_input_args(
             scalar_val = _symint_to_int(arg) if isinstance(arg, torch.SymInt) else arg
             if scalar_val is None:
                 scalar_val = 1
-            weights[const_name] = torch.tensor(scalar_val)
+            # Use f32 for float scalars, i64 for int scalars
+            if isinstance(scalar_val, float):
+                weights[const_name] = torch.tensor(scalar_val, dtype=torch.float32)
+            else:
+                weights[const_name] = torch.tensor(scalar_val)
             input_names.append(const_name)
         elif isinstance(arg, str):
             kwarg_name = scalar_kwargs_map.get(i)

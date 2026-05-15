@@ -1,4 +1,4 @@
-.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all profile smoke clean
+.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean diagnose-bt
 
 # ---- 环境 ----
 VENV := .venv
@@ -23,6 +23,17 @@ lint-mypy:
 test-unit: $(VENV)
 	$(PYTEST) tests/ -m unit -v --tb=short --timeout=1
 
+# ---- L1b: 模型产物质量检查 (<5s) ----
+test-model: $(VENV)
+	$(PYTHON) -m pytest tests/test_model_artifact.py -v --tb=short --timeout=10
+
+# ---- L1c: 单个 lowering pattern 测试 (<10s) ----
+test-patterns: $(VENV)
+	$(PYTHON) -m pytest tests/test_lowering_patterns.py -v --tb=short --timeout=2
+
+# ---- L1d: 组合快速验证 (lint + 全部 L1, <20s) ----
+test-smoke: lint test-unit test-model test-patterns
+
 # ---- L2: 集成测试 (<80s, 可选) ----
 test-integration: $(VENV)
 	-$(PYTEST) tests/ -m integration -v --tb=short --timeout=300
@@ -31,11 +42,11 @@ test-integration: $(VENV)
 test-baseline: $(VENV)
 	-$(PYTEST) tests/ -m baseline -v --tb=long --timeout=300
 
-# ---- 快速测试 (lint + unit, <15s) ----
-test-fast: lint test-unit smoke
+# ---- 快速测试 (lint + L1 all, <20s) ----
+test-fast: lint test-unit test-model test-patterns
 
 # ---- 全量测试 (all tests, <2min) ----
-test-all: lint test-unit test-integration smoke
+test-all: lint test-unit test-model test-patterns test-integration
 
 # ---- L3: 性能回归 (<5min) ----
 profile: $(VENV)
@@ -50,6 +61,10 @@ profile: $(VENV)
 # ---- L4: 冒烟测试 (<2s) ----
 smoke: $(VENV)
 	$(PYTEST) tests/test_smoke.py -m smoke -v --tb=short
+
+# ---- 诊断：lldb backtrace（C++ assertion 崩溃时用） ----
+diagnose-bt:
+	lldb -b -o "run" -o "bt all" -o "quit" -- $(PYTHON) scripts/diagnose_lowering.py
 
 # ---- Benchmark (Phase 2.5 Sprint 1) ----
 benchmark: $(VENV)
