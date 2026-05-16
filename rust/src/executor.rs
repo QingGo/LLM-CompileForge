@@ -197,20 +197,56 @@ impl ModelExecutor {
 
             eprintln!(
                 "[executor] calling func[{}] symbol={} outputs={} inputs={}",
-                fi, func_def.symbol, output_descs.len(), input_ptrs.len()
+                fi, func_def.symbol, func_def.num_outputs, input_ptrs.len()
             );
-            // Collect output pointers for ciface ABI
-            let output_ptrs: Vec<*mut c_void> =
-                output_descs.iter().map(|od| od.as_output_ptr()).collect();
+
+            // MLIR emit_c_interface convention: function returns output descriptors
+            // as a struct via sret pointer (first argument).  The outputs' data
+            // buffers are malloc'd inside the function.  We need:
+            //   1. A sret buffer large enough for all output descriptors
+            //   2. First arg = sret ptr, remaining args = input ptrs
+            //
+            // MemRef descriptor size (LLVM struct {ptr, ptr, i64, [N x i64], [N x i64]}):
+            //   rank 0: 24, rank 1: 40, rank 2: 56, rank 3: 72, rank 4: 88
+            let sret_size: usize = func_def.outputs.iter().map(|od| {
+                let r = od.rank as usize;
+                24 + 16 * r
+            }).sum();
+            let mut sret: Vec<u8> = vec![0u8; sret_size + 64];
+            let sret_ptr = sret.as_mut_ptr() as *mut c_void;
+
+            // Build arg list: sret first, then all inputs
+            let mut all_args: Vec<*const c_void> = Vec::with_capacity(1 + input_ptrs.len());
+            all_args.push(sret_ptr);
+            all_args.extend(input_ptrs.iter().copied());
             unsafe {
-                kernel.call(&output_ptrs, &input_ptrs);
+                kernel.call_high_arity_raw(
+                    self.executable.lookup_symbol(&func_def.symbol)?,
+                    &all_args,
+                );
             }
             eprintln!("[executor] func[{}] returned OK", fi);
 
-            for od in &output_descs {
-                let data = unsafe { od.read_output_f32() };
-                let shape: Vec<usize> = od.sizes();
+            // Parse output descriptors from sret buffer.
+            // Each descriptor is at a known offset based on output rank layout.
+            let mut sret_offset: usize = 0;
+            for (oi, io_def) in func_def.outputs.iter().enumerate() {
+                let r = io_def.rank as usize;
+                let desc_size = 24 + 16 * r;
+                let ptr_slice = &sret[sret_offset..sret_offset + desc_size];
+                let (aligned, sizes) = unsafe { parse_sret_descriptor(ptr_slice, r) };
+                let data: Vec<f32> = if aligned.is_null() {
+                    Vec::new()
+                } else {
+                    let n: usize = sizes.iter().map(|&s| s as usize).product();
+                    unsafe {
+                        let slice = std::slice::from_raw_parts(aligned as *const f32, n);
+                        slice.to_vec()
+                    }
+                };
+                let shape: Vec<usize> = sizes.iter().map(|&s| s as usize).collect();
                 func_outputs[fi].push(Tensor::new_owned(shape, data, Dtype::F32));
+                sret_offset += desc_size;
             }
         }
 
@@ -218,6 +254,19 @@ impl ModelExecutor {
         let result = &func_outputs[g_func][g_idx];
         Ok(result.to_owned())
     }
+}
+
+/// Parse a single memref descriptor from an sret buffer byte slice.
+/// LLVM struct layout: {ptr, ptr, i64, [N x i64], [N x i64]} where N = rank.
+/// Returns (aligned_ptr, [size0, size1, ...]).
+unsafe fn parse_sret_descriptor(slice: &[u8], rank: usize) -> (*mut u8, Vec<i64>) {
+    use std::mem;
+    let aligned = std::ptr::read_unaligned(slice.as_ptr().add(8) as *const *mut u8);
+    let sizes: Vec<i64> = (0..rank).map(|i| {
+        let offset = 24 + i * 8;  // after allocated(8) + aligned(8) + offset(8)
+        std::ptr::read_unaligned(slice.as_ptr().add(offset) as *const i64)
+    }).collect();
+    (aligned, sizes)
 }
 
 #[cfg(test)]

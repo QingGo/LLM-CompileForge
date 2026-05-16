@@ -431,6 +431,10 @@ def _compile_mlir_to_dylib_with_constants(
     with tempfile.TemporaryDirectory() as td:
         ll_path = os.path.join(td, "module.ll")
         emit_llvm_ir_to_file(ir_module, ll_path)
+        # Save a copy of LLVM IR in output dir for debugging
+        import shutil
+        debug_ll = os.path.join(work_dir, "model.ll")
+        shutil.copy2(ll_path, debug_ll)
         obj_path = llc_compile(ll_path, arch=arch, opt_level=opt_level)
         obj_files.append(obj_path)
 

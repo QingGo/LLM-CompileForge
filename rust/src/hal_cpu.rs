@@ -160,6 +160,17 @@ impl Executable {
         &self.lib
     }
 
+    /// Look up a raw symbol by name (for sret-based ciface calls).
+    pub fn lookup_symbol(
+        &self,
+        name: &str,
+    ) -> Result<unsafe extern "C" fn(), anyhow::Error> {
+        let sym: libloading::Symbol<unsafe extern "C" fn()> = unsafe {
+            self.lib.get(name.as_bytes())
+        }?;
+        Ok(*sym)
+    }
+
         /// Look up a kernel function by symbol name with a specific arity.
     pub fn lookup_typed(
         &self,
@@ -218,6 +229,16 @@ impl KernelFn {
         }
     }
 
+    /// Call with sret convention: first arg is sret buffer, rest are inputs.
+    pub unsafe fn call_high_arity_raw(
+        &self,
+        fn_ptr: unsafe extern "C" fn(),
+        args: &[*const c_void],
+    ) {
+        let ptr = fn_ptr as *const ();
+        crate::ciface_high::call_high_arity(ptr, args);
+    }
+
     pub unsafe fn call(&self, outputs: &[*mut c_void], inputs: &[*const c_void]) {
         let total = outputs.len() + inputs.len();
         match (self, outputs.len(), inputs.len()) {
@@ -231,7 +252,11 @@ impl KernelFn {
             (KernelFn::Arity8(f), 0, 7) => f(outputs[0], inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], inputs[5], inputs[6]),
             (KernelFn::HighArity(f), _, _) if total >= 1 && total <= 300 => {
                 let ptr = f.0 as *const ();
-                crate::ciface_high::call_high_arity(ptr, outputs, inputs);
+                // Build flat arg list: all outputs first, then all inputs
+                let mut all_args: Vec<*const c_void> = Vec::with_capacity(total);
+                for o in outputs { all_args.push(*o as *const c_void); }
+                for inp in inputs { all_args.push(*inp); }
+                crate::ciface_high::call_high_arity(ptr, &all_args);
             }
             _ => panic!(
                 "kernel arity mismatch: outputs={}, inputs={}",
