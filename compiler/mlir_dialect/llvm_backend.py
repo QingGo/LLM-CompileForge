@@ -234,15 +234,15 @@ def emit_llvm_ir_to_file(ir_module: Any, path: str) -> None:
 
 def llc_compile(
     ll_file: str,
-    arch: str = "native",
+    arch: str = "",
     output: str | None = None,
-    opt_level: int = 2,
+    opt_level: int = 3,
 ) -> str:
     """Invoke llc to compile a .ll file to a .o object file.
 
     Args:
         ll_file: Path to the .ll input file.
-        arch: Target architecture (default "native").
+        arch: Target architecture. Empty string means use llc default.
         output: Output .o path. Defaults to ll_file with .o extension.
         opt_level: LLVM optimization level (0-3).
 
@@ -261,12 +261,13 @@ def llc_compile(
         llc_bin,
         "-filetype=obj",
         f"-O{opt_level}",
+        "-ffast-math",
         ll_file,
         "-o",
         output,
     ]
-    if arch != "native":
-        cmd.insert(1, f"-march={arch}")
+    if arch and arch != "native":
+        cmd.insert(-2, f"-march={arch}")
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -363,7 +364,7 @@ def compile_mlir_to_dylib(
     ir_module: Any,
     output: str,
     arch: str = "native",
-    opt_level: int = 2,
+    opt_level: int = 3,
 ) -> str:
     """Full AOT compilation: MLIR (LLVM dialect) → .ll → .o → .dylib.
 
@@ -393,7 +394,7 @@ def compile_module_to_dylib(
     output_dir: str,
     model_name: str = "model",
     arch: str = "native",
-    opt_level: int = 2,
+    opt_level: int = 3,
 ) -> str:
     """Compile a lowered MLIR module into the compiled/ artifacts directory.
 
