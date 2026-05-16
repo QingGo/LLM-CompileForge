@@ -17,23 +17,18 @@ pub unsafe fn call_high_arity(
     all_args: &[*const c_void],
 ) {
     let n = all_args.len();
-    eprintln!("[ciface] call_high_arity: {} args", n);
     if n == 0 || n > 300 {
         panic!("unsupported arity: {n}");
     }
 
-    // Build CIF for n pointer args and void return
     let cif = Cif::new(
         std::iter::repeat(Type::pointer()).take(n),
         Type::void(),
     );
-    eprintln!("[ciface] Cif created for {} args", n);
 
     let args: Vec<libffi::middle::Arg> = all_args.iter().map(|p| {
         libffi::middle::Arg::new(p)
     }).collect();
-    eprintln!("[ciface] args built, calling...");
 
     cif.call_return_into(CodePtr(fn_ptr as *mut c_void), &args, libffi::middle::Ret::void());
-    eprintln!("[ciface] call returned");
 }

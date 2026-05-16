@@ -44,12 +44,22 @@ static Value makeEmpty(OpBuilder &b, Location loc, Type t, ValueRange inputs) {
         }
       }
     }
-    // For dynamic dims not filled from inputs, use 0 (will be replaced)
     for (int64_t i = 0; i < (int64_t)shaped.getRank(); ++i)
       if (shaped.isDynamicDim(i) && !filled[i])
         dynSizes.push_back(b.create<arith::ConstantIndexOp>(loc, 0));
   }
   return b.create<tensor::EmptyOp>(loc, shaped, dynSizes);
+}
+
+// Create tensor.empty initialized to zero (for reduction init tensors).
+static Value makeZeroedEmpty(OpBuilder &b, Location loc, Type t, ValueRange inputs,
+                              Type eltType) {
+  Value empty = makeEmpty(b, loc, t, inputs);
+  if (!empty) return Value();
+  Value zero = b.create<arith::ConstantOp>(loc, eltType,
+      b.getFloatAttr(eltType, 0.0f));
+  auto fill = linalg::FillOp::create(b, loc, ValueRange{zero}, ValueRange{empty});
+  return fill.getResult(0);
 }
 
 // Create tensor.empty with support for dynamic dims (kDynamic in shape).
@@ -353,9 +363,11 @@ struct SfMatmulOpLowering : public OpConversionPattern<sf::MatmulOp> {
     auto rhsType = cast<RankedTensorType>(rhs.getType());
     int64_t lhsRank = lhsType.getRank(), rhsRank = rhsType.getRank();
 
+    auto eltType = lhsType.getElementType();
+
     // Standard 2D matmul: use linalg.matmul
     if (lhsRank == 2 && rhsRank == 2) {
-      Value empty = makeEmpty(rewriter, loc, resultType, {lhs});
+    Value empty = makeZeroedEmpty(rewriter, loc, resultType, {lhs}, eltType);
       if (!empty) return failure();
       auto mo = rewriter.create<linalg::MatmulOp>(loc, resultType,
           ValueRange{lhs, rhs}, empty);
@@ -369,7 +381,6 @@ struct SfMatmulOpLowering : public OpConversionPattern<sf::MatmulOp> {
     //   lhs: [d0..d{m-2}, M, K]  rhs: [d0..d{r-2}, K, N]
     //   out: [d0..d{max(m,r)-2}, M, N]
     // We use a loop with (maxRank-1) parallel + 1 reduction iterator.
-    auto eltType = lhsType.getElementType();
     int64_t contractDimL = lhsRank - 1;  // K in lhs
     int64_t contractDimR = 0;            // K in rhs
     int64_t outerRank = std::max(lhsRank - 1, rhsRank - 1) + 1; // M + N + batch
@@ -383,8 +394,7 @@ struct SfMatmulOpLowering : public OpConversionPattern<sf::MatmulOp> {
     }
     while ((int64_t)outShape.size() < outerRank - 1)
       outShape.insert(outShape.begin(), 1);
-    auto outType = RankedTensorType::get(outShape, eltType);
-    Value empty = makeEmpty(rewriter, loc, resultType, {lhs});
+    Value empty = makeZeroedEmpty(rewriter, loc, resultType, {lhs}, eltType);
     if (!empty) return failure();
     // Build maps: the loop has (outerRank) iterators: [batch..., M, N, K]
     int64_t loopRank = outerRank;  // [d0..d{LO}, K] where LO = outermost non-M/N/K dims
@@ -452,7 +462,7 @@ struct SfLinearOpLowering : public OpConversionPattern<sf::LinearOp> {
     SmallVector<Value> t1Dyn; if (kDim < 0) t1Dyn.push_back(rewriter.create<tensor::DimOp>(loc, input, 0));
     SmallVector<Value> tOutDyn; if (nDim < 0) tOutDyn.push_back(rewriter.create<tensor::DimOp>(loc, weight, 1));
     Value pInput = rewriter.create<tensor::ExpandShapeOp>(loc, t1, input, ArrayRef<ReassociationIndices>{{0, 1}});
-    Value pEmpty = rewriter.create<tensor::EmptyOp>(loc, tOut, tOutDyn);
+    Value pEmpty = makeZeroedEmpty(rewriter, loc, tOut, {input}, eltType);
     auto mo = rewriter.create<linalg::MatmulOp>(loc, tOut, ValueRange{pInput, weight}, pEmpty);
     mo->setAttr("operandSegmentSizes", rewriter.getDenseI32ArrayAttr({2, 1}));
     Value mmr = mo.getResult(0);
@@ -527,7 +537,7 @@ struct SfLinearOpLowering : public OpConversionPattern<sf::LinearOp> {
     }
   }
 
-  Value empty = makeEmpty(rewriter, loc, resultType, {input});
+  Value empty = makeZeroedEmpty(rewriter, loc, resultType, {input}, eltType);
   if (!empty) { llvm::errs() << "  [SfLinear] makeEmpty failed\n"; return failure(); }
   Value result;
   auto finalWType = cast<RankedTensorType>(resultWeight.getType());
@@ -546,7 +556,7 @@ struct SfLinearOpLowering : public OpConversionPattern<sf::LinearOp> {
       auto bmType = RankedTensorType::get(bmShape, eltType);
       bmResultType = bmType;
     }
-    Value bmEmpty = makeEmpty(rewriter, loc, bmResultType, {input});
+    Value bmEmpty = makeZeroedEmpty(rewriter, loc, bmResultType, {input}, eltType);
     if (!bmEmpty) { llvm::errs() << "  [SfLinear] bmEmpty failed\n"; return failure(); }
     llvm::errs() << "  [SfLinear] creating batch_matmul target=" << bmResultType << "\n";
     auto mo = rewriter.create<linalg::BatchMatmulOp>(loc, bmResultType,
@@ -810,7 +820,7 @@ struct SfSumOpLowering : public OpConversionPattern<sf::SumOp> {
                                 ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc(); auto rt = op.getResult().getType();
     if (!isa<ShapedType>(rt)) return failure();
-    Value empty = makeEmpty(rewriter, loc, rt, {adaptor.getInput()});
+    Value empty = makeZeroedEmpty(rewriter, loc, rt, {adaptor.getInput()}, rewriter.getF32Type());
     if (!empty) return failure();
     auto rank = cast<ShapedType>(rt).getRank();
     SmallVector<utils::IteratorType> iterTypes(rank, utils::IteratorType::reduction);
@@ -980,7 +990,7 @@ struct SfScaledDotProductAttentionOpLowering
     SmallVector<int64_t> scoresShape(qType.getShape());
     scoresShape[rank - 1] = qType.getDimSize(rank - 2);
     auto scoresType = RankedTensorType::get(scoresShape, eltType);
-    Value scoresEmpty = rewriter.create<tensor::EmptyOp>(loc, scoresType, scoresDyn(scoresType));
+    Value scoresEmpty = makeZeroedEmpty(rewriter, loc, scoresType, {Q, K}, eltType);
     Value scores;
     {
       // Generic batch-matmul: loop [b..h, m, n, k]: parallel(b..h), parallel(m), parallel(n), reduction(k)
@@ -1045,7 +1055,12 @@ struct SfScaledDotProductAttentionOpLowering
     SmallVector<int64_t> maxShape(scoresShape);
     maxShape[lastDim] = 1;
     auto maxType = RankedTensorType::get(maxShape, eltType);
+    // Softmax max reduction: init to -inf
+    Value negInf = rewriter.create<arith::ConstantOp>(loc, eltType,
+        rewriter.getFloatAttr(eltType, -1.0e20f));
     Value maxEmpty = rewriter.create<tensor::EmptyOp>(loc, maxType, maxDyn(maxType));
+    auto fillMax = linalg::FillOp::create(rewriter, loc, ValueRange{negInf}, ValueRange{maxEmpty});
+    maxEmpty = fillMax.getResult(0);
     SmallVector<utils::IteratorType> reduIters(rank);
     for (int64_t i = 0; i < rank; ++i)
       reduIters[i] = (i == lastDim) ? utils::IteratorType::reduction : utils::IteratorType::parallel;
@@ -1074,7 +1089,7 @@ struct SfScaledDotProductAttentionOpLowering
         });
 
     // 4d: sum reduction
-    Value sumEmpty = rewriter.create<tensor::EmptyOp>(loc, maxType, maxDyn(maxType));
+    Value sumEmpty = makeZeroedEmpty(rewriter, loc, maxType, {Q}, eltType);
     auto sumOp = linalg::GenericOp::create(rewriter, loc, maxType, expVal, sumEmpty,
         {AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext()),
          AffineMap::get(rank, 0,
@@ -1108,7 +1123,7 @@ struct SfScaledDotProductAttentionOpLowering
       else
         outDyn.push_back(rewriter.create<tensor::DimOp>(loc, Q, i));
     }
-    Value outEmpty = rewriter.create<tensor::EmptyOp>(loc, outEmptyType, outDyn);
+    Value outEmpty = makeZeroedEmpty(rewriter, loc, outEmptyType, {Q, V}, eltType);
     Value attnVResult;
     {
       // Generic batch-matmul: loop [b..h, m, s, d]: parallel(b..h), parallel(m), reduction(s), parallel(d)
@@ -1265,6 +1280,11 @@ struct SfLayerNormOpLowering : public OpConversionPattern<sf::LayerNormOp> {
     auto makeReduce = [&](Value in, Type reduType) -> Value {
       Value empty = makeEmpty(rewriter, loc, reduType, {in});
       if (!empty) return Value();
+      // Initialize reduction output to 0 before reduction
+      Value zero = rewriter.create<arith::ConstantOp>(loc, eltType,
+          rewriter.getFloatAttr(eltType, 0.0f));
+      auto fill = linalg::FillOp::create(rewriter, loc, ValueRange{zero}, ValueRange{empty});
+      Value filled = fill.getResult(0);
       SmallVector<utils::IteratorType> iters(rank);
       for (int64_t i = 0; i < rank; ++i)
         iters[i] = (i == lastDim) ? utils::IteratorType::reduction : utils::IteratorType::parallel;
@@ -1278,7 +1298,7 @@ struct SfLayerNormOpLowering : public OpConversionPattern<sf::LayerNormOp> {
           outExprs.push_back(getAffineDimExpr(i, rewriter.getContext()));
       }
       auto outMap = AffineMap::get(rank, 0, outExprs, rewriter.getContext());
-      auto g = linalg::GenericOp::create(rewriter, loc, reduType, in, empty,
+      auto g = linalg::GenericOp::create(rewriter, loc, reduType, in, filled,
           {inMap, outMap}, iters);
       populateBody(g, [&](OpBuilder &b, Location loc, ValueRange args) {
         Value _ad = b.create<arith::AddFOp>(loc, args[0], args[1]); b.create<linalg::YieldOp>(loc, _ad);
@@ -1373,6 +1393,11 @@ struct SfRmsNormOpLowering : public OpConversionPattern<sf::RmsNormOp> {
     auto makeReduce = [&](Value in, Type reduType) -> Value {
       Value empty = makeEmpty(rewriter, loc, reduType, {in});
       if (!empty) return Value();
+      // Initialize to 0 before reduction (same as LayerNorm makeReduce)
+      Value zero = rewriter.create<arith::ConstantOp>(loc, eltType,
+          rewriter.getFloatAttr(eltType, 0.0f));
+      auto fill = linalg::FillOp::create(rewriter, loc, ValueRange{zero}, ValueRange{empty});
+      Value filled = fill.getResult(0);
       SmallVector<utils::IteratorType> iters(rank);
       for (int64_t i = 0; i < rank; ++i)
         iters[i] = (i == lastDim) ? utils::IteratorType::reduction : utils::IteratorType::parallel;
@@ -1383,7 +1408,7 @@ struct SfRmsNormOpLowering : public OpConversionPattern<sf::RmsNormOp> {
         else outExprs.push_back(getAffineDimExpr(i, rewriter.getContext()));
       }
       auto outMap = AffineMap::get(rank, 0, outExprs, rewriter.getContext());
-      auto g = linalg::GenericOp::create(rewriter, loc, reduType, in, empty,
+      auto g = linalg::GenericOp::create(rewriter, loc, reduType, in, filled,
           {inMap, outMap}, iters);
       populateBody(g, [&](OpBuilder &b, Location loc, ValueRange args) {
         Value _ad = b.create<arith::AddFOp>(loc, args[0], args[1]);

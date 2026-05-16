@@ -79,11 +79,15 @@ impl<'a> InferenceRunner<'a> {
 
         for _step in 0..self.max_tokens {
             let logits_tensor = self.executor.forward(&current_ids)?;
-            let logits = logits_tensor.as_slice();
-
-            if logits.is_empty() {
+            let all_logits = logits_tensor.as_slice();
+            if all_logits.is_empty() {
                 anyhow::bail!("forward pass returned empty logits");
             }
+            // The forward returns logits shape [2, 4, 50272] (exported static shape).
+            // Sample from the LAST position (batch=1, seq=3, all vocab = 50272).
+            const VOCAB_SIZE: usize = 50272;
+            let last_start = all_logits.len() - VOCAB_SIZE;
+            let logits = &all_logits[last_start..];
 
             let token_id = self.sampler.sample(logits, &sampler_config);
 
@@ -93,8 +97,11 @@ impl<'a> InferenceRunner<'a> {
 
             output_tokens.push(token_id);
 
-            // Single-token decode step
-            current_ids = vec![token_id];
+            // Append new token to history (model has fixed input of 8 tokens)
+            current_ids.push(token_id);
+            if current_ids.len() > 8 {
+                current_ids.remove(0);
+            }
         }
 
         let text = self
