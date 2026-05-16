@@ -63,24 +63,38 @@ def _vectorize_via_transform(ir_module: Any) -> None:
             return
 
         # Tile size 32: GCD(768, 3072, 50272) = 32, divides all static dims evenly.
-        # After tiling, inner dims are 32×32 → vectorize with [32,32,32,32]
-        # is valid (32 <= 32 passes isValidMaskedInputVector).
-        # NOTE: multi-dim vector.contract is expensive to lower to LLVM IR;
-        # see convert-vector-to-llvm hang known issue.
+        # Vector sizes must match the ACTUAL static dims from the module to avoid
+        # creating vector.mask wrappers (which explode convert-vector-to-llvm).
+        # The canonicalize+cse pass folds ?x? → 2x4 when shapes are known.
+        # For fully dynamic shapes, [32,32,32,32] with assume works but creates
+        # 341 masks; those 73 wrapping contracts will hang vec→llvm.
+        # We parse the lowered text to infer actual batch dims.
         _t = 32
         _rt = ": (!transform.any_op) -> (!transform.any_op)"
         _rt3 = ": (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)"
         _rv = ": !transform.any_op"
 
+        # Infer exact vector sizes from the lowered module text.
+        # After canonicalize, batch_matmul shapes like tensor<2x4x768xf32> give b=2,m=4.
+        import re
+        _b, _m, _mm = _t, _t, _t
+        for m_bmm in re.finditer(r'linalg\.batch_matmul[^}]*tensor<(\d+)x(\d+)x(\d+)xf32>', text):
+            _b, _m = int(m_bmm.group(1)), int(m_bmm.group(2))
+            break
+        for m_mm in re.finditer(r'linalg\.matmul[^}]*tensor<(\d+)x(\d+)xf32>', text):
+            _mm = int(m_mm.group(1))
+            break
+        _attrs = "{create_named_contraction}"
+
         script = f"""module attributes {{transform.with_named_sequence}} {{
   transform.named_sequence @__transform_main(%arg0: !transform.any_op) {{
     %bmms = transform.structured.match ops{{["linalg.batch_matmul"]}} in %arg0 {_rt}
     %tiled_b, %loops_b:2 = transform.structured.tile_using_for %bmms tile_sizes [0, 0, {_t}, {_t}] {_rt3}
-    transform.structured.vectorize %tiled_b vector_sizes [{_t}, {_t}, {_t}, {_t}] {{create_named_contraction}} {_rv}
+    transform.structured.vectorize %tiled_b vector_sizes [{_b}, {_m}, {_t}, {_t}] {_attrs} {_rv}
 
     %mms = transform.structured.match ops{{["linalg.matmul"]}} in %arg0 {_rt}
     %tiled_m, %loops_m:2 = transform.structured.tile_using_for %mms tile_sizes [0, {_t}, {_t}] {_rt3}
-    transform.structured.vectorize %tiled_m vector_sizes [{_t}, {_t}, {_t}] {{create_named_contraction}} {_rv}
+    transform.structured.vectorize %tiled_m vector_sizes [{_mm}, {_t}, {_t}] {_attrs} {_rv}
 
     transform.yield
   }}
@@ -152,6 +166,16 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
     ctx = ir_module.operation.context
     ctx.allow_unregistered_dialects = True
 
+    # Register all dialects including bufferization interface extensions
+    # (one-shot-bufferize needs vector::registerBufferizableOpInterfaceExternalModels)
+    try:
+        from mlir._mlir_libs import _mlirRegisterEverything
+        reg = ir.DialectRegistry()
+        _mlirRegisterEverything.register_dialects(reg)
+        ctx.append_dialect_registry(reg)
+    except Exception:
+        _log.debug("Could not register full dialect registry (may affect bufferization)")
+
     with ir.Location.unknown(ctx):
         # sf.weight/sf.constant are already promoted to func.func tensor arguments
         # by the C++ sf-lower-to-linalg pass. No Python-level promotion needed.
@@ -175,13 +199,8 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
             pass  # fuse is optional
 
         # Vectorize: tile inner dims by 32 + mask vectorize with vector.contract.
-        # DISABLED: tile+vectorize via transform dialect.
-        # The transform script (tile_using_for + vectorize {create_named_contraction})
-        # produces 73 vector.contract for all matmuls, but convert-vector-to-llvm
-        # hangs on multi-dimensional contract lowering (scalar expansion of 32K ops).
-        # Enable after fixing with: convert-vector-to-scf → lower-vector-mask
-        # → convert-vector-to-llvm, or switching to 1D-only vectorization.
-        # _vectorize_via_transform(ir_module)
+        # tile+vectorize via transform dialect. All 73 matmuls get vector.contract.
+        _vectorize_via_transform(ir_module)
 
         pipeline_pre = (
             "builtin.module("
@@ -194,12 +213,17 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
             "convert-scf-to-cf,"
             "expand-strided-metadata,"
             "lower-affine,"
+            "func.func(lower-vector-mask),"
+            "func.func(convert-vector-to-scf),"
+            "canonicalize,cse,"
+            "convert-scf-to-cf,"
+            "lower-affine,"
             "finalize-memref-to-llvm,"
             "convert-cf-to-llvm,"
             "convert-math-to-llvm,"
-            "convert-vector-to-scf,"
-            "convert-vector-to-llvm,"
-            "convert-arith-to-llvm"
+            "convert-vector-to-llvm{vector-contract-lowering=outerproduct},"
+            "convert-arith-to-llvm,"
+            "convert-ub-to-llvm"
             ")"
         )
         pman = pm.PassManager.parse(pipeline_pre, ctx)
