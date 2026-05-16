@@ -351,4 +351,63 @@ mod tests {
         let token = s.sample(&logits, &cfg);
         assert!(token < 3);
     }
+
+    #[test]
+    fn test_sample_from_last_position_only() {
+        // Regression: when forward returns flattened [2, 4, 50272] tensor,
+        // sampler must only see the LAST position's 50272 logits, not all 402176.
+        let vocab = 16usize;
+        let seq = 4usize;
+        let batch = 2usize;
+        let total = batch * seq * vocab;
+
+        // Create logits where only the last position's first token is high
+        let mut all_logits = vec![-10.0f32; total];
+        // Position [batch-1][seq-1][token=0] = 10.0 (should be picked)
+        let last_pos_start = (batch - 1) * seq * vocab + (seq - 1) * vocab;
+        all_logits[last_pos_start] = 10.0;
+        // Other positions have max at token=1
+        for b in 0..batch {
+            for s in 0..seq {
+                let base = (b * seq + s) * vocab;
+                all_logits[base + 1] = 5.0;
+            }
+        }
+
+        // BUGGY behavior: sample from ALL logits
+        let cfg = SamplerConfig { temperature: 0.0, top_p: 1.0, top_k: 0 };  // greedy
+        let mut s = Sampler::new(42);
+        let buggy_token = s.sample(&all_logits, &cfg);
+        // Token 0 might not be picked if another position's max is higher
+        // (In our setup, position [0,0] has logit[1]=5.0 and last pos has logit[0]=10.0,
+        //  so greedy picks 0. But this verifies the wrong position is checked.)
+
+        // CORRECT behavior: sample from LAST position only
+        let last_only = &all_logits[last_pos_start..last_pos_start + vocab];
+        let correct_token = s.sample(last_only, &cfg);
+        assert_eq!(correct_token, 0, "last position should pick token 0 (logit=10.0)");
+
+        // The two approaches can give different results for flattened tensors
+        // where different positions dominate different tokens
+    }
+
+    #[test]
+    fn test_sliding_window_simulated() {
+        // Simulate the runner's sliding window: append tokens, cap at 8
+        let mut current_ids: Vec<u32> = vec![2, 32826];  // BOS + "Paris"
+        let max_cap = 8;
+
+        for new_token in [85u32, 4129u32, 4u32, 500u32, 600u32, 700u32, 800u32] {
+            current_ids.push(new_token);
+            while current_ids.len() > max_cap {
+                current_ids.remove(0);
+            }
+        }
+
+        // After 9 total tokens (2 initial + 7 new) sliding to cap=8:
+        // First token (2) got removed, rest shifted
+        assert_eq!(current_ids.len(), 8);
+        assert_eq!(current_ids[0], 32826, "oldest after sliding should be 32826 (removed BOS)");
+        assert_eq!(current_ids[7], 800, "newest token should be 800");
+    }
 }

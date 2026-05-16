@@ -303,4 +303,55 @@ mod tests {
         assert!((data[2] - 0.0).abs() < 1e-6);
         assert!((data[3] + 1.0).abs() < 1e-6);
     }
+
+    #[test]
+    fn test_desc_pointers_unique_and_stable_in_vec() {
+        // Regression: as_input_ptr() must point to Vec element (not stack-local desc),
+        // and must remain valid after subsequent pushes (Vec must not reallocate).
+        let data = vec![1.0f32; 768];
+        let cap = 10;
+        let mut descs: Vec<MemRefDescAny> = Vec::with_capacity(cap);
+        let mut ptrs: Vec<*const std::ffi::c_void> = Vec::with_capacity(cap);
+
+        for _ in 0..cap {
+            let tensor = Tensor::new_owned(vec![768], data.clone(), Dtype::F32);
+            descs.push(MemRefDescAny::from_f32(&tensor.shape, tensor.as_slice()));
+            ptrs.push(descs.last().unwrap().as_input_ptr());
+        }
+
+        // Each pointer should be unique (pointing to different Vec elements)
+        for i in 0..cap {
+            for j in i + 1..cap {
+                assert_ne!(ptrs[i], ptrs[j],
+                    "descs[{}] and descs[{}] have same pointer: {:p}", i, j, ptrs[i]);
+            }
+        }
+
+        // Re-verify by re-reading pointers from Vec
+        for i in 0..cap {
+            assert_eq!(ptrs[i], descs[i].as_input_ptr(),
+                "descs[{}] pointer changed after subsequent pushes", i);
+        }
+    }
+
+    #[test]
+    fn test_desc_pointers_different_for_different_ranks() {
+        // Different rank descriptors should have different pointers
+        let mut descs: Vec<MemRefDescAny> = Vec::with_capacity(3);
+
+        let d1 = vec![0.0f32];
+        descs.push(MemRefDescAny::from_f32(&[], &d1));  // rank-0
+        let d2 = vec![0.0f32; 4];
+        descs.push(MemRefDescAny::from_f32(&[4], &d2));  // rank-1
+        let d3 = vec![0.0f32; 8];
+        descs.push(MemRefDescAny::from_f32(&[2, 4], &d3));  // rank-2
+
+        let p0 = descs[0].as_input_ptr();
+        let p1 = descs[1].as_input_ptr();
+        let p2 = descs[2].as_input_ptr();
+
+        assert_ne!(p0, p1, "rank-0 and rank-1 pointers must differ");
+        assert_ne!(p1, p2, "rank-1 and rank-2 pointers must differ");
+        assert_ne!(p0, p2, "rank-0 and rank-2 pointers must differ");
+    }
 }
