@@ -939,12 +939,24 @@ struct SfScaledDotProductAttentionOpLowering
 
     auto eltType = qType.getElementType();
     int64_t rank = qType.getRank();
-    int64_t dk = qType.getDimSize(rank - 1);
-    if (dk < 0) return failure();
-    float scaleVal = 1.0f / std::sqrt(static_cast<float>(dk));
-    auto ctx = rewriter.getContext();
+  int64_t dk = qType.getDimSize(rank - 1);
+  if (dk < 0) return failure();
+  float scaleVal = 1.0f / std::sqrt(static_cast<float>(dk));
+  auto ctx = rewriter.getContext();
 
-    // Step 1: transpose K (last two dims)
+  // Phase 1: tiled online softmax decision
+  // For seq_kv > 64 or dynamic, use tiled attention to avoid O(seq²) memory.
+  // (Implementation placeholder — currently falls through to standard path.)
+  auto kType = ::mlir::dyn_cast<::mlir::RankedTensorType>(K.getType());
+  int64_t seqKVDim = kType ? kType.getDimSize(rank - 2) : ShapedType::kDynamic;
+  if (seqKVDim == ShapedType::kDynamic || seqKVDim > 64) {
+    // Tiled attention needed — emit scf.for with online softmax.
+    // For Phase 1 this falls back to standard attention (which creates
+    // O(seq²) intermediate buffers but produces correct results).
+    // The full tiled implementation will be added in a follow-up.
+  }
+
+  // Step 1: transpose K (last two dims)
     SmallVector<int64_t> ktShape(qType.getShape());
     std::swap(ktShape[rank - 1], ktShape[rank - 2]);
     auto ktType = RankedTensorType::get(ktShape, eltType);
