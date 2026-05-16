@@ -57,6 +57,31 @@ class MlirExecutor(_KVCacheMixin):
         for name, tensor in self._function.weights.items():
             self._weights[name] = tensor
 
+        # Build compiled-name → tensor mapping via hf_key_map.
+        # Weight ops store their name in compiled format (e.g.
+        # model_decoder_embed_tokens_weight) but f.weights uses HF format
+        # (model.decoder.embed_tokens.weight). The hf_key_map bridges them.
+        hfk = module.metadata.get("hf_key_map", {})
+        for compiled_name, hf_key in hfk.items():
+            if compiled_name not in self._weights and hf_key in self._weights:
+                self._weights[compiled_name] = self._weights[hf_key]
+
+        # Constants are stored with function prefix (e.g. main_0._const_7)
+        # but ops reference them by bare name (e.g. _const_7). Add aliases.
+        func_prefix = self._function.name + "."
+        for key in list(self._weights.keys()):
+            if key.startswith(func_prefix):
+                bare = key[len(func_prefix):]
+                if bare not in self._weights:
+                    self._weights[bare] = self._weights[key]
+
+        # Handle tied weights: when two compiled names map to the same physical
+        # tensor (e.g. embed_tokens = lm_head in OPT-125m).
+        tied = module.metadata.get("tied_weights", {})
+        for alias, primary in tied.items():
+            if alias not in self._weights and primary in self._weights:
+                self._weights[alias] = self._weights[primary]
+
         # ── Cache manager (new path) ──────────────────────
         self._cache_mgr: Any = None
         self._intercepts_by_op: dict[str, list[Any]] = {}
