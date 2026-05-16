@@ -36,11 +36,13 @@ def _has_bindings() -> bool:
 def _vectorize_via_transform(ir_module: Any) -> None:
     """Apply Transform dialect vectorization to linalg ops in-place.
     
-    Note: This is experimental and handles ONLY ops with fully static shapes.
-    Dynamic shapes (common in attention) are skipped.
+    Vectorize children of all functions. Matmul/batch_matmul with fully
+    static shapes get vector.contract; dynamic-shape ones fall through
+    to convert-linalg-to-loops.
     """
     import mlir.ir as ir
     import mlir.passmanager as pm
+    import re
 
     ctx = ir_module.operation.context
     ctx.load_all_available_dialects()
@@ -50,92 +52,34 @@ def _vectorize_via_transform(ir_module: Any) -> None:
         if "linalg.batch_matmul" not in text and "linalg.matmul" not in text:
             return
 
-        # Transform script: generalize matmul then vectorize children
+        # Vectorize children of all functions
         script = """module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg0: !transform.any_op) {
-    %mm = "transform.structured.match"(%arg0) <{ops = ["linalg.matmul", "linalg.batch_matmul"]}> : (!transform.any_op) -> !transform.any_op
-    %gen = "transform.structured.generalize"(%mm) : (!transform.any_op) -> !transform.any_op  
-    %vec = "transform.structured.vectorize_children_and_apply_patterns"(%gen) : (!transform.any_op) -> !transform.any_op
+    %funcs = "transform.structured.match"(%arg0) <{ops = ["func.func"]}> : (!transform.any_op) -> !transform.any_op
+    %vec = "transform.structured.vectorize_children_and_apply_patterns"(%funcs) {create_named_contraction} : (!transform.any_op) -> !transform.any_op
     transform.yield
   }
 }
 """
-        combined_text = script + "\n" + text
+        combined = ir.Module.parse(script + "\n" + text, ctx)
         try:
-            combined = ir.Module.parse(combined_text, ctx)
-        except Exception as e:
+            pm.PassManager.parse("builtin.module(transform-interpreter)", ctx).run(combined.operation)
+        except Exception:
             return
 
-        p = pm.PassManager.parse("builtin.module(transform-interpreter)", ctx)
-        try:
-            p.run(combined.operation)
-        except Exception as e:
+        # Clean up: remove transform wrapper modules, keep only user funcs
+        raw = str(combined)
+        parts = re.split(r'(?=module\s*(?:attributes\s*\{[^}]*\})?\s*\{)', raw)
+        clean = '\n'.join(p.strip() for p in parts if 'transform.with_named_sequence' not in p)
+        if not clean.strip():
             return
-
-        # Clean up: remove the transform module
-        final = str(combined)
-        import re
-        stripped = re.sub(
-            r'module\s*attributes\s*\{transform\.with_named_sequence\}\s*\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}\s*',
-            '', final, count=1
-        ).strip()
-        try:
-            result = ir.Module.parse(stripped, ctx)
-        except:
-            return
+        result = ir.Module.parse(clean, ctx)
 
         block = ir_module.operation.regions[0].blocks[0]
         for op in list(block):
             op.operation.erase()
         for op in list(result.operation.regions[0].blocks[0]):
-            op.operation.clone().move_after(block)
-
-        transform_script = '''
-module attributes {transform.with_named_sequence} {
-  transform.named_sequence @__transform_main(%arg0: !transform.any_op) {
-    %mm = "transform.structured.match"(%arg0) <{ops = ["linalg.matmul", "linalg.batch_matmul"]}> : (!transform.any_op) -> !transform.any_op
-    "transform.structured.vectorize"(%mm) : (!transform.any_op) -> ()
-    transform.yield
-  }
-}
-'''
-        combined_text = transform_script.strip() + "\n" + text
-        try:
-            combined = ir.Module.parse(combined_text, ctx)
-        except Exception as e:
-            from utils.logging import get_logger
-            get_logger("llvm_backend").warning(f"Transform merge failed: {e}")
-            return
-
-        p = pm.PassManager.parse("builtin.module(transform-interpreter)", ctx)
-        try:
-            p.run(combined.operation)
-        except Exception as e:
-            from utils.logging import get_logger
-            get_logger("llvm_backend").warning(f"Transform vectorization failed: {e}")
-            return
-
-        # Remove the transform wrapper module from the combined IR
-        final = str(combined)
-        import re
-        stripped = re.sub(
-            r'module\s*attributes\s*\{transform\.with_named_sequence\}\s*\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}\s*',
-            '', final, count=1
-        )
-        stripped = stripped.strip()
-        try:
-            result = ir.Module.parse(stripped, ctx)
-        except Exception as e:
-            from utils.logging import get_logger
-            get_logger("llvm_backend").warning(f"Transform cleanup failed: {e}")
-            return
-
-        # Replace ir_module in-place
-        block = ir_module.operation.regions[0].blocks[0]
-        for op in list(block):
-            op.operation.erase()
-        for op in list(result.operation.regions[0].blocks[0]):
-            op.operation.clone().move_after(block)
+            block.append(op.operation.clone())
 
 
 def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
@@ -171,8 +115,10 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
         pman = pm.PassManager.parse(pipeline_pre, ctx)
         pman.run(ir_module.operation)
 
-        # Apply Transform-dialect vectorization of linalg ops
-        _vectorize_via_transform(ir_module)
+        # Apply Transform-dialect vectorization of linalg ops (experimental)
+        # Disabled: dynamic shapes prevent effective vectorization and tiling
+        # causes pipeline failures. See _vectorize_via_transform for reference.
+        # _vectorize_via_transform(ir_module)
 
         # Bufferization and scalar loop lowering
         pipeline_pre = (
