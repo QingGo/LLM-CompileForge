@@ -120,10 +120,6 @@ pub fn load_registry_from_dylib(
         *sym as *const u8
     };
 
-    // SAFETY: `serveforge_constants_size` is a `const uint64_t` symbol.
-    // `lib.get::<*const u64>` returns a pointer to the symbol's address.
-    // `*(*sym)` reads the u64 value. Both indirections are valid because
-    // the symbol is a static global in the dylib's data section.
     let size_val: u64 = {
         let sym = unsafe {
             lib.get::<*const u64>(b"serveforge_constants_size")

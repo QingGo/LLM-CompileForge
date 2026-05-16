@@ -2,10 +2,12 @@
 //!
 //! Verifies the Rust → compiled MLIR kernel FFI path works end-to-end:
 //!   1. ``libloading`` opens the .dylib
-//!   2. ``_mlir_ciface_add_two`` is looked up
+//!   2. ``_mlir_ciface_*`` is looked up
 //!   3. Input memref descriptors are constructed
 //!   4. The function is called via the C ABI
 //!   5. Output is read back from the result descriptor
+
+use std::path::Path;
 
 #[cfg(test)]
 mod m1_tests {
@@ -52,5 +54,95 @@ mod m1_tests {
                 val
             );
         }
+    }
+}
+
+/// End-to-end test: load the full opt_125m model, run forward, dump logits.
+/// Run with: cargo test -- --nocapture test_opt_125m_forward
+/// Then compare with HF reference using Python.
+#[cfg(test)]
+mod integration_tests {
+    use crate::executor::ModelExecutor;
+
+    fn find_safetensors() -> Option<String> {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let candidates = [
+            format!("{}/.cache/huggingface/hub/models--facebook--opt-125m/snapshots", home),
+            format!("{}/.cache/huggingface/hub/models--facebook--opt-125m/blobs", home),
+            "compiled/opt_125m_v8/model.safetensors".to_string(),
+            "compiled/opt_125m_v8/weights.safetensors".to_string(),
+        ];
+        for dir_path in &candidates {
+            let path = std::path::Path::new(dir_path);
+            if path.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(path) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if p.extension().map(|e| e == "safetensors").unwrap_or(false) {
+                            return Some(p.to_string_lossy().to_string());
+                        }
+                        if p.is_dir() {
+                            let model_st = p.join("model.safetensors");
+                            if model_st.exists() {
+                                return Some(model_st.to_string_lossy().to_string());
+                            }
+                        }
+                    }
+                }
+            } else if path.is_file() {
+                return Some(dir_path.clone());
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn test_opt_125m_forward_runs() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let dylib = format!("{}/../compiled/opt_125m_v8/libopt_125m.dylib", manifest_dir);
+        let st = find_safetensors();
+
+        eprintln!("dylib: {}", dylib);
+        eprintln!("safetensors: {:?}", st);
+
+        let executor = ModelExecutor::load(&dylib, st.as_deref())
+            .expect("Failed to load ModelExecutor. Has the model been compiled?");
+
+        eprintln!(
+            "Model loaded: {} functions, {} weight mappings, {} constants",
+            executor.compute_graph.functions.len(),
+            executor.weight_provider.name_mapping().len(),
+            executor.weight_provider.constants().len(),
+        );
+
+        let input_ids: Vec<u32> = vec![2, 32826, 85, 4129];
+
+        let result = executor.forward(&input_ids).expect("forward failed");
+        let logits_slice = result.as_slice();
+        eprintln!(
+            "Forward OK: shape={:?}, numel={}, first={:.4}, last={:.4}, mean={:.4}",
+            result.shape,
+            result.numel(),
+            logits_slice[0],
+            logits_slice[logits_slice.len() - 1],
+            logits_slice.iter().sum::<f32>() / logits_slice.len() as f32,
+        );
+
+        use std::io::Write;
+        let csv_path = "/tmp/rust_logits.csv";
+        if let Ok(mut f) = std::fs::File::create(csv_path) {
+            for (i, &v) in logits_slice.iter().enumerate() {
+                if i > 0 { write!(f, ",").ok(); }
+                write!(f, "{:.8}", v).ok();
+            }
+            eprintln!("Logits saved to {}", csv_path);
+        }
+
+        assert_eq!(result.shape.len(), 3, "expected 3D output");
+        assert_eq!(result.shape[0], 1, "batch=1");
+        assert_eq!(result.shape[1], 4, "seq=4");
+        assert_eq!(result.shape[2], 50272, "vocab=50272");
+        assert!(logits_slice[0].is_finite(), "logits should be finite");
+        assert!(result.numel() > 0, "output should not be empty");
     }
 }
