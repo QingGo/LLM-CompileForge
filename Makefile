@@ -42,6 +42,15 @@ test-integration: $(VENV)
 test-baseline: $(VENV)
 	-$(PYTEST) tests/ -m baseline -v --tb=long --timeout=300
 
+# ---- L1e: 向量化管线测试 (<30s) ----
+test-vec: $(VENV)
+	$(PYTHON) scripts/test_transform_vec.py
+	$(PYTHON) -m pytest tests/test_pipeline_bugs.py -v --tb=short --timeout=60
+
+# ---- L1f: 管线性能回归 (<60s) ----
+test-perf: $(VENV)
+	$(PYTHON) scripts/perf_regression.py --save .perf_baseline.json
+
 # ---- 快速测试 (lint + L1 all, <20s) ----
 test-fast: lint test-unit test-model test-patterns
 
