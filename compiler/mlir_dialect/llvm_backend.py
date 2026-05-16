@@ -8,6 +8,8 @@ The pipeline requires that ALL sf dialect ops have been eliminated
 before bufferization (sf→linalg lowering must be complete).
 """
 
+# ruff: noqa: E501 — long lines in MLIR transform script f-strings
+
 from __future__ import annotations
 
 import os
@@ -34,17 +36,24 @@ def _has_bindings() -> bool:
 
 
 def _vectorize_via_transform(ir_module: Any) -> None:
-    """Apply Transform dialect vectorization to linalg ops in-place.
-    
-    Runs transform-interpreter with a script that vectorizes children
-    of all functions. Element-wise ops get vector transfers; matmuls
-    with fully static shapes get vector.contract. Dynamic-shape matmuls
-    fall through to convert-linalg-to-loops.
+    """Apply tile+vectorize to all linalg matmul/batch_matmul ops in-place.
+
+    Strategy:
+      1. Match all linalg.batch_matmul and linalg.matmul ops
+      2. Tile inner static dims (n, k) by 32: GCD(768, 3072, 50272)=32 → no remainders
+      3. Vectorize the tiled inner ops with create_named_contraction → vector.contract
+      4. Outer dynamic dims (batch, sequence) remain as scalar loops
+
+    After this, the remaining (unmatched) linalg ops fall through to scalar
+    convert-linalg-to-loops. Vector ops pass through bufferization and
+    convert-vector-to-llvm.
     """
+    import logging
+
     import mlir.ir as ir
     import mlir.passmanager as pm
-    import time
 
+    logger = logging.getLogger(__name__)
     ctx = ir_module.operation.context
     ctx.load_all_available_dialects()
 
@@ -53,44 +62,69 @@ def _vectorize_via_transform(ir_module: Any) -> None:
         if "linalg.batch_matmul" not in text and "linalg.matmul" not in text:
             return
 
-        # Build combined module: transform script + user code
-        script = """module attributes {transform.with_named_sequence} {
-  transform.named_sequence @__transform_main(%arg0: !transform.any_op) {
-    %funcs = "transform.structured.match"(%arg0) <{ops = ["func.func"]}> : (!transform.any_op) -> !transform.any_op
-    %vec = "transform.structured.vectorize_children_and_apply_patterns"(%funcs) {create_named_contraction} : (!transform.any_op) -> !transform.any_op
+        # Tile size 32: GCD(768, 3072, 50272) = 32, divides all static dims evenly.
+        _t = 32
+        _rt = ": (!transform.any_op) -> (!transform.any_op)"
+        _rt3 = ": (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)"
+        _rv = ": !transform.any_op"
+
+        script = f"""module attributes {{transform.with_named_sequence}} {{
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op) {{
+    %bmms = transform.structured.match ops{{["linalg.batch_matmul"]}} in %arg0 {_rt}
+    %tiled_b, %loops_b:2 = transform.structured.tile_using_for %bmms tile_sizes [0, 0, {_t}, {_t}] {_rt3}
+    transform.structured.vectorize %tiled_b vector_sizes [{_t}, {_t}, {_t}, {_t}] {{create_named_contraction}} {_rv}
+
+    %mms = transform.structured.match ops{{["linalg.matmul"]}} in %arg0 {_rt}
+    %tiled_m, %loops_m:2 = transform.structured.tile_using_for %mms tile_sizes [0, {_t}, {_t}] {_rt3}
+    transform.structured.vectorize %tiled_m vector_sizes [{_t}, {_t}, {_t}] {{create_named_contraction}} {_rv}
+
     transform.yield
-  }
-}
+  }}
+}}
 """
         combined = ir.Module.parse(script + "\n" + text, ctx)
         try:
-            pm.PassManager.parse("builtin.module(transform-interpreter)", ctx).run(combined.operation)
-        except Exception:
+            pm.PassManager.parse("builtin.module(transform-interpreter)", ctx).run(
+                combined.operation
+            )
+        except Exception as e:
+            logger.warning("Transform vectorization failed (scalar fallback): %s", e)
             return
 
-        # Extract user funcs from the combined module.
-        # The combined text has: transform_wrapper { ... } \n user_module { func.func @main ... }
-        # Just strip everything before the first 'func.func' or '#map'
-        result_text = str(combined)
-        idx = result_text.find('func.func')
-        if idx < 0:
-            return
-        # Also include map/set definitions from the user module
-        map_idx = result_text.find('#map')
-        if map_idx >= 0 and map_idx < idx:
-            user_text = result_text[map_idx:]
-        else:
-            user_text = result_text[idx:]
-        try:
-            result = ir.Module.parse(user_text, ctx)
-        except Exception:
-            return
+        # Delete the transform script module and any leftover transform ops.
+        # transform-interpreter does NOT erase the schedule; leftover transform ops
+        # carry tensor types that confuse one-shot-bufferize (they look like unknown
+        # ops whose tensor operands survive unscathed into scf.for iter_args → cf.br).
+        outer_block = combined.operation.regions[0].blocks[0]
+        for op in list(outer_block):
+            if "transform.with_named_sequence" in op.operation.attributes:
+                op.operation.erase()
+            elif str(op.operation.name).startswith("transform."):
+                op.operation.erase()
 
+        # Clone transformed ops back into caller's module.
+        # CRITICAL: flatten any nested builtin.module () so functions live
+        # at the top level — one-shot-bufferize ignores nested modules.
         block = ir_module.operation.regions[0].blocks[0]
         for op in list(block):
             op.operation.erase()
-        for op in list(result.operation.regions[0].blocks[0]):
-            block.append(op.operation.clone())
+        for op in list(outer_block):
+            if str(op.operation.name) == "builtin.module":
+                inner_block = op.operation.regions[0].blocks[0]
+                for inner_op in list(inner_block):
+                    block.append(inner_op.operation.clone())
+                op.operation.erase()
+            else:
+                block.append(op.operation.clone())
+
+        # Log vectorization stats from the modified module text
+        mod_text = str(ir_module)
+        n_contract = mod_text.count("vector.contract")
+        n_remaining = mod_text.count("linalg.batch_matmul") + mod_text.count("linalg.matmul")
+        logger.info(
+            "vectorization: %d vector.contract generated, %d linalg matmuls remaining",
+            n_contract, n_remaining,
+        )
 
 
 def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
@@ -105,9 +139,10 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
     if not _has_bindings():
         raise RuntimeError("MLIR Python bindings not available")
 
+    import logging
     import mlir.ir as ir
     import mlir.passmanager as pm
-    from mlir.dialects import transform
+    _log = logging.getLogger(__name__)
 
     ctx = ir_module.operation.context
     ctx.allow_unregistered_dialects = True
@@ -134,18 +169,34 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
         except Exception:
             pass  # fuse is optional
 
-        # Transform-dialect vectorization: disabled because pattern-based
-        # vectorize_children_and_apply_patterns leaves partially-converted
-        # linalg ops with broken bodies. Enable once vectorize handles all ops.
-        # See _vectorize_via_transform() and docs/compilation-design-v2.md.
-        # _vectorize_via_transform(ir_module)
+        # Vectorize: tile inner dims by 32 + mask vectorize with vector.contract.
+        _vectorize_via_transform(ir_module)
 
-        # Bufferization and scalar loop lowering
+        # Lower vector masks to scf.if BEFORE convert-vector-to-scf.
+        # vector.mask can only wrap a single op; after tiling+vectorize the
+        # masked region contains scf.for, requiring prior lowering.
+        # convert-vector-to-scf{lower-tensors} then handles tensor→memref for
+        # the remaining vector.transfer_read/write inside scf.for loops.
+        import mlir.passmanager as pm
+        try:
+            pm.PassManager.parse(
+                "builtin.module("
+                "func.func(lower-vector-mask),"
+                "func.func(convert-vector-to-scf{lower-tensors}),"
+                "canonicalize,cse"
+                ")", ctx
+            ).run(ir_module.operation)
+        except Exception as e:
+            _log.warning("vector pre-bufferize step failed: %s", e)
+
+        # Vector ops already handled by convert-vector-to-scf and expand-strided-metadata
+        # before bufferization; keep convert-vector-to-llvm for any remaining.
         pipeline_pre = (
             "builtin.module("
-            "one-shot-bufferize{allow-unknown-ops bufferize-function-boundaries},"
+            "one-shot-bufferize{bufferize-function-boundaries},"
             "canonicalize,"
             "cse,"
+            "buffer-deallocation-pipeline,"
             "convert-bufferization-to-memref,"
             "convert-linalg-to-loops,"
             "lower-affine,"
@@ -155,7 +206,6 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
             "finalize-memref-to-llvm,"
             "convert-cf-to-llvm,"
             "convert-math-to-llvm,"
-            "convert-vector-to-scf,"
             "convert-vector-to-llvm,"
             "convert-arith-to-llvm"
             ")"
