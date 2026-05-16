@@ -367,8 +367,11 @@ impl<const RANK: usize> MemRefDesc<RANK> {
     }
 
     /// Build a zero-initialized output descriptor.
-    /// The kernel will overwrite ``aligned`` with a malloc'd buffer.
+    /// Allocates memory for the output buffer.
     pub fn zeroed(shape: [usize; RANK]) -> Self {
+        let numel: usize = shape.iter().product();
+        let layout = std::alloc::Layout::array::<f32>(numel.max(1)).expect("invalid layout");
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) as *mut c_void };
         let mut sizes = [0i64; RANK];
         let mut strides_arr = [0i64; RANK];
         let mut stride = 1i64;
@@ -378,8 +381,8 @@ impl<const RANK: usize> MemRefDesc<RANK> {
             stride *= shape[i] as i64;
         }
         Self {
-            allocated: std::ptr::null_mut(),
-            aligned: std::ptr::null_mut(),
+            allocated: ptr,
+            aligned: ptr,
             offset: 0,
             sizes,
             strides: strides_arr,
@@ -569,7 +572,7 @@ mod tests {
         let desc = MemRefDesc2::zeroed([4, 4]);
         assert_eq!(desc.sizes, [4, 4]);
         assert_eq!(desc.strides, [4, 1]);
-        assert!(desc.is_null());
+        assert!(!desc.is_null()); // zeroed now allocates memory
     }
 
     #[test]
@@ -615,5 +618,62 @@ mod tests {
 
         let desc2 = MemRefDescAny::zeroed(&[2, 3]);
         assert!(desc2.as_input_ptr().is_null() == false); // struct exists
+    }
+
+    #[test]
+    fn test_memref_desc0_from_f32() {
+        // Rank-0 scalar tensor
+        let data = [42.0f32];
+        let desc = MemRefDesc0::from_f32_dyn_slice(&data, &[]);
+        assert_eq!(desc.sizes, [0i64; 0]);
+        assert_eq!(desc.strides, [0i64; 0]);
+        assert_eq!(desc.numel(), 1); // product of empty = 1
+        unsafe {
+            let val = *(desc.aligned as *const f32);
+            assert_eq!(val, 42.0);
+        }
+    }
+
+    #[test]
+    fn test_memref_desc0_zeroed() {
+        let desc = MemRefDesc0::zeroed_dyn(&[]);
+        assert!(!desc.aligned.is_null());
+        assert_eq!(desc.numel(), 1);
+    }
+
+    #[test]
+    fn test_memref_any_zeroed_with_0_dims() {
+        // Simulate the bug: [0, 0, 50272] where 0 = kDynamic sentinel
+        // zeroed_dyn must allocate at least 1 element to avoid null ptr
+        let desc = MemRefDescAny::zeroed(&[0, 0, 50272]);
+        assert!(!desc.as_output_ptr().is_null());
+        // sizes should have 0→1 replaced
+        let sz = desc.sizes();
+        assert_eq!(sz, vec![1, 1, 50272]);
+    }
+
+    #[test]
+    fn test_memref_any_zeroed_rank0() {
+        let desc = MemRefDescAny::zeroed(&[]);
+        assert!(!desc.as_output_ptr().is_null());
+        assert_eq!(desc.sizes(), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn test_memref_any_from_f32_rank0() {
+        let data = [3.14f32];
+        let desc = MemRefDescAny::from_f32(&[], &data);
+        assert!(!desc.as_input_ptr().is_null());
+        // as_input_ptr returns pointer-to-descriptor, not data pointer.
+        // Read through the descriptor's aligned field.
+        match &desc {
+            MemRefDescAny::R0(d) => {
+                unsafe {
+                    let val = *(d.aligned as *const f32);
+                    assert!((val - 3.14).abs() < 1e-6);
+                }
+            }
+            _ => panic!("expected R0 variant"),
+        }
     }
 }
