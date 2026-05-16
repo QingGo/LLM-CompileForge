@@ -9,7 +9,7 @@
 use std::ffi::c_void;
 
 use crate::compute_graph::{ComputeGraph, InputBinding};
-use crate::hal_cpu::{Executable, KernelFn, MemRefDescAny};
+use crate::hal_cpu::{Executable, KernelFn, MemRefDesc2, MemRefDescAny};
 use crate::tensor::{Dtype, Tensor};
 use crate::weight_loader::{parse_embedded, WeightProvider};
 use half::f16;
@@ -105,6 +105,8 @@ impl ModelExecutor {
                 Vec::with_capacity(func_def.num_inputs);
             // Keep tensors alive until after kernel call (desc.aligned borrows tensor data)
             let mut _tensors: Vec<Tensor<'static>> = Vec::with_capacity(func_def.num_inputs);
+            // Also keep raw byte buffers (e.g., for i64 global input)
+            let mut _raw_buffers: Vec<Vec<u8>> = Vec::new();
 
             for (bi, (binding, io_def)) in func_def.inputs.iter().enumerate() {
                 eprintln!("[executor]  bi={} start", bi);
@@ -117,14 +119,29 @@ impl ModelExecutor {
                     InputBinding::GlobalInput => {
                         eprintln!("[executor]  input[{}] = GlobalInput shape={:?}", bi, shape);
                         let expected_numel: usize = shape.iter().product();
-                        let data: Vec<f32> = if input_ids.len() >= expected_numel {
-                            input_ids[..expected_numel].iter().map(|&id| id as f32).collect()
+                        let padded: Vec<i64> = if input_ids.len() >= expected_numel {
+                            input_ids[..expected_numel].iter().map(|&id| id as i64).collect()
                         } else {
-                            let mut padded = input_ids.iter().map(|&id| id as f32).collect::<Vec<_>>();
-                            padded.resize(expected_numel, 0.0);
-                            padded
+                            let mut p = input_ids.iter().map(|&id| id as i64).collect::<Vec<_>>();
+                            p.resize(expected_numel, 0);
+                            p
                         };
-                        Tensor::new_owned(shape, data, Dtype::F32)
+                        // Store i64 data as raw bytes, then build descriptor pointing to it.
+                        let raw: Vec<u8> = padded.iter().flat_map(|&v| v.to_ne_bytes()).collect();
+                        let p = raw.as_ptr();
+                        let memref = MemRefDesc2 {
+                            allocated: p as *mut c_void,
+                            aligned: p as *mut c_void,
+                            offset: 0,
+                            sizes: [shape[0] as i64, shape.get(1).copied().unwrap_or(1) as i64],
+                            strides: [shape.get(1).copied().unwrap_or(1) as i64, 1],
+                        };
+                        _raw_buffers.push(raw);
+                        let desc = MemRefDescAny::R2(memref);
+                        input_ptrs.push(desc.as_input_ptr());
+                        input_descs.push(desc);
+                        _tensors.push(Tensor::new_owned(vec![], vec![], Dtype::I64));
+                        continue;  // skip the common push at loop end
                     }
                     InputBinding::Weight(key) => {
                         eprintln!("[executor]  input[{}] = Weight BEFORE get_weight {} (consts={})", bi, key, self.weight_provider.constants().len());
@@ -174,6 +191,9 @@ impl ModelExecutor {
                 input_descs.push(desc);
                 _tensors.push(tensor);
             }
+            // Verify counts match — if not, pointers may be dangling
+            assert_eq!(_tensors.len(), input_ptrs.len(), "tensor count mismatch");
+            eprintln!("[executor]  {} inputs loaded, {} tensors kept alive", input_ptrs.len(), _tensors.len());
 
             // MLIR emit_c_interface convention: function returns output descriptors
             // as a struct via sret pointer (first argument).  The outputs' data
@@ -197,13 +217,37 @@ impl ModelExecutor {
             eprintln!("[executor] func[{}] returned OK ({:.1}ms)", fi, kernel_ms);
 
             // Parse output descriptors from sret buffer.
+            // Use io_def.shape (from compute graph) as fallback for 0-sentinel dims.
             let t_output = std::time::Instant::now();
-            let mut sret_offset: usize = 0;
+                let mut sret_offset: usize = 0;
             for (oi, io_def) in func_def.outputs.iter().enumerate() {
                 let r = io_def.rank as usize;
                 let desc_size = 24 + 16 * r;
                 let ptr_slice = &sret[sret_offset..sret_offset + desc_size];
-                let (aligned, sizes) = unsafe { parse_sret_descriptor(ptr_slice, r) };
+                let (aligned, runtime_sizes) = unsafe { parse_sret_descriptor(ptr_slice, r) };
+                // Use runtime sizes from sret, but replace suspicious values with safe ones
+                let fallback: Vec<i64> = io_def.shape.iter().map(|&d|
+                    if d == 0 { 1 } else { d as i64 }
+                ).collect();
+                // Validate runtime sizes
+                for (di, (&runtime, &desired)) in runtime_sizes.iter().zip(fallback.iter()).enumerate() {
+                    if runtime <= 0 || runtime > 10_000_000 {
+                        eprintln!("[executor]  output[{}] dim[{}]: runtime={}, fallback={}", oi, di, runtime, desired);
+                    }
+                }
+                if oi < 53 {
+                    eprintln!("[executor]  output[{:>2}]: sizes={:?}", oi, runtime_sizes);
+                }
+                let sizes: Vec<i64> = runtime_sizes.iter().zip(fallback.iter()).map(|(&r, &f)|
+                    if r <= 0 || r > 10_000_000 { f } else { r }
+                ).collect();
+                let sizes: Vec<i64> = runtime_sizes.iter().zip(fallback.iter()).map(|(&r, &f)|
+                    if r <= 0 || r > 1_000_000_000 { f } else { r }
+                ).collect();
+                let shape: Vec<usize> = sizes.iter().map(|&s| s as usize).collect();
+                if oi < 3 || aligned.is_null() {
+                    eprintln!("[executor]  output[{}] aligned={:?} sizes={:?} null={}", oi, aligned, shape, aligned.is_null());
+                }
                 let data: Vec<f32> = if aligned.is_null() {
                     Vec::new()
                 } else {
