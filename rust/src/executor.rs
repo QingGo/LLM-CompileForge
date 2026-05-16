@@ -9,7 +9,7 @@
 use std::ffi::c_void;
 
 use crate::compute_graph::{ComputeGraph, InputBinding};
-use crate::hal_cpu::{Executable, MemRefDescAny};
+use crate::hal_cpu::{Executable, KernelFn, MemRefDescAny};
 use crate::tensor::{Dtype, Tensor};
 use crate::weight_loader::{parse_embedded, WeightProvider};
 use half::f16;
@@ -103,12 +103,11 @@ impl ModelExecutor {
                 Vec::with_capacity(func_def.num_inputs);
             let mut input_ptrs: Vec<*const c_void> =
                 Vec::with_capacity(func_def.num_inputs);
-
-            // Capture global input shape (batch, seq) for output dim inference
-            let mut global_batch: usize = 1;
-            let mut global_seq: usize = 1;
+            // Keep tensors alive until after kernel call (desc.aligned borrows tensor data)
+            let mut _tensors: Vec<Tensor<'static>> = Vec::with_capacity(func_def.num_inputs);
 
             for (bi, (binding, io_def)) in func_def.inputs.iter().enumerate() {
+                eprintln!("[executor]  bi={} start", bi);
                 eprintln!("[executor]  input[{}]", bi);
                 eprintln!("[executor]  input[{}] io_def.shape={:?} rank={}", bi, io_def.shape, io_def.rank);
                 let shape: Vec<usize> =
@@ -125,12 +124,6 @@ impl ModelExecutor {
                             padded.resize(expected_numel, 0.0);
                             padded
                         };
-                        if shape.len() >= 2 {
-                            global_batch = shape[0];
-                            global_seq = shape[1];
-                        } else if shape.len() == 1 {
-                            global_batch = shape[0];
-                        }
                         Tensor::new_owned(shape, data, Dtype::F32)
                     }
                     InputBinding::Weight(key) => {
@@ -179,56 +172,32 @@ impl ModelExecutor {
                 let desc = MemRefDescAny::from_f32(&tensor.shape, tensor.as_slice());
                 input_ptrs.push(desc.as_input_ptr());
                 input_descs.push(desc);
+                _tensors.push(tensor);
             }
-
-            let mut output_descs: Vec<MemRefDescAny> =
-                Vec::with_capacity(func_def.num_outputs);
-            for io_def in &func_def.outputs {
-                let mut shape: Vec<usize> =
-                    io_def.shape.iter().map(|&d| d as usize).collect();
-                // Replace 0-sentinel dims with inferred batch/seq from global input
-                for d in shape.iter_mut() {
-                    if *d == 0 {
-                        *d = global_batch.max(1);
-                    }
-                }
-                output_descs.push(MemRefDescAny::zeroed(&shape));
-            }
-
-            eprintln!(
-                "[executor] calling func[{}] symbol={} outputs={} inputs={}",
-                fi, func_def.symbol, func_def.num_outputs, input_ptrs.len()
-            );
 
             // MLIR emit_c_interface convention: function returns output descriptors
             // as a struct via sret pointer (first argument).  The outputs' data
-            // buffers are malloc'd inside the function.  We need:
-            //   1. A sret buffer large enough for all output descriptors
-            //   2. First arg = sret ptr, remaining args = input ptrs
-            //
-            // MemRef descriptor size (LLVM struct {ptr, ptr, i64, [N x i64], [N x i64]}):
-            //   rank 0: 24, rank 1: 40, rank 2: 56, rank 3: 72, rank 4: 88
-            let sret_size: usize = func_def.outputs.iter().map(|od| {
-                let r = od.rank as usize;
-                24 + 16 * r
-            }).sum();
-            let mut sret: Vec<u8> = vec![0u8; sret_size + 64];
+            // buffers are malloc'd inside the function.
+            let mut sret: Vec<u8> = vec![0u8; 65536];
             let sret_ptr = sret.as_mut_ptr() as *mut c_void;
 
-            // Build arg list: sret first, then all inputs
+            // Build flat arg list: sret first, then all inputs
             let mut all_args: Vec<*const c_void> = Vec::with_capacity(1 + input_ptrs.len());
             all_args.push(sret_ptr);
             all_args.extend(input_ptrs.iter().copied());
+            let t_kernel = std::time::Instant::now();
             unsafe {
-                kernel.call_high_arity_raw(
-                    self.executable.lookup_symbol(&func_def.symbol)?,
-                    &all_args,
-                );
+                let raw_ptr = match &kernel {
+                    KernelFn::HighArity(f) => f.0 as *const (),
+                    _ => panic!("expected HighArity kernel"),
+                };
+                crate::ciface_high::call_high_arity(raw_ptr, &all_args);
             }
-            eprintln!("[executor] func[{}] returned OK", fi);
+            let kernel_ms = t_kernel.elapsed().as_secs_f64() * 1000.0;
+            eprintln!("[executor] func[{}] returned OK ({:.1}ms)", fi, kernel_ms);
 
             // Parse output descriptors from sret buffer.
-            // Each descriptor is at a known offset based on output rank layout.
+            let t_output = std::time::Instant::now();
             let mut sret_offset: usize = 0;
             for (oi, io_def) in func_def.outputs.iter().enumerate() {
                 let r = io_def.rank as usize;
@@ -247,6 +216,10 @@ impl ModelExecutor {
                 let shape: Vec<usize> = sizes.iter().map(|&s| s as usize).collect();
                 func_outputs[fi].push(Tensor::new_owned(shape, data, Dtype::F32));
                 sret_offset += desc_size;
+            }
+            let output_ms = t_output.elapsed().as_secs_f64() * 1000.0;
+            if output_ms > 1.0 {
+                eprintln!("[executor] func[{}] output copy: {:.1}ms", fi, output_ms);
             }
         }
 
