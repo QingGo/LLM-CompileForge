@@ -515,7 +515,7 @@ def compile_mlir_to_dylib(
     ir_module: Any,
     output: str,
     arch: str = "native",
-    opt_level: int = 3,
+    opt_level: int = 0,
 ) -> str:
     """Full AOT compilation: MLIR (LLVM dialect) → .ll → .o → .dylib.
 
@@ -545,7 +545,7 @@ def compile_module_to_dylib(
     output_dir: str,
     model_name: str = "model",
     arch: str = "native",
-    opt_level: int = 3,
+    opt_level: int = 0,
 ) -> str:
     """Compile a lowered MLIR module into the compiled/ artifacts directory.
 
