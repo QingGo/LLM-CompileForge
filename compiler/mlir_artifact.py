@@ -617,16 +617,14 @@ def _build_constants_binary(module: MlirModule, name_mapping: dict[str, str]) ->
         for wname in func.const_weight_names:
             if wname in func.weights:
                 t = func.weights[wname]
-                # Store short name for constants too
-                candidates = _candidate_names(wname)
-                short_name = candidates[-1] if len(candidates) > 1 else candidates[0]
-                const_tensors.append((short_name, t))
+                # Use full wname (e.g. _const_7) — runtime looks up by this name
+                const_tensors.append((wname, t))
 
     parts.append(struct.pack("<I", len(const_tensors)))
     for name, tensor in const_tensors:
-        n = name.encode("utf-8")
-        parts.append(struct.pack("<I", len(n)))
-        parts.append(n)
+        encoded = name.encode("utf-8")
+        parts.append(struct.pack("<I", len(encoded)))
+        parts.append(encoded)
         dtype_code = _DTYPE_TO_CODE.get(tensor.dtype, 0)
         parts.append(struct.pack("<B", dtype_code))
         shape = tuple(tensor.shape)

@@ -4,3 +4,5 @@
 !rust/target/
 !.venv/
 !compiled/
+!llvm-project/
+!sf-dialect/build/

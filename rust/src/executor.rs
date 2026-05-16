@@ -12,6 +12,7 @@ use crate::compute_graph::{ComputeGraph, InputBinding};
 use crate::hal_cpu::{Executable, MemRefDescAny};
 use crate::tensor::{Dtype, Tensor};
 use crate::weight_loader::{parse_embedded, WeightProvider};
+use half::f16;
 
 pub struct ModelExecutor {
     executable: Executable,
@@ -85,6 +86,12 @@ impl ModelExecutor {
     pub fn forward(&self, input_ids: &[u32]) -> Result<Tensor<'static>, anyhow::Error> {
         let num_funcs = self.compute_graph.functions.len();
         let mut func_outputs: Vec<Vec<Tensor<'static>>> = vec![Vec::new(); num_funcs];
+        eprintln!(
+            "[executor] forward start: {} funcs, {} input tokens, {} constants",
+            num_funcs,
+            input_ids.len(),
+            self.weight_provider.constants().len(),
+        );
 
         for func_def in &self.compute_graph.functions {
             let fi = func_def.index;
@@ -92,43 +99,82 @@ impl ModelExecutor {
                 .executable
                 .lookup_typed(&func_def.symbol, func_def.total_args())?;
 
-            // input_descs holds owned MemRefDescAny values that keep the
-            // underlying data (Tensor slices) alive during the kernel call.
             let mut input_descs: Vec<MemRefDescAny> =
                 Vec::with_capacity(func_def.num_inputs);
             let mut input_ptrs: Vec<*const c_void> =
                 Vec::with_capacity(func_def.num_inputs);
 
-            for (binding, io_def) in &func_def.inputs {
+            // Capture global input shape (batch, seq) for output dim inference
+            let mut global_batch: usize = 1;
+            let mut global_seq: usize = 1;
+
+            for (bi, (binding, io_def)) in func_def.inputs.iter().enumerate() {
+                eprintln!("[executor]  input[{}]", bi);
+                eprintln!("[executor]  input[{}] io_def.shape={:?} rank={}", bi, io_def.shape, io_def.rank);
                 let shape: Vec<usize> =
                     io_def.shape.iter().map(|&d| d as usize).collect();
+                eprintln!("[executor]  input[{}] shape collected, rank={}", bi, shape.len());
                 let tensor: Tensor = match binding {
                     InputBinding::GlobalInput => {
-                        let data: Vec<f32> =
-                            input_ids.iter().map(|&id| id as f32).collect();
+                        eprintln!("[executor]  input[{}] = GlobalInput shape={:?}", bi, shape);
+                        let expected_numel: usize = shape.iter().product();
+                        let data: Vec<f32> = if input_ids.len() >= expected_numel {
+                            input_ids[..expected_numel].iter().map(|&id| id as f32).collect()
+                        } else {
+                            let mut padded = input_ids.iter().map(|&id| id as f32).collect::<Vec<_>>();
+                            padded.resize(expected_numel, 0.0);
+                            padded
+                        };
+                        if shape.len() >= 2 {
+                            global_batch = shape[0];
+                            global_seq = shape[1];
+                        } else if shape.len() == 1 {
+                            global_batch = shape[0];
+                        }
                         Tensor::new_owned(shape, data, Dtype::F32)
                     }
                     InputBinding::Weight(key) => {
+                        eprintln!("[executor]  input[{}] = Weight BEFORE get_weight {} (consts={})", bi, key, self.weight_provider.constants().len());
+                        let t0 = std::time::Instant::now();
                         let desc = self
                             .weight_provider
                             .get_weight_memref(key)
                             .ok_or_else(|| {
                                 anyhow::anyhow!("weight not found: {}", key)
                             })?;
-                        let wshape: Vec<usize> =
-                            desc.sizes.iter().map(|&s| s as usize).collect();
-                        // SAFETY: `desc` was populated by `get_weight_memref`, which
-                        // returns a descriptor pointing to data in either the mmap'd
-                        // safetensors file or the embedded constants blob — both of
-                        // which live as long as `self.weight_provider`.
-                        let data = unsafe { desc.read_output_f32() };
-                        Tensor::new_owned(wshape, data, Dtype::F32)
+                        eprintln!("[executor]  input[{}] = Weight got memref for {} (sizes={:?})", bi, key, desc.sizes);
+                        // Use io_def.shape for correct rank (not desc.sizes which is always rank-2)
+                        let n = desc.numel();
+                        let data: Vec<f32> = unsafe {
+                            let raw = desc.aligned as *const u16;
+                            let slice = std::slice::from_raw_parts(raw, n);
+                            slice.iter().map(|&h| f16::from_bits(h).to_f32()).collect()
+                        };
+                        let elapsed = t0.elapsed();
+                        eprintln!(
+                            "[executor]  input[{}] = Weight {} shape={:?} ({:.1}ms)",
+                            bi,
+                            key,
+                            shape,
+                            elapsed.as_secs_f64() * 1000.0,
+                        );
+                        Tensor::new_owned(shape, data, Dtype::F32)
                     }
                     InputBinding::Ssa {
                         producer_func,
                         output_idx,
-                    } => func_outputs[*producer_func][*output_idx].to_owned(),
+                    } => {
+                        eprintln!(
+                            "[executor]  input[{}] = Ssa func[{}][{}]",
+                            bi, producer_func, output_idx
+                        );
+                        let output_len = func_outputs[*producer_func].len();
+                        eprintln!("[executor]  input[{}] Ssa func_outputs[{}] has {} entries", bi, producer_func, output_len);
+                        let ref_tensor = &func_outputs[*producer_func][*output_idx];
+                        ref_tensor.to_owned()
+                    }
                 };
+                eprintln!("[executor]  input[{}] tensor done, shape={:?}", bi, tensor.shape);
 
                 let desc = MemRefDescAny::from_f32(&tensor.shape, tensor.as_slice());
                 input_ptrs.push(desc.as_input_ptr());
@@ -138,28 +184,30 @@ impl ModelExecutor {
             let mut output_descs: Vec<MemRefDescAny> =
                 Vec::with_capacity(func_def.num_outputs);
             for io_def in &func_def.outputs {
-                let shape: Vec<usize> =
+                let mut shape: Vec<usize> =
                     io_def.shape.iter().map(|&d| d as usize).collect();
+                // Replace 0-sentinel dims with inferred batch/seq from global input
+                for d in shape.iter_mut() {
+                    if *d == 0 {
+                        *d = global_batch.max(1);
+                    }
+                }
                 output_descs.push(MemRefDescAny::zeroed(&shape));
             }
 
-            // SAFETY: The kernel call is safe because:
-            // - `output_descs[0]` is a properly zeroed `MemRefDescAny` whose
-            //   layout matches the MLIR strided memref descriptor ABI.
-            // - `input_ptrs` points to `input_descs` descriptors that are
-            //   constructed from valid tensor data kept alive by `input_descs`.
-            // - The kernel function pointer was loaded via `lookup_typed` which
-            //   uses `libloading::Symbol` with the correct `CifaceFn*` type.
-            // - All descriptors remain on the stack for the call duration.
+            eprintln!(
+                "[executor] calling func[{}] symbol={} outputs={} inputs={}",
+                fi, func_def.symbol, output_descs.len(), input_ptrs.len()
+            );
+            // Collect output pointers for ciface ABI
+            let output_ptrs: Vec<*mut c_void> =
+                output_descs.iter().map(|od| od.as_output_ptr()).collect();
             unsafe {
-                kernel.call(output_descs[0].as_output_ptr(), &input_ptrs);
+                kernel.call(&output_ptrs, &input_ptrs);
             }
+            eprintln!("[executor] func[{}] returned OK", fi);
 
             for od in &output_descs {
-                // SAFETY: The kernel was called immediately above and should have
-                // populated `od.aligned` with a malloc'd output buffer. If the
-                // kernel failed to do so, `od.aligned` stays null and
-                // `read_output_f32` returns an empty Vec (graceful degradation).
                 let data = unsafe { od.read_output_f32() };
                 let shape: Vec<usize> = od.sizes();
                 func_outputs[fi].push(Tensor::new_owned(shape, data, Dtype::F32));

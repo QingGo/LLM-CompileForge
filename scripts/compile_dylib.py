@@ -91,6 +91,39 @@ def main() -> None:
     module = _parse_mlir_text(mlir_text)
     print(f"   {len(module.functions)} functions, {sum(len(f.ops) for f in module.functions)} ops")
 
+    # Load metadata first (needed for weight classification restoration)
+    metadata = {}
+    if metadata_path.exists():
+        metadata = json.loads(metadata_path.read_text())
+
+    # Restore weight classification from metadata.json
+    if "weight_classification" not in module.metadata and metadata:
+        module.metadata["weight_classification"] = metadata.get("weight_classification", {})
+    wc = module.metadata.get("weight_classification", {})
+    for func in module.functions:
+        fwc = wc.get(func.name, {})
+        func.param_weight_names = set(fwc.get("params", []))
+        func.const_weight_names = set(fwc.get("constants", []))
+
+    # Restore constant tensors from constants.pth
+    const_pth = compiled_path / "constants.pth"
+    if const_pth.exists():
+        import torch
+        const_state = torch.load(str(const_pth), weights_only=True)
+        restored = 0
+        for func in module.functions:
+            for wname in list(func.const_weight_names):
+                prefixed = f"{func.name}.{wname}"
+                if prefixed in const_state:
+                    func.weights[wname] = const_state[prefixed]
+                    restored += 1
+                elif wname in const_state:
+                    func.weights[wname] = const_state[wname]
+                    restored += 1
+        print(f"   Restored {restored} constant tensors from constants.pth")
+    else:
+        print(f"   No constants.pth found")
+
     # Step 2: Reconstruct hf_key_map
     metadata = {}
     if metadata_path.exists():

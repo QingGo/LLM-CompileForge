@@ -218,53 +218,25 @@ impl KernelFn {
         }
     }
 
-    pub unsafe fn call(&self, out: *mut c_void, inputs: &[*const c_void]) {
-        // SAFETY: The caller must guarantee:
-        // - `out` points to a valid MemRefDesc<RANK> descriptor of the
-        //   rank expected by the compiled function.
-        // - `inputs` contains exactly `self.arity() - 1` valid pointers
-        //   to MemRefDesc<RANK> descriptors for each function argument.
-        // - All descriptors remain valid for the call duration.
-        match (self, inputs.len()) {
-            (KernelFn::Arity1(f), 0) => f(out),
-            (KernelFn::Arity2(f), 1) => f(out, inputs[0]),
-            (KernelFn::Arity3(f), 2) => f(out, inputs[0], inputs[1]),
-            (KernelFn::Arity4(f), 3) => f(out, inputs[0], inputs[1], inputs[2]),
-            (KernelFn::Arity5(f), 4) => f(out, inputs[0], inputs[1], inputs[2], inputs[3]),
-            (KernelFn::Arity6(f), 5) => {
-                f(out, inputs[0], inputs[1], inputs[2], inputs[3], inputs[4])
-            }
-            (KernelFn::Arity7(f), 6) => {
-                f(
-                    out,
-                    inputs[0],
-                    inputs[1],
-                    inputs[2],
-                    inputs[3],
-                    inputs[4],
-                    inputs[5],
-                )
-            }
-            (KernelFn::Arity8(f), 7) => {
-                f(
-                    out,
-                    inputs[0],
-                    inputs[1],
-                    inputs[2],
-                    inputs[3],
-                    inputs[4],
-                    inputs[5],
-                    inputs[6],
-                )
-            }
-            (KernelFn::HighArity(f), _) if inputs.len() >= 1 && inputs.len() <= 300 => {
+    pub unsafe fn call(&self, outputs: &[*mut c_void], inputs: &[*const c_void]) {
+        let total = outputs.len() + inputs.len();
+        match (self, outputs.len(), inputs.len()) {
+            (KernelFn::Arity1(f), 0, 0) => f(outputs[0]),
+            (KernelFn::Arity2(f), 0, 1) => f(outputs[0], inputs[0]),
+            (KernelFn::Arity3(f), 0, 2) => f(outputs[0], inputs[0], inputs[1]),
+            (KernelFn::Arity4(f), 0, 3) => f(outputs[0], inputs[0], inputs[1], inputs[2]),
+            (KernelFn::Arity5(f), 0, 4) => f(outputs[0], inputs[0], inputs[1], inputs[2], inputs[3]),
+            (KernelFn::Arity6(f), 0, 5) => f(outputs[0], inputs[0], inputs[1], inputs[2], inputs[3], inputs[4]),
+            (KernelFn::Arity7(f), 0, 6) => f(outputs[0], inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], inputs[5]),
+            (KernelFn::Arity8(f), 0, 7) => f(outputs[0], inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], inputs[5], inputs[6]),
+            (KernelFn::HighArity(f), _, _) if total >= 1 && total <= 300 => {
                 let ptr = f.0 as *const ();
-                crate::ciface_high::call_high_arity(ptr, out, inputs);
+                crate::ciface_high::call_high_arity(ptr, outputs, inputs);
             }
             _ => panic!(
-                "kernel arity mismatch: fn arity={}, input_count={}",
-                self.arity(),
-                inputs.len()
+                "kernel arity mismatch: outputs={}, inputs={}",
+                outputs.len(),
+                inputs.len(),
             ),
         }
     }
@@ -344,6 +316,7 @@ impl<const RANK: usize> Default for MemRefDesc<RANK> {
     }
 }
 
+pub type MemRefDesc0 = MemRefDesc<0>;
 pub type MemRefDesc1 = MemRefDesc<1>;
 pub type MemRefDesc2 = MemRefDesc<2>;
 pub type MemRefDesc3 = MemRefDesc<3>;
@@ -414,19 +387,25 @@ impl<const RANK: usize> MemRefDesc<RANK> {
     }
 
     /// Build a zero-initialized output descriptor from a dynamic shape.
+    /// 0 dims (kDynamic sentinel) are replaced with 1 to avoid null allocations.
     pub fn zeroed_dyn(shape: &[usize]) -> Self {
         assert_eq!(shape.len(), RANK, "shape rank mismatch");
+        // Replace 0 sentinel dims with 1 so kernel has a buffer to write to.
+        let safe_shape: Vec<usize> = shape.iter().map(|&d| if d == 0 { 1 } else { d }).collect();
+        let numel: usize = safe_shape.iter().product();
+        let layout = std::alloc::Layout::array::<f32>(numel.max(1)).expect("invalid layout");
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) as *mut c_void };
         let mut sizes = [0i64; RANK];
         let mut strides_arr = [0i64; RANK];
         let mut stride = 1i64;
         for i in (0..RANK).rev() {
-            sizes[i] = shape[i] as i64;
+            sizes[i] = safe_shape[i] as i64;
             strides_arr[i] = stride;
-            stride *= shape[i] as i64;
+            stride *= safe_shape[i] as i64;
         }
         Self {
-            allocated: std::ptr::null_mut(),
-            aligned: std::ptr::null_mut(),
+            allocated: ptr,
+            aligned: ptr,
             offset: 0,
             sizes,
             strides: strides_arr,
@@ -492,6 +471,7 @@ unsafe impl<const RANK: usize> Send for MemRefDesc<RANK> {}
 // ── Rank-erased descriptor enum ────────────────────────────────────
 
 pub enum MemRefDescAny {
+    R0(MemRefDesc0),
     R1(MemRefDesc1),
     R2(MemRefDesc2),
     R3(MemRefDesc3),
@@ -501,6 +481,7 @@ pub enum MemRefDescAny {
 impl MemRefDescAny {
     pub fn from_f32(shape: &[usize], data: &[f32]) -> Self {
         match shape.len() {
+            0 => Self::R0(MemRefDesc0::from_f32_dyn_slice(data, shape)),
             1 => Self::R1(MemRefDesc1::from_f32_dyn_slice(data, shape)),
             2 => Self::R2(MemRefDesc2::from_f32_dyn_slice(data, shape)),
             3 => Self::R3(MemRefDesc3::from_f32_dyn_slice(data, shape)),
@@ -511,6 +492,7 @@ impl MemRefDescAny {
 
     pub fn zeroed(shape: &[usize]) -> Self {
         match shape.len() {
+            0 => Self::R0(MemRefDesc0::zeroed_dyn(shape)),
             1 => Self::R1(MemRefDesc1::zeroed_dyn(shape)),
             2 => Self::R2(MemRefDesc2::zeroed_dyn(shape)),
             3 => Self::R3(MemRefDesc3::zeroed_dyn(shape)),
@@ -521,6 +503,7 @@ impl MemRefDescAny {
 
     pub fn as_output_ptr(&self) -> *mut c_void {
         match self {
+            MemRefDescAny::R0(d) => d as *const MemRefDesc0 as *mut c_void,
             MemRefDescAny::R1(d) => d as *const MemRefDesc1 as *mut c_void,
             MemRefDescAny::R2(d) => d as *const MemRefDesc2 as *mut c_void,
             MemRefDescAny::R3(d) => d as *const MemRefDesc3 as *mut c_void,
@@ -530,6 +513,7 @@ impl MemRefDescAny {
 
     pub fn as_input_ptr(&self) -> *const c_void {
         match self {
+            MemRefDescAny::R0(d) => d as *const MemRefDesc0 as *const c_void,
             MemRefDescAny::R1(d) => d as *const MemRefDesc1 as *const c_void,
             MemRefDescAny::R2(d) => d as *const MemRefDesc2 as *const c_void,
             MemRefDescAny::R3(d) => d as *const MemRefDesc3 as *const c_void,
@@ -539,6 +523,7 @@ impl MemRefDescAny {
 
     pub unsafe fn read_output_f32(&self) -> Vec<f32> {
         match self {
+            MemRefDescAny::R0(d) => d.read_output_f32(),
             MemRefDescAny::R1(d) => d.read_output_f32(),
             MemRefDescAny::R2(d) => d.read_output_f32(),
             MemRefDescAny::R3(d) => d.read_output_f32(),
@@ -548,6 +533,7 @@ impl MemRefDescAny {
 
     pub fn sizes(&self) -> Vec<usize> {
         match self {
+            MemRefDescAny::R0(d) => d.sizes.iter().map(|&x| x as usize).collect(),
             MemRefDescAny::R1(d) => d.sizes.iter().map(|&x| x as usize).collect(),
             MemRefDescAny::R2(d) => d.sizes.iter().map(|&x| x as usize).collect(),
             MemRefDescAny::R3(d) => d.sizes.iter().map(|&x| x as usize).collect(),

@@ -32,6 +32,7 @@ tokenizers = { version = "0.21", optional = true }
 minijinja = { version = "2", features = ["macros"], optional = true }
 thiserror = "2"
 libffi = "5.1.0"
+half = "2"
 
 [profile.release]
 lto = true
