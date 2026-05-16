@@ -36,13 +36,14 @@ def _has_bindings() -> bool:
 def _vectorize_via_transform(ir_module: Any) -> None:
     """Apply Transform dialect vectorization to linalg ops in-place.
     
-    Vectorize children of all functions. Matmul/batch_matmul with fully
-    static shapes get vector.contract; dynamic-shape ones fall through
-    to convert-linalg-to-loops.
+    Runs transform-interpreter with a script that vectorizes children
+    of all functions. Element-wise ops get vector transfers; matmuls
+    with fully static shapes get vector.contract. Dynamic-shape matmuls
+    fall through to convert-linalg-to-loops.
     """
     import mlir.ir as ir
     import mlir.passmanager as pm
-    import re
+    import time
 
     ctx = ir_module.operation.context
     ctx.load_all_available_dialects()
@@ -52,7 +53,7 @@ def _vectorize_via_transform(ir_module: Any) -> None:
         if "linalg.batch_matmul" not in text and "linalg.matmul" not in text:
             return
 
-        # Vectorize children of all functions
+        # Build combined module: transform script + user code
         script = """module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg0: !transform.any_op) {
     %funcs = "transform.structured.match"(%arg0) <{ops = ["func.func"]}> : (!transform.any_op) -> !transform.any_op
@@ -67,13 +68,23 @@ def _vectorize_via_transform(ir_module: Any) -> None:
         except Exception:
             return
 
-        # Clean up: remove transform wrapper modules, keep only user funcs
-        raw = str(combined)
-        parts = re.split(r'(?=module\s*(?:attributes\s*\{[^}]*\})?\s*\{)', raw)
-        clean = '\n'.join(p.strip() for p in parts if 'transform.with_named_sequence' not in p)
-        if not clean.strip():
+        # Extract user funcs from the combined module.
+        # The combined text has: transform_wrapper { ... } \n user_module { func.func @main ... }
+        # Just strip everything before the first 'func.func' or '#map'
+        result_text = str(combined)
+        idx = result_text.find('func.func')
+        if idx < 0:
             return
-        result = ir.Module.parse(clean, ctx)
+        # Also include map/set definitions from the user module
+        map_idx = result_text.find('#map')
+        if map_idx >= 0 and map_idx < idx:
+            user_text = result_text[map_idx:]
+        else:
+            user_text = result_text[idx:]
+        try:
+            result = ir.Module.parse(user_text, ctx)
+        except Exception:
+            return
 
         block = ir_module.operation.regions[0].blocks[0]
         for op in list(block):
@@ -115,9 +126,18 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
         pman = pm.PassManager.parse(pipeline_pre, ctx)
         pman.run(ir_module.operation)
 
-        # Apply Transform-dialect vectorization of linalg ops (experimental)
-        # Disabled: dynamic shapes prevent effective vectorization and tiling
-        # causes pipeline failures. See _vectorize_via_transform for reference.
+        # Fuse element-wise ops with linalg to reduce memory bandwidth
+        try:
+            pm.PassManager.parse(
+                "builtin.module(linalg-fuse-elementwise-ops,canonicalize,cse)", ctx
+            ).run(ir_module.operation)
+        except Exception:
+            pass  # fuse is optional
+
+        # Transform-dialect vectorization: disabled because pattern-based
+        # vectorize_children_and_apply_patterns leaves partially-converted
+        # linalg ops with broken bodies. Enable once vectorize handles all ops.
+        # See _vectorize_via_transform() and docs/compilation-design-v2.md.
         # _vectorize_via_transform(ir_module)
 
         # Bufferization and scalar loop lowering
@@ -135,6 +155,7 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
             "finalize-memref-to-llvm,"
             "convert-cf-to-llvm,"
             "convert-math-to-llvm,"
+            "convert-vector-to-scf,"
             "convert-vector-to-llvm,"
             "convert-arith-to-llvm"
             ")"

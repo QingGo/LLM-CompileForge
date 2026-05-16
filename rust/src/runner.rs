@@ -99,7 +99,8 @@ impl<'a> InferenceRunner<'a> {
 
             // Append new token to history (model has fixed input of 8 tokens)
             current_ids.push(token_id);
-            if current_ids.len() > 8 {
+            const MAX_INPUT_TOKENS: usize = 8;
+            while current_ids.len() > MAX_INPUT_TOKENS {
                 current_ids.remove(0);
             }
         }
