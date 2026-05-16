@@ -296,4 +296,103 @@ mod tests {
         let result = ModelExecutor::load("/nonexistent/lib.dylib", None);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_parse_sret_descriptor_rank1() {
+        // Build a mock sret buffer for a rank-1 descriptor (sizes=[3]).
+        // LLVM struct layout: {ptr, ptr, i64, [1 x i64], [1 x i64]} = 40 bytes.
+        let data: Vec<f32> = vec![1.0, 2.0, 3.0];
+        let dummy_allocated = data.as_ptr() as u64;
+        let mut buf = Vec::<u8>::new();
+        buf.extend_from_slice(&dummy_allocated.to_ne_bytes()); // allocated
+        buf.extend_from_slice(&dummy_allocated.to_ne_bytes()); // aligned
+        buf.extend_from_slice(&0u64.to_ne_bytes());           // offset
+        buf.extend_from_slice(&3u64.to_ne_bytes());            // sizes[0]
+        buf.extend_from_slice(&1u64.to_ne_bytes());            // strides[0]
+        assert_eq!(buf.len(), 40);
+        let (aligned, sizes) = unsafe { parse_sret_descriptor(&buf, 1) };
+        assert_eq!(aligned as u64, dummy_allocated);
+        assert_eq!(sizes, vec![3]);
+    }
+
+    #[test]
+    fn test_parse_sret_descriptor_rank4() {
+        // rank-4 descriptor: 24 + 16*4 = 88 bytes
+        let data: Vec<f32> = vec![0.0; 10];
+        let p = data.as_ptr() as u64;
+        let mut buf = Vec::<u8>::new();
+        buf.extend_from_slice(&p.to_ne_bytes());               // allocated
+        buf.extend_from_slice(&p.to_ne_bytes());               // aligned
+        buf.extend_from_slice(&0u64.to_ne_bytes());            // offset
+        buf.extend_from_slice(&2u64.to_ne_bytes());            // sizes[0]
+        buf.extend_from_slice(&1u64.to_ne_bytes());            // sizes[1]
+        buf.extend_from_slice(&4u64.to_ne_bytes());            // sizes[2]
+        buf.extend_from_slice(&4u64.to_ne_bytes());            // sizes[3]
+        buf.extend_from_slice(&4u64.to_ne_bytes());            // strides[0]
+        buf.extend_from_slice(&4u64.to_ne_bytes());            // strides[1]
+        buf.extend_from_slice(&1u64.to_ne_bytes());            // strides[2]
+        buf.extend_from_slice(&1u64.to_ne_bytes());            // strides[3]
+        assert_eq!(buf.len(), 88);
+        let (aligned, sizes) = unsafe { parse_sret_descriptor(&buf, 4) };
+        assert_eq!(aligned as u64, p);
+        assert_eq!(sizes, vec![2, 1, 4, 4]);
+    }
+
+    #[test]
+    fn test_global_input_i64_memref() {
+        // Simulate GlobalInput: store i64 values as raw bytes, create MemRefDesc2.
+        let input_ids: Vec<i64> = vec![2, 525, 484, 0]; // padded to [1, 4]
+        let raw: Vec<u8> = input_ids.iter().flat_map(|&v| v.to_ne_bytes()).collect();
+        let p = raw.as_ptr();
+        let desc = MemRefDesc2 {
+            allocated: p as *mut std::ffi::c_void,
+            aligned: p as *mut std::ffi::c_void,
+            offset: 0,
+            sizes: [1, 4],
+            strides: [4, 1],
+        };
+        // Verify: read back the i64 values through the descriptor
+        unsafe {
+            for i in 0..4i64 {
+                let val = *(desc.aligned.add((i * 8) as usize) as *const i64);
+                assert_eq!(val, input_ids[i as usize]);
+            }
+        }
+        assert_eq!(desc.sizes[0], 1);
+        assert_eq!(desc.sizes[1], 4);
+        assert_eq!(desc.strides[0], 4);
+        assert_eq!(desc.strides[1], 1);
+        assert_eq!(desc.numel(), 4);
+    }
+
+    #[test]
+    fn test_f16_to_f32_conversion() {
+        use half::f16;
+        // f16 data: 1.0, 0.5, 0.0, -1.0
+        let f16_vals: Vec<u16> = vec![
+            f16::from_f32(1.0).to_bits(),
+            f16::from_f32(0.5).to_bits(),
+            f16::from_f32(0.0).to_bits(),
+            f16::from_f32(-1.0).to_bits(),
+        ];
+        let raw: Vec<u8> = f16_vals.iter().flat_map(|&v| v.to_ne_bytes()).collect();
+        let p = raw.as_ptr();
+        let desc = MemRefDesc2 {
+            allocated: p as *mut std::ffi::c_void,
+            aligned: p as *mut std::ffi::c_void,
+            offset: 0,
+            sizes: [2, 2],
+            strides: [2, 1],
+        };
+        let n = desc.numel();
+        let data: Vec<f32> = unsafe {
+            let raw = desc.aligned as *const u16;
+            let slice = std::slice::from_raw_parts(raw, n);
+            slice.iter().map(|&h| f16::from_bits(h).to_f32()).collect()
+        };
+        assert!((data[0] - 1.0).abs() < 1e-6);
+        assert!((data[1] - 0.5).abs() < 1e-6);
+        assert!((data[2] - 0.0).abs() < 1e-6);
+        assert!((data[3] + 1.0).abs() < 1e-6);
+    }
 }
