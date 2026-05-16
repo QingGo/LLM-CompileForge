@@ -192,9 +192,11 @@ impl Executable {
             6 => { let sym: libloading::Symbol<CifaceFn6> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity6(*sym)) }
             7 => { let sym: libloading::Symbol<CifaceFn7> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity7(*sym)) }
             8 => { let sym: libloading::Symbol<CifaceFn8> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity8(*sym)) }
-             _ => {
-                let sym: libloading::Symbol<unsafe extern "C" fn()> = unsafe { self.lib.get(name.as_bytes()) }?;
-                Ok(KernelFn::HighArity(crate::ciface_high::FnPtr(*sym)))
+              _ => {
+                let sym: libloading::Symbol<*const ()> = unsafe { self.lib.get(name.as_bytes()) }?;
+                Ok(KernelFn::HighArity(crate::ciface_high::FnPtr(
+                    unsafe { std::mem::transmute::<*const (), unsafe extern "C" fn()>(*sym) }
+                )))
             }
         }
     }

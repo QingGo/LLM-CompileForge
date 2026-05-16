@@ -44,8 +44,10 @@ pub struct FuncDef {
 }
 
 impl FuncDef {
+    /// Number of C ABI arguments for the ciface wrapper:
+    /// 1 sret pointer + num_inputs descriptor pointers.
     pub fn total_args(&self) -> usize {
-        self.num_inputs + self.num_outputs
+        1 + self.num_inputs
     }
 }
 
