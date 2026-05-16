@@ -5,6 +5,8 @@ use anyhow::bail;
 use half::f16;
 
 use crate::compute_graph::{ComputeGraph, InputBinding};
+use crate::hal::cpu::CpuDevice;
+use crate::hal::traits::{Device as DeviceTrait, Executable as ExecutableTrait};
 use crate::hal_cpu::{Executable, KernelFn, MemRefDescAny, MemRefDesc2};
 use crate::tensor::{Dtype, Tensor};
 use crate::weight_loader::WeightProvider;
@@ -17,10 +19,29 @@ pub struct ModelExecutor {
 }
 
 impl ModelExecutor {
+    /// Load a model with the default CPU device.
     pub fn load(
         dylib_path: &str,
         safetensors_path: Option<&str>,
     ) -> Result<Self, anyhow::Error> {
+        let device = CpuDevice::new();
+        Self::load_with_device(&device, dylib_path, safetensors_path)
+    }
+
+    /// Load a model using a specific HAL device.  The device is used for
+    /// compiling/loading the executable.
+    pub fn load_with_device(
+        device: &dyn DeviceTrait,
+        dylib_path: &str,
+        safetensors_path: Option<&str>,
+    ) -> Result<Self, anyhow::Error> {
+        // Use the HAL device to compile (load) the executable — for now,
+        // device.compile() validates the .dylib is loadable.
+        let dylib_bytes = dylib_path.as_bytes();
+        let _exec = device.compile(dylib_bytes)
+            .map_err(|e| anyhow::anyhow!("Device rejected dylib '{}': {}", dylib_path, e))?;
+
+        // For the inner SFCF parsing we still need the concrete Executable
         let executable = Executable::load(dylib_path)
             .map_err(|e| anyhow::anyhow!("Failed to load dylib '{}': {}", dylib_path, e))?;
         let lib = executable.lib();
@@ -203,12 +224,96 @@ unsafe fn parse_sret_descriptor(slice: &[u8], rank: usize) -> (*mut u8, Vec<i64>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compute_graph::{ComputeGraph, FuncDef, IOTensorDef, InputBinding};
+    use crate::hal::traits::{self, Device as _, Executable as _};
+
+    /// A mock device that records its compile() call for validation.
+    #[derive(Debug)]
+    struct MockDevice {
+        name: String,
+        compile_called: std::sync::atomic::AtomicBool,
+    }
+
+    impl MockDevice {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.to_string(),
+                compile_called: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+
+        fn was_compile_called(&self) -> bool {
+            self.compile_called.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    #[derive(Debug)]
+    struct MockBuffer(Vec<u8>);
+
+    impl traits::Buffer for MockBuffer {
+        fn as_ptr(&self) -> *const u8 { self.0.as_ptr() }
+        fn as_mut_ptr(&mut self) -> *mut u8 { self.0.as_mut_ptr() }
+        fn len(&self) -> usize { self.0.len() }
+        fn copy_from_host(&mut self, src: &[u8], _stream: &dyn traits::Stream) -> Result<(), anyhow::Error> {
+            self.0.copy_from_slice(src);
+            Ok(())
+        }
+        fn copy_to_host(&self, dst: &mut [u8], _stream: &dyn traits::Stream) -> Result<(), anyhow::Error> {
+            dst.copy_from_slice(&self.0);
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct MockStream;
+
+    impl traits::Stream for MockStream {
+        fn synchronize(&self) -> Result<(), anyhow::Error> { Ok(()) }
+    }
+
+    #[derive(Debug)]
+    struct MockExecutable {
+        entry_count: usize,
+    }
+
+    impl traits::Executable for MockExecutable {
+        fn execute(&self, _stream: &dyn traits::Stream, _inputs: &[&dyn traits::Buffer], _outputs: &[&dyn traits::Buffer]) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+        fn entry_count(&self) -> usize { self.entry_count }
+    }
+
+    impl traits::Device for MockDevice {
+        fn alloc(&self, size: usize) -> Result<Box<dyn traits::Buffer>, anyhow::Error> {
+            Ok(Box::new(MockBuffer(vec![0u8; size])))
+        }
+        fn create_stream(&self) -> Result<Box<dyn traits::Stream>, anyhow::Error> {
+            Ok(Box::new(MockStream))
+        }
+        fn compile(&self, module_data: &[u8]) -> Result<Box<dyn traits::Executable>, anyhow::Error> {
+            self.compile_called.store(true, std::sync::atomic::Ordering::Relaxed);
+            assert!(!module_data.is_empty(), "compile should receive non-empty data");
+            Ok(Box::new(MockExecutable { entry_count: 2 }))
+        }
+        fn name(&self) -> &str { &self.name }
+    }
 
     #[test]
     fn test_executor_load_nonexistent_fails() {
         let result = ModelExecutor::load("/nonexistent/lib.dylib", None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_executor_load_with_device_calls_compile() {
+        let device = MockDevice::new("mock-test");
+        // This will fail because the .dylib doesn't exist, but compile()
+        // should be called first.
+        let result = ModelExecutor::load_with_device(&device, "/nonexistent/lib.dylib", None);
+        assert!(result.is_err(), "load should fail on nonexistent dylib");
+        // Even though the load fails (no dylib), compile() should have been attempted
+        // The compile_called flag indicates the trait was used
+        assert!(device.was_compile_called(),
+            "Device::compile() should be called during load_with_device");
     }
 
     #[test]

@@ -14,6 +14,7 @@ use std::ptr::NonNull;
 
 // ── Device ────────────────────────────────────────────────────────
 
+#[derive(Debug)]
 pub struct Device {
     allocated_bytes: usize,
 }
@@ -53,6 +54,7 @@ impl Device {
 
 // ── Buffer ─────────────────────────────────────────────────────────
 
+#[derive(Debug)]
 pub struct Buffer {
     ptr: NonNull<u8>,
     size: usize,
@@ -135,8 +137,13 @@ impl Drop for Buffer {
 // ownership of the allocation.
 unsafe impl Send for Buffer {}
 
+// SAFETY: Buffer is read-only after initialization (the write phase
+// happens before any sharing). Synchronization is handled by the caller.
+unsafe impl Sync for Buffer {}
+
 // ── Executable ─────────────────────────────────────────────────────
 
+#[derive(Debug)]
 pub struct Executable {
     lib: libloading::Library,
 }

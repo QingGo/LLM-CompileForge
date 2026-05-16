@@ -2,6 +2,9 @@
 //!
 //! Enabled with ``--features python-bindings``.
 
+pub mod hal;
+pub mod hal_cpu;
+pub mod ciface_high;
 pub mod block_manager;
 pub mod radix_cache;
 pub mod scheduler;
