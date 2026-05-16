@@ -63,6 +63,10 @@ def _vectorize_via_transform(ir_module: Any) -> None:
             return
 
         # Tile size 32: GCD(768, 3072, 50272) = 32, divides all static dims evenly.
+        # After tiling, inner dims are 32×32 → vectorize with [32,32,32,32]
+        # is valid (32 <= 32 passes isValidMaskedInputVector).
+        # NOTE: multi-dim vector.contract is expensive to lower to LLVM IR;
+        # see convert-vector-to-llvm hang known issue.
         _t = 32
         _rt = ": (!transform.any_op) -> (!transform.any_op)"
         _rt3 = ": (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)"
@@ -140,6 +144,7 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
         raise RuntimeError("MLIR Python bindings not available")
 
     import logging
+
     import mlir.ir as ir
     import mlir.passmanager as pm
     _log = logging.getLogger(__name__)
@@ -170,33 +175,19 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
             pass  # fuse is optional
 
         # Vectorize: tile inner dims by 32 + mask vectorize with vector.contract.
-        _vectorize_via_transform(ir_module)
+        # DISABLED: tile+vectorize via transform dialect.
+        # The transform script (tile_using_for + vectorize {create_named_contraction})
+        # produces 73 vector.contract for all matmuls, but convert-vector-to-llvm
+        # hangs on multi-dimensional contract lowering (scalar expansion of 32K ops).
+        # Enable after fixing with: convert-vector-to-scf → lower-vector-mask
+        # → convert-vector-to-llvm, or switching to 1D-only vectorization.
+        # _vectorize_via_transform(ir_module)
 
-        # Lower vector masks to scf.if BEFORE convert-vector-to-scf.
-        # vector.mask can only wrap a single op; after tiling+vectorize the
-        # masked region contains scf.for, requiring prior lowering.
-        # convert-vector-to-scf{lower-tensors} then handles tensor→memref for
-        # the remaining vector.transfer_read/write inside scf.for loops.
-        import mlir.passmanager as pm
-        try:
-            pm.PassManager.parse(
-                "builtin.module("
-                "func.func(lower-vector-mask),"
-                "func.func(convert-vector-to-scf{lower-tensors}),"
-                "canonicalize,cse"
-                ")", ctx
-            ).run(ir_module.operation)
-        except Exception as e:
-            _log.warning("vector pre-bufferize step failed: %s", e)
-
-        # Vector ops already handled by convert-vector-to-scf and expand-strided-metadata
-        # before bufferization; keep convert-vector-to-llvm for any remaining.
         pipeline_pre = (
             "builtin.module("
             "one-shot-bufferize{bufferize-function-boundaries},"
             "canonicalize,"
             "cse,"
-            "buffer-deallocation-pipeline,"
             "convert-bufferization-to-memref,"
             "convert-linalg-to-loops,"
             "lower-affine,"
@@ -206,6 +197,7 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
             "finalize-memref-to-llvm,"
             "convert-cf-to-llvm,"
             "convert-math-to-llvm,"
+            "convert-vector-to-scf,"
             "convert-vector-to-llvm,"
             "convert-arith-to-llvm"
             ")"
