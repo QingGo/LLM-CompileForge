@@ -53,30 +53,29 @@ class MlirExecutor(_KVCacheMixin):
         self._hal = hal_backend
         self._function = module.main
 
+        # Load weights from ALL functions (not just main).
         self._weights: dict[str, torch.Tensor] = {}
-        for name, tensor in self._function.weights.items():
-            self._weights[name] = tensor
+        for func in module.functions:
+            for name, tensor in func.weights.items():
+                if name not in self._weights:
+                    self._weights[name] = tensor
 
         # Build compiled-name → tensor mapping via hf_key_map.
-        # Weight ops store their name in compiled format (e.g.
-        # model_decoder_embed_tokens_weight) but f.weights uses HF format
-        # (model.decoder.embed_tokens.weight). The hf_key_map bridges them.
         hfk = module.metadata.get("hf_key_map", {})
         for compiled_name, hf_key in hfk.items():
             if compiled_name not in self._weights and hf_key in self._weights:
                 self._weights[compiled_name] = self._weights[hf_key]
 
-        # Constants are stored with function prefix (e.g. main_0._const_7)
-        # but ops reference them by bare name (e.g. _const_7). Add aliases.
-        func_prefix = self._function.name + "."
-        for key in list(self._weights.keys()):
-            if key.startswith(func_prefix):
-                bare = key[len(func_prefix):]
-                if bare not in self._weights:
-                    self._weights[bare] = self._weights[key]
+        # Constants are stored with function prefix, ops reference by bare name.
+        for func in module.functions:
+            prefix = func.name + "."
+            for key in list(self._weights.keys()):
+                if key.startswith(prefix):
+                    bare = key[len(prefix):]
+                    if bare not in self._weights:
+                        self._weights[bare] = self._weights[key]
 
-        # Handle tied weights: when two compiled names map to the same physical
-        # tensor (e.g. embed_tokens = lm_head in OPT-125m).
+        # Handle tied weights.
         tied = module.metadata.get("tied_weights", {})
         for alias, primary in tied.items():
             if alias not in self._weights and primary in self._weights:
@@ -138,35 +137,58 @@ class MlirExecutor(_KVCacheMixin):
     def _run_forward(
         self, input_ids: torch.Tensor, capture_kv: bool, **kwargs: Any
     ) -> tuple[torch.Tensor, list[tuple[str, torch.Tensor]]]:
+        """Run ALL functions sequentially, chaining outputs→inputs."""
         ssa_values: dict[str, torch.Tensor] = {}
 
-        if self._function.inputs:
-            first_input = self._function.inputs[0][0]
-            ssa_values[first_input] = input_ids
-            ssa_values[first_input.lstrip("%")] = input_ids
-            for named_input, _ in self._function.inputs[1:]:
-                clean = named_input.replace("%", "")
-                if clean in kwargs:
-                    ssa_values[named_input] = kwargs[clean]
-                    ssa_values[clean] = kwargs[clean]
+        for fi, func in enumerate(self._module.functions):
+            self._function = func  # switch current function for weight lookups
 
-        self._reset_forward_state(kwargs)
+            # ── Initialize inputs for this function ──────────
+            if fi == 0:
+                # First function: input_ids is the GlobalInput
+                if func.inputs:
+                    first_input = func.inputs[0][0]
+                    ssa_values[first_input] = input_ids
+                    ssa_values[first_input.lstrip("%")] = input_ids
+                    for named_input, _ in func.inputs[1:]:
+                        clean = named_input.replace("%", "")
+                        if clean in kwargs:
+                            ssa_values[named_input] = kwargs[clean]
+                            ssa_values[clean] = kwargs[clean]
+            else:
+                # Subsequent functions: all inputs are already in ssa_values
+                # from previous function's outputs. Just ensure they exist.
+                for inp_name, _ in func.inputs:
+                    clean = inp_name.replace("%", "")
+                    if clean not in ssa_values:
+                        ssa_values.setdefault(inp_name, torch.tensor([]))
+                        ssa_values.setdefault(clean, torch.tensor([]))
 
-        # ── Begin cache step if using CacheManager ────────
-        if self._uses_cache_manager and self._cache_mgr is not None:
-            self._cache_mgr.begin_step(self._block_tables)
+            self._reset_forward_state(kwargs)
 
-        for op in self._function.ops:
-            result = self._execute_op(op, ssa_values)
-            if result is not None and op.results:
-                ssa_values[op.results[0]] = result
+            if self._uses_cache_manager and self._cache_mgr is not None:
+                self._cache_mgr.begin_step(self._block_tables)
 
+            # ── Execute ops ─────────────────────────────────
+            for op in func.ops:
+                result = self._execute_op(op, ssa_values)
+                if result is not None and op.results:
+                    ssa_values[op.results[0]] = result
+
+            # ── Store outputs for next function ──────────────
+            for out_name, _ in func.outputs:
+                clean = out_name.replace("%", "")
+                if clean not in ssa_values:
+                    ssa_values[clean] = ssa_values.get(clean, torch.tensor([]))
+
+        # ── Return last function's output ───────────────────
+        last_func = self._module.functions[-1]
         if not capture_kv:
             output_ssa = None
-            if self._function.outputs:
-                output_ssa = self._function.outputs[0][0]
-            if output_ssa is None and self._function.ops:
-                last_op = self._function.ops[-1]
+            if last_func.outputs:
+                output_ssa = last_func.outputs[0][0]
+            if output_ssa is None and last_func.ops:
+                last_op = last_func.ops[-1]
                 if last_op.results:
                     output_ssa = last_op.results[-1]
             if output_ssa and output_ssa in ssa_values:
@@ -177,19 +199,16 @@ class MlirExecutor(_KVCacheMixin):
 
         logits = torch.tensor([])
         kv_tensors: list[tuple[str, torch.Tensor]] = []
-        for i, (out_name, _) in enumerate(self._function.outputs):
+        for i, (out_name, _) in enumerate(last_func.outputs):
             if out_name in ssa_values:
                 if i == 0:
                     logits = ssa_values[out_name]
                 else:
                     kv_tensors.append((out_name, ssa_values[out_name]))
-
-        # Fallback: if outputs not declared in MLIR, use last op result
-        if logits.numel() == 0 and self._function.ops:
-            last_op = self._function.ops[-1]
+        if logits.numel() == 0 and last_func.ops:
+            last_op = last_func.ops[-1]
             if last_op.results and last_op.results[-1] in ssa_values:
                 logits = ssa_values[last_op.results[-1]]
-
         return logits, kv_tensors
 
     def _reset_forward_state(self, kwargs: dict[str, Any]) -> None:
