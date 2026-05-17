@@ -137,13 +137,18 @@ fn main() -> Result<(), anyhow::Error> {
                     .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?
             };
 
-            let mut runner = runner::InferenceRunner::new(
-                &executor,
-                tok,
+            let runner_config = runner::RunnerConfig {
+                max_tokens_per_request: max_tokens,
                 seed,
-                max_tokens,
+                use_chat_template: !no_chat_template,
+                ..Default::default()
+            };
+            let mut runner = runner::InferenceRunner::new(
+                executor,
+                tok,
+                runner_config,
             )
-            .with_chat_template(!no_chat_template);
+            .map_err(|e| anyhow::anyhow!("Failed to create runner: {}", e))?;
 
             let result = runner.generate(&prompt, temperature, top_p, top_k)?;
             print!("{}", result.text);

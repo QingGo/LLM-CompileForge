@@ -176,6 +176,29 @@ impl Tokenizer {
 
         render_chat_template(template, messages, add_generation_prompt)
     }
+
+    /// Get stop token IDs (EOS + common stop tokens).
+    pub fn stop_token_ids(&self) -> Vec<u32> {
+        let mut ids = Vec::new();
+        if let Some(eos) = self.eos_token_id() {
+            ids.push(eos);
+        }
+        for key in &["<|im_end|>", "</s>", "<|endoftext|>"] {
+            if let Some(id) = self.inner.get_vocab(true).get(*key).copied() {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+        ids
+    }
+
+    /// Decode a single token ID to a string.
+    pub fn decode_token(&self, token_id: u32) -> String {
+        self.inner
+            .decode(&[token_id], true)
+            .unwrap_or_else(|_| format!("\u{FFFD}"))
+    }
 }
 
 #[cfg(test)]

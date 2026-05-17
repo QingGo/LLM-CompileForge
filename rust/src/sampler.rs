@@ -15,6 +15,7 @@ pub struct SamplerConfig {
     pub temperature: f32,
     pub top_p: f32,
     pub top_k: usize,
+    pub max_tokens: Option<usize>,
 }
 
 impl Default for SamplerConfig {
@@ -23,6 +24,7 @@ impl Default for SamplerConfig {
             temperature: 1.0,
             top_p: 1.0,
             top_k: 0,
+            max_tokens: None,
         }
     }
 }
@@ -33,6 +35,7 @@ impl SamplerConfig {
             temperature: 0.0,
             top_p: 1.0,
             top_k: 0,
+            max_tokens: None,
         }
     }
 }
@@ -252,6 +255,7 @@ mod tests {
             temperature: 0.8,
             top_p: 1.0,
             top_k: 0,
+            max_tokens: None,
         };
         let token = s.sample(&logits, &cfg);
         assert!(token < 5);
@@ -264,6 +268,7 @@ mod tests {
             temperature: 1.0,
             top_p: 1.0,
             top_k: 2,
+            max_tokens: None,
         };
         let mut s = Sampler::new(42);
         for _ in 0..20 {
@@ -281,6 +286,7 @@ mod tests {
             temperature: 1.0,
             top_p: 0.9,
             top_k: 0,
+            max_tokens: None,
         };
         let mut s = Sampler::new(42);
         for _ in 0..20 {
@@ -316,6 +322,7 @@ mod tests {
             temperature: 1e-15,
             top_p: 1.0,
             top_k: 0,
+            max_tokens: None,
         };
         let mut s = Sampler::new(42);
         let token = s.sample(&logits, &cfg);
@@ -330,6 +337,7 @@ mod tests {
             temperature: 1.0,
             top_p: 1.0,
             top_k: 3,
+            max_tokens: None,
         };
         let mut s = Sampler::new(42);
         for _ in 0..20 {
@@ -346,6 +354,7 @@ mod tests {
             temperature: 1.0,
             top_p: 1.0,
             top_k: 10,
+            max_tokens: None,
         };
         let mut s = Sampler::new(42);
         let token = s.sample(&logits, &cfg);
@@ -375,7 +384,7 @@ mod tests {
         }
 
         // BUGGY behavior: sample from ALL logits
-        let cfg = SamplerConfig { temperature: 0.0, top_p: 1.0, top_k: 0 };  // greedy
+        let cfg = SamplerConfig { temperature: 0.0, top_p: 1.0, top_k: 0, max_tokens: None };  // greedy
         let mut s = Sampler::new(42);
         let buggy_token = s.sample(&all_logits, &cfg);
         // Token 0 might not be picked if another position's max is higher

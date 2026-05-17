@@ -276,6 +276,17 @@ impl Scheduler {
         !self.waiting.is_empty() || !self.running.is_empty()
     }
 
+    /// Get a reference to a running request by ID.
+    pub fn running_request(&self, request_id: &str) -> Option<&Request> {
+        self.running.iter().find(|r| r.request_id == request_id)
+    }
+
+    /// Get a finished request by ID (removes it from running list).
+    pub fn get_finished_request(&mut self, request_id: &str) -> Option<Request> {
+        let idx = self.running.iter().position(|r| r.request_id == request_id)?;
+        Some(self.running.remove(idx))
+    }
+
     /// Record output tokens for a request and check for termination.
     ///
     /// Returns `true` if the request should be marked finished.
