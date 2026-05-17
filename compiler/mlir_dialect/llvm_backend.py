@@ -61,6 +61,9 @@ def _vectorize_via_transform(ir_module: Any) -> None:
 
     with ir.Location.unknown(ctx):
         text = str(ir_module)
+        # Only vectorize named contraction ops.  linalg.generic includes
+        # element-wise (add, mul) and reductions (softmax, layernorm) that
+        # the outerproduct strategy cannot handle.
         if "linalg.batch_matmul" not in text and "linalg.matmul" not in text:
             return
 
@@ -182,15 +185,10 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
             "convert-scf-to-cf,"
             "expand-strided-metadata,"
             "lower-affine,"
-            "func.func(lower-vector-mask),"
-            "func.func(convert-vector-to-scf),"
-            "canonicalize,cse,"
-            "convert-scf-to-cf,"
-            "lower-affine,"
-            "finalize-memref-to-llvm,"
+            "finalize-memref-to-llvm{use-generic-functions=false},"
             "convert-cf-to-llvm,"
             "convert-math-to-llvm,"
-            "convert-vector-to-llvm{vector-contract-lowering=outerproduct},"
+            "convert-vector-to-llvm{vector-contract-lowering=parallelarith},"
             "convert-arith-to-llvm,"
             "convert-ub-to-llvm"
             ")"
@@ -216,7 +214,15 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
         pman2 = pm.PassManager.parse(pipeline_llvm, ctx)
         pman2.run(ir_module.operation)
 
-    return str(ir_module)
+        # Final cleanup of any remaining unrealized conversion casts
+        try:
+            pm.PassManager.parse(
+                "builtin.module(reconcile-unrealized-casts)", ctx
+            ).run(ir_module.operation)
+        except Exception:
+            pass
+
+        return str(ir_module)
 
 
 def lower_linalg_to_llvm_ir_text(mlir_text: str) -> str:

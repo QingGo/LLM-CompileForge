@@ -22,6 +22,11 @@ if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
 from compiler.pipeline import _apply_sf_to_linalg  # noqa: E402
 from tests.test_pipeline_lowering import MLIR_BINDINGS  # noqa: E402
 
+try:
+    from compiler.mlir_dialect.llvm_backend import _has_bindings as _has_vec_bindings  # noqa: F811
+except ImportError:
+    def _has_vec_bindings() -> bool: return False
+
 pytestmark = pytest.mark.skipif(not MLIR_BINDINGS, reason="mlir-core not available")
 
 
@@ -738,3 +743,90 @@ def test_layer_norm_with_dynamic_dim():
 }''')
     _check_lowered(lowered)
     assert "linalg.generic" in lowered
+
+
+def test_vector_contract_lowering_outerproduct():
+    """Regression: vector.contract with outerproduct strategy must not hang on
+    4D batch_matmul contracts with masks.
+
+    The vectorize_children_and_apply_patterns transform can create vector.mask
+    wrappers around 4D vector.contract ops when auto-inferred vector sizes
+    don't match the static tensor dims.  convert-vector-to-llvm with
+    vector-contract-lowering=outerproduct hangs on masked 4D contracts
+    because the mask projection in OuterProduct lowering has limited support
+    for 4D+ masks.
+
+    This test verifies:
+      1. C++ lowering → vectorization produces vector.contract without masks
+      2. Full LLVM pipeline (bufferize → LLVM) completes without hanging
+      3. No vector ops remain (all lowered to LLVM)
+    """
+    if not _has_vec_bindings():
+        pytest.skip("MLIR vector bindings not available (transform dialect)")
+
+    from compiler.mlir_dialect.llvm_backend import _vectorize_via_transform
+    import mlir.ir as ir
+    import mlir.passmanager as pm
+
+    mlir_text = """module {
+  func.func @test(%a: tensor<1x12x4x64xf32>, %b: tensor<1x12x64x4xf32>) -> tensor<1x12x4x4xf32> {
+    %0 = "sf.matmul"(%a, %b) : (tensor<1x12x4x64xf32>, tensor<1x12x64x4xf32>) -> tensor<1x12x4x4xf32>
+    return %0 : tensor<1x12x4x4xf32>
+  }
+}"""
+    lowered = _lower(mlir_text)
+    assert "linalg." in lowered, "C++ lowering failed to produce linalg ops"
+
+    ctx = ir.Context()
+    ctx.allow_unregistered_dialects = True
+    with ir.Location.unknown(ctx):
+        mod = ir.Module.parse(lowered, ctx)
+
+        # Step 1: vectorize
+        _vectorize_via_transform(mod)
+        text = str(mod)
+        n_contract = text.count("vector.contract")
+        assert n_contract > 0, f"Vectorization produced no contracts (got {n_contract})"
+
+        # Assert no masked 4D contracts (the hang trigger)
+        import re
+        masked_4d = len(re.findall(
+            r'vector\.mask[^{]*\{[^}]*vector\.contract', text))
+        assert masked_4d == 0, (
+            f"Found {masked_4d} masked contracts — will hang in outerproduct lowering"
+        )
+
+        # Step 2: full LLVM pipeline
+        pipeline = (
+            "builtin.module("
+            "one-shot-bufferize{bufferize-function-boundaries},"
+            "canonicalize,cse,"
+            "convert-bufferization-to-memref,"
+            "convert-linalg-to-loops,lower-affine,convert-scf-to-cf,"
+            "expand-strided-metadata,lower-affine,"
+            "func.func(lower-vector-mask),"
+            "func.func(convert-vector-to-scf),"
+            "canonicalize,cse,"
+            "convert-scf-to-cf,lower-affine,"
+            "finalize-memref-to-llvm,"
+            "convert-cf-to-llvm,convert-math-to-llvm,"
+            "convert-vector-to-llvm{vector-contract-lowering=outerproduct},"
+            "convert-arith-to-llvm,convert-ub-to-llvm"
+            ")"
+        )
+        pm.PassManager.parse(pipeline, ctx).run(mod.operation)
+
+        # Step 3: emit_c_interface + func-to-llvm
+        for region in mod.operation.regions:
+            for block in region.blocks:
+                for op in block:
+                    if str(op.operation.name) == "func.func":
+                        op.operation.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get(ctx)
+        pm.PassManager.parse(
+            "builtin.module(convert-func-to-llvm,reconcile-unrealized-casts)", ctx
+        ).run(mod.operation)
+
+        result = str(mod)
+        assert "vector.contract" not in result, "vector.contract not lowered"
+        assert "vector." not in result, "vector ops remain after lowering"
+

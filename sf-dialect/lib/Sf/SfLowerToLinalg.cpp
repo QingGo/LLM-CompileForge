@@ -166,24 +166,38 @@ struct SfBinaryLowering : public OpRewritePattern<SfOpTy> {
     auto rank = cast<ShapedType>(resultType).getRank();
     auto lhsRank = lhsType.getRank();
     auto rhsRank = rhsType.getRank();
-    // Promote non-float operands: when result is float but operands are int,
-    // insert sitofp conversion via linalg.generic (bufferizable).
+    // Promote non-float operands: when result is float but operand is int,
+    // insert sitofp via linalg.generic (bufferizable DPS pattern).
     auto outEltTy = cast<ShapedType>(resultType).getElementType();
-    if (isa<FloatType>(outEltTy)) {
-      if (!isa<FloatType>(lhsType.getElementType()) ||
-          !isa<FloatType>(rhsType.getElementType())) {
-        llvm::errs() << "  [SfBinary] type=" << SfOpTy::getOperationName()
-                     << " SKIP (non-float operand: " << lhsType.getElementType()
-                     << " vs " << rhsType.getElementType() << ")\n";
-        return failure();
+    auto promoteIfNeeded = [&](Value val, Type valEltTy, StringRef side) -> Value {
+      if (isa<FloatType>(valEltTy)) return val;
+      if (!isa<FloatType>(outEltTy)) {
+        llvm::errs() << "  [SfBinary] SKIP (output not float, can't promote: "
+                     << valEltTy << " -> " << outEltTy << ")\n";
+        return Value();
       }
-    } else if (!isa<FloatType>(lhsType.getElementType()) ||
-               !isa<FloatType>(rhsType.getElementType())) {
+      auto valType = cast<RankedTensorType>(val.getType());
+      auto promType = RankedTensorType::get(valType.getShape(), outEltTy);
+      Value promInit = makeEmpty(rewriter, loc, promType, {val});
+      if (!promInit) return Value();
+      auto promRank = valType.getRank();
+      SmallVector<utils::IteratorType> promIter(promRank, utils::IteratorType::parallel);
+      auto promOp = linalg::GenericOp::create(rewriter, loc, promType,
+          ValueRange{val}, promInit,
+          identityMaps(promRank, 2, rewriter.getContext()), promIter,
+          [&](OpBuilder &b, Location ploc, ValueRange args) {
+            Value f = b.create<arith::SIToFPOp>(ploc, outEltTy, args[0]);
+            b.create<linalg::YieldOp>(ploc, f);
+          });
       llvm::errs() << "  [SfBinary] type=" << SfOpTy::getOperationName()
-                   << " SKIP (non-float operand: " << lhsType.getElementType()
-                   << " vs " << rhsType.getElementType() << ")\n";
-      return failure();
-    }
+                   << " promoted " << side << " " << valEltTy << " -> f32\n";
+      return promOp.getResult(0);
+    };
+    lhs = promoteIfNeeded(lhs, lhsType.getElementType(), "lhs");
+    rhs = promoteIfNeeded(rhs, rhsType.getElementType(), "rhs");
+    if (!lhs || !rhs) return failure();
+    lhsType = cast<RankedTensorType>(lhs.getType());
+    rhsType = cast<RankedTensorType>(rhs.getType());
     llvm::errs() << "  [SfBinary] type=" << SfOpTy::getOperationName() << " lhs=" << lhsType << " rhs=" << rhsType << " out=" << resultType << "\n";
     Value empty = makeEmpty(rewriter, loc, resultType, {lhs});
     if (!empty) { llvm::errs() << "  [SfBinary] makeEmpty failed\n"; return failure(); }
@@ -416,7 +430,7 @@ struct SfMatmulOpLowering : public OpRewritePattern<sf::MatmulOp> {
     //   out: [d0..d{max(m,r)-2}, M, N]
     // We use a loop with (maxRank-1) parallel + 1 reduction iterator.
     int64_t contractDimL = lhsRank - 1;  // K in lhs
-    int64_t contractDimR = 0;            // K in rhs
+    int64_t contractDimR = rhsRank - 2;  // K in rhs (second-to-last dim)
     int64_t outerRank = std::max(lhsRank - 1, rhsRank - 1) + 1; // M + N + batch
     SmallVector<int64_t> outShape;
     SmallVector<Value> dynSizes;
