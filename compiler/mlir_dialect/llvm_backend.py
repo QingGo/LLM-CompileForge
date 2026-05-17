@@ -185,6 +185,11 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
             "convert-scf-to-cf,"
             "expand-strided-metadata,"
             "lower-affine,"
+            "func.func(lower-vector-mask),"
+            "func.func(convert-vector-to-scf),"
+            "canonicalize,cse,"
+            "convert-scf-to-cf,"
+            "lower-affine,"
             "finalize-memref-to-llvm{use-generic-functions=false},"
             "convert-cf-to-llvm,"
             "convert-math-to-llvm,"
@@ -288,6 +293,97 @@ def _find_mlir_translate() -> str:
     return _find_mlir_tool("mlir-translate")
 
 
+def _fixup_unrealized_casts(mlir_text: str) -> str:
+    """Replace unrealized_conversion_cast (ptr → struct) with llvm.insertvalue chains."""
+    import re
+
+    def fix_line(line: str) -> str | None:
+        m = re.search(
+            r'%(?P<r>\w+)\s*=\s*(?:"builtin\.unrealized_conversion_cast"|builtin\.unrealized_conversion_cast)\s*'
+            r'\((?P<args>[^)]*)\)\s*:\s*\([^)]*\)\s*->\s*'
+            r'(?P<dst>!llvm\.struct<\(.*?\)>)',
+            line
+        )
+        if not m:
+            m = re.search(
+                r'%(?P<r>\w+)\s*=\s*(?:"builtin\.unrealized_conversion_cast"|builtin\.unrealized_conversion_cast)\s+'
+                r'(?P<args>[^:]+?)\s*:\s*(?:[^,]+,\s*)*[^t]+\s+to\s+'
+                r'(?P<dst>!llvm\.struct<\(.*?\)>)',
+                line
+            )
+        if not m:
+            return None
+        result_name = m.group("r")
+        args = [a.strip() for a in m.group("args").split(",") if a.strip()]
+        dst = m.group("dst")
+        if not dst.startswith("!llvm.struct<"):
+            return None
+        array_m = re.search(r"array<(\d+)\s*x\s*i64>", dst)
+        rank = int(array_m.group(1)) if array_m else 1
+        indent = "    "
+        # Build chain with intermediate SSA names: %r0 = undef, %r1 = insert, ..., %rN = last
+        # The final result %rN replaces all uses of %result_name.
+        last_name = result_name
+        # We MUST NOT redefine the original name. Create a unique base name.
+        base = f"_cast_{result_name}"  # unique prefix to avoid name conflicts
+        lines = [f"{indent}%{base}0 = llvm.mlir.undef : {dst}"]
+        prev = "%" + base + "0"
+        fi = 0
+        for vi, v in enumerate(args):
+            curr = f"%{base}{vi+1}"
+            pos = f"[{fi}]"
+            if fi >= 3:
+                is_size = (fi - 3) < rank
+                arr_idx = fi - 3 if is_size else fi - 3 - rank
+                base_arr = 3 if is_size else 4
+                pos = f"[{base_arr}, {arr_idx}]"
+            lines.append(f"{indent}{curr} = llvm.insertvalue {v}, {prev}{pos} : {dst}")
+            prev = curr
+            fi += 1
+        # Now prev holds the final value. Replace ALL uses of %result_name with this.
+        final_val = prev
+        # We return both the replacement lines and the mapping for later use
+        return "\n".join(lines), result_name, final_val
+
+    # Collect all replacements first (keep original lines, mark them for later)
+    replacements: list[tuple[str, str, str, int]] = []  # (orig_name, final_val, rep_text, line_idx)
+    result_lines: list[str] = []
+    for line in mlir_text.split("\n"):
+        fixed = fix_line(line)
+        if fixed is not None:
+            rep_text, orig_name, final_val = fixed
+            replacements.append((orig_name, final_val, rep_text, len(result_lines)))
+        result_lines.append(line)
+
+    # Apply replacements: replace the original def line with the new chain
+    for orig_name, final_val, rep_text, idx in replacements:
+        # Replace original def line with the new chain
+        result_lines[idx] = rep_text
+        # Update references: %orig_name used as SSA value → final_val
+        # Only replace standalone SSA value uses (not inside type defs)
+        orig_ref_re = re.compile(rf'(?<!%)%{orig_name}(?!\w)')
+        for i, line in enumerate(result_lines):
+            if i == idx:
+                continue
+            if re.match(rf'\s*%{orig_name}\s*=', line):
+                continue  # definition line (shouldn't happen, but just in case)
+            new_line = []
+            prev_end = 0
+            for m in orig_ref_re.finditer(line):
+                # Check this isn't inside a !llvm.struct<...> type definition
+                before = line[:m.start()]
+                angle_depth = before.count("<") - before.count(">")
+                if angle_depth > 0:
+                    continue  # inside a type definition
+                new_line.append(line[prev_end:m.start()])
+                new_line.append(final_val)
+                prev_end = m.end()
+            new_line.append(line[prev_end:])
+            result_lines[i] = "".join(new_line)
+
+    return "\n".join(result_lines)
+
+
 def _fixup_mlir_for_translate(mlir_text: str) -> str:
     """Apply backward-compatibility fixups for LLVM 22 → LLVM 20 translation.
 
@@ -297,11 +393,7 @@ def _fixup_mlir_for_translate(mlir_text: str) -> str:
     """
     import re
 
-    # llvm.getelementptr inbounds|nuw → llvm.getelementptr inbounds
-    mlir_text = re.sub(
-        r"inbounds\|nuw\b", "inbounds", mlir_text
-    )
-
+    mlir_text = re.sub(r"inbounds\|nuw\b", "inbounds", mlir_text)
     return mlir_text
 
 
@@ -316,6 +408,10 @@ def mlir_module_to_llvm_ir(ir_module: Any) -> str:
 
     mlir_translate = _find_mlir_translate()
     mlir_text = str(ir_module)
+
+    # Fix up unrealized_conversion_cast (bare ptr → struct) that the LLVM
+    # translator cannot handle
+    mlir_text = _fixup_unrealized_casts(mlir_text)
 
     with tempfile.TemporaryDirectory() as td:
         mlir_path = os.path.join(td, "module.mlir")
@@ -342,7 +438,7 @@ def mlir_module_to_llvm_ir(ir_module: Any) -> str:
                 f"mlir-translate failed (exit {result.returncode}):\n{result.stderr[:1000]}"
             )
 
-    return result.stdout
+        return result.stdout
 
 
 def emit_llvm_ir_to_file(ir_module: Any, path: str) -> None:
