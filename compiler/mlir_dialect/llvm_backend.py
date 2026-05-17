@@ -297,91 +297,81 @@ def _fixup_unrealized_casts(mlir_text: str) -> str:
     """Replace unrealized_conversion_cast (ptr → struct) with llvm.insertvalue chains."""
     import re
 
-    def fix_line(line: str) -> str | None:
+    lines = mlir_text.split('\n')
+    cast_indices: list[tuple[int, str, str, str]] = []  # (line_idx, orig_name, dst_type, args_str)
+
+    for idx, line in enumerate(lines):
+        m = None
+        # Generic format: %r = "builtin.unrealized_conversion_cast"(%a, %b) : (types) -> type
         m = re.search(
-            r'%(?P<r>\w+)\s*=\s*(?:"builtin\.unrealized_conversion_cast"|builtin\.unrealized_conversion_cast)\s*'
-            r'\((?P<args>[^)]*)\)\s*:\s*\([^)]*\)\s*->\s*'
-            r'(?P<dst>!llvm\.struct<\(.*?\)>)',
-            line
-        )
+            r'%(\w+)\s*=\s*"builtin\.unrealized_conversion_cast"'
+            r'\(([^)]*)\)\s*:\s*\([^)]*\)\s*->\s*'
+            r'(!llvm\.struct<\(.*?\)>)',
+            line)
         if not m:
+            # Custom format: %r = builtin.unrealized_conversion_cast %a, %b : types to type
             m = re.search(
-                r'%(?P<r>\w+)\s*=\s*(?:"builtin\.unrealized_conversion_cast"|builtin\.unrealized_conversion_cast)\s+'
-                r'(?P<args>[^:]+?)\s*:\s*(?:[^,]+,\s*)*[^t]+\s+to\s+'
-                r'(?P<dst>!llvm\.struct<\(.*?\)>)',
-                line
-            )
+                r'%(\w+)\s*=\s*builtin\.unrealized_conversion_cast\s+'
+                r'([^:]+?)\s*:\s*'
+                r'(?:!llvm\.ptr,\s*!llvm\.ptr,\s*i64[^t]*)'
+                r'to\s+'
+                r'(!llvm\.struct<\(.*?\)>)',
+                line)
         if not m:
-            return None
-        result_name = m.group("r")
-        args = [a.strip() for a in m.group("args").split(",") if a.strip()]
-        dst = m.group("dst")
-        if not dst.startswith("!llvm.struct<"):
-            return None
-        array_m = re.search(r"array<(\d+)\s*x\s*i64>", dst)
+            continue
+        name = m.group(1)
+        args = m.group(2).strip()
+        dst = m.group(3) if m.lastindex >= 3 else (m.group(2) if not args else '')
+        if not dst or not dst.startswith('!llvm.struct<'):
+            continue
+        cast_indices.append((idx, name, dst, args))
+
+    if not cast_indices:
+        return mlir_text
+
+    # Phase 1: replace %name with sentinel __SF_{name}__ in ALL lines
+    sentinel_map: dict[str, str] = {}
+    for _, name, _, _ in cast_indices:
+        sentinel = f'__SF_{name}__'
+        sentinel_map[name] = sentinel
+        pattern = re.compile(rf'(?<!\w)(?<!__SF_)%{name}(?!\w)')
+        for i in range(len(lines)):
+            lines[i] = pattern.sub(sentinel, lines[i])
+
+    # Phase 2: generate insertvalue chains and replace cast definition lines
+    for idx, name, dst, args_str in cast_indices:
+        args = [a.strip() for a in args_str.split(',') if a.strip()]
+        array_m = re.search(r'array<(\d+)\s*x\s*i64>', dst)
         rank = int(array_m.group(1)) if array_m else 1
-        indent = "    "
-        # Build chain with intermediate SSA names: %r0 = undef, %r1 = insert, ..., %rN = last
-        # The final result %rN replaces all uses of %result_name.
-        last_name = result_name
-        # We MUST NOT redefine the original name. Create a unique base name.
-        base = f"_cast_{result_name}"  # unique prefix to avoid name conflicts
-        lines = [f"{indent}%{base}0 = llvm.mlir.undef : {dst}"]
-        prev = "%" + base + "0"
+        indent = '    '
+        result_name = name
+        # Build insertvalue chain. Use %__TMP_{name}_N__ for intermediates,
+        # but reuse the FINAL value as %{name} so all references see the right value.
+        # Chain: %__TMP_0 = undef, %__TMP_1 = insert, ..., %0 = insert (last)
+        nxt = None
+        chain = [f'{indent}%__TMP_{result_name}__ = llvm.mlir.undef : {dst}']
+        curr = f'%__TMP_{result_name}__'
         fi = 0
         for vi, v in enumerate(args):
-            curr = f"%{base}{vi+1}"
-            pos = f"[{fi}]"
+            is_last = (vi == len(args) - 1)
+            nxt = f'%{result_name}' if is_last else f'%__TMP_{result_name}_{vi}__'
+            pos = f'[{fi}]'
             if fi >= 3:
                 is_size = (fi - 3) < rank
                 arr_idx = fi - 3 if is_size else fi - 3 - rank
                 base_arr = 3 if is_size else 4
-                pos = f"[{base_arr}, {arr_idx}]"
-            lines.append(f"{indent}{curr} = llvm.insertvalue {v}, {prev}{pos} : {dst}")
-            prev = curr
+                pos = f'[{base_arr}, {arr_idx}]'
+            chain.append(f'{indent}{nxt} = llvm.insertvalue {v}, {curr}{pos} : {dst}')
+            curr = nxt
             fi += 1
-        # Now prev holds the final value. Replace ALL uses of %result_name with this.
-        final_val = prev
-        # We return both the replacement lines and the mapping for later use
-        return "\n".join(lines), result_name, final_val
+        lines[idx] = '\n'.join(chain)
 
-    # Collect all replacements first (keep original lines, mark them for later)
-    replacements: list[tuple[str, str, str, int]] = []  # (orig_name, final_val, rep_text, line_idx)
-    result_lines: list[str] = []
-    for line in mlir_text.split("\n"):
-        fixed = fix_line(line)
-        if fixed is not None:
-            rep_text, orig_name, final_val = fixed
-            replacements.append((orig_name, final_val, rep_text, len(result_lines)))
-        result_lines.append(line)
+    # Phase 3: replace sentinels with %{name} (which is the final chain value)
+    for orig_name, sentinel in sentinel_map.items():
+        for i in range(len(lines)):
+            lines[i] = lines[i].replace(sentinel, f'%{orig_name}')
 
-    # Apply replacements: replace the original def line with the new chain
-    for orig_name, final_val, rep_text, idx in replacements:
-        # Replace original def line with the new chain
-        result_lines[idx] = rep_text
-        # Update references: %orig_name used as SSA value → final_val
-        # Only replace standalone SSA value uses (not inside type defs)
-        orig_ref_re = re.compile(rf'(?<!%)%{orig_name}(?!\w)')
-        for i, line in enumerate(result_lines):
-            if i == idx:
-                continue
-            if re.match(rf'\s*%{orig_name}\s*=', line):
-                continue  # definition line (shouldn't happen, but just in case)
-            new_line = []
-            prev_end = 0
-            for m in orig_ref_re.finditer(line):
-                # Check this isn't inside a !llvm.struct<...> type definition
-                before = line[:m.start()]
-                angle_depth = before.count("<") - before.count(">")
-                if angle_depth > 0:
-                    continue  # inside a type definition
-                new_line.append(line[prev_end:m.start()])
-                new_line.append(final_val)
-                prev_end = m.end()
-            new_line.append(line[prev_end:])
-            result_lines[i] = "".join(new_line)
-
-    return "\n".join(result_lines)
+    return '\n'.join(lines)
 
 
 def _fixup_mlir_for_translate(mlir_text: str) -> str:
