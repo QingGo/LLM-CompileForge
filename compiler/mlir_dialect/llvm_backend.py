@@ -297,13 +297,15 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
         except Exception:
             pass  # fuse is optional
 
-        # Tile K dim by 64 + vectorize matmuls to eliminate FP accuracy gap
-        # (cos 0.865 → 0.999) and improve performance.  Falls back to scalar
-        # pipeline on failure (transform dialect errors, unsupported shapes).
+        # Tile matmul + batch_matmul K dim by 64 for better FP accuracy
+        # (smaller K → less FP accumulation error) and parallel loop lowering.
         try:
-            _vectorize_via_transform(ir_module)
+            _tile_matmuls_per_func(ir_module, tile_k=64)
+            pm.PassManager.parse(
+                "builtin.module(canonicalize,cse)", ctx
+            ).run(ir_module.operation)
         except Exception:
-            _log.info("Vectorization skipped (scalar fallback)")
+            _log.info("Tiling skipped")
 
         # No emit_c_interface — the Rust runtime calls struct-based functions
         # directly (see rust/src/hal_cpu.rs for the MemRefDesc calling convention).
@@ -331,7 +333,7 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
             "convert-cf-to-llvm,"
             "convert-math-to-llvm,"
             "convert-arith-to-llvm,"
-            "convert-vector-to-llvm{vector-contract-lowering=outerproduct},"
+            "convert-vector-to-llvm,"
             "convert-ub-to-llvm,"
             "convert-func-to-llvm,"
             "reconcile-unrealized-casts"
@@ -379,7 +381,7 @@ def _find_mlir_tool(name: str) -> str:
             return candidate
 
     for prefix in [
-        "/usr/local/opt/llvm@20/bin",
+        "/usr/local/opt/llvm/bin",
         "/usr/local/opt/llvm@19/bin",
         "/usr/local/opt/llvm@18/bin",
         "/usr/local/opt/llvm/bin",

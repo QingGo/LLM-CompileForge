@@ -6,3 +6,4 @@
 !compiled/
 !llvm-project/
 !sf-dialect/build/
+!.opencode/

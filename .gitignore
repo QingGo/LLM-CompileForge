@@ -15,3 +15,4 @@ rust/target/
 benchmark_results.json
 llvm-project/
 sf-dialect/build/
+.opencode/

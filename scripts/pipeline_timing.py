@@ -277,7 +277,7 @@ with ctx:
     sys.stdout.write("Step 4: llc (.ll → .o)\n")
     try:
         _step("llc", [
-            "/usr/local/opt/llvm@20/bin/llc",
+            "/usr/local/opt/llvm/bin/llc",
             "-O0", "-filetype=obj",
             "-o", str(o_path),
             str(ll_path),

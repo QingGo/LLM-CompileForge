@@ -97,6 +97,11 @@ test-pipeline-timing: $(VENV)
 	DYLD_LIBRARY_PATH="$(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs" \
 	$(PYTHON) scripts/pipeline_timing.py compiled/opt_125m_fresh
 
+# ---- L1i: Pipeline 逐 pass 落盘 debug (中间文件保存+计时) ----
+test-pipeline-debug: $(VENV)
+	DYLD_LIBRARY_PATH="$(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs" \
+	$(PYTHON) scripts/pipeline_debug.py compiled/opt_125m_fresh --out /tmp/pipeline_debug
+
 # ---- L2a: 全模型编译测试 (逐步骤检测, <300s) ----
 test-compile-full: $(VENV)
 	DYLD_LIBRARY_PATH="$(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs" \
