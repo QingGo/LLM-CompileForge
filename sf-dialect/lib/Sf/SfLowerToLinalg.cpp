@@ -2310,9 +2310,11 @@ struct SfLowerToLinalgPass
                             math::MathDialect, tensor::TensorDialect,
                             func::FuncDialect, scf::SCFDialect>();
     target.addLegalOp<UnrealizedConversionCastOp>();
-    // Don't mark sf dialect as globally illegal. Instead, use per-op dynamic
-    // legalization so that ops whose patterns return failure() (e.g. scalar ops)
-    // don't cause infinite retry in the conversion framework.
+    // Don't mark sf dialect as globally illegal. This lets the conversion
+    // framework run all patterns on all ops. Patterns that fail will cause
+    // the op to remain unconverted (okay in Partial mode), and the
+    // post-conversion check below will report them.
+    // Only mark specific ops as dynamically legal to prevent infinite retry.
     auto isScalar = [](Operation *op) {
       for (auto r : op->getResults())
         if (auto t = dyn_cast<RankedTensorType>(r.getType()))
@@ -2376,8 +2378,23 @@ struct SfLowerToLinalgPass
     if (failed(applyPartialConversion(getOperation(), target, std::move(patterns)))) {
       llvm::errs() << "  [sf-lower-to-linalg] CONVERSION FAILED\n";
       signalPassFailure();
+    }
+
+    // Post-conversion check: report remaining sf ops with their names
+    int64_t remaining = 0;
+    getOperation()->walk([&](Operation *op) {
+      if (op->getDialect() && isa<sf::SfDialect>(op->getDialect())) {
+        if (remaining == 0)
+          llvm::errs() << "  [sf-lower-to-linalg] remaining sf ops:\n";
+        llvm::errs() << "    " << op->getName().getStringRef() << "\n";
+        ++remaining;
+      }
+    });
+    if (remaining > 0) {
+      llvm::errs() << "  [sf-lower-to-linalg] " << remaining
+                   << " sf ops remain unconverted\n";
     } else {
-      llvm::errs() << "  [sf-lower-to-linalg] conversion succeeded\n";
+      llvm::errs() << "  [sf-lower-to-linalg] all sf ops converted\n";
     }
   }
 };
