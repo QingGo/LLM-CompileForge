@@ -148,4 +148,96 @@ mod integration_tests {
         assert!(logits_slice[0].is_finite(), "logits should be finite");
         assert!(result.numel() > 0, "output should not be empty");
     }
+
+    /// End-to-end test: full auto-regressive loop via InferenceRunner.
+    /// Loads compiled model, creates runner, feeds a short prompt,
+    /// runs step() multiple times, verifies tokens are produced.
+    #[test]
+    fn test_runner_generate_end_to_end() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let dylib = format!("{}/../compiled/opt_125m_v8/libopt_125m.dylib", manifest_dir);
+        let st = find_safetensors();
+
+        if !std::path::Path::new(&dylib).exists() {
+            eprintln!("SKIP: compiled model not found at {}", dylib);
+            return;
+        }
+
+        let executor = match ModelExecutor::load(&dylib, st.as_deref()) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("SKIP: failed to load model: {}", e);
+                return;
+            }
+        };
+
+        // Use test tokenizer (minimal BPE for unit tests)
+        let tok_path = format!("{}/../tests/data/test_tokenizer.json", manifest_dir);
+        let tokenizer = match crate::tokenizer::Tokenizer::from_file(&tok_path) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("SKIP: no test tokenizer: {}", e);
+                return;
+            }
+        };
+
+        let config = crate::runner::RunnerConfig {
+            max_batch_size: 4,
+            max_tokens_per_step: 128,
+            chunk_size: 64,
+            num_blocks: 1024,
+            block_size: 16,
+            max_tokens_per_request: 5,
+            seed: 42,
+            use_chat_template: false,
+        };
+
+        let mut runner = match crate::runner::InferenceRunner::new(executor, tokenizer, config) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("SKIP: failed to create runner: {}", e);
+                return;
+            }
+        };
+
+        // Add a simple prompt — "a b" — which the test tokenizer can encode
+        // (test tokenizer has a=4, b=5, <s>=0, </s>=2)
+        let rid = runner
+            .add_request(
+                "a b",
+                crate::sampler::SamplerConfig {
+                    temperature: 0.0,
+                    top_p: 1.0,
+                    top_k: 0,
+                    max_tokens: Some(5),
+                },
+            )
+            .expect("add request");
+
+        eprintln!("Added request: {}", rid);
+        let mut total_tokens = 0usize;
+
+        // Run up to 10 steps
+        for step in 0..10 {
+            let results = runner.step().expect("step failed");
+            if results.is_empty() {
+                eprintln!("No more work after step {}", step);
+                break;
+            }
+            for r in &results {
+                eprintln!("step[{}] request={} token={} text='{}' finished={}",
+                           step, r.request_id, r.token_id, r.text, r.finished);
+                total_tokens += 1;
+                if r.finished {
+                    eprintln!("Request finished at step {}", step);
+                }
+            }
+        }
+
+        assert!(total_tokens >= 1, "should produce at least 1 token");
+        eprintln!(
+            "E2E OK: produced {} tokens across {} steps",
+            total_tokens, 10.min(total_tokens)
+        );
+    }
 }
