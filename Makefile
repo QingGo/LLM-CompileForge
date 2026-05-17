@@ -47,6 +47,11 @@ test-vec: $(VENV)
 	$(PYTHON) scripts/test_transform_vec.py
 	$(PYTHON) -m pytest tests/test_pipeline_bugs.py -v --tb=short --timeout=60
 
+# ---- L1g: Lowering 诊断 (每个 op 类型单独测试, <10s) ----
+test-lower: $(VENV)
+	DYLD_LIBRARY_PATH="$(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs" \
+	$(PYTHON) scripts/test_lowering_diag.py
+
 # ---- L1f: 管线性能回归 (<60s) ----
 test-perf: $(VENV)
 	$(PYTHON) scripts/perf_regression.py --save .perf_baseline.json
