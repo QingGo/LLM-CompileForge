@@ -22,8 +22,8 @@ mod m1_tests {
         };
 
         let func: libloading::Symbol<CifaceFn3> = unsafe {
-            lib.get(b"_mlir_ciface_add_two")
-                .expect("symbol _mlir_ciface_add_two not found")
+            lib.get(b"add_two")
+                .expect("symbol add_two not found")
         };
 
         let rows = 2usize;

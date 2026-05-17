@@ -667,7 +667,7 @@ def _emit_compute_graph_section(
     parts.append(struct.pack("<I", num_funcs))
 
     for fi, func in enumerate(module.functions):
-        _emit_string(parts, f"_mlir_ciface_{func.name}")
+        _emit_string(parts, func.name)
 
         # Collect weight/constant ops in this function — these become additional
         # function arguments after C++ lowering promotes them from ops to args.

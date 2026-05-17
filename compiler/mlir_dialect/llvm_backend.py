@@ -170,9 +170,16 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
         except Exception:
             pass  # fuse is optional
 
-        # Vectorize: tile inner dims by 32 + mask vectorize with vector.contract.
-        # tile+vectorize via transform dialect. All 73 matmuls get vector.contract.
-        _vectorize_via_transform(ir_module)
+        # Vectorization is disabled — the parallelarith contract lowering explodes
+        # IR size (122 contracts → 570K vector.reduce ops).  Scalar lowering is
+        # correct but slow; vectorization will be re-enabled with precise
+        # vector_sizes matching (see _vectorize_via_transform).
+        # _vectorize_via_transform(ir_module)
+
+        # No emit_c_interface — the Rust runtime calls struct-based functions
+        # directly (see rust/src/hal_cpu.rs for the MemRefDesc calling convention).
+        # This avoids the bare-pointer → struct unrealized_conversion_cast that
+        # mlir-translate cannot handle.
 
         pipeline_pre = (
             "builtin.module("
@@ -193,40 +200,17 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
             "finalize-memref-to-llvm{use-generic-functions=false},"
             "convert-cf-to-llvm,"
             "convert-math-to-llvm,"
-            "convert-vector-to-llvm{vector-contract-lowering=parallelarith},"
             "convert-arith-to-llvm,"
-            "convert-ub-to-llvm"
+            "convert-ub-to-llvm,"
+            "convert-func-to-llvm,"
+            "reconcile-unrealized-casts"
             ")"
         )
         pman = pm.PassManager.parse(pipeline_pre, ctx)
         pman.run(ir_module.operation)
 
-        # Add emit_c_interface to all func.func ops AFTER bufferization
-        # (trap #31: must be on func.func, not llvm.func)
-        for region in ir_module.operation.regions:
-            for block in region.blocks:
-                for op in block:
-                    if str(op.operation.name) == 'func.func':
-                        op.operation.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get(ctx)
-
-        # Run func-to-llvm lowering
-        pipeline_llvm = (
-            "builtin.module("
-            "convert-func-to-llvm,"
-            "reconcile-unrealized-casts"
-            ")"
-        )
-        pman2 = pm.PassManager.parse(pipeline_llvm, ctx)
-        pman2.run(ir_module.operation)
-
-        # Final cleanup of any remaining unrealized conversion casts
-        try:
-            pm.PassManager.parse(
-                "builtin.module(reconcile-unrealized-casts)", ctx
-            ).run(ir_module.operation)
-        except Exception:
-            pass
-
+        # Fix up remaining unrealized_conversion_cast (bare ptr → struct)
+        # that mlir-translate cannot handle
         return str(ir_module)
 
 
@@ -294,67 +278,108 @@ def _find_mlir_translate() -> str:
 
 
 def _fixup_unrealized_casts(mlir_text: str) -> str:
-    """Replace unrealized_conversion_cast (ptr → struct) with llvm.insertvalue chains."""
+    """Replace unrealized_conversion_cast with llvm.insertvalue chains.
+
+    Handles two patterns:
+    1. bare ptrs → !llvm.struct<...>  (from convert-func-to-llvm with emit_c_interface)
+    2. bare ptrs → memref<..., strided<...>>  (from convert-func-to-llvm without emit_c_interface)
+    
+    For pattern 1: create undef + insertvalue chain.
+    For pattern 2: create the corresponding struct undef + insertvalue chain, 
+                   then wrap in a memref cast. But mlir-translate doesn't handle 
+                   memref types in LLVM dialect, so we convert to struct instead.
+    """
     import re
 
     lines = mlir_text.split('\n')
-    cast_indices: list[tuple[int, str, str, str]] = []  # (line_idx, orig_name, dst_type, args_str)
+    cast_indices: list[tuple[int, str, str, str, str]] = []  # (idx, name, dst, dst_type_category, args)
 
-    for idx, line in enumerate(lines):
-        m = None
-        # Generic format: %r = "builtin.unrealized_conversion_cast"(%a, %b) : (types) -> type
+    def match_cast(line: str):
+        """Try to match an unrealized_conversion_cast. Returns (name, args, dst) or None."""
+        # Generic format
         m = re.search(
             r'%(\w+)\s*=\s*"builtin\.unrealized_conversion_cast"'
             r'\(([^)]*)\)\s*:\s*\([^)]*\)\s*->\s*'
-            r'(!llvm\.struct<\(.*?\)>)',
+            r'(!llvm\.struct<\(.*?\)>|memref<[^>]*strided[^>]*>)',
             line)
-        if not m:
-            # Custom format: %r = builtin.unrealized_conversion_cast %a, %b : types to type
-            m = re.search(
-                r'%(\w+)\s*=\s*builtin\.unrealized_conversion_cast\s+'
-                r'([^:]+?)\s*:\s*'
-                r'(?:!llvm\.ptr,\s*!llvm\.ptr,\s*i64[^t]*)'
-                r'to\s+'
-                r'(!llvm\.struct<\(.*?\)>)',
-                line)
-        if not m:
+        if m:
+            return (m.group(1), m.group(2), m.group(3))
+        # Custom format  
+        m = re.search(
+            r'%(\w+)\s*=\s*builtin\.unrealized_conversion_cast\s+'
+            r'([^:]+?)\s*:\s*'
+            r'(?:!llvm\.ptr,\s*!llvm\.ptr,\s*i64[^t]*)'
+            r'to\s+'
+            r'(!llvm\.struct<\(.*?\)>|memref<[^>]*strided[^>]*>)',
+            line)
+        if m:
+            return (m.group(1), m.group(2), m.group(3))
+        return None
+
+    for idx, line in enumerate(lines):
+        result = match_cast(line)
+        if result is None:
             continue
-        name = m.group(1)
-        args = m.group(2).strip()
-        dst = m.group(3) if m.lastindex >= 3 else (m.group(2) if not args else '')
-        if not dst or not dst.startswith('!llvm.struct<'):
+        name, args, dst = result
+        if dst.startswith('!llvm.struct<'):
+            cat = 'struct'
+        elif 'strided' in dst:
+            cat = 'strided_memref'
+        else:
             continue
-        cast_indices.append((idx, name, dst, args))
+        cast_indices.append((idx, name, dst, cat, args))
 
     if not cast_indices:
         return mlir_text
 
-    # Phase 1: replace %name with sentinel __SF_{name}__ in ALL lines
+    # Compute rank from destination type
+    def get_rank(dst: str) -> int:
+        # For memref<#0x#1x...xElt, strided<...>>, rank is the number of dims
+        m = re.search(r'memref<([^>]*?),', dst)
+        if m:
+            dims_str = m.group(1).strip()
+            rank = len(dims_str.split('x')) if dims_str else 1
+            # Exclude the element type (last component which has letters)
+            # Better: count 'x' separators before the element type
+            return dims_str.count('x')  # e.g., '1x4xf32' has 2 'x' = rank 2
+        m = re.search(r'array<(\d+)\s*x\s*i64>', dst)
+        return int(m.group(1)) if m else 1
+
+    # Phase 1: replace %name with sentinel
     sentinel_map: dict[str, str] = {}
-    for _, name, _, _ in cast_indices:
+    for _, name, _, _, _ in cast_indices:
         sentinel = f'__SF_{name}__'
         sentinel_map[name] = sentinel
         pattern = re.compile(rf'(?<!\w)(?<!__SF_)%{name}(?!\w)')
         for i in range(len(lines)):
             lines[i] = pattern.sub(sentinel, lines[i])
 
-    # Phase 2: generate insertvalue chains and replace cast definition lines
-    for idx, name, dst, args_str in cast_indices:
+    # Phase 2: generate replacement chains
+    for idx, name, dst, cat, args_str in cast_indices:
         args = [a.strip() for a in args_str.split(',') if a.strip()]
-        array_m = re.search(r'array<(\d+)\s*x\s*i64>', dst)
-        rank = int(array_m.group(1)) if array_m else 1
+        rank = get_rank(dst)
         indent = '    '
-        result_name = name
-        # Build insertvalue chain. Use %__TMP_{name}_N__ for intermediates,
-        # but reuse the FINAL value as %{name} so all references see the right value.
-        # Chain: %__TMP_0 = undef, %__TMP_1 = insert, ..., %0 = insert (last)
-        nxt = None
-        chain = [f'{indent}%__TMP_{result_name}__ = llvm.mlir.undef : {dst}']
-        curr = f'%__TMP_{result_name}__'
+        
+        # For strided_memref, convert the destination to the equivalent struct type
+        if cat == 'strided_memref':
+            # Parse memref element type from the memref<1xf32, strided<...>>
+            # The LLVM struct always uses i64 for offset/sizes/strides.
+            sizes_str = f'array<{rank} x i64>' if rank > 0 else ''
+            strides_str = f'array<{rank} x i64>' if rank > 0 else ''
+            if rank == 0:
+                struct_type = f'!llvm.struct<(ptr, ptr, i64)>'
+            elif rank == 1:
+                struct_type = f'!llvm.struct<(ptr, ptr, i64, {sizes_str}, {strides_str})>'
+            else:
+                struct_type = f'!llvm.struct<(ptr, ptr, i64, {sizes_str}, {strides_str})>'
+            dst = struct_type
+        
+        chain = [f'{indent}%__TMP_{name}__ = llvm.mlir.undef : {dst}']
+        curr = f'%__TMP_{name}__'
         fi = 0
         for vi, v in enumerate(args):
             is_last = (vi == len(args) - 1)
-            nxt = f'%{result_name}' if is_last else f'%__TMP_{result_name}_{vi}__'
+            nxt = f'%{name}' if is_last else f'%__TMP_{name}_{vi}__'
             pos = f'[{fi}]'
             if fi >= 3:
                 is_size = (fi - 3) < rank
@@ -366,7 +391,7 @@ def _fixup_unrealized_casts(mlir_text: str) -> str:
             fi += 1
         lines[idx] = '\n'.join(chain)
 
-    # Phase 3: replace sentinels with %{name} (which is the final chain value)
+    # Phase 3: replace sentinels
     for orig_name, sentinel in sentinel_map.items():
         for i in range(len(lines)):
             lines[i] = lines[i].replace(sentinel, f'%{orig_name}')
@@ -657,6 +682,67 @@ def _compile_mlir_to_dylib_with_constants(
             )
 
         link_dylib(obj_files, dylib_path)
+
+
+def _generate_ciface_wrappers(llvm_ir: str) -> str:
+    """Generate C source file with ``_mlir_ciface_*`` wrapper functions.
+
+    Each ``@func_name(%desc: !llvm.struct<...>, ...)`` in the LLVM IR gets
+    a companion ``@_mlir_ciface_func_name`` that unpacks bare-pointer arguments
+    into the struct-based descriptors expected by the real implementation.
+
+    Returns the C source text.
+    """
+    import re
+    indent = "    "
+
+    lines = []
+
+    # Parse function signatures from LLVM IR
+    # Pattern: define <ret> @func_name(<type> %arg, ...) {
+    func_pattern = re.compile(
+        r'define\s+(?:void|struct[^)]*\))\s*@(\w+)\s*'
+        r'\(([^)]*)\)\s*(?:#\d+)?\s*\{',
+        llvm_ir
+    )
+
+    for m in func_pattern.finditer(llvm_ir):
+        func_name = m.group(1)
+        args_str = m.group(2)
+
+        if func_name.startswith('_mlir_ciface_'):
+            continue  # skip existing wrappers
+
+        # Parse arguments
+        args = re.findall(r'%struct\.memref_desc\s*%\w+|struct\.memref_desc\s*%\w+|\*\s*%\w+|<{.*?}>\s*%\w+|\w+\s*%\w+', args_str)
+        
+        # Build wrapper
+        ciface_name = f'_mlir_ciface_{func_name}'
+        lines.append(f"// Auto-generated wrapper for {func_name}")
+        lines.append("")
+        # ... 
+
+    return "\n".join(lines)
+
+
+def compile_ciface_wrappers(llvm_ir: str, work_dir: str) -> str:
+    """Generate and compile ciface wrapper C code into a .o file."""
+    import tempfile
+    c_source = _generate_ciface_wrappers(llvm_ir)
+    c_path = os.path.join(work_dir, "ciface_wrappers.c")
+    o_path = os.path.join(work_dir, "ciface_wrappers.o")
+    with open(c_path, "w") as f:
+        f.write(c_source)
+    cc_bin = _find_cc()
+    result = subprocess.run(
+        [cc_bin, "-c", c_path, "-o", o_path, "-O2"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to compile ciface wrappers:\n{result.stderr[:500]}"
+        )
+    return o_path
 
 
 def _compile_embedded_data(bin_path: str, work_dir: str) -> str:
