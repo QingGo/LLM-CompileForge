@@ -307,10 +307,15 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
         except Exception:
             _log.info("Tiling skipped")
 
-        # No emit_c_interface — the Rust runtime calls struct-based functions
-        # directly (see rust/src/hal_cpu.rs for the MemRefDesc calling convention).
-        # This avoids the bare-pointer → struct unrealized_conversion_cast that
-        # mlir-translate cannot handle.
+        # Add emit_c_interface to all functions so convert-func-to-llvm generates
+        # _mlir_ciface_* wrappers (the Rust executor calls these wrapper functions).
+        try:
+            main_mod = ir_module.operation.regions[0].blocks[0]
+            for op in list(main_mod):
+                if str(op.operation.name) == "func.func":
+                    op.operation.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get(context=ctx)
+        except Exception:
+            _log.warning("Could not set emit_c_interface on functions")
 
         pipeline_pre = (
             "builtin.module("
@@ -411,123 +416,219 @@ def _find_mlir_translate() -> str:
 
 
 def _fixup_unrealized_casts(mlir_text: str) -> str:
-    """Replace unrealized_conversion_cast with llvm.insertvalue chains.
+    """Replace ``unrealized_conversion_cast`` with equivalent LLVM dialect ops.
 
-    Handles two patterns:
-    1. bare ptrs → !llvm.struct<...>  (from convert-func-to-llvm with emit_c_interface)
-    2. bare ptrs → memref<..., strided<...>>  (from convert-func-to-llvm without emit_c_interface)
-    
-    For pattern 1: create undef + insertvalue chain.
-    For pattern 2: create the corresponding struct undef + insertvalue chain, 
-                   then wrap in a memref cast. But mlir-translate doesn't handle 
-                   memref types in LLVM dialect, so we convert to struct instead.
+    After ``finalize-memref-to-llvm`` + ``convert-func-to-llvm``, two kinds of
+    ``unrealized_conversion_cast`` remain (no actual memref ops exist):
+
+    1. **Entry cast** — bare ptrs → strided memref (143 in OPT-125M)::
+
+         %v = builtin.unrealized_conversion_cast %a0, %a1, %a2, ...
+           : !llvm.ptr, !llvm.ptr, i64, i64, ...
+           to memref<DIMS, strided<...>>
+
+       → Replace with ``undef`` + ``llvm.insertvalue`` chain that builds
+         the equivalent ``!llvm.struct<(ptr, ptr, i64, ...)>``.
+       %v is now an LLVM struct instead of a strided memref.
+
+    2. **Exit cast** — strided memref → ``!llvm.struct<...>`` (143 pairs)::
+
+         %r = builtin.unrealized_conversion_cast %v
+           : memref<..., strided<...>> to !llvm.struct<...>
+
+       After fixing (1), %v IS already ``!llvm.struct<...>``.
+       This cast becomes a no-op (struct → struct).  Replace all uses
+       of %r with %v and remove the cast line.
+
+    3. **Direct struct cast** — bare ptrs → ``!llvm.struct<...>`` (45)::
+
+         %r = builtin.unrealized_conversion_cast %a0, %a1, ...
+           : !llvm.ptr, !llvm.ptr, i64, ... to !llvm.struct<...>
+
+       → ``undef`` + ``llvm.insertvalue`` chain (unchanged).
     """
     import re
 
     lines = mlir_text.split('\n')
-    cast_indices: list[tuple[int, str, str, str, str]] = []  # (idx, name, dst, dst_type_category, args)
+    indent = '    '
 
-    def match_cast(line: str):
-        """Try to match an unrealized_conversion_cast. Returns (name, args, dst) or None."""
-        # Generic format
-        m = re.search(
-            r'%(\w+)\s*=\s*"builtin\.unrealized_conversion_cast"'
-            r'\(([^)]*)\)\s*:\s*\([^)]*\)\s*->\s*'
-            r'(!llvm\.struct<\(.*?\)>|memref<[^>]*strided[^>]*>)',
-            line)
-        if m:
-            return (m.group(1), m.group(2), m.group(3))
-        # Custom format  
-        m = re.search(
-            r'%(\w+)\s*=\s*builtin\.unrealized_conversion_cast\s+'
-            r'([^:]+?)\s*:\s*'
-            r'(?:!llvm\.ptr,\s*!llvm\.ptr,\s*i64[^t]*)'
-            r'to\s+'
-            r'(!llvm\.struct<\(.*?\)>|memref<[^>]*strided[^>]*>)',
-            line)
-        if m:
-            return (m.group(1), m.group(2), m.group(3))
-        return None
+    # ── Pre-compiled regexes ───────────────────────────────────────
+
+    _re_entry = re.compile(
+        r'%(\w+)\s*=\s*builtin\.unrealized_conversion_cast\s+'
+        r'((?:%\w+(?:\s*,\s*)?)+?)\s*:\s*'
+        r'!llvm\.ptr,\s*!llvm\.ptr,\s*i64'
+        r'.*?\s*to\s*'
+        r'(memref<[^>]*?strided[^>]*>[^>]*>|memref<[^>]*>)'
+    )
+    _re_exit = re.compile(
+        r'%(\w+)\s*=\s*builtin\.unrealized_conversion_cast\s+%(\w+)\s*:\s*'
+        r'memref<[^>]*?strided[^>]*>[^>]*>\s*to\s*'
+        r'(!llvm\.struct<\([^)]*\)>)'
+    )
+    _re_exit_identity = re.compile(
+        r'%(\w+)\s*=\s*builtin\.unrealized_conversion_cast\s+%(\w+)\s*:\s*'
+        r'memref<[^>]*>\s*to\s*'
+        r'(!llvm\.struct<\([^)]*\)>)'
+    )
+    _re_direct = re.compile(
+        r'%(\w+)\s*=\s*builtin\.unrealized_conversion_cast\s+'
+        r'(%[\w,\s%]+?)\s*:\s*'
+        r'(!llvm\.ptr,\s*!llvm\.ptr,\s*i64(?:,\s*(?:!llvm\.ptr|i64))*)\s*to\s*'
+        r'(!llvm\.struct<\([^)]*\)>)'
+    )
+
+    # ── Phase 1: classify all casts ─────────────────────────────────
+
+    # List of (line_idx, name, [arg_names], memref_type) for entry casts.
+    # NOTE: SSA names (%0, %1, ...) are reused across functions. Use a list
+    # instead of a dict keyed by name to avoid overwrites between functions.
+    entry_casts: list[tuple[int, str, list[str], str]] = []
+    # List of (line_idx, dst_name, src_name, struct_type) — exit struct→struct
+    exit_casts: list[tuple[int, str, str, str]] = []
+    # List of (line_idx, name, dst_struct, args_str) — direct struct
+    direct_casts: list[tuple[int, str, str, str]] = []
 
     for idx, line in enumerate(lines):
-        result = match_cast(line)
-        if result is None:
+        s = line.strip()
+        if 'unrealized_conversion_cast' not in s:
             continue
-        name, args, dst = result
-        if dst.startswith('!llvm.struct<'):
-            cat = 'struct'
-        elif 'strided' in dst:
-            cat = 'strided_memref'
-        else:
-            continue
-        cast_indices.append((idx, name, dst, cat, args))
 
-    if not cast_indices:
+        m = _re_entry.match(s)
+        if m:
+            name = m.group(1)
+            args = [a.strip() for a in m.group(2).split(',') if a.strip()]
+            entry_casts.append((idx, name, args, m.group(3)))
+            continue
+
+        m = _re_exit.match(s)
+        if m:
+            exit_casts.append((idx, m.group(1), m.group(2), m.group(3)))
+            continue
+
+        m = _re_exit_identity.match(s)
+        if m:
+            exit_casts.append((idx, m.group(1), m.group(2), m.group(3)))
+            continue
+
+        m = _re_direct.match(s)
+        if m:
+            name = m.group(1)
+            args = m.group(2)
+            direct_casts.append((idx, name, m.group(4), args))
+            continue
+
+    if not entry_casts and not exit_casts and not direct_casts:
         return mlir_text
 
-    # Compute rank from destination type
-    def get_rank(dst: str) -> int:
-        # For memref<#0x#1x...xElt, strided<...>>, rank is the number of dims
-        m = re.search(r'memref<([^>]*?),', dst)
-        if m:
-            dims_str = m.group(1).strip()
-            rank = len(dims_str.split('x')) if dims_str else 1
-            # Exclude the element type (last component which has letters)
-            # Better: count 'x' separators before the element type
-            return dims_str.count('x')  # e.g., '1x4xf32' has 2 'x' = rank 2
-        m = re.search(r'array<(\d+)\s*x\s*i64>', dst)
-        return int(m.group(1)) if m else 1
+    # ── Phase 2: build struct type from memref type ─────────────────
 
-    # Phase 1: replace %name with sentinel
-    sentinel_map: dict[str, str] = {}
-    for _, name, _, _, _ in cast_indices:
-        sentinel = f'__SF_{name}__'
-        sentinel_map[name] = sentinel
-        pattern = re.compile(rf'(?<!\w)(?<!__SF_)%{name}(?!\w)')
-        for i in range(len(lines)):
-            lines[i] = pattern.sub(sentinel, lines[i])
+    def _strided_to_struct(memref_type: str) -> str:
+        """Build the equivalent ``!llvm.struct<...>`` for a memref type."""
+        m = re.match(r'memref<([^>]*?)(?:,|>)', memref_type)
+        if not m:
+            return '!llvm.struct<(ptr, ptr, i64)>'
+        dims = m.group(1)
+        rank = dims.count('x')  # e.g. '1x4xf32' → rank 2
+        sizes = f'array<{rank} x i64>' if rank else ''
+        strides = f'array<{rank} x i64>' if rank else ''
+        return (f'!llvm.struct<(ptr, ptr, i64, {sizes}, {strides})>'
+                if rank else '!llvm.struct<(ptr, ptr, i64)>')
 
-    # Phase 2: generate replacement chains
-    for idx, name, dst, cat, args_str in cast_indices:
-        args = [a.strip() for a in args_str.split(',') if a.strip()]
-        rank = get_rank(dst)
-        indent = '    '
-        
-        # For strided_memref, convert the destination to the equivalent struct type
-        if cat == 'strided_memref':
-            # Parse memref element type from the memref<1xf32, strided<...>>
-            # The LLVM struct always uses i64 for offset/sizes/strides.
-            sizes_str = f'array<{rank} x i64>' if rank > 0 else ''
-            strides_str = f'array<{rank} x i64>' if rank > 0 else ''
-            if rank == 0:
-                struct_type = f'!llvm.struct<(ptr, ptr, i64)>'
-            elif rank == 1:
-                struct_type = f'!llvm.struct<(ptr, ptr, i64, {sizes_str}, {strides_str})>'
+    # ── Phase 3: handle exit casts (struct → struct no-op) ─────────
+    # For each exit cast %r = cast %v : memref<strided> -> !llvm.struct:
+    #   %v comes from an entry cast → after Phase 4 it IS an !llvm.struct.
+    #   Instead of renaming (which breaks across-function SSA uniqueness),
+    #   build an independent undef+insertvalue chain from %v's entry args.
+    #
+    #   Key insight: SSA names (%0, %1, ...) are reused across functions.
+    #   A global rename would corrupt other functions.  We keep %r's name
+    #   and build the struct independently using the entry cast's args.
+
+    for exit_idx, dst_name, src_name, struct_type in exit_casts:
+        # Find the entry cast that produced src_name.
+        # SSA names are reused across functions — scan REVERSE and use
+        # the nearest PRECEDING entry cast (same function).
+        entry_args = None
+        entry_mtype = None
+        for e_idx, e_name, e_args, e_mtype in reversed(entry_casts):
+            if e_name == src_name and e_idx < exit_idx:
+                entry_args = e_args
+                entry_mtype = e_mtype
+                break
+
+        if entry_args is None:
+            continue
+
+        struct_type = _strided_to_struct(entry_mtype)
+        rank = entry_mtype.count('x')
+        chain = [f'{indent}%__TMP_{dst_name}__ = llvm.mlir.undef : {struct_type}']
+        curr = f'%__TMP_{dst_name}__'
+        fi = 0
+        for vi, v in enumerate(entry_args):
+            is_last = (vi == len(entry_args) - 1)
+            nxt = f'%{dst_name}' if is_last else f'%__TMP_{dst_name}_{vi}__'
+            if fi < 3:
+                pos = f'[{fi}]'
             else:
-                struct_type = f'!llvm.struct<(ptr, ptr, i64, {sizes_str}, {strides_str})>'
-            dst = struct_type
-        
+                arr_idx = fi - 3
+                if arr_idx < rank:
+                    pos = f'[3, {arr_idx}]'
+                else:
+                    pos = f'[4, {arr_idx - rank}]'
+            chain.append(f'{indent}{nxt} = llvm.insertvalue {v}, {curr}{pos} : {struct_type}')
+            curr = nxt
+            fi += 1
+        lines[exit_idx] = '\n'.join(chain)
+
+    # ── Phase 4: replace entry casts with undef + insertvalue ──────
+    for idx, name, args, mtype in entry_casts:
+        struct_type = _strided_to_struct(mtype)
+        rank = mtype.count('x')  # count 'x' between '<' and first ','
+        chain = [f'{indent}%__TMP_{name}__ = llvm.mlir.undef : {struct_type}']
+        curr = f'%__TMP_{name}__'
+        fi = 0
+        for vi, v in enumerate(args):
+            is_last = (vi == len(args) - 1)
+            nxt = f'%{name}' if is_last else f'%__TMP_{name}_{vi}__'
+            if fi < 3:
+                pos = f'[{fi}]'
+            else:
+                arr_idx = fi - 3
+                if arr_idx < rank:
+                    pos = f'[3, {arr_idx}]'
+                else:
+                    pos = f'[4, {arr_idx - rank}]'
+            chain.append(f'{indent}{nxt} = llvm.insertvalue {v}, {curr}{pos} : {struct_type}')
+            curr = nxt
+            fi += 1
+        lines[idx] = '\n'.join(chain)
+
+    # ── Phase 5: replace direct struct casts ────────────────────────
+    for idx, name, dst, args_str in direct_casts:
+        args = [a.strip() for a in args_str.split(',') if a.strip()]
+        rank = 0
+        m = re.search(r'array<(\d+)\s*x\s*i64>', dst)
+        if m:
+            rank = int(m.group(1))
         chain = [f'{indent}%__TMP_{name}__ = llvm.mlir.undef : {dst}']
         curr = f'%__TMP_{name}__'
         fi = 0
         for vi, v in enumerate(args):
             is_last = (vi == len(args) - 1)
             nxt = f'%{name}' if is_last else f'%__TMP_{name}_{vi}__'
-            pos = f'[{fi}]'
-            if fi >= 3:
-                is_size = (fi - 3) < rank
-                arr_idx = fi - 3 if is_size else fi - 3 - rank
-                base_arr = 3 if is_size else 4
-                pos = f'[{base_arr}, {arr_idx}]'
+            if fi < 3:
+                pos = f'[{fi}]'
+            else:
+                arr_idx = fi - 3
+                if arr_idx < rank:
+                    pos = f'[3, {arr_idx}]'
+                else:
+                    pos = f'[4, {arr_idx - rank}]'
             chain.append(f'{indent}{nxt} = llvm.insertvalue {v}, {curr}{pos} : {dst}')
             curr = nxt
             fi += 1
         lines[idx] = '\n'.join(chain)
-
-    # Phase 3: replace sentinels
-    for orig_name, sentinel in sentinel_map.items():
-        for i in range(len(lines)):
-            lines[i] = lines[i].replace(sentinel, f'%{orig_name}')
 
     return '\n'.join(lines)
 

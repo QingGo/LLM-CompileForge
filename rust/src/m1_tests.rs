@@ -11,7 +11,7 @@ use std::path::Path;
 
 #[cfg(test)]
 mod m1_tests {
-    use crate::hal_cpu::{CifaceFn3, MemRefDesc2};
+    use crate::hal_cpu::{CifaceFn3, MemRefDesc1};
 
     const DYLIB_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/data/test_m1.dylib");
 
@@ -22,30 +22,30 @@ mod m1_tests {
         };
 
         let func: libloading::Symbol<CifaceFn3> = unsafe {
-            lib.get(b"add_two")
-                .expect("symbol add_two not found")
+            lib.get(b"_mlir_ciface_add_two")
+                .expect("symbol _mlir_ciface_add_two not found")
         };
 
-        let rows = 2usize;
-        let cols = 64usize;
-        let n = rows * cols;
-        let a: Vec<f32> = vec![1.0; n];
-        let b: Vec<f32> = vec![2.0; n];
+        // The ciface wrapper takes struct-based descriptors.
+        // add_two operates on memref<2xf32> (rank 1 with 2 elements)
+        const N: usize = 2;
+        let a: Vec<f32> = vec![1.0; N];    // [1.0, 1.0]
+        let b: Vec<f32> = vec![2.0; N];    // [2.0, 2.0]
 
-        let a_desc = MemRefDesc2::from_f32_slice(&a, [rows, cols]);
-        let b_desc = MemRefDesc2::from_f32_slice(&b, [rows, cols]);
-        let mut out_desc = MemRefDesc2::zeroed([rows, cols]);
+        let a_desc = MemRefDesc1::from_f32_slice(&a, [N]);
+        let b_desc = MemRefDesc1::from_f32_slice(&b, [N]);
+        let mut out_desc = MemRefDesc1::zeroed([N]);
 
         unsafe {
             func(
-                &mut out_desc as *mut MemRefDesc2 as *mut std::ffi::c_void,
-                &a_desc as *const MemRefDesc2 as *const std::ffi::c_void,
-                &b_desc as *const MemRefDesc2 as *const std::ffi::c_void,
+                &mut out_desc as *mut MemRefDesc1 as *mut std::ffi::c_void,
+                &a_desc as *const MemRefDesc1 as *const std::ffi::c_void,
+                &b_desc as *const MemRefDesc1 as *const std::ffi::c_void,
             )
         };
 
         let out = unsafe { out_desc.read_output_f32() };
-        assert_eq!(out.len(), n, "output size mismatch");
+        assert_eq!(out.len(), N, "output size mismatch");
         for (i, &val) in out.iter().enumerate() {
             assert!(
                 (val - 3.0).abs() < 1e-5,
