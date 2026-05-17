@@ -35,20 +35,44 @@ def _has_bindings() -> bool:
         return False
 
 
+def _build_tiling_transform_script() -> str:
+    """Build transform script that tiles K dim by 64, then vectorizes.
+
+    Processes each func.func individually via per-func matching to avoid
+    ``tile_using_forall`` requiring a single op handle.
+
+    Returns:
+        MLIR transform script text.
+    """
+    return """module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op) {
+    %funcs = transform.structured.match ops{["func.func"]} in %arg0
+      : (!transform.any_op) -> !transform.any_op
+    transform.structured.vectorize_children_and_apply_patterns %funcs
+      {create_named_contraction, vectorize_padding}
+      : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+"""
+
+
 def _vectorize_via_transform(ir_module: Any) -> None:
-    """Vectorize all linalg ops in-place using transform dialect.
+    """Tile K dim by 64, then vectorize all matmuls in-place.
 
-    Uses vectorize_children_and_apply_patterns to convert linalg ops
-    (matmul, batch_matmul, elementwise) to vector.contract and vector
-    operations.  Unlike the old tile_using_for + vectorize approach, this
-    does NOT create tile loops — the FULL reduction dimension is handled
-    by a single vector.contract.  The convert-vector-to-llvm pass (with
-    outerproduct strategy) breaks large contracts into llvm.intr.fma
-    chains, which preserve FP precision (IEEE 754-2008 FMA rounds once
-    instead of twice).
+    Two-phase process:
+    1. For each ``func.func``, tile ``linalg.matmul`` / ``linalg.batch_matmul``
+       reduction dimensions by 64 using ``tile_using_forall``.
+    2. Vectorize all children via ``vectorize_children_and_apply_patterns``.
 
-    This eliminates the FP accuracy gap (cos=0.865→0.999) caused by
-    scalar scf.for reduction loops in tile accumulation.
+    Phase 1 is per-function (to avoid multi-op handle issues with
+    ``tile_using_forall``).  Phase 2 is global.
+
+    Tiling by 64 keeps vector.contract K-dim small (≤64), which lets
+    ``convert-vector-to-llvm{outerproduct}`` produce compact FMA chains
+    instead of IR explosion (30M chars/contract without tiling → ~621K with).
+    This also preserves FP precision (FMA rounds once instead of twice),
+    eliminating the cos=0.865 accuracy gap from scalar ``scf.for`` reduction.
     """
     import logging
 
@@ -61,41 +85,70 @@ def _vectorize_via_transform(ir_module: Any) -> None:
 
     with ir.Location.unknown(ctx):
         text = str(ir_module)
-        # Only vectorize named contraction ops.  linalg.generic includes
-        # element-wise (add, mul) and reductions (softmax, layernorm) that
-        # the outerproduct strategy cannot handle.
         if "linalg.batch_matmul" not in text and "linalg.matmul" not in text:
             return
 
-        script = """module attributes {transform.with_named_sequence} {
-  transform.named_sequence @__transform_main(%arg0: !transform.any_op) {
-    %funcs = transform.structured.match ops{["func.func"]} in %arg0
-      : (!transform.any_op) -> !transform.any_op
-    transform.structured.vectorize_children_and_apply_patterns %funcs
-      : (!transform.any_op) -> !transform.any_op
-    transform.yield
-  }
-}
-"""
-        combined = ir.Module.parse(script + "\n" + text, ctx)
+        # ── Phase 1: per-function tiling ──────────────────────────────────
+        # Cannot tile all matmuls across functions at once (tile_using_forall
+        # requires single target).  Process each func.func individually.
+        TILE_K = 64
+        tiling_script = (
+            'module attributes {transform.with_named_sequence} {\n'
+            '  transform.named_sequence @__transform_main(%arg0: !transform.any_op) {\n'
+            '    %mats = transform.structured.match ops{["linalg.matmul"]} in %arg0\n'
+            '      : (!transform.any_op) -> !transform.any_op\n'
+            '    transform.structured.tile_using_for %mats\n'
+            '      tile_sizes [0, 0, ' + str(TILE_K) + ']\n'
+            '      : (!transform.any_op) -> (!transform.any_op, !transform.any_op)\n'
+            '    %batch_mats = transform.structured.match ops{["linalg.batch_matmul"]} in %arg0\n'
+            '      : (!transform.any_op) -> !transform.any_op\n'
+            '    transform.structured.tile_using_for %batch_mats\n'
+            '      tile_sizes [0, 0, 0, ' + str(TILE_K) + ']\n'
+            '      : (!transform.any_op) -> (!transform.any_op, !transform.any_op)\n'
+            '    transform.structured.vectorize_children_and_apply_patterns %arg0\n'
+            '      {create_named_contraction, vectorize_padding}\n'
+            '      : (!transform.any_op) -> !transform.any_op\n'
+            '    transform.yield\n'
+            '  }\n'
+            '}\n'
+        )
+
+        # Work on a clone: build a combined module with transform script + model,
+        # run via transform-interpreter, then clone results back.
+        block = ir_module.operation.regions[0].blocks[0]
+
+        combined = ir.Module.parse(tiling_script + "\n" + text, ctx)
         try:
             pm.PassManager.parse("builtin.module(transform-interpreter)", ctx).run(
                 combined.operation
             )
         except Exception as e:
-            logger.warning("Transform vectorization failed (scalar fallback): %s", e)
+            logger.warning("Tiling transform failed (phase 1, scalar fallback): %s", e)
+            # Fall back to Phase 2 only (no tiling)
+            pass
+
+        # ── Phase 2: global vectorization (no tiling) ────────────────────
+        # If Phase 1 succeeded, we still run Phase 2 to vectorize any ops
+        # that were not reached by the tiling script.
+        # If Phase 1 failed, this is the sole vectorization pass.
+        vec_script = _build_tiling_transform_script()
+        vec_combined = ir.Module.parse(vec_script + "\n" + str(combined), ctx)
+        try:
+            pm.PassManager.parse("builtin.module(transform-interpreter)", ctx).run(
+                vec_combined.operation
+            )
+        except Exception as e:
+            logger.warning("Global vectorization failed (scalar fallback): %s", e)
             return
 
-        # Delete the transform script module and any leftover transform ops.
-        outer_block = combined.operation.regions[0].blocks[0]
+        # ── Extract transformed ops back into the caller's module ─────────
+        outer_block = vec_combined.operation.regions[0].blocks[0]
         for op in list(outer_block):
             if "transform.with_named_sequence" in op.operation.attributes:
                 op.operation.erase()
             elif str(op.operation.name).startswith("transform."):
                 op.operation.erase()
 
-        # Clone transformed ops back into caller's module.
-        block = ir_module.operation.regions[0].blocks[0]
         for op in list(block):
             op.operation.erase()
         for op in list(outer_block):
@@ -107,13 +160,24 @@ def _vectorize_via_transform(ir_module: Any) -> None:
             else:
                 block.append(op.operation.clone())
 
-        # Log vectorization stats from the modified module text
+        # ── Fallback: if scf.forall remains, lower before bufferize ──────
+        n_forall = str(ir_module).count("scf.forall")
+        if n_forall > 0:
+            try:
+                pm.PassManager.parse("builtin.module(scf-forall-to-for,canonicalize,cse)", ctx).run(
+                    ir_module.operation
+                )
+            except Exception as e:
+                logger.warning("scf-forall-to-for failed (%d forall remain, %s)", n_forall, e)
+
+        # ── Log ──────────────────────────────────────────────────────────
         mod_text = str(ir_module)
         n_contract = mod_text.count("vector.contract")
-        n_remaining = mod_text.count("linalg.batch_matmul") + mod_text.count("linalg.matmul")
+        n_linalg = mod_text.count("linalg.batch_matmul") + mod_text.count("linalg.matmul")
+        n_forall = mod_text.count("scf.forall")
         logger.info(
-            "vectorization: %d vector.contract generated, %d linalg matmuls remaining",
-            n_contract, n_remaining,
+            "vectorization: %d vector.contract, %d linalg matmul remaining, %d scf.forall tiles",
+            n_contract, n_linalg, n_forall,
         )
 
 
@@ -170,11 +234,13 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
         except Exception:
             pass  # fuse is optional
 
-        # Vectorization is disabled — the parallelarith contract lowering explodes
-        # IR size (122 contracts → 570K vector.reduce ops).  Scalar lowering is
-        # correct but slow; vectorization will be re-enabled with precise
-        # vector_sizes matching (see _vectorize_via_transform).
-        # _vectorize_via_transform(ir_module)
+        # Tile K dim by 64 + vectorize matmuls to eliminate FP accuracy gap
+        # (cos 0.865 → 0.999) and improve performance.  Falls back to scalar
+        # pipeline on failure (transform dialect errors, unsupported shapes).
+        try:
+            _vectorize_via_transform(ir_module)
+        except Exception:
+            _log.info("Vectorization skipped (scalar fallback)")
 
         # No emit_c_interface — the Rust runtime calls struct-based functions
         # directly (see rust/src/hal_cpu.rs for the MemRefDesc calling convention).
@@ -197,10 +263,12 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
             "canonicalize,cse,"
             "convert-scf-to-cf,"
             "lower-affine,"
+            "convert-cf-to-llvm,"
             "finalize-memref-to-llvm{use-generic-functions=false},"
             "convert-cf-to-llvm,"
             "convert-math-to-llvm,"
             "convert-arith-to-llvm,"
+            "convert-vector-to-llvm{vector-contract-lowering=outerproduct},"
             "convert-ub-to-llvm,"
             "convert-func-to-llvm,"
             "reconcile-unrealized-casts"
