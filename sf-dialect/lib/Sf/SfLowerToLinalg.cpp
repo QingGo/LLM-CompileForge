@@ -166,9 +166,19 @@ struct SfBinaryLowering : public OpRewritePattern<SfOpTy> {
     auto rank = cast<ShapedType>(resultType).getRank();
     auto lhsRank = lhsType.getRank();
     auto rhsRank = rhsType.getRank();
-    // Fail if operand element types aren't float (binary ops are FAdd/FMul etc.)
-    if (!isa<FloatType>(lhsType.getElementType()) ||
-        !isa<FloatType>(rhsType.getElementType())) {
+    // Promote non-float operands: when result is float but operands are int,
+    // insert sitofp conversion via linalg.generic (bufferizable).
+    auto outEltTy = cast<ShapedType>(resultType).getElementType();
+    if (isa<FloatType>(outEltTy)) {
+      if (!isa<FloatType>(lhsType.getElementType()) ||
+          !isa<FloatType>(rhsType.getElementType())) {
+        llvm::errs() << "  [SfBinary] type=" << SfOpTy::getOperationName()
+                     << " SKIP (non-float operand: " << lhsType.getElementType()
+                     << " vs " << rhsType.getElementType() << ")\n";
+        return failure();
+      }
+    } else if (!isa<FloatType>(lhsType.getElementType()) ||
+               !isa<FloatType>(rhsType.getElementType())) {
       llvm::errs() << "  [SfBinary] type=" << SfOpTy::getOperationName()
                    << " SKIP (non-float operand: " << lhsType.getElementType()
                    << " vs " << rhsType.getElementType() << ")\n";
@@ -1020,7 +1030,11 @@ struct SfScaledDotProductAttentionOpLowering
     SmallVector<int64_t> scoresShape(qType.getShape());
     scoresShape[rank - 1] = qType.getDimSize(rank - 2);
     auto scoresType = RankedTensorType::get(scoresShape, eltType);
-    Value scoresEmpty = makeZeroedEmpty(rewriter, loc, scoresType, {Q, K});
+    Value scoresInit = rewriter.create<tensor::EmptyOp>(loc, scoresType, scoresDyn(scoresType));
+    Value scoresZero = rewriter.create<arith::ConstantOp>(loc, eltType,
+        rewriter.getFloatAttr(eltType, 0.0f));
+    Value scoresEmpty = rewriter.create<linalg::FillOp>(loc,
+        ValueRange{scoresZero}, ValueRange{scoresInit}).getResult(0);
     Value scores;
     {
       // Generic batch-matmul: loop [b..h, m, n, k]: parallel(b..h), parallel(m), parallel(n), reduction(k)
@@ -1119,7 +1133,11 @@ struct SfScaledDotProductAttentionOpLowering
         });
 
     // 4d: sum reduction
-    Value sumEmpty = makeZeroedEmpty(rewriter, loc, maxType, {Q});
+    Value sumInit = rewriter.create<tensor::EmptyOp>(loc, maxType, maxDyn(maxType));
+    Value sumZero = rewriter.create<arith::ConstantOp>(loc, eltType,
+        rewriter.getFloatAttr(eltType, 0.0f));
+    Value sumEmpty = rewriter.create<linalg::FillOp>(loc,
+        ValueRange{sumZero}, ValueRange{sumInit}).getResult(0);
     auto sumOp = linalg::GenericOp::create(rewriter, loc, maxType, expVal, sumEmpty,
         {AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext()),
          AffineMap::get(rank, 0,
@@ -1153,7 +1171,11 @@ struct SfScaledDotProductAttentionOpLowering
       else
         outDyn.push_back(rewriter.create<tensor::DimOp>(loc, Q, i));
     }
-    Value outEmpty = makeZeroedEmpty(rewriter, loc, outEmptyType, {Q, V});
+    Value outInit = rewriter.create<tensor::EmptyOp>(loc, outEmptyType, outDyn);
+    Value outZero = rewriter.create<arith::ConstantOp>(loc, eltType,
+        rewriter.getFloatAttr(eltType, 0.0f));
+    Value outEmpty = rewriter.create<linalg::FillOp>(loc,
+        ValueRange{outZero}, ValueRange{outInit}).getResult(0);
     Value attnVResult;
     {
       // Generic batch-matmul: loop [b..h, m, s, d]: parallel(b..h), parallel(m), reduction(s), parallel(d)
@@ -1788,6 +1810,7 @@ struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
     auto loc = op.getLoc();
     Value input = op.getInput();
     Type rt = op.getResult().getType();
+    llvm::errs() << "  [sf.arange] rt=" << rt << " operands=" << op.getOperation()->getNumOperands() << "\n";
     auto outType = ::mlir::dyn_cast<::mlir::RankedTensorType>(rt);
     if (!outType) return failure();
     if (outType.getRank() == 0) {
@@ -1801,6 +1824,14 @@ struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
     }
     if (outType.getRank() != 1) return failure();
     auto eltType = getElementTypeOrSelf(rt);
+    // Override non-float output to f32 — arange is used for positional
+    // encodings which expect float tensor values.
+    bool outputWasPromoted = false;
+    if (!isa<FloatType>(eltType)) {
+      eltType = rewriter.getF32Type();
+      outType = RankedTensorType::get(outType.getShape(), eltType);
+      outputWasPromoted = true;
+    }
 
     // Extract first element from input and cast to index type
     auto inType = ::mlir::dyn_cast<::mlir::RankedTensorType>(input.getType());
@@ -2372,12 +2403,15 @@ struct SfLowerToLinalgPass
                    SfArangeOpLowering, SfCumsumOpLowering,
                    SfIndexOpLowering>(&getContext());
 
+      int64_t sfBefore = 0;
+      func.walk([&](Operation *op) {
+        if (op->getDialect() && isa<sf::SfDialect>(op->getDialect())) ++sfBefore;
+      });
+      int64_t bodyOps = 0;
+      func.walk([&](Operation *) { ++bodyOps; });
       llvm::errs() << "  [sf-lower-to-linalg] lowering func '" << func.getName()
-                   << "' (" << patterns.getNativePatterns().size() << " patterns)\n";
-      GreedyRewriteConfig config;
-      config.setMaxIterations(10);
-      config.enableFolding(false);
-      LogicalResult result = applyPatternsGreedily(func, std::move(patterns), config);
+                   << "' (" << bodyOps << " body ops, " << sfBefore << " sf ops)\n";
+      LogicalResult result = applyPatternsGreedily(func, std::move(patterns));
       if (failed(result)) {
         llvm::errs() << "  [sf-lower-to-linalg] greedy rewriter did not converge for '"
                      << func.getName() << "'\n";
