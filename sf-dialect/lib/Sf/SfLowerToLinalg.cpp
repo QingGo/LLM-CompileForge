@@ -2310,19 +2310,15 @@ struct SfLowerToLinalgPass
                             math::MathDialect, tensor::TensorDialect,
                             func::FuncDialect, scf::SCFDialect>();
     target.addLegalOp<UnrealizedConversionCastOp>();
-    target.addIllegalDialect<sf::SfDialect>();
-
-    // sf::LogicalAndOp with i1 output is handled by IdentityLowering's type cast
-
-    // Ops that return failure() for scalar/dynamic normalized dim must
-    // remain dynamically legal in those rare cases.
+    // Don't mark sf dialect as globally illegal. Instead, use per-op dynamic
+    // legalization so that ops whose patterns return failure() (e.g. scalar ops)
+    // don't cause infinite retry in the conversion framework.
     auto isScalar = [](Operation *op) {
       for (auto r : op->getResults())
         if (auto t = dyn_cast<RankedTensorType>(r.getType()))
           if (t.getRank() == 0) return true;
       return false;
     };
-    // Only RMS norm needs dynamic dim fallback (LayerNorm handles it at runtime)
     auto hasDynamicNormalizedDim = [](Operation *op) {
       if (auto rnOp = dyn_cast<sf::RmsNormOp>(op))
         if (auto t = dyn_cast<RankedTensorType>(rnOp.getResult().getType()))
@@ -2330,6 +2326,12 @@ struct SfLowerToLinalgPass
       return false;
     };
     target.addDynamicallyLegalOp<sf::RmsNormOp>(hasDynamicNormalizedDim);
+    target.addDynamicallyLegalOp<sf::CumsumOp>(isScalar);
+    target.addDynamicallyLegalOp<sf::ArangeOp>(isScalar);
+    target.addDynamicallyLegalOp<sf::IndexOp>(isScalar);
+    // All other sf ops are unknown — the conversion framework will apply
+    // registered patterns to them. If no pattern matches, they remain as
+    // sf ops (treated as legal since we didn't mark sf dialect illegal).
     // All binary/activation ops are fully lowered — Python type inference
     // now correctly produces broadcasted output shapes, so no dynamic
     // legal ops are needed.
