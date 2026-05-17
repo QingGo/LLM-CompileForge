@@ -1,3 +1,4 @@
+#define NDEBUG
 #include "Sf/SfDialect.h"
 #include "Sf/SfOps.h"
 #include "Sf/SfPasses.h"
@@ -17,7 +18,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Pass/Pass.h"
-#include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -52,12 +53,21 @@ static Value makeEmpty(OpBuilder &b, Location loc, Type t, ValueRange inputs) {
 }
 
 // Create tensor.empty initialized to zero (for reduction init tensors).
-static Value makeZeroedEmpty(OpBuilder &b, Location loc, Type t, ValueRange inputs,
-                              Type eltType) {
+static Value makeZeroedEmpty(OpBuilder &b, Location loc, Type t, ValueRange inputs) {
   Value empty = makeEmpty(b, loc, t, inputs);
   if (!empty) return Value();
-  Value zero = b.create<arith::ConstantOp>(loc, eltType,
-      b.getFloatAttr(eltType, 0.0f));
+  auto eltType = cast<ShapedType>(t).getElementType();
+  Value zero;
+  if (isa<FloatType>(eltType)) {
+    zero = b.create<arith::ConstantOp>(loc, eltType,
+        b.getFloatAttr(eltType, 0.0f));
+  } else if (eltType.isInteger(64)) {
+    zero = b.create<arith::ConstantOp>(loc, eltType,
+        b.getIntegerAttr(eltType, 0));
+  } else {
+    llvm::errs() << "  [makeZeroedEmpty] unsupported element type: " << eltType << "\n";
+    return Value();
+  }
   auto fill = linalg::FillOp::create(b, loc, ValueRange{zero}, ValueRange{empty});
   return fill.getResult(0);
 }
@@ -117,37 +127,53 @@ static AffineMap broadcastMap(unsigned loopRank, unsigned operandRank, MLIRConte
   return AffineMap::get(loopRank, 0, exprs, ctx);
 }
 
-static void populateBody(linalg::GenericOp op, function_ref<void(OpBuilder &, Location, ValueRange)> f) {
-  OpBuilder b(op.getContext());
-  Block *body = b.createBlock(&op.getRegion(), {});
+
+// Safe constant creation — checks that the type is handled.
+static Value createSafeConst(OpBuilder &b, Location loc, Type eltType, double floatVal, int64_t intVal = 0) {
+  if (isa<FloatType>(eltType))
+    return b.create<arith::ConstantOp>(loc, eltType, b.getFloatAttr(eltType, floatVal));
+  if (eltType.isInteger(64))
+    return b.create<arith::ConstantOp>(loc, eltType, b.getIntegerAttr(eltType, intVal));
+  return Value();
+}
+
+static void populateBody(linalg::GenericOp op, PatternRewriter &rewriter,
+                          function_ref<void(OpBuilder &, Location, ValueRange)> f) {
+  auto guard = OpBuilder::InsertionGuard(rewriter);
+  Block *body = rewriter.createBlock(&op.getRegion(), {});
   auto shaped = cast<ShapedType>(op->getResult(0).getType());
   auto eltTy = shaped.getElementType();
   unsigned numInputs = op.getNumDpsInputs();
   unsigned numOutputs = op.getNumDpsInits();
-  for (unsigned i = 0; i < numInputs; ++i)
+  for (unsigned i = 0; i < numInputs + numOutputs; ++i)
     body->addArgument(eltTy, op.getLoc());
-  for (unsigned i = 0; i < numOutputs; ++i)
-    body->addArgument(eltTy, op.getLoc());
-  b.setInsertionPointToEnd(body);
-  f(b, op.getLoc(), body->getArguments());
+  rewriter.setInsertionPointToEnd(body);
+  f(rewriter, op.getLoc(), body->getArguments());
 }
 
 // Binary lowering with broadcast support via affine maps
 template <typename SfOpTy, typename ArithOpTy>
-struct SfBinaryLowering : public OpConversionPattern<SfOpTy> {
-  using OpConversionPattern<SfOpTy>::OpConversionPattern;
-  LogicalResult matchAndRewrite(SfOpTy op, typename SfOpTy::Adaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+struct SfBinaryLowering : public OpRewritePattern<SfOpTy> {
+  using OpRewritePattern<SfOpTy>::OpRewritePattern;
+  LogicalResult matchAndRewrite(SfOpTy op, PatternRewriter &rewriter) const override {
     auto resultType = op.getResult().getType();
     if (!isa<ShapedType>(resultType)) return failure();
     auto loc = op.getLoc();
-    Value lhs = adaptor.getLhs();
-    Value rhs = adaptor.getRhs();
+    Value lhs = op.getLhs();
+    Value rhs = op.getRhs();
     auto lhsType = cast<RankedTensorType>(lhs.getType());
     auto rhsType = cast<RankedTensorType>(rhs.getType());
     auto rank = cast<ShapedType>(resultType).getRank();
     auto lhsRank = lhsType.getRank();
     auto rhsRank = rhsType.getRank();
+    // Fail if operand element types aren't float (binary ops are FAdd/FMul etc.)
+    if (!isa<FloatType>(lhsType.getElementType()) ||
+        !isa<FloatType>(rhsType.getElementType())) {
+      llvm::errs() << "  [SfBinary] type=" << SfOpTy::getOperationName()
+                   << " SKIP (non-float operand: " << lhsType.getElementType()
+                   << " vs " << rhsType.getElementType() << ")\n";
+      return failure();
+    }
     llvm::errs() << "  [SfBinary] type=" << SfOpTy::getOperationName() << " lhs=" << lhsType << " rhs=" << rhsType << " out=" << resultType << "\n";
     Value empty = makeEmpty(rewriter, loc, resultType, {lhs});
     if (!empty) { llvm::errs() << "  [SfBinary] makeEmpty failed\n"; return failure(); }
@@ -197,7 +223,7 @@ struct SfBinaryLowering : public OpConversionPattern<SfOpTy> {
     auto generic = linalg::GenericOp::create(
         rewriter, loc, resultType, ValueRange{lhs, rhs}, empty,
         {lhsMap, rhsMap, outMap}, iterTypes);
-    populateBody(generic, [&](OpBuilder &b, Location loc, ValueRange args) {
+    populateBody(generic, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
       Value v = b.create<ArithOpTy>(loc, args[0], args[1]);
       b.create<linalg::YieldOp>(loc, v);
     });
@@ -208,23 +234,23 @@ struct SfBinaryLowering : public OpConversionPattern<SfOpTy> {
 };
 
 // Relu lowering
-struct ReluLowering : public OpConversionPattern<sf::ReluOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::ReluOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+struct ReluLowering : public OpRewritePattern<sf::ReluOp> {
+  using OpRewritePattern<sf::ReluOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::ReluOp op, PatternRewriter &rewriter) const override {
     auto resultType = op.getResult().getType();
     if (!isa<ShapedType>(resultType)) return failure();
     auto loc = op.getLoc();
-    Value empty = makeEmpty(rewriter, loc, resultType, {adaptor.getInput()});
+    Value empty = makeEmpty(rewriter, loc, resultType, {op.getInput()});
     if (!empty) return failure();
     auto rank = cast<ShapedType>(resultType).getRank();
     auto eltType = getElementTypeOrSelf(resultType);
+    if (!isa<FloatType>(eltType)) return failure();
 
     SmallVector<utils::IteratorType> iterTypes(rank, utils::IteratorType::parallel);
     auto generic = linalg::GenericOp::create(
-        rewriter, loc, resultType, adaptor.getInput(), empty,
+        rewriter, loc, resultType, op.getInput(), empty,
         identityMaps(rank, 2, rewriter.getContext()), iterTypes);
-    populateBody(generic, [&](OpBuilder &b, Location loc, ValueRange args) {
+    populateBody(generic, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
       Value zero = b.create<arith::ConstantOp>(loc, eltType,
           b.getFloatAttr(eltType, 0.0));
       Value v = b.create<arith::MaxNumFOp>(loc, args[0], zero);
@@ -237,11 +263,10 @@ struct ReluLowering : public OpConversionPattern<sf::ReluOp> {
 };
 
 // Identity → passthrough; handle type mismatches by inserting proper cast
-struct IdentityLowering : public OpConversionPattern<sf::IdentityOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::IdentityOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    Value input = adaptor.getInput();
+struct IdentityLowering : public OpRewritePattern<sf::IdentityOp> {
+  using OpRewritePattern<sf::IdentityOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::IdentityOp op, PatternRewriter &rewriter) const override {
+    Value input = op.getInput();
     Type rt = op.getResult().getType();
     if (input.getType() == rt) {
       rewriter.replaceOp(op, input);
@@ -291,23 +316,23 @@ struct IdentityLowering : public OpConversionPattern<sf::IdentityOp> {
 //===----------------------------------------------------------------------===//
 
 template <typename SfOpTy>
-struct SfActivationOpLowering : public OpConversionPattern<SfOpTy> {
-  using OpConversionPattern<SfOpTy>::OpConversionPattern;
-  LogicalResult matchAndRewrite(SfOpTy op, typename SfOpTy::Adaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+struct SfActivationOpLowering : public OpRewritePattern<SfOpTy> {
+  using OpRewritePattern<SfOpTy>::OpRewritePattern;
+  LogicalResult matchAndRewrite(SfOpTy op, PatternRewriter &rewriter) const override {
     auto resultType = op.getResult().getType();
     if (!isa<ShapedType>(resultType)) return failure();
     auto loc = op.getLoc();
-    Value empty = makeEmpty(rewriter, loc, resultType, {adaptor.getInput()});
+    Value empty = makeEmpty(rewriter, loc, resultType, {op.getInput()});
     if (!empty) return failure();
     auto rank = cast<ShapedType>(resultType).getRank();
     auto eltType = getElementTypeOrSelf(resultType);
+    if (!isa<FloatType>(eltType)) return failure();
 
     SmallVector<utils::IteratorType> iterTypes(rank, utils::IteratorType::parallel);
     auto generic = linalg::GenericOp::create(
-        rewriter, loc, resultType, adaptor.getInput(), empty,
+        rewriter, loc, resultType, op.getInput(), empty,
         identityMaps(rank, 2, rewriter.getContext()), iterTypes);
-    populateBody(generic, [&](OpBuilder &b, Location loc, ValueRange args) {
+    populateBody(generic, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
       Value val;
       StringRef opName = SfOpTy::getOperationName();
       if (opName == "sf.gelu") {
@@ -352,12 +377,11 @@ struct SfActivationOpLowering : public OpConversionPattern<SfOpTy> {
 };
 
 // Matmul/Linear lowering
-struct SfMatmulOpLowering : public OpConversionPattern<sf::MatmulOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::MatmulOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+struct SfMatmulOpLowering : public OpRewritePattern<sf::MatmulOp> {
+  using OpRewritePattern<sf::MatmulOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::MatmulOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    Value lhs = adaptor.getLhs(), rhs = adaptor.getRhs();
+    Value lhs = op.getLhs(), rhs = op.getRhs();
     Type resultType = op.getResult().getType();
     auto lhsType = cast<RankedTensorType>(lhs.getType());
     auto rhsType = cast<RankedTensorType>(rhs.getType());
@@ -367,7 +391,7 @@ struct SfMatmulOpLowering : public OpConversionPattern<sf::MatmulOp> {
 
     // Standard 2D matmul: use linalg.matmul
     if (lhsRank == 2 && rhsRank == 2) {
-    Value empty = makeZeroedEmpty(rewriter, loc, resultType, {lhs}, eltType);
+    Value empty = makeZeroedEmpty(rewriter, loc, resultType, {lhs});
       if (!empty) return failure();
       auto mo = rewriter.create<linalg::MatmulOp>(loc, resultType,
           ValueRange{lhs, rhs}, empty);
@@ -394,7 +418,7 @@ struct SfMatmulOpLowering : public OpConversionPattern<sf::MatmulOp> {
     }
     while ((int64_t)outShape.size() < outerRank - 1)
       outShape.insert(outShape.begin(), 1);
-    Value empty = makeZeroedEmpty(rewriter, loc, resultType, {lhs}, eltType);
+    Value empty = makeZeroedEmpty(rewriter, loc, resultType, {lhs});
     if (!empty) return failure();
     // Build maps: the loop has (outerRank) iterators: [batch..., M, N, K]
     int64_t loopRank = outerRank;  // [d0..d{LO}, K] where LO = outermost non-M/N/K dims
@@ -439,13 +463,12 @@ struct SfMatmulOpLowering : public OpConversionPattern<sf::MatmulOp> {
   }
 };
 
-struct SfLinearOpLowering : public OpConversionPattern<sf::LinearOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::LinearOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+struct SfLinearOpLowering : public OpRewritePattern<sf::LinearOp> {
+  using OpRewritePattern<sf::LinearOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::LinearOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-  Value input = adaptor.getInput();
-  Value weight = adaptor.getWeight();
+  Value input = op.getInput();
+  Value weight = op.getWeight();
   Type resultType = op.getResult().getType();
   auto inputType = ::mlir::dyn_cast<::mlir::RankedTensorType>(input.getType());
   auto wType = ::mlir::dyn_cast<::mlir::RankedTensorType>(weight.getType());
@@ -462,7 +485,7 @@ struct SfLinearOpLowering : public OpConversionPattern<sf::LinearOp> {
     SmallVector<Value> t1Dyn; if (kDim < 0) t1Dyn.push_back(rewriter.create<tensor::DimOp>(loc, input, 0));
     SmallVector<Value> tOutDyn; if (nDim < 0) tOutDyn.push_back(rewriter.create<tensor::DimOp>(loc, weight, 1));
     Value pInput = rewriter.create<tensor::ExpandShapeOp>(loc, t1, input, ArrayRef<ReassociationIndices>{{0, 1}});
-    Value pEmpty = makeZeroedEmpty(rewriter, loc, tOut, {input}, eltType);
+    Value pEmpty = makeZeroedEmpty(rewriter, loc, tOut, {input});
     auto mo = rewriter.create<linalg::MatmulOp>(loc, tOut, ValueRange{pInput, weight}, pEmpty);
     mo->setAttr("operandSegmentSizes", rewriter.getDenseI32ArrayAttr({2, 1}));
     Value mmr = mo.getResult(0);
@@ -495,7 +518,7 @@ struct SfLinearOpLowering : public OpConversionPattern<sf::LinearOp> {
         ValueRange{weight}, ValueRange{emptyTVal},
         {AffineMap::getPermutationMap(perm, rewriter.getContext()),
          AffineMap::getMultiDimIdentityMap(2, rewriter.getContext())}, titer);
-    populateBody(transposeOp, [&](OpBuilder &b, Location loc2, ValueRange args) {
+    populateBody(transposeOp, rewriter, [&](OpBuilder &b, Location loc2, ValueRange args) {
       b.create<linalg::YieldOp>(loc2, args[0]);
     });
     Value transW = transposeOp.getResult(0);
@@ -512,7 +535,7 @@ struct SfLinearOpLowering : public OpConversionPattern<sf::LinearOp> {
         ValueRange{transW}, ValueRange{w3dEmptyVal},
         {broadcastMap(3, 2, rewriter.getContext()),
          AffineMap::getMultiDimIdentityMap(3, rewriter.getContext())}, biter);
-    populateBody(w3dOp, [&](OpBuilder &b, Location loc2, ValueRange args) {
+    populateBody(w3dOp, rewriter, [&](OpBuilder &b, Location loc2, ValueRange args) {
       b.create<linalg::YieldOp>(loc2, args[0]);
     });
     resultWeight = w3dOp.getResult(0);
@@ -530,14 +553,14 @@ struct SfLinearOpLowering : public OpConversionPattern<sf::LinearOp> {
           ValueRange{weight}, ValueRange{emptyTVal},
           {AffineMap::getPermutationMap(perm, rewriter.getContext()),
            AffineMap::getMultiDimIdentityMap(2, rewriter.getContext())}, titer);
-      populateBody(transposeOp, [&](OpBuilder &b, Location loc2, ValueRange args) {
+      populateBody(transposeOp, rewriter, [&](OpBuilder &b, Location loc2, ValueRange args) {
         b.create<linalg::YieldOp>(loc2, args[0]);
       });
       resultWeight = transposeOp.getResult(0);
     }
   }
 
-  Value empty = makeZeroedEmpty(rewriter, loc, resultType, {input}, eltType);
+  Value empty = makeZeroedEmpty(rewriter, loc, resultType, {input});
   if (!empty) { llvm::errs() << "  [SfLinear] makeEmpty failed\n"; return failure(); }
   Value result;
   auto finalWType = cast<RankedTensorType>(resultWeight.getType());
@@ -556,7 +579,7 @@ struct SfLinearOpLowering : public OpConversionPattern<sf::LinearOp> {
       auto bmType = RankedTensorType::get(bmShape, eltType);
       bmResultType = bmType;
     }
-    Value bmEmpty = makeZeroedEmpty(rewriter, loc, bmResultType, {input}, eltType);
+    Value bmEmpty = makeZeroedEmpty(rewriter, loc, bmResultType, {input});
     if (!bmEmpty) { llvm::errs() << "  [SfLinear] bmEmpty failed\n"; return failure(); }
     llvm::errs() << "  [SfLinear] creating batch_matmul target=" << bmResultType << "\n";
     auto mo = rewriter.create<linalg::BatchMatmulOp>(loc, bmResultType,
@@ -592,11 +615,10 @@ struct SfLinearOpLowering : public OpConversionPattern<sf::LinearOp> {
 };
 
 // View → tensor reshape or expand/collapse
-struct SfViewOpLowering : public OpConversionPattern<sf::ViewOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::ViewOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc(); Value input = adaptor.getInput();
+struct SfViewOpLowering : public OpRewritePattern<sf::ViewOp> {
+  using OpRewritePattern<sf::ViewOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::ViewOp op, PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc(); Value input = op.getInput();
     auto inType = dyn_cast<RankedTensorType>(input.getType());
     auto outType = dyn_cast<RankedTensorType>(op.getResult().getType());
     if (!inType || !outType) return failure();
@@ -608,7 +630,7 @@ struct SfViewOpLowering : public OpConversionPattern<sf::ViewOp> {
     // The shape attribute tells which output dims come from dyn_shape operands,
     // which are static, and which are -1 (inferred from element count).
     auto shapeAttr = op->getAttrOfType<ArrayAttr>("shape");
-    auto dynShapeOperands = adaptor.getDynShape();
+    auto dynShapeOperands = op.getDynShape();
 
     // Pass 1: collect shape values and track the -1 (inferred) dimension.
     SmallVector<Value> shapeVals;
@@ -693,11 +715,10 @@ struct SfViewOpLowering : public OpConversionPattern<sf::ViewOp> {
     return success();
   }
 };
-struct SfExpandOpLowering : public OpConversionPattern<sf::ExpandOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::ExpandOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc(); Value input = adaptor.getInput();
+struct SfExpandOpLowering : public OpRewritePattern<sf::ExpandOp> {
+  using OpRewritePattern<sf::ExpandOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::ExpandOp op, PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc(); Value input = op.getInput();
     auto inType = dyn_cast<RankedTensorType>(input.getType());
     auto outType = dyn_cast<RankedTensorType>(op.getResult().getType());
     if (!inType || !outType) return failure();
@@ -705,7 +726,7 @@ struct SfExpandOpLowering : public OpConversionPattern<sf::ExpandOp> {
 
     // Build tensor.empty with dynamic dims from shape attribute / dyn_shape operands
     auto shapeAttr = op->getAttrOfType<ArrayAttr>("shape");
-    auto dynShapeOperands = adaptor.getDynShape();
+    auto dynShapeOperands = op.getDynShape();
     SmallVector<Value> dynSizes;
     int64_t dynIdx = 0;
     for (int64_t i = 0; i < outRank; ++i) {
@@ -770,18 +791,17 @@ struct SfExpandOpLowering : public OpConversionPattern<sf::ExpandOp> {
     SmallVector<utils::IteratorType> iters(outRank, utils::IteratorType::parallel);
     auto g = linalg::GenericOp::create(rewriter, loc, outType,
         ValueRange{input}, ValueRange{empty}, {inMap, outMap}, iters);
-    populateBody(g, [&](OpBuilder &b, Location loc, ValueRange args) {
+    populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
       b.create<linalg::YieldOp>(loc, args[0]);
     });
     rewriter.replaceOp(op, g.getResult(0));
     return success();
   }
 };
-struct SfUnsqueezeOpLowering : public OpConversionPattern<sf::UnsqueezeOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::UnsqueezeOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc(); Value input = adaptor.getInput();
+struct SfUnsqueezeOpLowering : public OpRewritePattern<sf::UnsqueezeOp> {
+  using OpRewritePattern<sf::UnsqueezeOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::UnsqueezeOp op, PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc(); Value input = op.getInput();
     auto inType = dyn_cast<RankedTensorType>(input.getType());
     auto outType = dyn_cast<RankedTensorType>(op.getResult().getType());
     if (!inType || !outType) { rewriter.replaceOp(op, input); return success(); }
@@ -814,19 +834,18 @@ struct SfUnsqueezeOpLowering : public OpConversionPattern<sf::UnsqueezeOp> {
     return success();
   }
 };
-struct SfSumOpLowering : public OpConversionPattern<sf::SumOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::SumOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+struct SfSumOpLowering : public OpRewritePattern<sf::SumOp> {
+  using OpRewritePattern<sf::SumOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::SumOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc(); auto rt = op.getResult().getType();
     if (!isa<ShapedType>(rt)) return failure();
-    Value empty = makeZeroedEmpty(rewriter, loc, rt, {adaptor.getInput()}, rewriter.getF32Type());
+    Value empty = makeZeroedEmpty(rewriter, loc, rt, {op.getInput()});
     if (!empty) return failure();
     auto rank = cast<ShapedType>(rt).getRank();
     SmallVector<utils::IteratorType> iterTypes(rank, utils::IteratorType::reduction);
-    auto g = linalg::GenericOp::create(rewriter, loc, rt, adaptor.getInput(), empty,
+    auto g = linalg::GenericOp::create(rewriter, loc, rt, op.getInput(), empty,
         identityMaps(rank, 2, rewriter.getContext()), iterTypes);
-    populateBody(g, [&](OpBuilder &b, Location loc, ValueRange args) {
+    populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
       Value add = b.create<arith::AddFOp>(loc, args[0], args[1]);
       b.create<linalg::YieldOp>(loc, add);
     });
@@ -840,7 +859,7 @@ struct SfSumOpLowering : public OpConversionPattern<sf::SumOp> {
 //===----------------------------------------------------------------------===//
 
 static Value makeBinaryOp(OpBuilder &builder, Location loc, Value lhs, Value rhs,
-                           Type outType, ConversionPatternRewriter &rewriter,
+                           Type outType, PatternRewriter &rewriter,
                            function_ref<Value(OpBuilder &, Location, Value, Value)> fn) {
   Value empty = makeEmpty(builder, loc, outType, {lhs});
   if (!empty) return Value();
@@ -874,7 +893,7 @@ static Value makeBinaryOp(OpBuilder &builder, Location loc, Value lhs, Value rhs
   SmallVector<utils::IteratorType> iters(outRank, utils::IteratorType::parallel);
   auto g = linalg::GenericOp::create(rewriter, loc, outType,
       ValueRange{lhs, rhs}, empty, {lhsMap, rhsMap, outMap}, iters);
-  populateBody(g, [&](OpBuilder &b, Location loc, ValueRange args) {
+  populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
     Value v = fn(b, loc, args[0], args[1]);
     b.create<linalg::YieldOp>(loc, v);
   });
@@ -882,7 +901,7 @@ static Value makeBinaryOp(OpBuilder &builder, Location loc, Value lhs, Value rhs
 }
 
 static Value makeUnaryOp(OpBuilder &builder, Location loc, Value in, Type outType,
-                          ConversionPatternRewriter &rewriter,
+                          PatternRewriter &rewriter,
                           function_ref<Value(OpBuilder &, Location, Value)> fn) {
   Value empty = makeEmpty(builder, loc, outType, {in});
   if (!empty) return Value();
@@ -907,7 +926,7 @@ static Value makeUnaryOp(OpBuilder &builder, Location loc, Value in, Type outTyp
   SmallVector<utils::IteratorType> iters(outRank, utils::IteratorType::parallel);
   auto g = linalg::GenericOp::create(rewriter, loc, outType,
       in, empty, {inMap, outMap}, iters);
-  populateBody(g, [&](OpBuilder &b, Location loc, ValueRange args) {
+  populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
     Value v = fn(b, loc, args[0]);
     b.create<linalg::YieldOp>(loc, v);
   });
@@ -925,14 +944,13 @@ static Value makeUnaryOp(OpBuilder &builder, Location loc, Value in, Type outTyp
 //===----------------------------------------------------------------------===//
 
 struct SfScaledDotProductAttentionOpLowering
-    : public OpConversionPattern<sf::ScaledDotProductAttentionOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::ScaledDotProductAttentionOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+    : public OpRewritePattern<sf::ScaledDotProductAttentionOp> {
+  using OpRewritePattern<sf::ScaledDotProductAttentionOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::ScaledDotProductAttentionOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    Value Q = adaptor.getQuery();
-    Value K = adaptor.getKey();
-    Value V = adaptor.getValue();
+    Value Q = op.getQuery();
+    Value K = op.getKey();
+    Value V = op.getValue();
 
     auto qType = ::mlir::dyn_cast<::mlir::RankedTensorType>(Q.getType());
     if (!qType || qType.getRank() < 3) return failure();
@@ -980,7 +998,7 @@ struct SfScaledDotProductAttentionOpLowering
     auto ktOp = linalg::GenericOp::create(rewriter, loc, ktType, K, ktEmpty,
         {AffineMap::getPermutationMap(ktPerm, rewriter.getContext()),
          AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext())}, ktIterTypes);
-    populateBody(ktOp, [&](OpBuilder &b, Location loc, ValueRange args) {
+    populateBody(ktOp, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
       b.create<linalg::YieldOp>(loc, args[0]);
     });
     Value Kt = ktOp.getResult(0);
@@ -1002,7 +1020,7 @@ struct SfScaledDotProductAttentionOpLowering
     SmallVector<int64_t> scoresShape(qType.getShape());
     scoresShape[rank - 1] = qType.getDimSize(rank - 2);
     auto scoresType = RankedTensorType::get(scoresShape, eltType);
-    Value scoresEmpty = makeZeroedEmpty(rewriter, loc, scoresType, {Q, K}, eltType);
+    Value scoresEmpty = makeZeroedEmpty(rewriter, loc, scoresType, {Q, K});
     Value scores;
     {
       // Generic batch-matmul: loop [b..h, m, n, k]: parallel(b..h), parallel(m), parallel(n), reduction(k)
@@ -1041,7 +1059,7 @@ struct SfScaledDotProductAttentionOpLowering
     auto scaleOp = linalg::GenericOp::create(rewriter, loc, scoresType,
         scores, scaledEmpty,
         identityMaps(rank, 2, rewriter.getContext()), iterTypes);
-    populateBody(scaleOp, [&](OpBuilder &b, Location loc, ValueRange args) {
+    populateBody(scaleOp, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
       Value _scaled = b.create<arith::MulFOp>(loc, args[0], scaleConst); b.create<linalg::YieldOp>(loc, _scaled);
     });
     Value scoresScaled = scaleOp.getResult(0);
@@ -1083,7 +1101,7 @@ struct SfScaledDotProductAttentionOpLowering
                return (i == lastDim) ? getAffineConstantExpr(0, rewriter.getContext())
                                      : getAffineDimExpr(i, rewriter.getContext());
              }), rewriter.getContext())}, reduIters);
-    populateBody(maxOp, [&](OpBuilder &b, Location loc, ValueRange args) {
+    populateBody(maxOp, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
       Value _mx = b.create<arith::MaxNumFOp>(loc, args[0], args[1]); b.create<linalg::YieldOp>(loc, _mx);
     });
     Value maxVal = maxOp.getResult(0);
@@ -1101,7 +1119,7 @@ struct SfScaledDotProductAttentionOpLowering
         });
 
     // 4d: sum reduction
-    Value sumEmpty = makeZeroedEmpty(rewriter, loc, maxType, {Q}, eltType);
+    Value sumEmpty = makeZeroedEmpty(rewriter, loc, maxType, {Q});
     auto sumOp = linalg::GenericOp::create(rewriter, loc, maxType, expVal, sumEmpty,
         {AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext()),
          AffineMap::get(rank, 0,
@@ -1109,7 +1127,7 @@ struct SfScaledDotProductAttentionOpLowering
                return (i == lastDim) ? getAffineConstantExpr(0, rewriter.getContext())
                                      : getAffineDimExpr(i, rewriter.getContext());
              }), rewriter.getContext())}, reduIters);
-    populateBody(sumOp, [&](OpBuilder &b, Location loc, ValueRange args) {
+    populateBody(sumOp, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
       Value _ad = b.create<arith::AddFOp>(loc, args[0], args[1]); b.create<linalg::YieldOp>(loc, _ad);
     });
     Value sumVal = sumOp.getResult(0);
@@ -1135,7 +1153,7 @@ struct SfScaledDotProductAttentionOpLowering
       else
         outDyn.push_back(rewriter.create<tensor::DimOp>(loc, Q, i));
     }
-    Value outEmpty = makeZeroedEmpty(rewriter, loc, outEmptyType, {Q, V}, eltType);
+    Value outEmpty = makeZeroedEmpty(rewriter, loc, outEmptyType, {Q, V});
     Value attnVResult;
     {
       // Generic batch-matmul: loop [b..h, m, s, d]: parallel(b..h), parallel(m), reduction(s), parallel(d)
@@ -1171,14 +1189,13 @@ struct SfScaledDotProductAttentionOpLowering
   }
 };
 
-struct SfLayerNormOpLowering : public OpConversionPattern<sf::LayerNormOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::LayerNormOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+struct SfLayerNormOpLowering : public OpRewritePattern<sf::LayerNormOp> {
+  using OpRewritePattern<sf::LayerNormOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::LayerNormOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    Value input = adaptor.getInput();
-    Value weight = adaptor.getWeight();
-    Value bias = adaptor.getBias();
+    Value input = op.getInput();
+    Value weight = op.getWeight();
+    Value bias = op.getBias();
     Type rt = op.getResult().getType();
     auto inputType = ::mlir::dyn_cast<::mlir::RankedTensorType>(input.getType());
     if (!inputType) return failure();
@@ -1248,7 +1265,7 @@ struct SfLayerNormOpLowering : public OpConversionPattern<sf::LayerNormOp> {
       SmallVector<utils::IteratorType> iters(outRank, utils::IteratorType::parallel);
       auto g = linalg::GenericOp::create(rewriter, loc, outType,
           ValueRange{lhs, rhs}, empty, {lhsMap, rhsMap, outMap}, iters);
-      populateBody(g, [&](OpBuilder &b, Location loc, ValueRange args) {
+      populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
         Value _v = fn(b, loc, args[0], args[1]);
         b.create<linalg::YieldOp>(loc, _v);
       });
@@ -1281,7 +1298,7 @@ struct SfLayerNormOpLowering : public OpConversionPattern<sf::LayerNormOp> {
       SmallVector<utils::IteratorType> iters(outRank, utils::IteratorType::parallel);
       auto g = linalg::GenericOp::create(rewriter, loc, outType,
           in, empty, {inMap, outMap}, iters);
-      populateBody(g, [&](OpBuilder &b, Location loc, ValueRange args) {
+      populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
         Value _v = fn(b, loc, args[0]);
         b.create<linalg::YieldOp>(loc, _v);
       });
@@ -1312,7 +1329,7 @@ struct SfLayerNormOpLowering : public OpConversionPattern<sf::LayerNormOp> {
       auto outMap = AffineMap::get(rank, 0, outExprs, rewriter.getContext());
       auto g = linalg::GenericOp::create(rewriter, loc, reduType, in, filled,
           {inMap, outMap}, iters);
-      populateBody(g, [&](OpBuilder &b, Location loc, ValueRange args) {
+      populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
         Value _ad = b.create<arith::AddFOp>(loc, args[0], args[1]); b.create<linalg::YieldOp>(loc, _ad);
       });
       return g.getResult(0);
@@ -1377,13 +1394,12 @@ struct SfLayerNormOpLowering : public OpConversionPattern<sf::LayerNormOp> {
 // Step 3: rms = sqrt(mean_x2 + eps)
 // Step 4: normed = x / rms (broadcast)
 // Step 5: out = normed * weight
-struct SfRmsNormOpLowering : public OpConversionPattern<sf::RmsNormOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::RmsNormOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+struct SfRmsNormOpLowering : public OpRewritePattern<sf::RmsNormOp> {
+  using OpRewritePattern<sf::RmsNormOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::RmsNormOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    Value input = adaptor.getInput();
-    Value weight = adaptor.getWeight();
+    Value input = op.getInput();
+    Value weight = op.getWeight();
     Type rt = op.getResult().getType();
     auto inputType = ::mlir::dyn_cast<::mlir::RankedTensorType>(input.getType());
     if (!inputType) return failure();
@@ -1422,7 +1438,7 @@ struct SfRmsNormOpLowering : public OpConversionPattern<sf::RmsNormOp> {
       auto outMap = AffineMap::get(rank, 0, outExprs, rewriter.getContext());
       auto g = linalg::GenericOp::create(rewriter, loc, reduType, in, filled,
           {inMap, outMap}, iters);
-      populateBody(g, [&](OpBuilder &b, Location loc, ValueRange args) {
+      populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
         Value _ad = b.create<arith::AddFOp>(loc, args[0], args[1]);
         b.create<linalg::YieldOp>(loc, _ad);
       });
@@ -1453,7 +1469,7 @@ struct SfRmsNormOpLowering : public OpConversionPattern<sf::RmsNormOp> {
       SmallVector<utils::IteratorType> iters(outRank, utils::IteratorType::parallel);
       auto g = linalg::GenericOp::create(rewriter, loc, outType, in, empty,
           {inMap, outMap}, iters);
-      populateBody(g, [&](OpBuilder &b, Location loc, ValueRange args) {
+      populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
         Value _v = fn(b, loc, args[0]);
         b.create<linalg::YieldOp>(loc, _v);
       });
@@ -1493,7 +1509,7 @@ struct SfRmsNormOpLowering : public OpConversionPattern<sf::RmsNormOp> {
       SmallVector<utils::IteratorType> iters(outRank, utils::IteratorType::parallel);
       auto g = linalg::GenericOp::create(rewriter, loc, outType,
           ValueRange{lhs, rhs}, empty, {lhsMap, rhsMap, outMap}, iters);
-      populateBody(g, [&](OpBuilder &b, Location loc, ValueRange args) {
+      populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
         Value _v = fn(b, loc, args[0], args[1]);
         b.create<linalg::YieldOp>(loc, _v);
       });
@@ -1538,11 +1554,10 @@ struct SfRmsNormOpLowering : public OpConversionPattern<sf::RmsNormOp> {
     return success();
   }
 };
-struct SfTransposeOpLowering : public OpConversionPattern<sf::TransposeOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::TransposeOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc(); Value input = adaptor.getInput();
+struct SfTransposeOpLowering : public OpRewritePattern<sf::TransposeOp> {
+  using OpRewritePattern<sf::TransposeOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::TransposeOp op, PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc(); Value input = op.getInput();
     Type resultType = op.getResult().getType();
     if (!isa<ShapedType>(resultType)) return failure();
     auto rt = cast<RankedTensorType>(resultType);
@@ -1581,11 +1596,10 @@ struct SfTransposeOpLowering : public OpConversionPattern<sf::TransposeOp> {
 };
 
 // Slice → tensor.extract_slice
-struct SfSliceOpLowering : public OpConversionPattern<sf::SliceOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::SliceOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc(); Value input = adaptor.getInput();
+struct SfSliceOpLowering : public OpRewritePattern<sf::SliceOp> {
+  using OpRewritePattern<sf::SliceOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::SliceOp op, PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc(); Value input = op.getInput();
     auto inType = ::mlir::dyn_cast<::mlir::RankedTensorType>(input.getType());
     if (!inType) return failure();
     int64_t dim = 0, start = 0, sEnd = 0;
@@ -1621,26 +1635,25 @@ struct SfSliceOpLowering : public OpConversionPattern<sf::SliceOp> {
 // Le comparison → arith.cmpf in generic
 // Uses body builder (not populateBody) so body args have input element type (f32),
 // not output element type (i1).
-struct SfLeOpLowering : public OpConversionPattern<sf::LeOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::LeOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+struct SfLeOpLowering : public OpRewritePattern<sf::LeOp> {
+  using OpRewritePattern<sf::LeOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::LeOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc(); Type rt = op.getResult().getType();
     if (!isa<ShapedType>(rt)) return failure();
     // Always use f32 output type to avoid i1→f32 unrealized_conversion_cast
     auto outType = cast<ShapedType>(rt);
     auto f32OutType = outType.cloneWith(outType.getShape(), rewriter.getF32Type());
-    Value empty = makeEmpty(rewriter, loc, f32OutType, {adaptor.getLhs()});
+    Value empty = makeEmpty(rewriter, loc, f32OutType, {op.getLhs()});
     if (!empty) return failure();
     auto rank = outType.getRank();
     SmallVector<utils::IteratorType> iterTypes(rank, utils::IteratorType::parallel);
-    auto lhsType2 = cast<RankedTensorType>(adaptor.getLhs().getType());
-    auto rhsType2 = cast<RankedTensorType>(adaptor.getRhs().getType());
+    auto lhsType2 = cast<RankedTensorType>(op.getLhs().getType());
+    auto rhsType2 = cast<RankedTensorType>(op.getRhs().getType());
     auto lhsMap = broadcastMap(rank, lhsType2.getRank(), rewriter.getContext(), lhsType2.getShape());
     auto rhsMap = broadcastMap(rank, rhsType2.getRank(), rewriter.getContext(), rhsType2.getShape());
     auto outMap = AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext());
     auto g = linalg::GenericOp::create(rewriter, loc, f32OutType,
-        ValueRange{adaptor.getLhs(), adaptor.getRhs()}, empty,
+        ValueRange{op.getLhs(), op.getRhs()}, empty,
         {lhsMap, rhsMap, outMap}, iterTypes,
         [&](OpBuilder &b, Location bodyLoc, ValueRange args) {
       Value lhsB, rhsB;
@@ -1671,26 +1684,25 @@ struct SfLeOpLowering : public OpConversionPattern<sf::LeOp> {
 //   bool_a = cmp UGT(a, 0.0), bool_b = cmp UGT(b, 0.0)
 //   and = andi(bool_a, bool_b)
 //   result = uitofp(and) → f32
-struct SfLogicalAndOpLowering : public OpConversionPattern<sf::LogicalAndOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::LogicalAndOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+struct SfLogicalAndOpLowering : public OpRewritePattern<sf::LogicalAndOp> {
+  using OpRewritePattern<sf::LogicalAndOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::LogicalAndOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc(); Type rt = op.getResult().getType();
     if (!isa<ShapedType>(rt)) return failure();
     // Always use f32 output type to avoid i1→f32 unrealized_conversion_cast
     auto outType = cast<ShapedType>(rt);
     auto f32OutType = outType.cloneWith(outType.getShape(), rewriter.getF32Type());
-    Value empty = makeEmpty(rewriter, loc, f32OutType, {adaptor.getLhs()});
+    Value empty = makeEmpty(rewriter, loc, f32OutType, {op.getLhs()});
     if (!empty) return failure();
     auto rank = outType.getRank();
     SmallVector<utils::IteratorType> iterTypes(rank, utils::IteratorType::parallel);
-    auto lhsType2 = cast<RankedTensorType>(adaptor.getLhs().getType());
-    auto rhsType2 = cast<RankedTensorType>(adaptor.getRhs().getType());
+    auto lhsType2 = cast<RankedTensorType>(op.getLhs().getType());
+    auto rhsType2 = cast<RankedTensorType>(op.getRhs().getType());
     auto lhsMap = broadcastMap(rank, lhsType2.getRank(), rewriter.getContext(), lhsType2.getShape());
     auto rhsMap = broadcastMap(rank, rhsType2.getRank(), rewriter.getContext(), rhsType2.getShape());
     auto outMap = AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext());
     auto g = linalg::GenericOp::create(rewriter, loc, f32OutType,
-        ValueRange{adaptor.getLhs(), adaptor.getRhs()}, empty,
+        ValueRange{op.getLhs(), op.getRhs()}, empty,
         {lhsMap, rhsMap, outMap}, iterTypes,
         [&](OpBuilder &b, Location bodyLoc, ValueRange args) {
       Value cmp = b.create<arith::CmpFOp>(bodyLoc, arith::CmpFPredicate::OLE, args[0], args[1]);
@@ -1703,15 +1715,15 @@ struct SfLogicalAndOpLowering : public OpConversionPattern<sf::LogicalAndOp> {
 };
 
 // OnesLike → linalg.fill(1.0)
-struct SfOnesLikeOpLowering : public OpConversionPattern<sf::OnesLikeOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::OnesLikeOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+struct SfOnesLikeOpLowering : public OpRewritePattern<sf::OnesLikeOp> {
+  using OpRewritePattern<sf::OnesLikeOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::OnesLikeOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc(); Type rt = op.getResult().getType();
     if (!isa<ShapedType>(rt)) return failure();
-    Value empty = makeEmpty(rewriter, loc, rt, {adaptor.getInput()});
+    Value empty = makeEmpty(rewriter, loc, rt, {op.getInput()});
     if (!empty) return failure();
     auto elt = getElementTypeOrSelf(rt);
+    if (!isa<FloatType>(elt)) return failure();
     Value oneVal = rewriter.create<arith::ConstantOp>(loc, elt,
         rewriter.getFloatAttr(elt, 1.0));
     rewriter.replaceOpWithNewOp<linalg::FillOp>(op, ValueRange{oneVal}, ValueRange{empty});
@@ -1720,15 +1732,15 @@ struct SfOnesLikeOpLowering : public OpConversionPattern<sf::OnesLikeOp> {
 };
 
 // NewOnes → tensor.empty + linalg.fill(1.0)
-struct SfNewOnesOpLowering : public OpConversionPattern<sf::NewOnesOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::NewOnesOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+struct SfNewOnesOpLowering : public OpRewritePattern<sf::NewOnesOp> {
+  using OpRewritePattern<sf::NewOnesOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::NewOnesOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc(); Type rt = op.getResult().getType();
     if (!isa<ShapedType>(rt)) return failure();
-    Value empty = makeEmpty(rewriter, loc, rt, {adaptor.getInput()});
+    Value empty = makeEmpty(rewriter, loc, rt, {op.getInput()});
     if (!empty) return failure();
     auto elt = getElementTypeOrSelf(rt);
+    if (!isa<FloatType>(elt)) return failure();
     Value oneVal = rewriter.create<arith::ConstantOp>(loc, elt,
         rewriter.getFloatAttr(elt, 1.0));
     rewriter.replaceOpWithNewOp<linalg::FillOp>(op, ValueRange{oneVal}, ValueRange{empty});
@@ -1740,12 +1752,11 @@ struct SfNewOnesOpLowering : public OpConversionPattern<sf::NewOnesOp> {
 // SymSize → tensor.dim + cast + tensor.insert
 //===----------------------------------------------------------------------===//
 
-struct SfSymSizeOpLowering : public OpConversionPattern<sf::SymSizeOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::SymSizeOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+struct SfSymSizeOpLowering : public OpRewritePattern<sf::SymSizeOp> {
+  using OpRewritePattern<sf::SymSizeOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::SymSizeOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    Value input = adaptor.getInput();
+    Value input = op.getInput();
     Type rt = op.getResult().getType();
     auto inputType = ::mlir::dyn_cast<::mlir::RankedTensorType>(input.getType());
     if (!inputType) return failure();
@@ -1771,20 +1782,19 @@ struct SfSymSizeOpLowering : public OpConversionPattern<sf::SymSizeOp> {
 // Arange → tensor.empty + scf.for fill
 //===----------------------------------------------------------------------===//
 
-struct SfArangeOpLowering : public OpConversionPattern<sf::ArangeOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::ArangeOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
+  using OpRewritePattern<sf::ArangeOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::ArangeOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    Value input = adaptor.getInput();
+    Value input = op.getInput();
     Type rt = op.getResult().getType();
     auto outType = ::mlir::dyn_cast<::mlir::RankedTensorType>(rt);
     if (!outType) return failure();
     if (outType.getRank() == 0) {
       // Scalar arange: not meaningful; just return zero.
       auto eltType = getElementTypeOrSelf(rt);
-      Value zero = rewriter.create<arith::ConstantOp>(loc, eltType,
-          rewriter.getFloatAttr(eltType, 0.0));
+      Value zero = createSafeConst(rewriter, loc, eltType, 0.0, 0);
+      if (!zero) return failure();
       auto empty = rewriter.create<tensor::EmptyOp>(loc, ArrayRef<int64_t>{}, eltType, ValueRange{});
       rewriter.replaceOpWithNewOp<tensor::InsertOp>(op, zero, empty, ValueRange{});
       return success();
@@ -1792,14 +1802,25 @@ struct SfArangeOpLowering : public OpConversionPattern<sf::ArangeOp> {
     if (outType.getRank() != 1) return failure();
     auto eltType = getElementTypeOrSelf(rt);
 
-    // Extract first element from input (use zero indices for non-scalar input)
+    // Extract first element from input and cast to index type
     auto inType = ::mlir::dyn_cast<::mlir::RankedTensorType>(input.getType());
     SmallVector<Value> zeroIdx;
     if (inType) for (int64_t _i = 0; _i < inType.getRank(); ++_i)
       zeroIdx.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
-    Value nF32 = rewriter.create<tensor::ExtractOp>(loc, input, zeroIdx);
-    Value nI64 = rewriter.create<arith::FPToUIOp>(loc, rewriter.getI64Type(), nF32);
-    Value nIdx = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), nI64);
+    Value scalarVal = rewriter.create<tensor::ExtractOp>(loc, input, zeroIdx);
+    auto scalarType = scalarVal.getType();
+    Value nIdx;
+    if (scalarType.isInteger(64)) {
+      // Input already i64 → direct index cast
+      nIdx = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), scalarVal);
+    } else if (isa<FloatType>(scalarType)) {
+      // Input is f32 → fptoui + index cast
+      Value nI64 = rewriter.create<arith::FPToUIOp>(loc, rewriter.getI64Type(), scalarVal);
+      nIdx = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), nI64);
+    } else {
+      llvm::errs() << "  [sf.arange] unsupported input type: " << scalarType << "\n";
+      return failure();
+    }
 
     // Create empty tensor with correct output type (static or dynamic)
     Value empty;
@@ -1821,8 +1842,15 @@ struct SfArangeOpLowering : public OpConversionPattern<sf::ArangeOp> {
     // Region iter arg (not init value) — required for bufferization correctness
     Value iterArg = forOp.getBody()->getArgument(1);
     Value ivI64 = rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), iv);
-    Value ivF32 = rewriter.create<arith::UIToFPOp>(loc, eltType, ivI64);
-    Value outVal = rewriter.create<tensor::InsertOp>(loc, eltType, ivF32, iterArg, iv);
+    Value outVal;
+    if (eltType.isInteger(64)) {
+      outVal = rewriter.create<tensor::InsertOp>(loc, iterArg.getType(), ivI64, iterArg, iv);
+    } else if (isa<FloatType>(eltType)) {
+      Value ivF32 = rewriter.create<arith::UIToFPOp>(loc, eltType, ivI64);
+      outVal = rewriter.create<tensor::InsertOp>(loc, iterArg.getType(), ivF32, iterArg, iv);
+    } else {
+      return failure();
+    }
     rewriter.create<scf::YieldOp>(loc, outVal);
 
     rewriter.setInsertionPointAfter(forOp);
@@ -1835,12 +1863,11 @@ struct SfArangeOpLowering : public OpConversionPattern<sf::ArangeOp> {
 // Cumsum → scf.for loop accumulation along dim
 //===----------------------------------------------------------------------===//
 
-struct SfCumsumOpLowering : public OpConversionPattern<sf::CumsumOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::CumsumOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+struct SfCumsumOpLowering : public OpRewritePattern<sf::CumsumOp> {
+  using OpRewritePattern<sf::CumsumOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::CumsumOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    Value input = adaptor.getInput();
+    Value input = op.getInput();
     Type rt = op.getResult().getType();
     auto inType = ::mlir::dyn_cast<::mlir::RankedTensorType>(input.getType());
     auto outType = ::mlir::dyn_cast<::mlir::RankedTensorType>(rt);
@@ -1949,13 +1976,12 @@ struct SfCumsumOpLowering : public OpConversionPattern<sf::CumsumOp> {
 // Embedding → scf.for gather
 //===----------------------------------------------------------------------===//
 
-struct SfEmbeddingOpLowering : public OpConversionPattern<sf::EmbeddingOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::EmbeddingOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+struct SfEmbeddingOpLowering : public OpRewritePattern<sf::EmbeddingOp> {
+  using OpRewritePattern<sf::EmbeddingOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::EmbeddingOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    Value weight = adaptor.getWeight();
-    Value indices = adaptor.getIndices();
+    Value weight = op.getWeight();
+    Value indices = op.getIndices();
     Type rt = op.getResult().getType();
     auto wType = ::mlir::dyn_cast<::mlir::RankedTensorType>(weight.getType());
     auto idxType = ::mlir::dyn_cast<::mlir::RankedTensorType>(indices.getType());
@@ -2018,15 +2044,14 @@ struct SfEmbeddingOpLowering : public OpConversionPattern<sf::EmbeddingOp> {
 // Index → scf.for gather (multi-index)
 //===----------------------------------------------------------------------===//
 
-struct SfIndexOpLowering : public OpConversionPattern<sf::IndexOp> {
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult matchAndRewrite(sf::IndexOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+struct SfIndexOpLowering : public OpRewritePattern<sf::IndexOp> {
+  using OpRewritePattern<sf::IndexOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::IndexOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     // First operand is data, rest are indices
     ValueRange operands = op->getOperands();
     if (operands.size() < 2) return failure();
-    Value data = adaptor.getInput();
+    Value data = op.getInput();
     // For index tensors, we need them in order after the data input
     SmallVector<Value> indexTensors;
     for (size_t i = 1; i < operands.size(); ++i)
@@ -2299,85 +2324,65 @@ struct SfLowerToLinalgPass
     });
     llvm::errs() << "  [sf-lower-to-linalg] found " << sfCount
                  << " sf ops to lower\n";
-
     if (sfCount == 0) {
       llvm::errs() << "  [sf-lower-to-linalg] nothing to do\n";
       return;
     }
 
-    ConversionTarget target(getContext());
-    target.addLegalDialect<linalg::LinalgDialect, arith::ArithDialect,
-                            math::MathDialect, tensor::TensorDialect,
-                            func::FuncDialect, scf::SCFDialect>();
-    target.addLegalOp<UnrealizedConversionCastOp>();
-    // Don't mark sf dialect as globally illegal. This lets the conversion
-    // framework run all patterns on all ops. Patterns that fail will cause
-    // the op to remain unconverted (okay in Partial mode), and the
-    // post-conversion check below will report them.
-    // Only mark specific ops as dynamically legal to prevent infinite retry.
-    auto isScalar = [](Operation *op) {
-      for (auto r : op->getResults())
-        if (auto t = dyn_cast<RankedTensorType>(r.getType()))
-          if (t.getRank() == 0) return true;
-      return false;
-    };
-    auto hasDynamicNormalizedDim = [](Operation *op) {
-      if (auto rnOp = dyn_cast<sf::RmsNormOp>(op))
-        if (auto t = dyn_cast<RankedTensorType>(rnOp.getResult().getType()))
-          if (t.getRank() > 0 && t.isDynamicDim(t.getRank() - 1)) return true;
-      return false;
-    };
-    target.addDynamicallyLegalOp<sf::RmsNormOp>(hasDynamicNormalizedDim);
-    target.addDynamicallyLegalOp<sf::CumsumOp>(isScalar);
-    target.addDynamicallyLegalOp<sf::ArangeOp>(isScalar);
-    target.addDynamicallyLegalOp<sf::IndexOp>(isScalar);
-    // All other sf ops are unknown — the conversion framework will apply
-    // registered patterns to them. If no pattern matches, they remain as
-    // sf ops (treated as legal since we didn't mark sf dialect illegal).
-    // All binary/activation ops are fully lowered — Python type inference
-    // now correctly produces broadcasted output shapes, so no dynamic
-    // legal ops are needed.
-    RewritePatternSet patterns(&getContext());
-    // Register all lowering patterns
-    patterns.add<SfBinaryLowering<sf::AddOp, arith::AddFOp>,
-                 SfBinaryLowering<sf::MulOp, arith::MulFOp>,
-                 SfBinaryLowering<sf::SubOp, arith::SubFOp>,
-                 SfBinaryLowering<sf::DivOp, arith::DivFOp>,
-                 SfBinaryLowering<sf::MaxOp, arith::MaxNumFOp>,
-                 ReluLowering,
-                 IdentityLowering,
-                 SfActivationOpLowering<sf::GeluOp>,
-                 SfActivationOpLowering<sf::SiluOp>,
-                 SfActivationOpLowering<sf::SigmoidOp>,
-                 SfActivationOpLowering<sf::ExpOp>,
-                 SfActivationOpLowering<sf::NegOp>,
-                 SfActivationOpLowering<sf::TanhOp>,
-                 SfMatmulOpLowering,
-                 SfLinearOpLowering,
-                 SfViewOpLowering,
-                 SfExpandOpLowering,
-                 SfUnsqueezeOpLowering,
-                 SfSumOpLowering,
-                 SfTransposeOpLowering,
-                 SfSliceOpLowering,
-                 SfLeOpLowering,
-                 SfLogicalAndOpLowering,
-                 SfOnesLikeOpLowering,
-                 SfNewOnesOpLowering,
-                 SfLayerNormOpLowering,
-                 SfRmsNormOpLowering,
-                 SfScaledDotProductAttentionOpLowering,
-                 SfEmbeddingOpLowering,
-                 SfSymSizeOpLowering,
-                 SfArangeOpLowering,
-                 SfCumsumOpLowering,
-                 SfIndexOpLowering>(&getContext());
+    // Collect functions that contain sf ops
+    SmallVector<func::FuncOp> targetFuncs;
+    getOperation()->walk([&](func::FuncOp funcOp) {
+      bool hasSf = false;
+      funcOp.walk([&](Operation *op) {
+        if (op->getDialect() && isa<sf::SfDialect>(op->getDialect())) {
+          hasSf = true;
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
+      });
+      if (hasSf)
+        targetFuncs.push_back(funcOp);
+    });
 
+    // Lower per-function using greedy pattern rewriter (avoids
+    // dialect-conversion framework worklist divergence at scale).
+    for (auto func : targetFuncs) {
+      RewritePatternSet patterns(&getContext());
+      patterns.add<SfBinaryLowering<sf::AddOp, arith::AddFOp>,
+                   SfBinaryLowering<sf::MulOp, arith::MulFOp>,
+                   SfBinaryLowering<sf::SubOp, arith::SubFOp>,
+                   SfBinaryLowering<sf::DivOp, arith::DivFOp>,
+                   SfBinaryLowering<sf::MaxOp, arith::MaxNumFOp>,
+                   ReluLowering, IdentityLowering,
+                   SfActivationOpLowering<sf::GeluOp>,
+                   SfActivationOpLowering<sf::SiluOp>,
+                   SfActivationOpLowering<sf::SigmoidOp>,
+                   SfActivationOpLowering<sf::ExpOp>,
+                   SfActivationOpLowering<sf::NegOp>,
+                   SfActivationOpLowering<sf::TanhOp>,
+                   SfMatmulOpLowering, SfLinearOpLowering,
+                   SfViewOpLowering, SfExpandOpLowering,
+                   SfUnsqueezeOpLowering, SfSumOpLowering,
+                   SfTransposeOpLowering, SfSliceOpLowering,
+                   SfLeOpLowering, SfLogicalAndOpLowering,
+                   SfOnesLikeOpLowering, SfNewOnesOpLowering,
+                   SfLayerNormOpLowering, SfRmsNormOpLowering,
+                   SfScaledDotProductAttentionOpLowering,
+                   SfEmbeddingOpLowering, SfSymSizeOpLowering,
+                   SfArangeOpLowering, SfCumsumOpLowering,
+                   SfIndexOpLowering>(&getContext());
 
-    llvm::errs() << "  [sf-lower-to-linalg] running applyPartialConversion\n";
-    if (failed(applyPartialConversion(getOperation(), target, std::move(patterns)))) {
-      llvm::errs() << "  [sf-lower-to-linalg] CONVERSION FAILED\n";
-      signalPassFailure();
+      llvm::errs() << "  [sf-lower-to-linalg] lowering func '" << func.getName()
+                   << "' (" << patterns.getNativePatterns().size() << " patterns)\n";
+      GreedyRewriteConfig config;
+      config.setMaxIterations(10);
+      config.enableFolding(false);
+      LogicalResult result = applyPatternsGreedily(func, std::move(patterns), config);
+      if (failed(result)) {
+        llvm::errs() << "  [sf-lower-to-linalg] greedy rewriter did not converge for '"
+                     << func.getName() << "'\n";
+      }
+      llvm::errs() << "  [sf-lower-to-linalg] after lowering func '" << func.getName() << "'\n";
     }
 
     // Post-conversion check: report remaining sf ops with their names
@@ -2396,6 +2401,7 @@ struct SfLowerToLinalgPass
     } else {
       llvm::errs() << "  [sf-lower-to-linalg] all sf ops converted\n";
     }
+    llvm::errs() << "  [sf-lower-to-linalg] done\n";
   }
 };
 } // namespace
