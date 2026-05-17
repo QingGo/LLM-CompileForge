@@ -92,6 +92,16 @@ test-pipeline: $(VENV)
 	DYLD_LIBRARY_PATH="$(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs" \
 	$(PYTHON) scripts/smoke_pipeline.py
 
+# ---- L1i: Pipeline 时序诊断 (每步单独计时+超时, <120s) ----
+test-pipeline-timing: $(VENV)
+	DYLD_LIBRARY_PATH="$(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs" \
+	$(PYTHON) scripts/pipeline_timing.py compiled/opt_125m_fresh
+
+# ---- L2a: 全模型编译测试 (逐步骤检测, <300s) ----
+test-compile-full: $(VENV)
+	DYLD_LIBRARY_PATH="$(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs" \
+	$(PYTHON) -m pytest tests/test_compile_full.py -v --tb=short --timeout=300
+
 # ---- SF dialect extension rebuild ----
 .PHONY: rebuild-sf
 rebuild-sf:
