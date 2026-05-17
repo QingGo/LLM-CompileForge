@@ -87,6 +87,11 @@ benchmark: $(VENV)
 test-benchmark: $(VENV)
 	$(PYTEST) tests/test_benchmark.py -m benchmark -v --tb=short --timeout=120
 
+# ---- L1h: Pipeline 冒烟测试 (<10s) ----
+test-pipeline: $(VENV)
+	DYLD_LIBRARY_PATH="$(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs" \
+	$(PYTHON) scripts/smoke_pipeline.py
+
 # ---- SF dialect extension rebuild ----
 .PHONY: rebuild-sf
 rebuild-sf:

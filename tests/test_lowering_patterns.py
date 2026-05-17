@@ -681,3 +681,60 @@ def test_compare_broadcast_3d_1d():
   }
 }""")
     _check_lowered(lowered)
+
+
+# ── Session bugs: FP accuracy, lowering hang, type mismatches ───────
+
+
+def test_linear_3d_dynamic_batch():
+    lowered = _lower('''module {
+  func.func @test(%a: tensor<?x4x768xf32>, %w: tensor<768x768xf32>,
+                  %b: tensor<768xf32>) -> tensor<?x4x768xf32> {
+    %0 = "sf.linear"(%a, %w, %b) : (tensor<?x4x768xf32>, tensor<768x768xf32>, tensor<768xf32>) -> tensor<?x4x768xf32>
+    return %0 : tensor<?x4x768xf32>
+  }
+}''')
+    _check_lowered(lowered)
+    assert "linalg.batch_matmul" in lowered
+
+
+def test_ones_like_with_tensor_input():
+    """Regression: sf.ones_like with 0 operands (aten.ones without tensor input).
+
+    The op definition (SfOps.td) requires $input, but fx_to_mlir may create
+    sf.ones_like with 0 operands for aten.ones(shape). The lowering should
+    handle this without crashing (op may remain unconverted — that's OK
+    when it's dynamically legal).
+    """
+    lowered = _lower("""module {
+  func.func @test() -> tensor<1x4xf32> {
+    %0 = "sf.ones_like"() {shape = [1, 4], device = "cpu",
+                           pin_memory = false} : () -> tensor<1x4xf32>
+    return %0 : tensor<1x4xf32>
+  }
+}""")
+    assert isinstance(lowered, str), "lowering should not crash"
+    # sf.ones_like with 0 operands may remain unconverted (op def requires input)
+    # The important thing is the pipeline doesn't hang or crash
+
+
+def test_cumsum_out_of_bounds_dim():
+    lowered = _lower('''module {
+  func.func @test(%a: tensor<1xf32>) -> tensor<1xf32> {
+    %0 = "sf.cumsum"(%a) {dim = 1 : i64} : (tensor<1xf32>) -> tensor<1xf32>
+    return %0 : tensor<1xf32>
+  }
+}''')
+    assert lowered, "lowering should not crash"
+
+
+def test_layer_norm_with_dynamic_dim():
+    lowered = _lower('''module {
+  func.func @test(%a: tensor<?x768xf32>, %w: tensor<768xf32>,
+                  %b: tensor<768xf32>) -> tensor<?x768xf32> {
+    %0 = "sf.layer_norm"(%a, %w, %b) {normalized_shape = [768]} : (tensor<?x768xf32>, tensor<768xf32>, tensor<768xf32>) -> tensor<?x768xf32>
+    return %0 : tensor<?x768xf32>
+  }
+}''')
+    _check_lowered(lowered)
+    assert "linalg.generic" in lowered
