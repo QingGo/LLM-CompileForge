@@ -182,8 +182,8 @@ impl InferenceRunner {
                 continue;
             }
 
-            // Forward pass
-            let logits_tensor = self.executor.forward(input_ids)?;
+            // Forward pass with positions (enables future KV cache integration)
+            let logits_tensor = self.executor.forward_with_positions(input_ids, &req.positions)?;
             let all_logits = logits_tensor.as_slice();
             if all_logits.is_empty() {
                 continue;

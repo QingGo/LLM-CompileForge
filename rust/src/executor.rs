@@ -83,6 +83,14 @@ impl ModelExecutor {
     }
 
     pub fn forward(&self, input_ids: &[u32]) -> Result<Tensor<'static>, anyhow::Error> {
+        // Default: use sequential positions [0, 1, ..., N-1] (full prefill)
+        let positions: Vec<u32> = (0..input_ids.len() as u32).collect();
+        self.forward_with_positions(input_ids, &positions)
+    }
+
+    /// Like forward() but accepts explicit positions for each token.
+    /// positions[i] gives the position of input_ids[i] in the sequence.
+    pub fn forward_with_positions(&self, input_ids: &[u32], positions: &[u32]) -> Result<Tensor<'static>, anyhow::Error> {
         let num_funcs = self.compute_graph.functions.len();
         let mut func_outputs: Vec<Vec<Tensor<'static>>> = vec![Vec::new(); num_funcs];
 
@@ -105,13 +113,14 @@ impl ModelExecutor {
                 let tensor: Tensor = match binding {
                     InputBinding::GlobalInput => {
                         let expected_numel: usize = shape.iter().product();
-                        let padded: Vec<i64> = if input_ids.len() >= expected_numel {
-                            input_ids[..expected_numel].iter().map(|&id| id as i64).collect()
-                        } else {
-                            let mut p = input_ids.iter().map(|&id| id as i64).collect::<Vec<_>>();
-                            p.resize(expected_numel, 0);
-                            p
-                        };
+                        let n_tokens = input_ids.len().min(expected_numel);
+                        let padded: Vec<i64> = (0..expected_numel).map(|i| {
+                            if i < n_tokens {
+                                input_ids[i] as i64
+                            } else {
+                                0i64
+                            }
+                        }).collect();
                         let raw: Vec<u8> = padded.iter().flat_map(|&v| v.to_ne_bytes()).collect();
                         let p = raw.as_ptr();
                         let memref = MemRefDesc2 {
