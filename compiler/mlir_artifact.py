@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import os
 import struct
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,47 +25,13 @@ if TYPE_CHECKING:
 
 import torch
 
-
-@dataclass
-class MlirOp:
-    """A single MLIR operation parsed from model.mlir."""
-
-    name: str  # full qualified name: "sf.linear", "sf.weight", etc.
-    dialect: str  # "sf", "arith", etc.
-    op_name: str  # "linear", "matmul", "weight", etc.
-    operands: list[str]  # SSA names of inputs
-    results: list[str]  # SSA names of outputs
-    attributes: dict[str, Any] = field(default_factory=dict)
-    input_types: list[str] = field(default_factory=list)  # MLIR type strings for each operand
-    output_types: list[str] = field(default_factory=list)  # MLIR type strings for each result
-
-
-@dataclass
-class MlirFunction:
-    """A parsed MLIR function (func.func)."""
-
-    name: str
-    inputs: list[tuple[str, str]]  # (ssa_name, mlir_type_string)
-    outputs: list[tuple[str, str]]  # (ssa_name, mlir_type_string)
-    ops: list[MlirOp] = field(default_factory=list)
-    weights: dict[str, torch.Tensor] = field(default_factory=dict)
-    param_weight_names: set[str] = field(default_factory=set)
-    const_weight_names: set[str] = field(default_factory=set)
-
-
-@dataclass
-class MlirModule:
-    """A parsed MLIR module containing functions and weights."""
-
-    functions: list[MlirFunction] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def main(self) -> MlirFunction:
-        """Return the main (first) function."""
-        if not self.functions:
-            raise ValueError("MlirModule has no functions")
-        return self.functions[0]
+# Re-export data types from the dedicated module for backward compatibility.
+from compiler.mlir_dialect.mlir_op_types import (  # noqa: F401
+    MlirFunction,
+    MlirModule,
+    MlirOp,
+    ssa as _ssa,
+)
 
 
 def mlir_module_to_text(module: MlirModule) -> str:
@@ -81,7 +46,7 @@ def mlir_module_to_text(module: MlirModule) -> str:
         # Function arguments
         arg_strs = []
         for name, tp in func.inputs:
-            arg_strs.append(f"{name}: {tp}")
+            arg_strs.append(f"{_ssa(name)}: {tp}")
         args_str = ", ".join(arg_strs)
 
         # Return type
@@ -97,12 +62,12 @@ def mlir_module_to_text(module: MlirModule) -> str:
                 wname = op.attributes.get("name", "")
                 tp = op.output_types[0] if op.output_types else "tensor<f32>"
                 attrs = f'{{name = "{wname}"}}' if wname else ""
-                lines.append(f'    %{op.results[0]} = "{op.name}"() {attrs} : '
+                lines.append(f'    {_ssa(op.results[0])} = "{op.name}"() {attrs} : '
                              f'() -> {tp}')
                 continue
 
-            results_str = ", ".join(f"%{r}" if not r.startswith("%") else r for r in op.results)
-            operands_str = ", ".join(f"%{o}" if not o.startswith("%") else o for o in op.operands)
+            results_str = ", ".join(_ssa(r) for r in op.results)
+            operands_str = ", ".join(_ssa(o) for o in op.operands)
             attrs_str = ""
             if op.attributes:
                 attr_parts = []
@@ -125,7 +90,7 @@ def mlir_module_to_text(module: MlirModule) -> str:
             )
 
         # Return
-        ret_names = [name for name, _ in func.outputs]
+        ret_names = [_ssa(name) for name, _ in func.outputs]
         ret_str = ", ".join(ret_names)
         ret_types = [tp for _, tp in func.outputs]
         if len(ret_types) == 1:

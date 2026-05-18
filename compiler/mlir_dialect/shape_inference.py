@@ -268,7 +268,7 @@ def infer_expand(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
     if shape:
         out_dims: list[int | None] = []
         in_idx = len(shape) - len(s)  # leading dims are new
-        for i, dim_entry in enumerate(shape):
+        for dim_entry in shape:
             if isinstance(dim_entry, int):
                 if dim_entry == -1:
                     # Keep from input (right-aligned)

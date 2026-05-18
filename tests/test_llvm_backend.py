@@ -141,7 +141,9 @@ define i32 @answer() {
         bad_path = str(tmp_path / "not.ll")
         Path(bad_path).write_text("this is not valid LLVM IR")
 
-        with pytest.raises(RuntimeError, match="llc compilation failed"):
+        from compiler.exceptions import LLCError
+
+        with pytest.raises(LLCError, match="llc compilation failed"):
             llc_compile(bad_path)
 
 

@@ -12,6 +12,8 @@ use std::alloc::{self, Layout};
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
+use crate::error::ExecutorError;
+
 // ── Device ────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -185,7 +187,9 @@ impl Executable {
         arity: usize,
     ) -> Result<KernelFn, anyhow::Error> {
         if arity > 300 {
-            anyhow::bail!("unsupported kernel arity: {} (max 300)", arity);
+            return Err(ExecutorError::KernelArityMismatch {
+                expected: 300, actual: arity,
+            }.into());
         }
         // SAFETY: libloading::Symbol casts the symbol to the expected type.
         // For arities 1..8 we use typed CifaceFnN for direct calls.

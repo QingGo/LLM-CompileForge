@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::path::Path;
 
+use crate::error::ExecutorError;
 use crate::hal_cpu::MemRefDesc2;
 use crate::sfcf;
 use crate::tensor::Dtype;
@@ -41,14 +42,20 @@ impl ConstantTensor {
 
 pub fn parse_embedded(data: &[u8]) -> Result<(WeightRegistry, usize), anyhow::Error> {
     if data.len() < 8 {
-        anyhow::bail!("embedded data too short: {} bytes", data.len());
+        return Err(ExecutorError::SfcfParse(format!(
+            "embedded data too short: {} bytes", data.len(),
+        )).into());
     }
     if &data[0..4] != b"SFCF" {
-        anyhow::bail!("bad magic: {:?}", &data[0..4]);
+        return Err(ExecutorError::SfcfParse(format!(
+            "bad magic: {:?}", &data[0..4],
+        )).into());
     }
     let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
     if version != 2 {
-        anyhow::bail!("unsupported binary version: {} (expected 2)", version);
+        return Err(ExecutorError::SfcfParse(format!(
+            "unsupported binary version: {} (expected 2)", version,
+        )).into());
     }
 
     let mut pos = 8usize;
@@ -66,7 +73,9 @@ pub fn parse_embedded(data: &[u8]) -> Result<(WeightRegistry, usize), anyhow::Er
     for _ in 0..const_count {
         let name = sfcf::read_string(data, &mut pos)?;
         if pos >= data.len() {
-            anyhow::bail!("truncated constant: {}", name);
+            return Err(ExecutorError::SfcfParse(
+                format!("truncated constant: {}", name),
+            ).into());
         }
         let dtype_code = data[pos];
         pos += 1;
@@ -81,7 +90,9 @@ pub fn parse_embedded(data: &[u8]) -> Result<(WeightRegistry, usize), anyhow::Er
         }
         let data_len = sfcf::read_u64(data, &mut pos)? as usize;
         if pos + data_len > data.len() {
-            anyhow::bail!("truncated constant data: {} (need {} bytes)", name, data_len);
+            return Err(ExecutorError::SfcfParse(
+                format!("truncated constant data: {} (need {} bytes)", name, data_len),
+            ).into());
         }
         let tensor_data = data[pos..pos + data_len].to_vec();
         pos += data_len;
@@ -129,7 +140,9 @@ pub fn load_registry_from_dylib(
     };
 
     if size_val == 0 || data_ptr.is_null() {
-        anyhow::bail!("embedded data empty or missing");
+        return Err(ExecutorError::SfcfParse(
+            "embedded data empty or missing".to_string(),
+        ).into());
     }
 
     // SAFETY: `data_ptr` and `size_val` come from the same dylib.
@@ -217,12 +230,16 @@ fn build_safetensors_index(
     mmap: &[u8],
 ) -> Result<HashMap<String, CachedTensorInfo>, anyhow::Error> {
     if mmap.len() < 8 {
-        anyhow::bail!("safetensors file too short");
+        return Err(ExecutorError::SfcfParse(
+            "safetensors file too short".to_string(),
+        ).into());
     }
     let header_len = u64::from_le_bytes(mmap[..8].try_into()?);
     let header_len = header_len as usize;
     if mmap.len() < 8 + header_len {
-        anyhow::bail!("safetensors header truncated");
+        return Err(ExecutorError::SfcfParse(
+            "safetensors header truncated".to_string(),
+        ).into());
     }
     let header_bytes = &mmap[8..8 + header_len];
     let header: serde_json::Value = serde_json::from_slice(header_bytes)?;

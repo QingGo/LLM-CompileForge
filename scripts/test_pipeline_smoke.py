@@ -74,7 +74,7 @@ def main():
     # Step 2: fuse elementwise (optional)
     try:
         pm.PassManager.parse("builtin.module(linalg-fuse-elementwise-ops,canonicalize,cse)", ctx).run(mod.operation)
-    except:
+    except Exception:
         pass
 
     # Step 3: tile matmul K dim by 64

@@ -5,6 +5,7 @@ use anyhow::bail;
 use half::f16;
 
 use crate::compute_graph::{ComputeGraph, InputBinding};
+use crate::error::ExecutorError;
 use crate::hal::cpu::CpuDevice;
 use crate::hal::traits::{Device as DeviceTrait, Executable as ExecutableTrait};
 use crate::hal_cpu::{Executable, KernelFn, MemRefDescAny, MemRefDesc2};
@@ -71,7 +72,7 @@ impl ModelExecutor {
         let compute_graph = if pos < data.len() {
             ComputeGraph::parse(data, &mut pos)?
         } else {
-            anyhow::bail!("SFCF data missing compute graph section");
+            return Err(ExecutorError::MissingComputeGraph.into());
         };
 
         Ok(Self {

@@ -2,6 +2,7 @@
 //!
 //! Enabled with ``--features python-bindings``.
 
+pub mod error;
 pub mod hal;
 pub mod hal_cpu;
 pub mod ciface_high;

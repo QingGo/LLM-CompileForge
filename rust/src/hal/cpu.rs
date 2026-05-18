@@ -121,14 +121,15 @@ impl traits::Executable for CpuExecutable {
     fn execute(
         &self,
         _stream: &dyn traits::Stream,
-        inputs: &[&dyn traits::Buffer],
-        outputs: &[&dyn traits::Buffer],
+        _inputs: &[&dyn traits::Buffer],
+        _outputs: &[&dyn traits::Buffer],
     ) -> Result<(), anyhow::Error> {
-        // For CPU, execute() dispatches the ciface call.
-        // We need a simpler interface for multi-function dispatch.
-        // For now this is a placeholder — the full multi-function
-        // dispatch lives in ModelExecutor::forward().
-        anyhow::bail!("direct execute() not yet implemented; use ModelExecutor::forward() instead")
+        // Use ModelExecutor::forward() for multi-function dispatch.
+        // Direct trait-based execution requires redesign of the trait
+        // to support output mutability via `&mut [&mut dyn Buffer]`.
+        anyhow::bail!(
+            "direct execute() not supported; use ModelExecutor::forward() instead"
+        )
     }
 
     fn entry_count(&self) -> usize {

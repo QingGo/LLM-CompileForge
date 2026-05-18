@@ -1,4 +1,4 @@
-.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean diagnose-bt test-fixup test-pipeline-smoke test-rust
+.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean diagnose-bt test-fixup test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed
 
 # ---- 环境 ----
 VENV := .venv
@@ -57,7 +57,7 @@ test-perf: $(VENV)
 	$(PYTHON) scripts/perf_regression.py --save .perf_baseline.json
 
 # ---- 快速测试 (lint + L1 all, <20s) ----
-test-fast: lint test-unit test-model test-patterns
+test-fast: lint test-unit test-model test-patterns test-pipeline-quick
 
 # ---- 全量测试 (all tests, <2min) ----
 test-all: lint test-unit test-model test-patterns test-integration
@@ -110,9 +110,37 @@ test-fixup: $(VENV)
 test-pipeline-smoke: $(VENV)
 	$(PYTHON) scripts/test_pipeline_smoke.py compiled/opt_125m_fresh --timeout 120
 
-# ---- L1l: Rust 测试 (全部 99+, <40s) ----
-test-rust: $(VENV)
-	cd rust && cargo test 2>&1
+# ---- L1l: Pipeline 验证 (IR 清洁度 + 分步计时 + 最终编译, <60s) ----
+test-pipeline-validate: $(VENV)
+	DYLD_LIBRARY_PATH="$(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs" \
+	$(PYTHON) -m pytest tests/test_pipeline_validation.py -v --tb=short --timeout=60
+
+# ---- L1n: Pipeline 快速验证 (仅 IR 解析 + op 类型检查, <2s) ----
+test-pipeline-quick: $(VENV)
+	DYLD_LIBRARY_PATH="$(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs" \
+	$(PYTEST) tests/test_pipeline_validation.py::test_no_arith_ops_after_lowering \
+	         tests/test_pipeline_validation.py::test_tile_sizes_within_bounds \
+	         -v --tb=short --timeout=30
+
+# ---- L1m: Rust 单元测试 (纯逻辑, ~5s) ----
+test-rust-unit: $(VENV)
+	cd rust && cargo test --lib 2>&1
+
+# ---- L2b: Rust 集成测试 (含 .dylib 加载, ~30s) ----
+test-rust-integ: $(VENV)
+	cd rust && cargo test --bin serveforge 2>&1
+
+# ---- L1m: Rust 测试 (全部 99+, <40s) ----
+test-rust: test-rust-unit test-rust-integ
+
+# ---- 增量测试: 仅跑 git diff 相关测试 (<30s) ----
+test-changed: $(VENV)
+	@if [ -f scripts/run_related_tests.py ]; then \
+		$(PYTHON) scripts/run_related_tests.py; \
+	else \
+		echo "⚠️  scripts/run_related_tests.py 不存在，回退到 test-fast"; \
+		$(MAKE) test-fast; \
+	fi
 
 # ---- L2a: 全模型编译测试 (逐步骤检测, <300s) ----
 test-compile-full: $(VENV)
