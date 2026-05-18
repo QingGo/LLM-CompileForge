@@ -1,4 +1,4 @@
-.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean diagnose-bt
+.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean diagnose-bt test-fixup test-pipeline-smoke test-rust
 
 # ---- 环境 ----
 VENV := .venv
@@ -101,6 +101,18 @@ test-pipeline-timing: $(VENV)
 test-pipeline-debug: $(VENV)
 	DYLD_LIBRARY_PATH="$(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs" \
 	$(PYTHON) scripts/pipeline_debug.py compiled/opt_125m_fresh --out /tmp/pipeline_debug
+
+# ---- L1j: _fixup_unrealized_casts 单元测试 (16 patterns, <1s) ----
+test-fixup: $(VENV)
+	$(PYTEST) tests/test_fixup_casts.py -v --tb=short --timeout=10
+
+# ---- L1k: Pipeline 冒烟测试 (全流程限时验证, <120s) ----
+test-pipeline-smoke: $(VENV)
+	$(PYTHON) scripts/test_pipeline_smoke.py compiled/opt_125m_fresh --timeout 120
+
+# ---- L1l: Rust 测试 (全部 99+, <40s) ----
+test-rust: $(VENV)
+	cd rust && cargo test 2>&1
 
 # ---- L2a: 全模型编译测试 (逐步骤检测, <300s) ----
 test-compile-full: $(VENV)
