@@ -156,9 +156,9 @@ mod tests {
         // Compute graph section
         buf.extend_from_slice(&2u32.to_le_bytes()); // 2 functions
 
-        // Function 0: main_0, 2 inputs, 1 output
+        // Function 0: _mlir_ciface_main_0, 2 inputs, 1 output
         {
-            let s = b"main_0";
+            let s = b"_mlir_ciface_main_0";
             buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
             buf.extend_from_slice(s);
             buf.extend_from_slice(&2u32.to_le_bytes()); // num_inputs
@@ -188,9 +188,9 @@ mod tests {
             buf.extend_from_slice(&0u64.to_le_bytes());
         }
 
-        // Function 1: main_1, 1 input, 1 output
+        // Function 1: _mlir_ciface_main_1, 1 input, 1 output
         {
-            let s = b"main_1";
+            let s = b"_mlir_ciface_main_1";
             buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
             buf.extend_from_slice(s);
             buf.extend_from_slice(&1u32.to_le_bytes()); // num_inputs
@@ -231,7 +231,7 @@ mod tests {
         let graph = ComputeGraph::parse(&data, &mut pos).unwrap();
         assert_eq!(graph.functions.len(), 2);
 
-        assert_eq!(graph.functions[0].symbol, "main_0");
+        assert_eq!(graph.functions[0].symbol, "_mlir_ciface_main_0");
         assert_eq!(graph.functions[0].num_inputs, 2);
         assert_eq!(graph.functions[0].num_outputs, 1);
         assert!(matches!(
@@ -243,7 +243,7 @@ mod tests {
             InputBinding::Weight(_)
         ));
 
-        assert_eq!(graph.functions[1].symbol, "main_1");
+        assert_eq!(graph.functions[1].symbol, "_mlir_ciface_main_1");
         assert!(matches!(
             graph.functions[1].inputs[0].0,
             InputBinding::Ssa {

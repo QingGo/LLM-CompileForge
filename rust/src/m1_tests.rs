@@ -115,9 +115,8 @@ mod integration_tests {
             executor.weight_provider.constants().len(),
         );
 
-        // Use input_ids that match the compiled model's GlobalInput shape (2×4=8).
-        // First row: [2, 32826, 85, 4129] like Python; second row: zeros.
-        let input_ids: Vec<u32> = vec![2, 32826, 85, 4129, 0, 0, 0, 0];
+        // Use input_ids that match the compiled model's GlobalInput shape (1×4=4).
+        let input_ids: Vec<u32> = vec![2, 32826, 85, 4129];
 
         let result = executor.forward(&input_ids).expect("forward failed");
         let logits_slice = result.as_slice();
@@ -141,8 +140,7 @@ mod integration_tests {
         }
 
         assert_eq!(result.shape.len(), 3, "expected 3D output");
-        // Model was compiled with static batch=2 (canonicalize folded ?->2)
-        assert_eq!(result.shape[0], 2, "batch=2 from static shape");
+        assert_eq!(result.shape[0], 1, "batch=1");
         assert_eq!(result.shape[1], 4, "seq=4");
         assert_eq!(result.shape[2], 50272, "vocab=50272");
         assert!(logits_slice[0].is_finite(), "logits should be finite");

@@ -516,14 +516,17 @@ def _build_name_mapping(module: MlirModule) -> dict[str, str]:
     """
     hf_key_map: dict[str, str] = module.metadata.get("hf_key_map", {})
     tied_weights: dict[str, str] = module.metadata.get("weight_source", {}).get("tied_weights", {})
-    # tied_weights maps survivor → alias, e.g. "lm_head_weight" → "model_decoder_embed_tokens_weight"
-    # meaning lm_head_weight and model_decoder_embed_tokens_weight share the same tensor.
-    # The alias (model_decoder_embed_tokens_weight) should map to the survivor's HF key.
+    # tied_weights maps alias → survivor, e.g. "lm_head_weight" → "model_decoder_embed_tokens_weight"
+    # meaning lm_head_weight is an alias for model_decoder_embed_tokens_weight (same tensor data).
+    #
+    # NOTE: The survivor's hf_key exists in safetensors. Both should use that key.
+    # In OPT-125m: lm_head.weight = model.decoder.embed_tokens.weight (tied),
+    # safetensors stores under "lm_head.weight" only.
 
-    # Build reverse map: alias → survivor
+    # Build reverse map: survivor → alias (so we redirect aliases to the survivor's HF key)
     alias_to_survivor: dict[str, str] = {}
-    for survivor, alias in tied_weights.items():
-        alias_to_survivor[alias] = survivor
+    for alias_name, surv_name in tied_weights.items():
+        alias_to_survivor[surv_name] = alias_name
 
     mapping: dict[str, str] = {}
 
@@ -667,7 +670,9 @@ def _emit_compute_graph_section(
     parts.append(struct.pack("<I", num_funcs))
 
     for fi, func in enumerate(module.functions):
-        _emit_string(parts, func.name)
+        # emit_c_interface is added during LLVM lowering (after constants.bin is built).
+        # The Rust runtime uses _mlir_ciface_* wrappers, so prefix the symbol.
+        _emit_string(parts, f"_mlir_ciface_{func.name}")
 
         # Collect weight/constant ops in this function — these become additional
         # function arguments after C++ lowering promotes them from ops to args.
