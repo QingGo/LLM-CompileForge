@@ -175,12 +175,18 @@ impl ModelExecutor {
             }
             debug_assert!(_tensors.len() <= input_ptrs.len());
 
-            let mut sret: Vec<u8> = vec![0u8; 65536];
+            const SRET_BUF_SIZE: usize = 65536;
+            let mut sret: Vec<u8> = vec![0u8; SRET_BUF_SIZE];
             let sret_ptr = sret.as_mut_ptr() as *mut c_void;
 
             let mut all_args: Vec<*const c_void> = Vec::with_capacity(1 + input_ptrs.len());
             all_args.push(sret_ptr);
             all_args.extend(input_ptrs.iter().copied());
+            // SAFETY: kernel was loaded from the compiled .dylib and validated
+            // by Executable::lookup_typed().  sret_ptr and input_ptrs point to
+            // writable/readable buffers of appropriate size.  The kernel is
+            // _mlir_ciface_* — a C ABI function that reads MemRef descriptors
+            // from input_ptrs and writes output descriptors to sret_ptr.
             unsafe {
                 let raw_ptr = match &kernel {
                     KernelFn::HighArity(f) => f.0 as *const (),
@@ -193,7 +199,18 @@ impl ModelExecutor {
             for (oi, io_def) in func_def.outputs.iter().enumerate() {
                 let r = io_def.rank as usize;
                 let desc_size = 24 + 16 * r;
-                let ptr_slice = &sret[sret_offset..sret_offset + desc_size];
+                let end = sret_offset + desc_size;
+                if end > SRET_BUF_SIZE {
+                    anyhow::bail!(
+                        "sret overflow: func {} output {} desc_size={} offset={} exceeds {}",
+                        fi, oi, desc_size, sret_offset, SRET_BUF_SIZE,
+                    );
+                }
+                let ptr_slice = &sret[sret_offset..end];
+                // SAFETY: parse_sret_descriptor reads structured binary data
+                // from the sret buffer written by the MLIR ciface kernel.
+                // desc_size was computed from the known rank r.  The slice
+                // bounds are validated above (end <= SRET_BUF_SIZE).
                 let (aligned, runtime_sizes) = unsafe { parse_sret_descriptor(ptr_slice, r) };
                 let fallback: Vec<i64> = io_def.shape.iter().map(|&d|
                     if d == 0 { 1 } else { d as i64 }
@@ -223,6 +240,15 @@ impl ModelExecutor {
 }
 
 unsafe fn parse_sret_descriptor(slice: &[u8], rank: usize) -> (*mut u8, Vec<i64>) {
+    let min_len = 24 + rank * 8;
+    assert!(
+        slice.len() >= min_len,
+        "parse_sret_descriptor: slice too short ({} bytes, need {} for rank {})",
+        slice.len(), min_len, rank,
+    );
+    // SAFETY: caller guarantees slice is long enough for the full descriptor
+    // (rank-sized offset 24 + rank*8).  read_unaligned is safe for any aligned
+    // or unaligned byte address on x86_64/aarch64.
     let aligned = std::ptr::read_unaligned(slice.as_ptr().add(8) as *const *mut u8);
     let sizes: Vec<i64> = (0..rank).map(|i| {
         let offset = 24 + i * 8;

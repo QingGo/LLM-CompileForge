@@ -99,7 +99,7 @@ mod integration_tests {
     #[test]
     fn test_opt_125m_forward_runs() {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let dylib = format!("{}/../compiled/opt_125m_v8/libopt_125m.dylib", manifest_dir);
+        let dylib = format!("{}/../compiled/opt_125m_fresh/libopt_125m.dylib", manifest_dir);
         let st = find_safetensors();
 
         eprintln!("dylib: {}", dylib);
@@ -153,7 +153,7 @@ mod integration_tests {
     #[test]
     fn test_runner_generate_end_to_end() {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let dylib = format!("{}/../compiled/opt_125m_v8/libopt_125m.dylib", manifest_dir);
+        let dylib = format!("{}/../compiled/opt_125m_fresh/libopt_125m.dylib", manifest_dir);
         let st = find_safetensors();
 
         if !std::path::Path::new(&dylib).exists() {

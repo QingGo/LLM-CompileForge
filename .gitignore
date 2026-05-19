@@ -16,3 +16,6 @@ benchmark_results.json
 llvm-project/
 sf-dialect/build/
 .opencode/
+outputs/
+logs/
+sf-dialect/python/mlir_sf/_mlir_libs/_sfDialectsNanobind.cpython-310-darwin.so

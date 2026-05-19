@@ -206,6 +206,12 @@ impl WeightProvider {
         let data_slice = &mmap[info.data_start..info.data_end];
         let rows = *info.shape.first().unwrap_or(&1);
         let cols = info.shape.get(1).copied().unwrap_or(1);
+        // SAFETY: The mmap region (data_start..data_end) is read-only memory
+        // backed by the safetensors file.  MemRefDesc2 stores pointers as
+        // *mut c_void because the ciface kernel expects mutable descriptors,
+        // but the safetensors data is never actually written to — the kernel
+        // only reads weights.  The cast from *const u8 to *mut c_void is
+        // safe because all accesses through this descriptor are reads.
         Some(MemRefDesc2 {
             allocated: data_slice.as_ptr() as *mut c_void,
             aligned: data_slice.as_ptr() as *mut c_void,
