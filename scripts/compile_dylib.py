@@ -237,6 +237,61 @@ def main() -> None:
     lowered_path.write_text(lowered_text)
     print(f"   Saved lowered MLIR to {lowered_path}")
 
+    import re as _re
+    _lines = lowered_text.split('\n')
+    _const_vals = {}
+    for _line in _lines:
+        _cm = _re.match(
+            r'\s*(%\w+)\s*=\s*"arith\.constant"\s*\(\)\s*<{value\s*=\s*(\d+)\s*:\s*index}>',
+            _line,
+        )
+        if _cm:
+            _const_vals[_cm.group(1)] = int(_cm.group(2))
+    _dim_records = []
+    for _li, _line in enumerate(_lines):
+        _dm = _re.match(
+            r'\s*(%\w+)\s*=\s*"tensor\.dim"\s*\(\s*(%\w+)\s*,\s*(%\w+|\d+)\s*\)',
+            _line,
+        )
+        if _dm:
+            _dim_ref = _dm.group(3)
+            _dim_idx = int(_dim_ref) if _dim_ref.isdigit() else _const_vals.get(_dim_ref, -1)
+            if _dim_idx >= 0:
+                _dim_records.append((_li, _dim_idx, _dm.group(1)))
+    _changes = 0
+    for _li in range(len(_lines)):
+        _me = _re.match(
+            r'(\s*%\w+\s*=\s*"tensor\.empty"\s*\()\s*(\)\s*:\s*\(\)\s*->\s*tensor<(.+?)>\s*$)',
+            _lines[_li],
+        )
+        if not _me:
+            continue
+        _type = _me.group(3)
+        _shape_part = _type.rsplit('x', 1)[0]
+        if '?' not in _shape_part:
+            continue
+        _dims = [d.strip() for d in _shape_part.split('x') if d.strip()]
+        _dyn_pos = [i for i, d in enumerate(_dims) if '?' in d]
+        _sizes = {}
+        for _dl, _di, _dv in reversed(_dim_records):
+            if _dl < _li and _di in _dyn_pos and _di not in _sizes:
+                _sizes[_di] = _dv
+                if len(_sizes) == len(_dyn_pos):
+                    break
+        if len(_sizes) == len(_dyn_pos):
+            _prefix = _me.group(1)
+            _sorted = [_sizes[p] for p in sorted(_sizes.keys())]
+            _lines[_li] = (
+                f'{_prefix}{", ".join(_sorted)})'
+                f' : ({", ".join(["index"] * len(_dyn_pos))})'
+                f' -> tensor<{_type}>'
+            )
+            _changes += 1
+    if _changes:
+        lowered_text = '\n'.join(_lines)
+        lowered_path.write_text(lowered_text)
+        print(f"   Fixed {_changes} tensor.empty ops with dynamic sizes")
+
     # Verification gate: ensure lowered IR is valid before proceeding
     print("[4v] Verifying lowered IR ...")
     try:
