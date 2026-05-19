@@ -1,4 +1,4 @@
-.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean diagnose-bt test-fixup test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed
+.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean diagnose-bt test-fixup test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-benchmark test-perf test-vec test-lower test-baseline test-compile-full test-forward-smoke build-rust install-rust
 
 # ---- 环境 ----
 VENV := .venv
@@ -57,20 +57,33 @@ test-perf: $(VENV)
 	$(PYTHON) scripts/perf_regression.py --save .perf_baseline.json
 
 # ---- 快速测试 (lint + L1 all, <20s) ----
-test-fast: lint test-unit test-model test-patterns test-pipeline-quick
+test-fast: lint test-unit test-model test-patterns test-pipeline-quick test-forward-smoke
+
+# ---- L1.5: 快速正确性检查 (<5s) ----
+test-forward-smoke: $(VENV)
+	mkdir -p logs/test
+	@for model in compiled/opt_125m_fresh compiled/tiny_llama; do \
+		if [ -d $$model ]; then \
+			echo "[$$model]"; \
+			LLM_SERVEFORGE_LOG=INFO $(PYTHON) scripts/check_forward_smoke.py $$model > logs/test/forward_smoke_$$(date +%Y%m%d_%H%M%S).log 2>&1 || exit 1; \
+		fi; \
+	done
 
 # ---- 全量测试 (all tests, <2min) ----
 test-all: lint test-unit test-model test-patterns test-integration
 
 # ---- L3: 性能回归 (<5min) ----
 profile: $(VENV)
-	@echo "=== LLM-ServeForge 性能基线 ===" > .profile_baseline.txt
-	@date >> .profile_baseline.txt
-	@echo "模型加载耗时:" >> .profile_baseline.txt
-	@$(PYTHON) -c "import time; t=time.perf_counter(); import torch; print(f'{time.perf_counter()-t:.2f}s')" >> .profile_baseline.txt 2>&1 || echo "torch 导入失败(非 GPU 环境)" >> .profile_baseline.txt
-	@echo "---" >> .profile_baseline.txt
-	@cat .profile_baseline.txt
+	@echo "=== LLM-ServeForge 性能基线 ==="
+	@date +"%Y-%m-%d %H:%M:%S"
+	@$(PYTHON) scripts/perf_regression.py --record 2>&1 || echo "perf_regression 失败"
 	@echo "提示: 功能里程碑后运行 make profile 记录关键指标"
+
+# ---- L3b: 性能回归门禁 ----
+profile-check: $(VENV)
+	@echo "=== 性能回归检查 ==="
+	@$(PYTHON) scripts/perf_regression.py --threshold 5 2>&1 || \
+		(echo "❌ 性能退化 > 5%, 请优化后重新提交" && exit 1)
 
 # ---- L4: 冒烟测试 (<2s) ----
 smoke: $(VENV)
@@ -124,14 +137,32 @@ test-pipeline-quick: $(VENV)
 
 # ---- L1m: Rust 单元测试 (纯逻辑, ~5s) ----
 test-rust-unit: $(VENV)
-	cd rust && cargo test --lib 2>&1
+	mkdir -p logs/rust
+	cd rust && cargo test --lib > ../logs/rust/test_unit_$$(date +%Y%m%d_%H%M%S).log 2>&1
 
 # ---- L2b: Rust 集成测试 (含 .dylib 加载, ~30s) ----
 test-rust-integ: $(VENV)
-	cd rust && cargo test --bin serveforge 2>&1
+	mkdir -p logs/rust
+	cd rust && cargo test --bin serveforge > ../logs/rust/test_integ_$$(date +%Y%m%d_%H%M%S).log 2>&1
 
 # ---- L1m: Rust 测试 (全部 99+, <40s) ----
 test-rust: test-rust-unit test-rust-integ
+
+# ---- Rust 构建 & 安装到 venv (用于 Python FFI) ----
+build-rust: $(VENV)
+	cd rust && cargo build --release --features python-bindings 2>&1
+
+install-rust: build-rust
+	@mkdir -p logs/rust
+	@echo "  ⚠️  检测环境冲突..." >&2
+	@if [ -n "$$CONDA_PREFIX" ] && [ -n "$$VIRTUAL_ENV" ]; then \
+		echo "  ⚠️  同时检测到 CONDA_PREFIX 和 VIRTUAL_ENV，尝试 unset CONDA_PREFIX..."; \
+		CONDA_PREFIX="" maturin develop -r --manifest-path rust/Cargo.toml 2>&1 || \
+		(echo "  ❌ maturin 失败 — 手动运行: cd rust && VIRTUAL_ENV=$$(pwd)/.venv PATH=$$(pwd)/.venv/bin:$$PATH CONDA_PREFIX= maturin develop -r" >&2 && exit 1); \
+	else \
+		maturin develop -r --manifest-path rust/Cargo.toml > logs/rust/install_$$(date +%Y%m%d_%H%M%S).log 2>&1; \
+	fi
+	@echo "  ✅ Rust 模块已安装到 venv"
 
 # ---- 增量测试: 仅跑 git diff 相关测试 (<30s) ----
 test-changed: $(VENV)

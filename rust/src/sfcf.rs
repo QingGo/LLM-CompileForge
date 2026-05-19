@@ -69,4 +69,40 @@ mod tests {
         let mut pos = 0;
         assert_eq!(read_string(&buf, &mut pos).unwrap(), "hello");
     }
+
+    // ── Fuzz-like tests ───────────────────────────────────────
+
+    /// Invariant: SFCF parsing functions never crash on random input.
+    /// They must always either return Ok or a well-formed error.
+    #[test]
+    fn prop_parse_never_panics_on_random_input() {
+        use proptest::prelude::*;
+        proptest!(|(data in proptest::collection::vec(0u8..=255, 0..100))| {
+            let mut pos = 0;
+            let r1 = read_u32(&data, &mut pos);
+            let r2 = read_u64(&data, &mut pos);
+            let r3 = read_string(&data, &mut pos);
+            // All results should be Ok or Err — never panic
+            let _ = (r1, r2, r3);
+        });
+    }
+
+    /// Invariant: read operations advance position or return an error,
+    /// but never leave position beyond data length.
+    #[test]
+    fn prop_parse_position_never_oob() {
+        use proptest::prelude::*;
+        proptest!(|(data in proptest::collection::vec(0u8..=255, 0..100))| {
+            if data.len() < 4 {
+                let mut pos = 0;
+                assert!(read_u32(&data, &mut pos).is_err());
+                return Ok(());
+            }
+            let mut pos = 0;
+            let val = read_u32(&data, &mut pos);
+            if val.is_ok() {
+                assert!(pos <= data.len(), "pos {} > len {}", pos, data.len());
+            }
+        });
+    }
 }

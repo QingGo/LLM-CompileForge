@@ -3,6 +3,10 @@
 When compiled models are missing, fixtures skip with clear instructions
 on how to generate them.  This lets ``make test-unit`` pass on a fresh
 clone without any compiled artifacts.
+
+All HuggingFace model loading uses ``local_files_only=True`` (offline mode)
+to avoid 30s HTTP revision-checking delays.  Set ``HF_HUB_OFFLINE=0`` to
+re-enable network access for model downloads.
 """
 
 from __future__ import annotations
@@ -13,7 +17,13 @@ from typing import Any
 
 import pytest
 
+from tests.helpers import has_mlir_bindings
 from tests.helpers import patch_transformers_torch
+
+# ── Force offline HF loading: local cache only, no HTTP revision checks ──
+# This eliminates 30s of zero-information feedback per HF load (三论: 信息效率)
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 
 def pytest_runtest_setup(item: Any) -> None:
@@ -167,6 +177,7 @@ def hf_qwen():
         config.use_cache = False
     model = AutoModelForCausalLM.from_pretrained(
         model_dir, config=config, trust_remote_code=True, torch_dtype=torch.bfloat16,
+        local_files_only=True,
     )
     model.eval()
     return model

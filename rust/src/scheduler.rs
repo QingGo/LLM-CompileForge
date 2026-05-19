@@ -62,12 +62,12 @@ impl Scheduler {
         max_batch_size: usize,
         max_tokens_per_step: usize,
         chunk_size: usize,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, anyhow::Error> {
         if max_batch_size == 0 {
-            return Err("max_batch_size must be positive".into());
+            return Err(anyhow::anyhow!("max_batch_size must be positive"));
         }
         if chunk_size == 0 {
-            return Err("chunk_size must be positive".into());
+            return Err(anyhow::anyhow!("chunk_size must be positive"));
         }
         Ok(Self {
             max_batch_size,
@@ -118,7 +118,7 @@ impl Scheduler {
     ) -> Batch {
         let finished_request_ids: Vec<String> = self.running.iter()
             .filter(|r| r.is_finished())
-            .map(|r| r.request_id.clone())
+            .map(|r| r.request_id.to_owned())
             .collect();
 
         // Reap finished requests
@@ -342,6 +342,19 @@ mod tests {
     }
 
     #[test]
+    fn test_stop_token_termination() {
+        let mut s = Scheduler::new(32, 512, 256).unwrap();
+        let mut bm = BlockManager::new(1000, 16).unwrap();
+        let rid = s.add_request(vec![1, 2, 3], 0, 0.0, 256, vec![7, 8], None);
+        s.schedule(&mut bm, &[]);  // move to running
+        assert!(!s.running_request(&rid).unwrap().is_finished());
+        s.record_output(&rid, 5);  // not a stop token
+        assert!(!s.running_request(&rid).unwrap().is_finished());
+        s.record_output(&rid, 7);  // stop token
+        assert!(s.running_request(&rid).unwrap().is_finished());
+    }
+
+    #[test]
     fn test_add_request_with_custom_id() {
         let mut s = Scheduler::new(32, 512, 256).unwrap();
         let rid = s.add_request(vec![1, 2], 0, 0.0, 256, vec![], Some("my_id".into()));
@@ -456,5 +469,59 @@ mod tests {
         assert!(!s.has_work());
         s.add_request(vec![1], 0, 0.0, 256, vec![], None);
         assert!(s.has_work());
+    }
+
+    // ── Property-based tests ───────────────────────────────────
+
+    /// Invariant: after schedule, running requests never exceed max_batch_size.
+    #[test]
+    fn prop_schedule_never_exceeds_batch_size() {
+        use proptest::prelude::*;
+        proptest!(|(n_requests in 0..50usize)| {
+            let mut bm = BlockManager::new(10000, 16).unwrap();
+            let mut s = Scheduler::new(8, 512, 64).unwrap();
+            for i in 0..n_requests {
+                let prompt: Vec<u32> = (0..((i % 10) + 1) as u32).collect();
+                s.add_request(prompt, 0, 0.0, 64, vec![], None);
+            }
+            let batch = s.schedule(&mut bm, &[]);
+            assert!(batch.requests.len() <= 8,
+                    "batch size {} exceeds max_batch_size=8", batch.requests.len());
+            for req in &batch.requests {
+                assert!(!req.block_table.is_empty(),
+                        "scheduled request {} has empty block table", req.request_id);
+            }
+        });
+    }
+
+    /// Invariant: scheduling with no waiting requests returns empty batch.
+    #[test]
+    fn prop_schedule_empty_returns_empty() {
+        use proptest::prelude::*;
+        proptest!(|(max_batch in 1..32usize)| {
+            let mut bm = BlockManager::new(100, 16).unwrap();
+            let mut s = Scheduler::new(max_batch, 512, 64).unwrap();
+            let batch = s.schedule(&mut bm, &[]);
+            assert!(batch.requests.is_empty());
+        });
+    }
+
+    /// Invariant: recorded output increments output_tokens.
+    #[test]
+    fn prop_record_output_increments_tokens() {
+        use proptest::prelude::*;
+        proptest!(|(n_tokens in 1..20usize)| {
+            let mut bm = BlockManager::new(100, 16).unwrap();
+            let mut s = Scheduler::new(4, 512, 64).unwrap();
+            s.add_request(vec![1, 2, 3], 0, 0.0, 256, vec![], None);
+            s.schedule(&mut bm, &[]);
+            let rid = s.running[0].request_id.clone();
+            let initial = s.running[0].output_tokens.len();
+            for t in 0..n_tokens {
+                s.record_output(&rid, t as u32);
+            }
+            assert_eq!(s.running[0].output_tokens.len() - initial, n_tokens,
+                       "output_tokens must grow by the number of record_output calls");
+        });
     }
 }

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import torch
 import torch.nn.functional as F  # noqa: N812
+
+_log = logging.getLogger("hal.pytorch.math")
 
 
 class _MathOps:
@@ -11,6 +14,8 @@ class _MathOps:
         a, b = inputs[0], inputs[1]
         if a.dtype != b.dtype:
             b = b.to(a.dtype)
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug("matmul: a=%s b=%s", a.shape, b.shape)
         return torch.matmul(a, b)
 
     def _op_linear(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:

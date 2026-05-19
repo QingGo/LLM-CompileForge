@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import torch
 import torch.nn.functional as F  # noqa: N812
+
+_log = logging.getLogger("hal.pytorch.attention")
 
 
 class _AttentionOps:

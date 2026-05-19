@@ -55,6 +55,8 @@ def _verify_lowered_ir(lowered_text: str) -> None:
 
 
 def main() -> None:
+    from utils.logging import init_logging
+    init_logging()
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)

@@ -26,12 +26,7 @@ import pytest
 # ── helpers ──────────────────────────────────────────────────────────────
 
 
-def _has_mlir_bindings() -> bool:
-    try:
-        import mlir.ir  # noqa: F401
-        return True
-    except ImportError:
-        return False
+from tests.helpers import has_mlir_bindings
 
 
 def _load_lowered(model_dir: str):
@@ -61,7 +56,7 @@ def _load_lowered(model_dir: str):
 @pytest.mark.timeout(30)
 def test_no_arith_ops_after_lowering():
     """No arith.* ops should survive the full lowering pipeline."""
-    if not _has_mlir_bindings():
+    if not has_mlir_bindings():
         pytest.skip("MLIR bindings not available")
 
     mod, ctx, ir = _load_lowered("compiled/opt_125m_v8")
@@ -118,7 +113,7 @@ def test_no_arith_ops_after_lowering():
 @pytest.mark.timeout(30)
 def test_tile_sizes_within_bounds():
     """After tiling K=64,N=64, all inner matmuls should have dims ≤ 64."""
-    if not _has_mlir_bindings():
+    if not has_mlir_bindings():
         pytest.skip("MLIR bindings not available")
 
     mod, ctx, ir = _load_lowered("compiled/opt_125m_v8")
@@ -161,7 +156,7 @@ def test_tile_sizes_within_bounds():
 @pytest.mark.timeout(60)
 def test_pipeline_timing():
     """Full lowering pipeline should complete within time budget."""
-    if not _has_mlir_bindings():
+    if not has_mlir_bindings():
         pytest.skip("MLIR bindings not available")
 
     mod, ctx, ir = _load_lowered("compiled/opt_125m_v8")
@@ -220,7 +215,7 @@ def test_pipeline_timing():
 @pytest.mark.timeout(30)
 def test_fma_fusion_fires():
     """FMA fusion should replace ~90% of fmul+{fadd,fsub} with llvm.intr.fmuladd."""
-    if not _has_mlir_bindings():
+    if not has_mlir_bindings():
         pytest.skip("MLIR bindings not available")
 
     mod, ctx, ir = _load_lowered("compiled/opt_125m_v8")

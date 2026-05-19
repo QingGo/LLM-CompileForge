@@ -1,0 +1,73 @@
+//! CPU Executable — dynamic library loading and typed symbol lookup.
+
+use crate::error::ExecutorError;
+
+use super::kernel::{CifaceFn1, CifaceFn2, CifaceFn3, CifaceFn4, CifaceFn5, CifaceFn6, CifaceFn7, CifaceFn8, KernelFn};
+
+#[derive(Debug)]
+pub struct CpuExecutable {
+    lib: libloading::Library,
+}
+
+impl CpuExecutable {
+    /// Load a compiled .dylib.
+    ///
+    /// # Safety
+    /// The caller must ensure `path` refers to a valid dynamic library.
+    /// `libloading::Library::new` is unsafe because it may execute
+    /// initializers in the loaded library.
+    pub fn load(path: &str) -> Result<Self, anyhow::Error> {
+        // SAFETY: The caller guarantees the path points to a trusted
+        // compiled model .dylib. We control the compilation pipeline,
+        // so the dylib has no malicious initializers.
+        let lib = unsafe { libloading::Library::new(path)? };
+        Ok(Self { lib })
+    }
+
+    pub fn lib(&self) -> &libloading::Library {
+        &self.lib
+    }
+
+    /// Look up a raw symbol by name (for sret-based ciface calls).
+    pub fn lookup_symbol(
+        &self,
+        name: &str,
+    ) -> Result<unsafe extern "C" fn(), anyhow::Error> {
+        let sym: libloading::Symbol<unsafe extern "C" fn()> = unsafe {
+            self.lib.get(name.as_bytes())
+        }?;
+        Ok(*sym)
+    }
+
+    /// Look up a kernel function by symbol name with a specific arity.
+    pub fn lookup_typed(
+        &self,
+        name: &str,
+        arity: usize,
+    ) -> Result<KernelFn, anyhow::Error> {
+        if arity > 300 {
+            return Err(ExecutorError::KernelArityMismatch {
+                expected: 300, actual: arity,
+            }.into());
+        }
+        // SAFETY: libloading::Symbol casts the symbol to the expected type.
+        // For arities 1..8 we use typed CifaceFnN for direct calls.
+        // For arities 9..300 we use a raw fn pointer + C trampoline.
+        match arity {
+            1 => { let sym: libloading::Symbol<CifaceFn1> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity1(*sym)) }
+            2 => { let sym: libloading::Symbol<CifaceFn2> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity2(*sym)) }
+            3 => { let sym: libloading::Symbol<CifaceFn3> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity3(*sym)) }
+            4 => { let sym: libloading::Symbol<CifaceFn4> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity4(*sym)) }
+            5 => { let sym: libloading::Symbol<CifaceFn5> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity5(*sym)) }
+            6 => { let sym: libloading::Symbol<CifaceFn6> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity6(*sym)) }
+            7 => { let sym: libloading::Symbol<CifaceFn7> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity7(*sym)) }
+            8 => { let sym: libloading::Symbol<CifaceFn8> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity8(*sym)) }
+              _ => {
+                let sym: libloading::Symbol<*const ()> = unsafe { self.lib.get(name.as_bytes()) }?;
+                Ok(KernelFn::HighArity(crate::ciface_high::FnPtr(
+                    unsafe { std::mem::transmute::<*const (), unsafe extern "C" fn()>(*sym) }
+                )))
+            }
+        }
+    }
+}

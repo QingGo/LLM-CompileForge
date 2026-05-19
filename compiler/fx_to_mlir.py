@@ -7,6 +7,7 @@ canonical representation consumed by MlirExecutor and serialized to model.mlir.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import torch
@@ -23,6 +24,8 @@ from compiler.mlir_dialect._op_defs import (
     _SCALAR_KWARG_NAMES,
 )
 from compiler.mlir_dialect.shape_inference import infer_output_shape
+
+_log = logging.getLogger(__name__)
 
 
 # ── Utility helpers ─────────────────────────────────────────
@@ -144,7 +147,11 @@ def _resolve_op_types(
 
     try:
         out = infer_output_shape(hal_op, input_shapes, input_elts, **kwargs)
-    except Exception:
+    except (ValueError, TypeError, NotImplementedError) as e:
+        _log.warning(
+            "shape inference fallback for op=%s shapes=%s elts=%s: %s",
+            hal_op, input_shapes, input_elts, e,
+        )
         if input_elts:
             out = [(input_shapes[0], input_elts[0])]
         else:

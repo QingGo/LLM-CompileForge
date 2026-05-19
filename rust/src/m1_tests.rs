@@ -11,7 +11,7 @@ use std::path::Path;
 
 #[cfg(test)]
 mod m1_tests {
-    use crate::hal_cpu::{CifaceFn3, MemRefDesc1};
+    use crate::hal::cpu::{CifaceFn3, MemRefDesc1};
 
     const DYLIB_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/data/test_m1.dylib");
 

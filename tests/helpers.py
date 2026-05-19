@@ -9,6 +9,18 @@ import os
 import sys
 from typing import Any
 
+# ── MLIR bindings detection ──────────────────────────────────
+
+
+def has_mlir_bindings() -> bool:
+    """Check if MLIR Python bindings are available."""
+    try:
+        import mlir.ir  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 # ── Transformers monkey-patch ─────────────────────────────────
 
 def patch_transformers_torch() -> None:

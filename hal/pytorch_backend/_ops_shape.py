@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import torch
 import torch.nn.functional as F  # noqa: N812
+
+_log = logging.getLogger("hal.pytorch.shape")
 
 
 class _ShapeOps:
     def _op_view(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         raw_shape = kwargs["shape"]
         x = inputs[0]
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug("view: %s -> %s", x.shape, raw_shape)
         dim_inputs = list(inputs[1:])
         resolved = []
         for s in raw_shape:

@@ -810,14 +810,203 @@ def _type_str_to_ir_type(type_str: str) -> ir.Type:
         ) from e
 
 
+def _build_mlir_function(func: MlirFunction, ir_mod: Any, ctx: Any) -> tuple[Any, Any, list[Any]]:
+    """Create a func.func op and its entry block.
+
+    Returns (func_op, body_blk, arg_values).
+    """
+    import mlir.ir as _ir
+
+    arg_types: list[ir.Type] = []
+    for _, tp in func.inputs:
+        arg_types.append(_type_str_to_ir_type(tp))
+
+    func_type = _ir.FunctionType.get(arg_types, [])
+    func_op = _ir.Operation.create(
+        "func.func",
+        attributes={
+            "function_type": _ir.TypeAttr.get(func_type),
+            "sym_name": _ir.StringAttr.get(func.name),
+        },
+        regions=1,
+    )
+    ir_mod.body.append(func_op.operation)
+
+    body_region = func_op.operation.regions[0]
+    body_blk = _ir.Block.create_at_start(body_region, arg_types)
+    arg_values: list[ir.Value] = list(body_blk.arguments)
+    return func_op, body_blk, arg_values
+
+
+def _build_ssa_map(func: MlirFunction, arg_values: list[ir.Value]) -> dict[str, ir.Value]:
+    """Build SSA name → ir.Value mapping from function inputs."""
+    import mlir.ir as _ir
+
+    ssa_map: dict[str, ir.Value] = {}
+    for i, (name, _) in enumerate(func.inputs):
+        ssa_map[name] = arg_values[i]
+        ssa_map[name.lstrip("%")] = arg_values[i]
+    return ssa_map
+
+
+def _emit_weight_op(op: MlirOp, ctx: Any, ssa_map: dict[str, ir.Value], body_blk: Any) -> None:
+    """Emit a weight/constant op into the IR builder."""
+    import mlir.ir as _ir
+
+    w_attrs: dict[str, ir.Attribute] = {}
+    for k, v in op.attributes.items():
+        if k == "source_node":
+            continue
+        w_attrs[k] = _python_to_attr_ir(v)
+
+    if op.output_types:
+        w_result_types = [_type_str_to_ir_type(t) for t in op.output_types]
+    else:
+        w_result_types = [_ir.UnrankedTensorType.get(_ir.F32Type.get(ctx))]
+
+    with _ir.InsertionPoint(body_blk):
+        ir_op = _ir.Operation.create(
+            op.name,
+            results=w_result_types,
+            attributes=w_attrs if w_attrs else {},
+        )
+    for i, rname in enumerate(op.results):
+        if i < len(ir_op.operation.results):
+            val = ir_op.operation.results[i]
+            ssa_map[rname] = val
+            ssa_map[rname.lstrip("%")] = val
+    wname = op.attributes.get("name")
+    if wname:
+        ssa_map[wname] = ir_op.operation.results[0]
+
+
+def _resolve_operands(op: MlirOp, ssa_map: dict[str, ir.Value]) -> list[ir.Value]:
+    """Resolve SSA operands for a compute op."""
+    operands: list[ir.Value] = []
+    for o in op.operands:
+        key = o
+        if key in ssa_map:
+            operands.append(ssa_map[key])
+        elif key.lstrip("%") in ssa_map:
+            operands.append(ssa_map[key.lstrip("%")])
+        else:
+            raise KeyError(
+                f"ssa_map missing operand '{key}' for op '{op.name}'. "
+                f"Known: {list(ssa_map.keys())[:10]}"
+            )
+    return operands
+
+
+def _infer_result_types(op: MlirOp, operands: list[ir.Value], ctx: Any) -> list[ir.Type]:
+    """Infer IR result types for a compute op."""
+    import mlir.ir as _ir
+
+    if op.output_types:
+        return [_type_str_to_ir_type(t) for t in op.output_types]
+    if op.op_name == "sym_size":
+        return [_ir.RankedTensorType.get([], _ir.F32Type.get(ctx))]
+    if operands:
+        opnd_type = operands[0].type
+        try:
+            _rank = len(opnd_type.shape)
+            return [opnd_type]
+        except Exception:
+            try:
+                elt = opnd_type.element_type
+            except Exception:
+                elt = _ir.F32Type.get(ctx)
+            return [_ir.RankedTensorType.get([1], elt)]
+    return [_ir.RankedTensorType.get([1], _ir.F32Type.get(ctx))]
+
+
+def _build_mlir_attrs(op: MlirOp) -> dict[str, ir.Attribute]:
+    """Build MLIR attributes dict from an MlirOp."""
+    import mlir.ir as _ir
+
+    mlir_attrs: dict[str, ir.Attribute] = {}
+    for k, v in op.attributes.items():
+        if k == "source_node":
+            continue
+        mlir_attrs[k] = _python_to_attr_ir(v)
+    return mlir_attrs
+
+
+def _emit_compute_op(op: MlirOp, operands: list[ir.Value], body_blk: Any, ctx: Any) -> Any:
+    """Emit a compute op into the IR builder. Returns the ir.Operation."""
+    import mlir.ir as _ir
+
+    mlir_attrs = _build_mlir_attrs(op)
+    result_types = _infer_result_types(op, operands, ctx)
+
+    try:
+        with _ir.InsertionPoint(body_blk):
+            ir_op = _ir.Operation.create(
+                op.name,
+                operands=operands,
+                results=result_types,
+                attributes=mlir_attrs if mlir_attrs else {},
+            )
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to build op '{op.name}' (result '{op.results[0] if op.results else '?'}'): "
+            f"output_types={op.output_types}, operands_count={len(op.operands)}, "
+            f"attr_keys={list(op.attributes.keys())[:5]}, error={e}"
+        ) from e
+    return ir_op
+
+
+def _map_op_results(op: MlirOp, ir_op: Any, ssa_map: dict[str, ir.Value]) -> None:
+    """Map IR op results into the SSA map."""
+    for i, rname in enumerate(op.results):
+        if i < len(ir_op.operation.results):
+            val = ir_op.operation.results[i]
+            ssa_map[rname] = val
+            ssa_map[rname.lstrip("%")] = val
+
+
+def _resolve_output_values(func: MlirFunction, ssa_map: dict[str, ir.Value]) -> list[ir.Value]:
+    """Resolve function output values from SSA map."""
+    output_values: list[ir.Value] = []
+    for out_name, _ in func.outputs:
+        if out_name in ssa_map:
+            output_values.append(ssa_map[out_name])
+        elif out_name.lstrip("%") in ssa_map:
+            output_values.append(ssa_map[out_name.lstrip("%")])
+
+    if not output_values and func.ops:
+        last_op = func.ops[-1]
+        if last_op.results:
+            rname = last_op.results[-1]
+            if rname in ssa_map:
+                output_values.append(ssa_map[rname])
+    return output_values
+
+
+def _build_return_op(output_values: list[ir.Value], body_blk: Any) -> None:
+    """Emit a func.return op."""
+    import mlir.ir as _ir
+
+    with _ir.InsertionPoint(body_blk):
+        _ir.Operation.create("func.return", operands=output_values)
+
+
+def _update_function_type(func_op: Any, arg_values: list[ir.Value], output_values: list[ir.Value]) -> None:
+    """Update function signature with actual return types."""
+    import mlir.ir as _ir
+
+    ret_types = [v.type for v in output_values]
+    arg_types_list = [a.type for a in arg_values]
+    new_func_type = _ir.FunctionType.get(arg_types_list, ret_types)
+    func_op.operation.attributes["function_type"] = _ir.TypeAttr.get(new_func_type)
+
+
 def mlir_module_to_ir_module(module: MlirModule, ctx: Any = None) -> Any:
     """Build an ir.Module from an MlirModule using MLIR Python API.
 
     This bypasses the MLIR text round-trip entirely, creating a valid
     ir.Module that can be passed directly to PassManager-based passes.
 
-    Weight ops are emitted with unranked tensor types to avoid type
-    conflicts between the actual tensor shape and inferred consumer types.
+    Decomposed into helper functions for testability and clarity.
     """
     import mlir.ir as _ir
 
@@ -829,159 +1018,26 @@ def mlir_module_to_ir_module(module: MlirModule, ctx: Any = None) -> Any:
         ir_mod = _ir.Module.create()
 
         for func in module.functions:
-            # ── Build function ──────────────────────────────────
-            arg_types: list[ir.Type] = []
-            for _, tp in func.inputs:
-                arg_types.append(_type_str_to_ir_type(tp))
+            # Build function entry block
+            func_op, body_blk, arg_values = _build_mlir_function(func, ir_mod, ctx)
 
-            func_type = _ir.FunctionType.get(arg_types, [])
-            func_op = _ir.Operation.create(
-                "func.func",
-                attributes={
-                    "function_type": _ir.TypeAttr.get(func_type),
-                    "sym_name": _ir.StringAttr.get(func.name),
-                },
-                regions=1,
-            )
-            ir_mod.body.append(func_op.operation)
+            # Build SSA map
+            ssa_map = _build_ssa_map(func, arg_values)
 
-            body_region = func_op.operation.regions[0]
-            body_blk = _ir.Block.create_at_start(body_region, arg_types)
-            arg_values: list[ir.Value] = list(body_blk.arguments)
-
-            # ── SSA name → ir.Value mapping ─────────────────────
-            ssa_map: dict[str, ir.Value] = {}
-            for i, (name, _) in enumerate(func.inputs):
-                ssa_map[name] = arg_values[i]
-                ssa_map[name.lstrip("%")] = arg_values[i]
-
-            # ── Build ops ───────────────────────────────────────
-            output_values: list[ir.Value] = []
-
+            # Build all ops
             for op in func.ops:
                 if op.op_name in ("weight", "constant"):
-                    w_attrs: dict[str, ir.Attribute] = {}
-                    for k, v in op.attributes.items():
-                        if k == "source_node":
-                            continue
-                        w_attrs[k] = _python_to_attr_ir(v)
-
-                    if op.output_types:
-                        w_result_types = [_type_str_to_ir_type(t) for t in op.output_types]
-                    else:
-                        w_result_types = [_ir.UnrankedTensorType.get(_ir.F32Type.get(ctx))]
-
-                    with _ir.InsertionPoint(body_blk):
-                        ir_op = _ir.Operation.create(
-                            op.name,
-                            results=w_result_types,
-                            attributes=w_attrs if w_attrs else {},
-                        )
-                    for i, rname in enumerate(op.results):
-                        if i < len(ir_op.operation.results):
-                            val = ir_op.operation.results[i]
-                            ssa_map[rname] = val
-                            ssa_map[rname.lstrip("%")] = val
-                    # Also map the weight name attribute so operand resolution works
-                    wname = op.attributes.get("name")
-                    if wname:
-                        ssa_map[wname] = ir_op.operation.results[0]
+                    _emit_weight_op(op, ctx, ssa_map, body_blk)
                     continue
 
-                # Regular compute ops: resolve operands from ssa_map
-                operands: list[ir.Value] = []
-                for o in op.operands:
-                    key = o
-                    if key in ssa_map:
-                        operands.append(ssa_map[key])
-                    elif key.lstrip("%") in ssa_map:
-                        operands.append(ssa_map[key.lstrip("%")])
-                    else:
-                        raise KeyError(
-                            f"ssa_map missing operand '{key}' for op '{op.name}'. "
-                            f"Known: {list(ssa_map.keys())[:10]}"
-                        )
+                operands = _resolve_operands(op, ssa_map)
+                ir_op = _emit_compute_op(op, operands, body_blk, ctx)
+                _map_op_results(op, ir_op, ssa_map)
 
-                try:
-                    # Build attributes as MLIR attributes
-                    mlir_attrs: dict[str, ir.Attribute] = {}
-                    for k, v in op.attributes.items():
-                        if k == "source_node":
-                            continue
-                        mlir_attrs[k] = _python_to_attr_ir(v)
-
-                    # Determine result types
-                    result_types: list[ir.Type] = []
-                    if op.output_types:
-                        result_types = [_type_str_to_ir_type(t) for t in op.output_types]
-                    elif op.op_name == "sym_size":
-                        result_types = [_ir.RankedTensorType.get([], _ir.F32Type.get(ctx))]
-                    elif operands:
-                        opnd_type = operands[0].type
-                        try:
-                            _rank = len(opnd_type.shape)
-                            result_types = [opnd_type]
-                        except Exception:
-                            try:
-                                elt = opnd_type.element_type
-                            except Exception:
-                                elt = _ir.F32Type.get(ctx)
-                            result_types = [_ir.RankedTensorType.get([1], elt)]
-                    else:
-                        result_types = [_ir.RankedTensorType.get([1], _ir.F32Type.get(ctx))]
-
-                    with _ir.InsertionPoint(body_blk):
-                        ir_op = _ir.Operation.create(
-                            op.name,
-                            operands=operands,
-                            results=result_types,
-                            attributes=mlir_attrs if mlir_attrs else {},
-                        )
-                except Exception as e:
-                    raise RuntimeError(
-                        f"Failed to build op '{op.name}' (result '{op.results[0] if op.results else '?'}'): "
-                        f"output_types={op.output_types}, operands_count={len(op.operands)}, "
-                        f"attr_keys={list(op.attributes.keys())[:5]}, error={e}"
-                    ) from e
-
-                with _ir.InsertionPoint(body_blk):
-                    ir_op = _ir.Operation.create(
-                        op.name,
-                        operands=operands,
-                        results=result_types,
-                        attributes=mlir_attrs if mlir_attrs else {},
-                    )
-
-                # Map results
-                for i, rname in enumerate(op.results):
-                    if i < len(ir_op.operation.results):
-                        val = ir_op.operation.results[i]
-                        ssa_map[rname] = val
-                        ssa_map[rname.lstrip("%")] = val
-
-            # Collect output values
-            for out_name, _ in func.outputs:
-                if out_name in ssa_map:
-                    output_values.append(ssa_map[out_name])
-                elif out_name.lstrip("%") in ssa_map:
-                    output_values.append(ssa_map[out_name.lstrip("%")])
-
-            # ── Return op ───────────────────────────────────────
-            if not output_values and func.ops:
-                last_op = func.ops[-1]
-                if last_op.results:
-                    rname = last_op.results[-1]
-                    if rname in ssa_map:
-                        output_values.append(ssa_map[rname])
-
-            with _ir.InsertionPoint(body_blk):
-                _ir.Operation.create("func.return", operands=output_values)
-
-            # Update function signature with actual return types
-            ret_types = [v.type for v in output_values]
-            arg_types_list = [a.type for a in arg_values]
-            new_func_type = _ir.FunctionType.get(arg_types_list, ret_types)
-            func_op.operation.attributes["function_type"] = _ir.TypeAttr.get(new_func_type)
+            # Resolve outputs and finalize function
+            output_values = _resolve_output_values(func, ssa_map)
+            _build_return_op(output_values, body_blk)
+            _update_function_type(func_op, arg_values, output_values)
 
         return ir_mod
 

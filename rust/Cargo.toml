@@ -34,6 +34,9 @@ thiserror = "2"
 libffi = "5.1.0"
 half = "2"
 
+[dev-dependencies]
+proptest = "1"
+
 [profile.release]
 lto = true
 codegen-units = 1

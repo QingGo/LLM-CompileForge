@@ -82,8 +82,10 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
         reg = ir.DialectRegistry()
         _mlirRegisterEverything.register_dialects(reg)
         ctx.append_dialect_registry(reg)
-    except Exception:
-        _log.debug("Could not register full dialect registry (may affect bufferization)")
+    except (ImportError, AttributeError) as e:
+        _log.warning(
+            "Dialect registry registration failed: %s (may affect bufferization)", e
+        )
 
     with ir.Location.unknown(ctx):
         run_stages(ir_module, ctx, BUILTIN_STAGES)

@@ -10,7 +10,6 @@ mod compute_graph;
 mod error;
 mod executor;
 mod hal;
-mod hal_cpu;
 mod radix_cache;
 mod runner;
 mod sampler;
@@ -25,6 +24,7 @@ use clap::{Parser, Subcommand};
 
 #[cfg(test)]
 mod m1_tests;
+mod e2e_tests;
 
 #[derive(Parser)]
 #[command(name = "serveforge", about = "AOT-compiled LLM inference runtime")]
@@ -85,11 +85,22 @@ fn main() -> Result<(), anyhow::Error> {
             seed,
             no_chat_template,
         } => {
-            let artifact_path = format!("{}/{}", compiled_dir, model);
-            let dylib_path = format!("{}/lib{}.dylib", artifact_path, model);
+            let artifact_path = std::path::Path::new(&compiled_dir).join(&model);
+            // Scan for any .dylib in the model directory — the actual name
+            // depends on --model-name passed to compile_dylib.py, which may
+            // differ from the directory name.
+            let dylib_path = std::fs::read_dir(&artifact_path)
+                .ok()
+                .and_then(|entries| {
+                    entries.filter_map(|e| e.ok()).find(|e| {
+                        e.path().extension().map(|ext| ext == "dylib").unwrap_or(false)
+                    })
+                })
+                .map(|e| e.path().to_string_lossy().to_string())
+                .unwrap_or_else(|| format!("{}/lib{}.dylib", artifact_path.to_string_lossy(), model));
             let st_path = safetensors
                 .clone()
-                .unwrap_or_else(|| format!("{}/weights.safetensors", artifact_path));
+                .unwrap_or_else(|| format!("{}/weights.safetensors", artifact_path.to_string_lossy()));
             let st_path_opt: Option<&str> = if std::path::Path::new(&st_path).exists() {
                 Some(&st_path)
             } else {
@@ -97,9 +108,9 @@ fn main() -> Result<(), anyhow::Error> {
             };
             let tok_path = tokenizer
                 .clone()
-                .unwrap_or_else(|| format!("{}/tokenizer.json", artifact_path));
+                .unwrap_or_else(|| format!("{}/tokenizer.json", artifact_path.display()));
 
-            eprintln!("Loading model from: {}", artifact_path);
+            eprintln!("Loading model from: {}", artifact_path.display());
             eprintln!("Prompt: {}", prompt);
 
             let executor = executor::ModelExecutor::load(
@@ -107,9 +118,16 @@ fn main() -> Result<(), anyhow::Error> {
                 st_path_opt,
             )
             .map_err(|e| {
+                // 三论: 信息论 — error must include WHAT failed and WHERE
+                let ap = artifact_path.display();
                 anyhow::anyhow!(
-                    "Failed to load model (have you compiled it?): {}",
-                    e
+                    "Failed to load model '{}': {}\n\
+                     Tried dylib: {}\n\
+                     Suggestions:\n\
+                     - Run: python scripts/compile_dylib.py {} --model-name <name>\n\
+                     - Check compiled/{} exists and contains a .dylib file\n\
+                     - Use --safetensors to point to the weights file",
+                    model, e, dylib_path, ap, model,
                 )
             })?;
 
@@ -125,7 +143,7 @@ fn main() -> Result<(), anyhow::Error> {
                     .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?
             } else {
                 let cfg_path = tokenizer_config.clone().or_else(|| {
-                    let alt = format!("{}/tokenizer_config.json", artifact_path);
+                    let alt = format!("{}/tokenizer_config.json", artifact_path.display());
                     if std::path::Path::new(&alt).exists() {
                         Some(alt)
                     } else {
@@ -154,17 +172,29 @@ fn main() -> Result<(), anyhow::Error> {
             print!("{}", result.text);
         }
         Commands::Info { model, compiled_dir } => {
-            let artifact_path = format!("{}/{}", compiled_dir, model);
+            let artifact_path = std::path::Path::new(&compiled_dir).join(&model);
             println!("Model: {}", model);
-            println!("Artifact dir: {}", artifact_path);
-
-            let dylib = format!("{}/lib{}.dylib", artifact_path, model);
-            if std::path::Path::new(&dylib).exists() {
-                println!("Status: compiled (.dylib present)");
-                let meta = std::fs::metadata(&dylib).map(|m| m.len()).unwrap_or(0);
-                println!("Size: {} bytes", meta);
+            println!("Artifact dir: {}", artifact_path.display());
+            if !artifact_path.is_dir() {
+                println!("Status: not found");
+                return Ok(());
+            }
+            if !artifact_path.is_dir() {
+                println!("Status: not found");
+                return Ok(());
+            }
+            let dylib = std::fs::read_dir(&artifact_path)
+                .ok()
+                .and_then(|entries| {
+                    entries.filter_map(|e| e.ok()).find(|e| {
+                        e.path().extension().map(|ext| ext == "dylib").unwrap_or(false)
+                    })
+                });
+            if let Some(dylib) = dylib {
+                let meta = std::fs::metadata(dylib.path()).map(|m| m.len()).unwrap_or(0);
+                println!("Status: compiled (.dylib present, {} bytes)", meta);
             } else {
-                println!("Status: not yet compiled");
+                println!("Status: not compiled (no .dylib found)");
             }
         }
     }

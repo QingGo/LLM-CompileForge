@@ -18,7 +18,10 @@ pub unsafe fn call_high_arity(
 ) {
     let n = all_args.len();
     if n == 0 || n > 300 {
-        panic!("unsupported arity: {n}");
+        panic!(
+            "call_high_arity: unsupported arity {} (function pointer: {:p}, expected 1-300)",
+            n, fn_ptr,
+        );
     }
 
     let cif = Cif::new(

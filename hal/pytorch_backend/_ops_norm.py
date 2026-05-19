@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import torch
 import torch.nn.functional as F  # noqa: N812
 
+_log = logging.getLogger("hal.pytorch.norm")
+
 
 class _NormOps:
     def _op_softmax(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         dim = kwargs.get("dim", -1)
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug("softmax: %s dim=%s", inputs[0].shape, dim)
         return F.softmax(inputs[0], dim=dim)
 
     def _op_layer_norm(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:

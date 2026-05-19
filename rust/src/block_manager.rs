@@ -55,12 +55,12 @@ pub struct BlockManager {
 }
 
 impl BlockManager {
-    pub fn new(num_blocks: usize, block_size: usize) -> Result<Self, String> {
+    pub fn new(num_blocks: usize, block_size: usize) -> Result<Self, anyhow::Error> {
         if num_blocks == 0 {
-            return Err("num_blocks must be positive".into());
+            return Err(anyhow::anyhow!("num_blocks must be positive"));
         }
         if block_size == 0 {
-            return Err("block_size must be positive".into());
+            return Err(anyhow::anyhow!("block_size must be positive"));
         }
         let blocks: HashMap<usize, Block> = (0..num_blocks)
             .map(|i| (i, Block::new(i)))
@@ -384,5 +384,58 @@ mod tests {
     fn test_get_blocks_unknown() {
         let bm = BlockManager::new(10, 16).unwrap();
         assert!(bm.get_blocks("unknown").is_err());
+    }
+
+    // ── Property-based tests ───────────────────────────────────
+
+    /// Invariant: after any sequence of successful allocate/free operations,
+    /// ``num_free_blocks() + num_allocated_blocks() == num_blocks``.
+    #[test]
+    fn prop_invariant_free_plus_allocated_equals_total() {
+        use proptest::prelude::*;
+        proptest!(|(ops in proptest::collection::vec(0..25usize, 1..20))| {
+            let mut bm = BlockManager::new(100, 16).unwrap();
+            for i in ops {
+                let rid = format!("req_{}", i);
+                if bm.num_free_blocks() >= 4 {
+                    bm.allocate(&rid, 64).unwrap();  // 4 blocks
+                    bm.free(&rid);
+                }
+            }
+            let total = bm.num_free_blocks() + bm.num_allocated_blocks();
+            assert_eq!(total, bm.num_blocks, "free+allocated must equal total");
+        });
+    }
+
+    /// Invariant: allocating more blocks than available returns an error.
+    #[test]
+    fn prop_allocate_beyond_total_fails() {
+        use proptest::prelude::*;
+        proptest!(|(over_alloc in 1..=5usize)| {
+            let n_blocks = 5;
+            let mut bm = BlockManager::new(n_blocks, 16).unwrap();
+            // Use all blocks
+            let rid = "req_all";
+            bm.allocate(rid, n_blocks * 16).unwrap();
+            // One more should fail
+            let extra = format!("req_extra_{}", over_alloc);
+            assert!(bm.allocate(&extra, 16).is_err(),
+                "allocating beyond capacity must fail");
+        });
+    }
+
+    /// Invariant: after free, the blocks are available for reallocation.
+    #[test]
+    fn prop_free_returns_blocks_to_pool() {
+        use proptest::prelude::*;
+        proptest!(|(n_blocks in 1..20usize)| {
+            let mut bm = BlockManager::new(50, 16).unwrap();
+            let free_before = bm.num_free_blocks();
+            let needed_bytes = n_blocks * 16;
+            bm.allocate("prop_test", needed_bytes).unwrap();
+            assert_eq!(bm.num_free_blocks(), free_before - n_blocks);
+            bm.free("prop_test");
+            assert_eq!(bm.num_free_blocks(), free_before);
+        });
     }
 }

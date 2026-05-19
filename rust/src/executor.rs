@@ -7,8 +7,8 @@ use half::f16;
 use crate::compute_graph::{ComputeGraph, InputBinding};
 use crate::error::ExecutorError;
 use crate::hal::cpu::CpuDevice;
+use crate::hal::cpu::{Executable, KernelFn, MemRefDescAny, MemRefDesc2};
 use crate::hal::traits::{Device as DeviceTrait, Executable as ExecutableTrait};
-use crate::hal_cpu::{Executable, KernelFn, MemRefDescAny, MemRefDesc2};
 use crate::tensor::{Dtype, Tensor};
 use crate::weight_loader::WeightProvider;
 
@@ -168,7 +168,8 @@ impl ModelExecutor {
                     }
                 };
 
-                let desc = MemRefDescAny::from_f32(&tensor.shape, tensor.as_slice());
+                let desc = MemRefDescAny::from_f32(&tensor.shape, tensor.as_slice())
+                    .map_err(|e| anyhow::anyhow!("weight desc: {}", e))?;
                 input_descs.push(desc);
                 input_ptrs.push(input_descs.last().unwrap().as_input_ptr());
                 _tensors.push(tensor);
@@ -456,7 +457,7 @@ mod tests {
 
         for _ in 0..cap {
             let tensor = Tensor::new_owned(vec![768], data.clone(), Dtype::F32);
-            descs.push(MemRefDescAny::from_f32(&tensor.shape, tensor.as_slice()));
+            descs.push(MemRefDescAny::from_f32(&tensor.shape, tensor.as_slice()).unwrap());
             ptrs.push(descs.last().unwrap().as_input_ptr());
         }
 
@@ -481,11 +482,11 @@ mod tests {
         let mut descs: Vec<MemRefDescAny> = Vec::with_capacity(3);
 
         let d1 = vec![0.0f32];
-        descs.push(MemRefDescAny::from_f32(&[], &d1));  // rank-0
+        descs.push(MemRefDescAny::from_f32(&[], &d1).unwrap());  // rank-0
         let d2 = vec![0.0f32; 4];
-        descs.push(MemRefDescAny::from_f32(&[4], &d2));  // rank-1
+        descs.push(MemRefDescAny::from_f32(&[4], &d2).unwrap());  // rank-1
         let d3 = vec![0.0f32; 8];
-        descs.push(MemRefDescAny::from_f32(&[2, 4], &d3));  // rank-2
+        descs.push(MemRefDescAny::from_f32(&[2, 4], &d3).unwrap());  // rank-2
 
         let p0 = descs[0].as_input_ptr();
         let p1 = descs[1].as_input_ptr();

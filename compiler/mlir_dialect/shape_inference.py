@@ -52,6 +52,25 @@ def _make_ranked_type(shape: tuple[int | None, ...], elt: str) -> ir.RankedTenso
     )
 
 
+def _infer_ir_via_pure(
+    pure_fn: Any,
+    input_types: list[ir.Type],
+    **kwargs: Any,
+) -> list[ir.Type]:
+    """Unify infer_* / _infer_*_pure: extract ir.Type → tuples → call _pure → re-wrap.
+
+    Eliminates the duplicate shape computation logic between ``infer_*`` and
+    ``_infer_*_pure`` function pairs.  The _pure functions operate on plain
+    Python tuples ``(shape, element_type_str)`` which are simpler to test.
+    """
+    if not input_types:
+        return []
+    shapes = [_ranked_shape(t) for t in input_types]
+    elts = [_elt_type_str(t) for t in input_types]
+    result = pure_fn(shapes, elts, **kwargs)
+    return [_make_ranked_type(s, e) for s, e in result]
+
+
 # ── Broadcasting helpers ─────────────────────────────────────
 
 
@@ -167,72 +186,30 @@ def infer_rms_norm(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
 
 
 def infer_matmul(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
-    if len(input_types) < 2:
-        return input_types
-    a = input_types[0]
-    b = input_types[1]
-    a_s = _ranked_shape(a)
-    b_s = _ranked_shape(b)
-    et = _elt_type_str(a)
-    if a_s is None or b_s is None:
-        return [_make_ranked_type((None, None), et)]
-    if len(a_s) == 2 and len(b_s) == 2:
-        return [_make_ranked_type((a_s[0], b_s[1]), et)]
-    if len(a_s) == 3 and len(b_s) == 2:
-        return [_make_ranked_type((a_s[0], a_s[1], b_s[1]), et)]
-    if len(a_s) == 3 and len(b_s) == 3:
-        return [_make_ranked_type((a_s[0], a_s[1], b_s[2]), et)]
-    return [input_types[0]]
+    """Matmul: (a: [M,K], b: [K,N]) → [M,N]; batched: [B,M,K]×[B,K,N] → [B,M,N]."""
+    return _infer_ir_via_pure(_infer_matmul_pure, input_types, **kwargs)
 
 
 def infer_linear(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
-    if len(input_types) < 2:
-        return input_types
-    a = input_types[0]
-    w = input_types[1]
-    a_s = _ranked_shape(a)
-    w_s = _ranked_shape(w)
-    et = _elt_type_str(a)
-    if a_s is None or w_s is None:
-        return [_make_ranked_type((None, None), et)]
-    # input: [..., K], weight: [N, K] → output: [..., N]
-    if len(a_s) >= 2 and len(w_s) == 2:
-        out_shape = list(a_s[:-1]) + [w_s[0]]
-        return [_make_ranked_type(tuple(out_shape), et)]
-    return [_make_ranked_type((None, None), et)]
+    """Linear: (input: [...,K], weight: [N,K]) → [...,N]."""
+    return _infer_ir_via_pure(_infer_linear_pure, input_types, **kwargs)
 
 
 # ── Shape manipulation ───────────────────────────────────────
 
 
 def infer_view(input_types: list[ir.Type], shape: tuple[int, ...] | None = None, **kwargs: Any) -> list[ir.Type]:
-    if not input_types:
-        return []
-    et = _elt_type_str(input_types[0])
-    if "shape" in kwargs:
-        shape = kwargs["shape"]
-    if shape:
-        return [_make_ranked_type(tuple(shape), et)]
-    return [input_types[0]]
+    """View/reshape: input → output with new shape (product of dims must match)."""
+    return _infer_ir_via_pure(_infer_view_pure, input_types, shape=shape, **kwargs)
 
 
 def infer_unsqueeze(input_types: list[ir.Type], dim: int = 0, **kwargs: Any) -> list[ir.Type]:
-    if not input_types:
-        return []
-    inp = input_types[0]
-    s = _ranked_shape(inp)
-    et = _elt_type_str(inp)
-    if s is None:
-        return [_make_ranked_type((None,), et)]
-    parts = list(s)
-    dim = int(dim)
-    if dim < 0:
-        dim = len(parts) + 1 + dim
-    parts.insert(dim, 1)
-    return [_make_ranked_type(tuple(parts), et)]
+    """Unsqueeze: insert a dim-1 at position ``dim``."""
+    return _infer_ir_via_pure(_infer_unsqueeze_pure, input_types, dim=dim, **kwargs)
 
 
 def infer_squeeze(input_types: list[ir.Type], dim: int | None = None, **kwargs: Any) -> list[ir.Type]:
+    """Squeeze: remove all size-1 dims, or the specific ``dim`` if given."""
     if not input_types:
         return []
     inp = input_types[0]
@@ -250,42 +227,8 @@ def infer_squeeze(input_types: list[ir.Type], dim: int | None = None, **kwargs: 
 
 
 def infer_expand(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
-    """Expand (broadcast) input to a larger shape.
-
-    The output type is determined by the shape attribute and dyn_shape operands.
-    New leading dims are inserted, -1 means "keep from input", explicit values
-    set the dim size.  SSA-referenced dims are dynamic (?).
-    """
-    if not input_types:
-        return []
-    inp = input_types[0]
-    s = _ranked_shape(inp)
-    et = _elt_type_str(inp)
-    if s is None:
-        return [_make_ranked_type((None,), et)]
-    # shape attr from kwargs contains the target shape with -1 for "keep"
-    shape = kwargs.get("shape")
-    if shape:
-        out_dims: list[int | None] = []
-        in_idx = len(shape) - len(s)  # leading dims are new
-        for dim_entry in shape:
-            if isinstance(dim_entry, int):
-                if dim_entry == -1:
-                    # Keep from input (right-aligned)
-                    if in_idx < len(s):
-                        val = s[in_idx]
-                        out_dims.append(val)
-                    else:
-                        out_dims.append(None)
-                    in_idx += 1
-                else:
-                    out_dims.append(dim_entry)
-            else:
-                # SSA reference → dynamic
-                out_dims.append(None)
-                in_idx += 1
-        return [_make_ranked_type(tuple(out_dims), et)]
-    return [inp]
+    """Expand: broadcast input to a larger shape with new leading dims."""
+    return _infer_ir_via_pure(_infer_expand_pure, input_types, **kwargs)
 
 
 def infer_permute(input_types: list[ir.Type], dims: tuple[int, ...] | None = None, **kwargs: Any) -> list[ir.Type]:
@@ -303,16 +246,8 @@ def infer_permute(input_types: list[ir.Type], dims: tuple[int, ...] | None = Non
 
 
 def infer_transpose(input_types: list[ir.Type], dim0: int = 0, dim1: int = 1, **kwargs: Any) -> list[ir.Type]:
-    if not input_types:
-        return []
-    inp = input_types[0]
-    s = _ranked_shape(inp)
-    et = _elt_type_str(inp)
-    if s and len(s) > max(int(dim0), int(dim1)):
-        parts = list(s)
-        parts[int(dim0)], parts[int(dim1)] = parts[int(dim1)], parts[int(dim0)]
-        return [_make_ranked_type(tuple(parts), et)]
-    return [inp]
+    """Transpose: swap dimensions ``dim0`` and ``dim1``."""
+    return _infer_ir_via_pure(_infer_transpose_pure, input_types, dim0=dim0, dim1=dim1, **kwargs)
 
 
 def infer_slice(
@@ -320,25 +255,8 @@ def infer_slice(
     dim: int = 0, start: int = 0, end: int = -1, step: int = 1,
     **kwargs: Any,
 ) -> list[ir.Type]:
-    if not input_types:
-        return []
-    inp = input_types[0]
-    s = _ranked_shape(inp)
-    et = _elt_type_str(inp)
-    if s is None or dim is None:
-        return [_make_ranked_type((None,), et)]
-    dim = int(dim)
-    if dim < len(s):
-        parts = list(s)
-        orig = parts[dim] if parts[dim] is not None else None
-        if orig is not None:
-            st = int(start) if start is not None else 0
-            en = int(end) if end is not None and end >= 0 else orig
-            parts[dim] = (en - st + step - 1) // step
-        else:
-            parts[dim] = None
-        return [_make_ranked_type(tuple(parts), et)]
-    return [inp]
+    """Slice: extract ``[start:end:step]`` along ``dim``."""
+    return _infer_ir_via_pure(_infer_slice_pure, input_types, dim=dim, start=start, end=end, step=step, **kwargs)
 
 
 def infer_select(
@@ -346,38 +264,13 @@ def infer_select(
     dim: int = 0, index: int = 0,
     **kwargs: Any,
 ) -> list[ir.Type]:
-    if not input_types:
-        return []
-    inp = input_types[0]
-    s = _ranked_shape(inp)
-    et = _elt_type_str(inp)
-    if s is None:
-        return [_make_ranked_type((None,), et)]
-    dim = int(dim)
-    if dim < len(s):
-        parts = list(s)
-        parts.pop(dim)
-        return [_make_ranked_type(tuple(parts), et)]
-    return [inp]
+    """Select: remove ``dim`` by indexing with a scalar ``index``."""
+    return _infer_ir_via_pure(_infer_select_pure, input_types, dim=dim, index=index, **kwargs)
 
 
 def infer_cat(input_types: list[ir.Type], dim: int = 0, **kwargs: Any) -> list[ir.Type]:
-    if not input_types:
-        return []
-    et = _elt_type_str(input_types[0])
-    shapes = [_ranked_shape(t) for t in input_types]
-    if None in shapes or any(s is None for s in shapes):
-        return [_make_ranked_type((None,), et)]
-    dim = int(dim)
-    parts = list(shapes[0])  # type: ignore[arg-type]
-    total = 0
-    for s in shapes:
-        if s is not None and dim < len(s):
-            d = s[dim]
-            total += d if d is not None else 0
-    if dim < len(parts):
-        parts[dim] = total if total > 0 else None
-    return [_make_ranked_type(tuple(parts), et)]
+    """Concat: join multiple tensors along ``dim``."""
+    return _infer_ir_via_pure(_infer_cat_pure, input_types, dim=dim, **kwargs)
 
 
 def infer_pad(input_types: list[ir.Type], pad: tuple[int, ...] | None = None, **kwargs: Any) -> list[ir.Type]:
@@ -479,17 +372,8 @@ infer_logical_and = _infer_compare
 
 
 def infer_embedding(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
-    if len(input_types) < 2:
-        return input_types
-    w = input_types[0]   # weight tensor: [vocab, embed_dim]
-    inp = input_types[1]  # indices tensor: [batch, seq, ...]
-    w_s = _ranked_shape(w)
-    inp_s = _ranked_shape(inp)
-    et = _elt_type_str(w)
-    if w_s and inp_s and len(w_s) >= 2:
-        # Output: indices_shape + [embed_dim]
-        return [_make_ranked_type(tuple(list(inp_s) + [w_s[1]]), et)]
-    return [_make_ranked_type((None, None), et)]
+    """Embedding: (weight, indices) → output, keep indice dims and use weight dims."""
+    return _infer_ir_via_pure(_infer_embedding_pure, input_types, **kwargs)
 
 
 def infer_triu(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
@@ -700,6 +584,11 @@ _INFERENCE_TABLE: dict[str, Any] = {}
 
 
 def _build_inference_table() -> dict[str, Any]:
+    """Build op_name → infer_* function dispatch table from module globals.
+
+    Any function named ``infer_<op>`` is automatically registered,
+    so adding a new op just requires defining ``def infer_<op>(...)``.
+    """
     table: dict[str, Any] = {}
     for name, obj in list(globals().items()):
         if name.startswith("infer_") and callable(obj):

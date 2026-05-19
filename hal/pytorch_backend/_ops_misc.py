@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import torch
 import torch.nn.functional as F  # noqa: N812
 
+_log = logging.getLogger("hal.pytorch.misc")
+
 
 class _MiscOps:
     def _op_embedding(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         indices = inputs[1].to(torch.long)
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug("embedding: weight=%s indices=%s", inputs[0].shape, indices.shape)
         return F.embedding(indices, inputs[0])
 
     def _op_type_as(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:

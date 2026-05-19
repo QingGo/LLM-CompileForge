@@ -14,7 +14,7 @@ use std::ffi::c_void;
 use std::path::Path;
 
 use crate::error::ExecutorError;
-use crate::hal_cpu::MemRefDesc2;
+use crate::hal::cpu::MemRefDesc2;
 use crate::sfcf;
 use crate::tensor::Dtype;
 

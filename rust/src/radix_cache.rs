@@ -82,6 +82,10 @@ impl RadixCache {
     /// Insert a token sequence and its KV blocks into the tree.
     ///
     /// Updates block reference counts via `bm.increment_ref_count`.
+    /// Uses raw pointer traversal internally to avoid borrow conflicts between
+    /// the recursive tree structure and external mutable references (`bm`).
+    /// SAFETY: The tree is a single-owner structure; all nodes outlive `&mut self`.
+    /// The traversal always re-acquires a valid reference from a pinned allocation.
     pub fn insert(
         &mut self,
         token_ids: &[u32],
@@ -94,68 +98,75 @@ impl RadixCache {
 
         let mut remaining = token_ids;
         let mut block_offset: usize = 0;
-        let mut node: *mut RadixTreeNode = &mut self.root;
 
-        // SAFETY: We use raw pointer to avoid multiple mutable borrows
-        // during tree traversal.  The tree is a single-owner structure
-        // (owned by `self`), so no aliasing issues exist.
+        // Raw pointer traversal avoids conflicting `&mut` borrows between
+        // tree navigation and child insertion/splitting.  All nodes are
+        // owned by `self` and are never deallocated during insertion.
+        let mut node_ptr: *mut RadixTreeNode = &mut self.root;
+
         loop {
             if remaining.is_empty() {
                 break;
             }
             let first = remaining[0];
 
-            let node_ref = unsafe { &mut *node };
-            let child = node_ref.children.get_mut(&first);
+            // SAFETY: `node_ptr` always points to a valid node owned by
+            // `self`.  The pointer is obtained either from `self.root` or
+            // from a child that remains pinned in its parent's HashMap.
+            let node = unsafe { &mut *node_ptr };
+            let child = node.children.get_mut(&first);
 
             match child {
                 None => {
                     let new_blocks = &kv_blocks[block_offset..];
-                    add_node(node_ref, remaining.to_vec(), new_blocks.to_vec(), bm);
+                    add_node(node, remaining.to_vec(), new_blocks.to_vec(), bm);
                     break;
                 }
-                Some(child) => {
-                    let child_tokens = child.token_ids.clone();
+                Some(child_node) => {
+                    let child_tokens = child_node.token_ids.clone();
                     let common = common_prefix_len(remaining, &child_tokens);
 
                     if common == 0 {
                         let new_blocks = &kv_blocks[block_offset..];
-                        add_node(node_ref, remaining.to_vec(), new_blocks.to_vec(), bm);
+                        add_node(node, remaining.to_vec(), new_blocks.to_vec(), bm);
                         break;
                     }
 
                     if common < child_tokens.len() {
+                        // ── Split node ─────────────────────────────
                         let shared_tokens = child_tokens[..common].to_vec();
                         let remaining_child_tokens = child_tokens[common..].to_vec();
                         let n_shared = ceil_div(common, self.block_size);
 
-                        let child_kv = child.kv_blocks.clone();
+                        let child_kv = child_node.kv_blocks.clone();
                         let shared_blocks = child_kv[..n_shared.min(child_kv.len())].to_vec();
                         let child_remaining_blocks = child_kv[n_shared.min(child_kv.len())..].to_vec();
-                        let child_ref = child.ref_count;
-
+                        let child_ref = child_node.ref_count;
                         let first_remainder = remaining_child_tokens[0];
 
                         let mut split_node = RadixTreeNode::new(shared_tokens);
                         split_node.kv_blocks = shared_blocks;
                         split_node.ref_count = child_ref;
 
-                        child.token_ids = remaining_child_tokens;
-                        child.kv_blocks = child_remaining_blocks;
-                        split_node.children.insert(first_remainder, std::mem::take(child));
+                        child_node.token_ids = remaining_child_tokens;
+                        child_node.kv_blocks = child_remaining_blocks;
+                        split_node.children.insert(first_remainder, std::mem::take(child_node));
 
-                        node_ref.children.insert(first, split_node);
+                        node.children.insert(first, split_node);
 
+                        // Advance to the newly inserted split node for the next iteration.
+                        // SAFETY: `split_node` was just inserted into `node.children`,
+                        // so the pointer is valid until `self` is dropped.
                         remaining = &remaining[common..];
-                        let split_ptr: *mut RadixTreeNode = {
-                            let nref = unsafe { &mut *node };
-                            nref.children.get_mut(&first).unwrap() as *mut RadixTreeNode
+                        node_ptr = {
+                            let parent = unsafe { &mut *node_ptr };
+                            parent.children.get_mut(&first).unwrap() as *mut RadixTreeNode
                         };
-                        node = split_ptr;
                     } else {
-                        block_offset += child.kv_blocks.len();
+                        block_offset += child_node.kv_blocks.len();
                         remaining = &remaining[child_tokens.len()..];
-                        node = child as *mut RadixTreeNode;
+                        // SAFETY: `child_node` lives in `node.children` which is owned by `self`.
+                        node_ptr = child_node as *mut RadixTreeNode;
                     }
                 }
             }

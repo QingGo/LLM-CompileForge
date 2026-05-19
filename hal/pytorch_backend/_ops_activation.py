@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import torch
 import torch.nn.functional as F  # noqa: N812
 
+_log = logging.getLogger("hal.pytorch.activation")
+
 
 class _ActivationOps:
     def _op_gelu(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug("gelu: %s", inputs[0].shape)
         return F.gelu(inputs[0])
 
     def _op_silu(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug("silu: %s", inputs[0].shape)
         return F.silu(inputs[0])
 
     def _op_relu(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:

@@ -75,8 +75,13 @@ class MlirExecutor(_KVCacheMixin):
                     if bare not in self._weights:
                         self._weights[bare] = self._weights[key]
 
-        # Handle tied weights.
-        tied = module.metadata.get("tied_weights", {})
+        # Handle tied weights (may be at metadata.tied_weights or metadata.weight_source.tied_weights).
+        tied: dict[str, str] = {}
+        if module.metadata:
+            tied = module.metadata.get("tied_weights", {})
+            if not tied:
+                ws = module.metadata.get("weight_source", {})
+                tied = ws.get("tied_weights", {})
         for alias, primary in tied.items():
             if alias not in self._weights and primary in self._weights:
                 self._weights[alias] = self._weights[primary]

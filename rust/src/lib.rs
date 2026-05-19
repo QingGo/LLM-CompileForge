@@ -4,7 +4,7 @@
 
 pub mod error;
 pub mod hal;
-pub mod hal_cpu;
+pub mod sfcf;
 pub mod ciface_high;
 pub mod block_manager;
 pub mod radix_cache;

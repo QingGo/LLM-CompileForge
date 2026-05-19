@@ -327,7 +327,7 @@ class TestHFCosineLlama1B:
         config = AutoConfig.from_pretrained(model_dir, trust_remote_code=False)
         config.use_cache = False
         hf_model = AutoModelForCausalLM.from_pretrained(
-            model_dir, config=config, torch_dtype=torch.bfloat16,
+            model_dir, config=config, torch_dtype=torch.bfloat16, local_files_only=True,
         )
         hf_model.eval()
 
@@ -366,7 +366,7 @@ class TestHFCosineLlama3B:
         config = AutoConfig.from_pretrained(model_dir, trust_remote_code=False)
         config.use_cache = False
         hf_model = AutoModelForCausalLM.from_pretrained(
-            model_dir, config=config, torch_dtype=torch.bfloat16,
+            model_dir, config=config, torch_dtype=torch.bfloat16, local_files_only=True,
         )
         hf_model.eval()
 

@@ -145,11 +145,11 @@ impl InferenceRunner {
         );
 
         // Try prefix cache match
-        let prompt_tokens = &self.scheduler.running_request(&rid)
-            .map(|r| r.prompt_tokens.clone())
-            .unwrap_or_default();
+        let prompt_tokens: &[u32] = &self.scheduler.running_request(&rid)
+            .map(|r| r.prompt_tokens.as_slice())
+            .unwrap_or(&[]);
         let (matched_blocks, matched_tokens) =
-            self.radix_cache.match_prefix(&prompt_tokens);
+            self.radix_cache.match_prefix(prompt_tokens);
         if !matched_blocks.is_empty() {
             // Assign cached blocks to the new request
             self.block_manager.assign_cached_blocks(&rid, &matched_blocks);
@@ -285,7 +285,7 @@ impl InferenceRunner {
         let text = self
             .tokenizer
             .decode(&output_tokens)
-            .unwrap_or_else(|_| "[decode error]".to_string());
+            .map_err(|e| anyhow::anyhow!("decode error: {}", e))?;
 
         Ok(GenerationResult {
             text,
@@ -298,10 +298,9 @@ impl InferenceRunner {
         self.scheduler.has_work()
     }
 
-    /// Return the vocabulary size (constant 50272 for OPT-125m).
+    /// Return the vocabulary size from the tokenizer.
     fn vocab_size(&self) -> usize {
-        // FIXME: extract from model metadata when available
-        50272
+        self.tokenizer.vocab_size()
     }
 }
 
@@ -326,39 +325,33 @@ mod tests {
     use crate::tokenizer::Tokenizer;
 
     /// Create a ModelExecutor that loads from the opt_125m_v8 compiled model.
-    /// This requires the model to have been compiled (CI must run setup.sh).
-    fn compiled_executor() -> Option<ModelExecutor> {
+    /// Panics with clear instructions if the compiled model is not found.
+    fn compiled_executor() -> ModelExecutor {
         let dylib = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../compiled/opt_125m_v8/libopt_125m.dylib"
         );
-        if !std::path::Path::new(dylib).exists() {
-            return None;
-        }
-        ModelExecutor::load(dylib, None).ok()
+        ModelExecutor::load(dylib, None)
+            .expect(&format!(
+                "compiled model not found at {dylib}. Run `make test-pipeline-smoke` to compile it first."
+            ))
     }
 
-    fn dummy_tokenizer() -> Option<Tokenizer> {
+    fn dummy_tokenizer() -> Tokenizer {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../tests/data/test_tokenizer.json"
         );
-        if !std::path::Path::new(path).exists() {
-            return None;
-        }
-        Tokenizer::from_file(path).ok()
+        Tokenizer::from_file(path)
+            .expect(&format!(
+                "test tokenizer not found at {path}. Ensure the test data is present."
+            ))
     }
 
     #[test]
     fn test_runner_create() {
-        let exec = match compiled_executor() {
-            Some(e) => e,
-            None => return,
-        };
-        let tokenizer = match dummy_tokenizer() {
-            Some(t) => t,
-            None => return,
-        };
+        let exec = compiled_executor();
+        let tokenizer = dummy_tokenizer();
         let config = RunnerConfig::default();
         let mut runner =
             InferenceRunner::new(exec, tokenizer, config).expect("create runner");
@@ -367,14 +360,8 @@ mod tests {
 
     #[test]
     fn test_runner_add_request() {
-        let exec = match compiled_executor() {
-            Some(e) => e,
-            None => return,
-        };
-        let tokenizer = match dummy_tokenizer() {
-            Some(t) => t,
-            None => return,
-        };
+        let exec = compiled_executor();
+        let tokenizer = dummy_tokenizer();
         let config = RunnerConfig::default();
         let mut runner =
             InferenceRunner::new(exec, tokenizer, config).expect("create runner");
@@ -388,14 +375,8 @@ mod tests {
 
     #[test]
     fn test_runner_step_empty() {
-        let exec = match compiled_executor() {
-            Some(e) => e,
-            None => return,
-        };
-        let tokenizer = match dummy_tokenizer() {
-            Some(t) => t,
-            None => return,
-        };
+        let exec = compiled_executor();
+        let tokenizer = dummy_tokenizer();
         let config = RunnerConfig::default();
         let mut runner =
             InferenceRunner::new(exec, tokenizer, config).expect("create runner");

@@ -512,12 +512,30 @@ def run_stages(
     Each stage is executed in order.  If a non-warn_only stage fails,
     execution stops and subsequent stages are not run.
 
+    Tracks IR line count across stages and warns if growth exceeds 5x
+    (indicating possible IR explosion).
+
     Returns a list of StageResult objects, one per stage.
     """
     results: list[StageResult] = []
+    prev_line_count: int = len(str(module).splitlines())
     for stage in stages:
         result = stage.run(module, ctx, log_dir)
         results.append(result)
+        if result.ir_lines > 0 and prev_line_count > 0:
+            growth_ratio = result.ir_lines / prev_line_count
+            if growth_ratio > 5.0:
+                _log.warning(
+                    "  ⚠️ Stage '%s' caused %dx IR growth (%d → %d lines) — possible explosion",
+                    stage.name, int(growth_ratio), prev_line_count, result.ir_lines,
+                )
+                if result.ir_snapshot_path:
+                    _log.warning(
+                        "  ⚠️ IR snapshot saved to %s (growth may cause downstream hangs)",
+                        result.ir_snapshot_path,
+                    )
+        if result.ir_lines > 0:
+            prev_line_count = result.ir_lines
         if not result.success and not stage.warn_only:
             _log.error("  Pipeline stopped at stage '%s'", stage.name)
             break
