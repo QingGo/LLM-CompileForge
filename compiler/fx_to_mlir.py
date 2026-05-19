@@ -8,6 +8,8 @@ canonical representation consumed by MlirExecutor and serialized to model.mlir.
 from __future__ import annotations
 
 import logging
+import re
+import sys
 from typing import Any
 
 import torch
@@ -18,8 +20,6 @@ from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp
 from compiler.mlir_dialect._op_defs import (
     _ATEN_TO_HAL,
     _LIST_ARG_ATTR,
-    _OP_DEFS,
-    _OpDef,
     _SCALAR_INT_POSITIONS,
     _SCALAR_KWARG_NAMES,
 )
@@ -296,12 +296,32 @@ def _split_into_functions(
     mlir_ops: list[MlirOp],
     func_inputs: list[tuple[str, str]],
     weights: dict[str, torch.Tensor],
-    ops_per_func: int,
+    ops_per_func: int = 500,
+    boundaries: list[int] | None = None,
 ) -> tuple[list[MlirOp], int]:
-    """Insert sentinel ops marking function boundaries every ops_per_func ops.
+    """Insert sentinel ops marking function boundaries.
+
+    If *boundaries* is provided (non-empty), insert sentinels at those
+    indices (layer-aware splitting). Otherwise, insert a sentinel every
+    *ops_per_func* ops (op-count splitting, existing behaviour).
 
     Returns (augmented_ops, num_functions).
     """
+    if boundaries:
+        # Layer-based: insert sentinel before each boundary op
+        result: list[MlirOp] = []
+        boundary_set = set(boundaries)
+        for i, op in enumerate(mlir_ops):
+            if i in boundary_set:
+                result.append(MlirOp(
+                    name="_sentinel", dialect="_sentinel", op_name="_func_boundary",
+                    operands=[], results=[], attributes={},
+                    input_types=[], output_types=[],
+                ))
+            result.append(op)
+        return result, len(boundaries) + 1
+
+    # Op-count splitting (existing behaviour)
     if len(mlir_ops) <= ops_per_func:
         return mlir_ops, 1
 
@@ -315,6 +335,66 @@ def _split_into_functions(
             ))
         result.append(op)
     return result, (len(mlir_ops) + ops_per_func - 1) // ops_per_func
+
+
+# ── Layer detection helpers ─────────────────────────────
+
+
+def _detect_layer(nn_module_stack: dict, prev_layer: str) -> str:
+    """Extract layer identifier from ``nn_module_stack`` dict.
+
+    Returns one of:
+      - ``"embed_prefix"`` — decoder/embedding prefix (before any layer)
+      - ``"layer_{N}"``    — transformer layer ``N``
+      - ``"output"``       — output region (final norm + lm_head)
+    """
+    if not nn_module_stack:
+        return prev_layer
+
+    # Look for decoder layer numbers in stack keys
+    layer_num: int | None = None
+    for key in nn_module_stack:
+        m = re.search(r'layers\.(\d+)', str(key))
+        if m:
+            num = int(m.group(1))
+            if layer_num is None or num > layer_num:
+                layer_num = num
+
+    if layer_num is not None:
+        return f"layer_{layer_num}"
+
+    # Check for output-module indicators
+    key_str_lower = " ".join(str(k).lower() for k in nn_module_stack)
+    if any(kw in key_str_lower for kw in ['lm_head', 'final_norm', 'final_layer_norm']):
+        return "output"
+
+    # If we've seen layers before and now no layer key → output region
+    if prev_layer and prev_layer.startswith("layer_"):
+        return "output"
+
+    return "embed_prefix"
+
+
+def _log_split_plan(mlir_ops: list, boundaries: list[int]) -> None:
+    """Log layer-based split plan to stderr."""
+    segments: list[tuple[str, int]] = []
+    prev = 0
+    for b in sorted(boundaries):
+        if b <= prev:
+            continue
+        layer_name = mlir_ops[prev].attributes.get("dump_layer", "?")
+        segments.append((layer_name, b - prev))
+        prev = b
+    if prev < len(mlir_ops):
+        layer_name = mlir_ops[prev].attributes.get("dump_layer", "?")
+        segments.append((layer_name, len(mlir_ops) - prev))
+
+    print(
+        f"[fx_to_mlir] Layer-based split: {len(segments)} functions detected",
+        file=sys.stderr,
+    )
+    for i, (name, count) in enumerate(segments):
+        print(f"[fx_to_mlir]   func_{i}: {name} — {count} ops", file=sys.stderr)
 
 
 def _make_multi_functions(
@@ -443,6 +523,7 @@ def _make_multi_functions(
 def fx_graph_to_mlir(
     program: ExportedProgram,
     function_name: str = "main",
+    split_strategy: str = "layer",
 ) -> MlirModule:
     gm = program.graph_module
     graph = gm.graph
@@ -491,6 +572,10 @@ def fx_graph_to_mlir(
     tuple_outputs: dict[str, list[str]] = {}
     # Shape tracking: SSA name → (shape_tuple, element_type_str)
     shape_map: dict[str, tuple[tuple[int | None, ...], str]] = {}
+    # Layer tracking for split_strategy="layer"
+    current_layer: str = "embed_prefix"
+    layer_boundaries: list[int] = []
+    node_layer_map: dict[str, str] = {}
 
     for node in graph.nodes:
         if node.op == "placeholder":
@@ -510,6 +595,16 @@ def fx_graph_to_mlir(
             hal_op = _map_aten_op(node.target)
             if hal_op is None:
                 continue
+
+            # Layer detection (split_strategy="layer")
+            nn_stack = node.meta.get("nn_module_stack", {})
+            if nn_stack:
+                new_layer = _detect_layer(nn_stack, current_layer)
+                if new_layer != current_layer:
+                    layer_boundaries.append(len(mlir_ops))
+                    current_layer = new_layer
+            node_layer_map[node.name] = current_layer
+
             if hal_op == "_skip_wrap":
                 ssa_map[node.name] = func_inputs[0][0] if func_inputs else node.name
                 continue
@@ -543,6 +638,7 @@ def fx_graph_to_mlir(
             name_counter += 1
             ssa_map[node.name] = output_name
             kwargs["source_node"] = node.name
+            kwargs["dump_layer"] = current_layer
 
             # Compute output types via shape inference
             input_types, output_types = _resolve_op_types(
@@ -571,6 +667,13 @@ def fx_graph_to_mlir(
                     func_outputs.append((out_name, tp))
             continue
 
+    # Backfill dump_layer for handler-generated ops (getitem, split, chunk)
+    for op in mlir_ops:
+        if "dump_layer" not in op.attributes:
+            src = op.attributes.get("source_node", "")
+            if src and src in node_layer_map:
+                op.attributes["dump_layer"] = node_layer_map[src]
+
     # ── Phase 4: prepend weight constants ─────────────────
     wops: list[MlirOp] = []
     for wname, tensor in weights.items():
@@ -585,16 +688,39 @@ def fx_graph_to_mlir(
         ))
     mlir_ops = wops + mlir_ops
 
+    # Adjust layer boundaries to account for prepended weight ops
+    if layer_boundaries and split_strategy == "layer":
+        weight_offset = len(wops)
+        adjusted_boundaries = [b + weight_offset for b in layer_boundaries]
+    else:
+        adjusted_boundaries = []
+
     # Constants: everything NOT from state_dict (synthesised scalars etc.)
     all_weight_names = set(weights.keys())
     const_names = (const_names or set()) | (all_weight_names - param_names)
 
     # ── Phase 5: split into per-function chunks (bufferization scaling) ──
-    ops_per_func = 500
-    if len(mlir_ops) > ops_per_func:
-        mlir_ops, func_count = _split_into_functions(mlir_ops, func_inputs, weights, ops_per_func)
-    else:
+    if adjusted_boundaries:
+        _log_split_plan(mlir_ops, adjusted_boundaries)
+        mlir_ops, func_count = _split_into_functions(
+            mlir_ops, func_inputs, weights, boundaries=adjusted_boundaries,
+        )
+    elif split_strategy == "layer":
+        # No layer boundaries detected — skip split (single function)
         func_count = 1
+        _log.warning(
+            "split_strategy='layer' but no layer boundaries detected; "
+            "model may not be a transformer or nn_module_stack is empty"
+        )
+    else:
+        # Fallback to op-count-based splitting
+        ops_per_func = 500
+        if len(mlir_ops) > ops_per_func:
+            mlir_ops, func_count = _split_into_functions(
+                mlir_ops, func_inputs, weights, ops_per_func,
+            )
+        else:
+            func_count = 1
 
     # ── Phase 6: assemble ─────────────────────────────────
     meta: dict[str, Any] = {"source": "torch.export", "artifact_format": "mlir"}
