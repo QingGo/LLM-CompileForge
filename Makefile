@@ -1,4 +1,4 @@
-.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean diagnose-bt test-fixup test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-benchmark test-perf test-vec test-lower test-baseline test-compile-full test-forward-smoke build-rust install-rust
+.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean diagnose-bt test-fixup test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke build-rust install-rust
 
 # ---- 环境 ----
 VENV := .venv
@@ -56,10 +56,6 @@ test-lower: $(VENV)
 	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" \
 	$(PYTHON) scripts/test_lowering_diag.py
 
-# ---- L1f: 管线性能回归 (<60s) ----
-test-perf: $(VENV)
-	$(PYTHON) scripts/perf_regression.py --save .perf_baseline.json
-
 # ---- 快速测试 (lint + L1 all, <20s) ----
 test-fast: lint test-unit test-model test-patterns test-pipeline-quick test-forward-smoke
 
@@ -96,18 +92,6 @@ smoke: $(VENV)
 # ---- 诊断：lldb backtrace（C++ assertion 崩溃时用） ----
 diagnose-bt:
 	lldb -b -o "run" -o "bt all" -o "quit" -- $(PYTHON) scripts/diagnose_lowering.py
-
-# ---- Benchmark (Phase 2.5 Sprint 1) ----
-benchmark: $(VENV)
-	$(PYTHON) scripts/benchmark.py --all --output benchmark_results.json
-
-test-benchmark: $(VENV)
-	$(PYTEST) tests/test_benchmark.py -m benchmark -v --tb=short --timeout=120
-
-# ---- L1h: Pipeline 冒烟测试 (<10s) ----
-test-pipeline: $(VENV)
-	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" \
-	$(PYTHON) scripts/smoke_pipeline.py
 
 # ---- L1i: Pipeline 时序诊断 (每步单独计时+超时, <120s) ----
 test-pipeline-timing: $(VENV)

@@ -4,6 +4,7 @@ Usage: python scripts/compile_dylib.py <compiled_dir> [--model-name <name>]
 Example: python scripts/compile_dylib.py compiled/tiny_llama --model-name tiny_llama
 """
 
+import faulthandler
 import json
 import os
 import re
@@ -12,6 +13,8 @@ import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
+
+faulthandler.enable()
 
 DEBUG: bool = False
 

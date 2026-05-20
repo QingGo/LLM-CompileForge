@@ -44,10 +44,12 @@ static Value makeEmpty(OpBuilder &b, Location loc, Type t, ValueRange inputs) {
       }
     }
   }
-  // Fill remaining dynamic dims with 0 (will be replaced by proper dim ops later)
+  // Fill remaining dynamic dims with a distinctive sentinel value (-1).
+  // This prevents silent wrong-code generation: any pass that encounters
+  // a -1 dynamic dim knows the size could not be inferred at lowering time.
   for (int64_t i = 0; i < (int64_t)shaped.getRank(); ++i)
     if (shaped.isDynamicDim(i) && !filled[i])
-      dynSizes.push_back(b.create<arith::ConstantIndexOp>(loc, 1));
+      dynSizes.push_back(b.create<arith::ConstantIndexOp>(loc, -1));
   return b.create<tensor::EmptyOp>(loc, shaped, dynSizes);
 }
 
@@ -837,6 +839,9 @@ struct SfUnsqueezeOpLowering : public OpRewritePattern<sf::UnsqueezeOp> {
     int64_t unsqueezeDim = 0;
     if (auto dimAttr = op->getAttrOfType<IntegerAttr>("dim"))
       unsqueezeDim = dimAttr.getInt();
+    if (unsqueezeDim < 0) {
+      unsqueezeDim += inType.getRank() + 1;  // +1 because unsqueeze adds a dimension
+    }
     SmallVector<Value> shapeVals;
     for (int64_t i = 0; i < outType.getRank(); ++i) {
       if (outType.isDynamicDim(i)) {

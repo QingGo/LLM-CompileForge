@@ -10,10 +10,13 @@ If (2) ≠ (3) and (2) ≈ (1), the bug is in the Rust executor's input construc
 """
 
 import ctypes
+import faulthandler
 import os
 import sys
 
 import numpy as np
+
+faulthandler.enable()
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -184,7 +187,7 @@ def main():
     # from constants.bin to know the input ordering.
     # For now, just check that the dylib loads and symbols are found.
     print(f"\nDylib loaded: {dylib_path}")
-    print(f"Symbols in dylib:")
+    print("Symbols in dylib:")
     symbols = []
     try:
         # macOS: use nm to list symbols

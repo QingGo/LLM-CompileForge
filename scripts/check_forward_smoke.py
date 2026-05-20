@@ -13,6 +13,7 @@ Exits 0 on success, 1 on failure.
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import logging
 import sys
 
@@ -22,6 +23,8 @@ from compiler.serialize import load_artifact
 from engine.mlir_executor import MlirExecutor
 from hal.pytorch_backend import PyTorchBackend
 from utils.logging import init_logging
+
+faulthandler.enable()
 
 _log = None  # set in main
 
