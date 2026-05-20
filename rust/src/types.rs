@@ -34,7 +34,9 @@ pub struct Request {
     pub prompt_tokens: Vec<u32>,
     pub output_tokens: Vec<u32>,
     pub state: RequestState,
+    #[allow(dead_code)]
     pub priority: i32,
+    #[allow(dead_code)]
     pub arrival_time: f64,
     pub prefill_pos: usize,
     pub max_tokens: usize,
@@ -89,7 +91,9 @@ pub struct ScheduledRequest {
     pub request_id: String,
     pub input_ids: Vec<u32>,
     pub positions: Vec<u32>,
+    #[allow(dead_code)]
     pub state: RequestState,
+    #[allow(dead_code)]
     pub block_table: Vec<usize>,
     pub n_tokens: usize,
 }
@@ -101,6 +105,7 @@ pub struct ScheduledRequest {
 #[derive(Debug, Clone)]
 pub struct Batch {
     pub requests: Vec<ScheduledRequest>,
+    #[allow(dead_code)]
     pub total_tokens: usize,
 }
 
@@ -112,6 +117,7 @@ impl Batch {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.requests.is_empty()
     }

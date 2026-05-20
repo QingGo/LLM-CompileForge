@@ -16,6 +16,7 @@ pub enum Dtype {
 }
 
 impl Dtype {
+    #[allow(dead_code)]
     pub fn element_size(&self) -> usize {
         match self {
             Dtype::F32 => 4,
@@ -58,6 +59,7 @@ impl fmt::Display for Dtype {
 
 pub enum TensorData<'a> {
     Owned(Vec<f32>),
+    #[allow(dead_code)]
     Borrowed(&'a [f32]),
 }
 
@@ -83,6 +85,7 @@ impl<'a> Tensor<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn from_borrowed(shape: Vec<usize>, data: &'a [f32], dtype: Dtype) -> Self {
         debug_assert_eq!(data.len(), shape.iter().product::<usize>());
         Self {
@@ -92,6 +95,7 @@ impl<'a> Tensor<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn scalar(value: f32) -> Self {
         Self {
             data: TensorData::Owned(vec![value]),
@@ -111,6 +115,7 @@ impl<'a> Tensor<'a> {
         self.shape.iter().product()
     }
 
+    #[allow(dead_code)]
     pub fn rank(&self) -> usize {
         self.shape.len()
     }

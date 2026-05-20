@@ -83,7 +83,6 @@ def compile_opt125m(output_dir: str, apply_lowering: bool = False) -> None:
         output_dir=output_dir,
         model_dir=os.path.join(snapshots, snap),
         dynamic_shapes={"input_ids": {0: Dim("batch"), 1: Dim("seq")}},
-        apply_lowering=apply_lowering,
     )
 
     op_count = len(mlir_mod.functions[0].ops)
@@ -135,7 +134,6 @@ def compile_tiny_llama(output_dir: str, apply_lowering: bool = False) -> None:
         example_args=(example_input,),
         output_dir=output_dir,
         dynamic_shapes={"input_ids": {0: Dim("batch"), 1: Dim("seq")}},
-        apply_lowering=apply_lowering,
     )
 
     op_count = len(mlir_mod.functions[0].ops)
@@ -190,7 +188,6 @@ def compile_qwen(output_dir: str, apply_lowering: bool = False) -> None:
         model_dir=model_dir,
         cache_export=False,
         cache_policy=cache_policy,
-        apply_lowering=apply_lowering,
     )
 
     op_count = len(mlir_mod.functions[0].ops)
@@ -268,7 +265,6 @@ def compile_llama_1b(output_dir: str, apply_lowering: bool = False) -> None:
         model_dir=model_dir,
         cache_export=False,
         cache_policy=cache_policy,
-        apply_lowering=apply_lowering,
     )
 
     op_count = len(mlir_mod.functions[0].ops)
@@ -345,7 +341,6 @@ def compile_llama_3b(output_dir: str, apply_lowering: bool = False) -> None:
         model_dir=model_dir,
         cache_export=False,
         cache_policy=cache_policy,
-        apply_lowering=apply_lowering,
     )
 
     op_count = len(mlir_mod.functions[0].ops)
@@ -412,7 +407,6 @@ def compile_rwkv(output_dir: str, apply_lowering: bool = False) -> None:
         output_dir=output_dir,
         cache_export=False,
         cache_policy=cache_policy,
-        apply_lowering=apply_lowering,
     )
 
     # Write weight_source with name mapping
@@ -453,12 +447,6 @@ def main() -> None:
         default=None,
         help="Output directory for compiled artifacts",
     )
-    parser.add_argument(
-        "--lowering",
-        action="store_true",
-        default=False,
-        help="Apply sf→linalg lowering pass after fusion",
-    )
     args = parser.parse_args()
 
     targets = {
@@ -472,7 +460,7 @@ def main() -> None:
 
     func, default_dir = targets[args.model]
     output_dir = args.output_dir or default_dir
-    func(output_dir, apply_lowering=args.lowering)
+    func(output_dir)
 
 
 if __name__ == "__main__":

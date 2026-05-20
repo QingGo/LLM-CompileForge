@@ -849,9 +849,38 @@ def _build_ssa_map(func: MlirFunction, arg_values: list[ir.Value]) -> dict[str, 
     return ssa_map
 
 
-def _emit_weight_op(op: MlirOp, ctx: Any, ssa_map: dict[str, ir.Value], body_blk: Any) -> None:
-    """Emit a weight/constant op into the IR builder."""
+def _emit_weight_op(op: MlirOp, ctx: Any, ssa_map: dict[str, ir.Value], body_blk: Any,
+                     weights: dict | None = None) -> None:
+    """Emit a weight/constant op into the IR builder.
+
+    For scalar constants (_const_*) with known values, emits ``arith.constant``
+    instead of ``sf.weight``, baking the value into the IR so the MLIR pipeline
+    cannot DCE scalar additions (Issue #45 root cause fix).
+    """
     import mlir.ir as _ir
+
+    wname = op.attributes.get("name")
+    if wname and wname.startswith("_const_") and weights and wname in weights:
+        wt = weights[wname]
+        if wt.numel() == 1:
+            result_type = _type_str_to_ir_type(op.output_types[0])
+            elt_type = result_type.element_type
+            with _ir.InsertionPoint(body_blk):
+                if isinstance(wt.item(), float):
+                    attr = _ir.FloatAttr.get(elt_type, float(wt.item()))
+                else:
+                    attr = _ir.IntegerAttr.get(elt_type, int(wt.item()))
+                ir_op = _ir.Operation.create("arith.constant",
+                    results=[result_type],
+                    attributes={"value": attr})
+            for i, rname in enumerate(op.results):
+                if i < len(ir_op.operation.results):
+                    v = ir_op.operation.results[i]
+                    ssa_map[rname] = v
+                    ssa_map[rname.lstrip("%")] = v
+            if wname:
+                ssa_map[wname] = ir_op.operation.results[0]
+            return
 
     w_attrs: dict[str, ir.Attribute] = {}
     for k, v in op.attributes.items():
@@ -1027,7 +1056,7 @@ def mlir_module_to_ir_module(module: MlirModule, ctx: Any = None) -> Any:
             # Build all ops
             for op in func.ops:
                 if op.op_name in ("weight", "constant"):
-                    _emit_weight_op(op, ctx, ssa_map, body_blk)
+                    _emit_weight_op(op, ctx, ssa_map, body_blk, func.weights)
                     continue
 
                 operands = _resolve_operands(op, ssa_map)

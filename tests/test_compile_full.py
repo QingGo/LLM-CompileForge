@@ -38,7 +38,7 @@ pytestmark = [
 ARTIFACT_DIR = Path(__file__).resolve().parent.parent / "compiled/opt_125m_fresh"
 LLVM_BIN = os.environ.get(
     "SERVE_FORGE_LLVM_BIN",
-    "/Users/zeng/code/LLM-CompileForge/llvm-project/build/bin",
+    str(Path(__file__).resolve().parent.parent / "llvm-project/build/bin"),
 )
 
 STEP_TIMEOUT = 120  # per-step timeout in seconds
@@ -50,11 +50,11 @@ def _llvm_step(label, script, timeout=STEP_TIMEOUT):
     Returns (stdout, elapsed_seconds) on success.
     Raises AssertionError on failure.
     """
+    _project_root = Path(__file__).resolve().parent.parent
     env = os.environ.copy()
     env.setdefault(
         "DYLD_LIBRARY_PATH",
-        "/Users/zeng/code/LLM-CompileForge/llvm-project/build/"
-        "tools/mlir/python_packages/mlir_core/mlir/_mlir_libs",
+        str(_project_root / "llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs"),
     )
     env["KMP_DUPLICATE_LIB_OK"] = "TRUE"
     env.pop("CONDA_PREFIX", None)

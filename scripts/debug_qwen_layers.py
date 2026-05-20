@@ -227,7 +227,8 @@ def main() -> None:
                     result = backend.execute(op.name, ti, **attrs)
                 else:
                     result = backend.execute(op.name, [], **attrs)
-            except Exception:
+            except Exception as e:
+                print(f"  WARNING: op execution failed: {e}")
                 exec_errors += 1
                 result = None
 

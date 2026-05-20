@@ -1,0 +1,2 @@
+/usr/bin/ar qc libSfCAPI.a CMakeFiles/obj.SfCAPI.dir/Dialects.cpp.o
+/usr/bin/ranlib libSfCAPI.a

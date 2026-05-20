@@ -92,9 +92,11 @@ def compare_ir_vs_ep(
                     tensor_inputs.append(ssa_values[inp_name])
                 elif inp_name in all_weights:
                     tensor_inputs.append(all_weights[inp_name])
-        except Exception:
+        except Exception as e:
             if verbose:
                 print(f"  [{i:4d}/{total}] {op.name:20s} SKIP (unresolved input)")
+            else:
+                print(f"  WARNING: unresolved input for {op.name}: {e}")
             continue
 
         if not tensor_inputs:

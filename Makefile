@@ -10,6 +10,10 @@ PYTEST := $(VENV)/bin/pytest
 $(VENV):
 	uv venv --python 3.10 && uv sync
 
+# ---- DYLD library paths ----
+MLIR_LIBS_PATH := $(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs
+TORCH_LIB_PATH := $(PWD)/$(VENV)/lib/python3.10/site-packages/torch/lib
+
 # ---- L0: 静态检查 (<2s) ----
 lint: lint-ruff lint-mypy
 
@@ -49,7 +53,7 @@ test-vec: $(VENV)
 
 # ---- L1g: Lowering 诊断 (每个 op 类型单独测试, <10s) ----
 test-lower: $(VENV)
-	DYLD_LIBRARY_PATH="$(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs" \
+	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" \
 	$(PYTHON) scripts/test_lowering_diag.py
 
 # ---- L1f: 管线性能回归 (<60s) ----
@@ -102,17 +106,17 @@ test-benchmark: $(VENV)
 
 # ---- L1h: Pipeline 冒烟测试 (<10s) ----
 test-pipeline: $(VENV)
-	DYLD_LIBRARY_PATH="$(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs" \
+	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" \
 	$(PYTHON) scripts/smoke_pipeline.py
 
 # ---- L1i: Pipeline 时序诊断 (每步单独计时+超时, <120s) ----
 test-pipeline-timing: $(VENV)
-	DYLD_LIBRARY_PATH="$(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs" \
+	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" \
 	$(PYTHON) scripts/pipeline_timing.py compiled/opt_125m_fresh
 
 # ---- L1i: Pipeline 逐 pass 落盘 debug (中间文件保存+计时) ----
 test-pipeline-debug: $(VENV)
-	DYLD_LIBRARY_PATH="$(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs" \
+	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" \
 	$(PYTHON) scripts/pipeline_debug.py compiled/opt_125m_fresh --out /tmp/pipeline_debug
 
 # ---- L1j: _fixup_unrealized_casts 单元测试 (16 patterns, <1s) ----
@@ -125,12 +129,12 @@ test-pipeline-smoke: $(VENV)
 
 # ---- L1l: Pipeline 验证 (IR 清洁度 + 分步计时 + 最终编译, <60s) ----
 test-pipeline-validate: $(VENV)
-	DYLD_LIBRARY_PATH="$(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs" \
+	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" \
 	$(PYTHON) -m pytest tests/test_pipeline_validation.py -v --tb=short --timeout=60
 
 # ---- L1n: Pipeline 快速验证 (仅 IR 解析 + op 类型检查, <2s) ----
 test-pipeline-quick: $(VENV)
-	DYLD_LIBRARY_PATH="$(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs" \
+	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" \
 	$(PYTEST) tests/test_pipeline_validation.py::test_no_arith_ops_after_lowering \
 	         tests/test_pipeline_validation.py::test_tile_sizes_within_bounds \
 	         -v --tb=short --timeout=30
@@ -175,7 +179,7 @@ test-changed: $(VENV)
 
 # ---- L2a: 全模型编译测试 (逐步骤检测, <300s) ----
 test-compile-full: $(VENV)
-	DYLD_LIBRARY_PATH="$(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs" \
+	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" \
 	$(PYTHON) -m pytest tests/test_compile_full.py -v --tb=short --timeout=300
 
 # ---- SF dialect extension rebuild ----
@@ -187,3 +191,30 @@ rebuild-sf:
 clean:
 	rm -rf .venv .pytest_cache .mypy_cache .ruff_cache dist *.egg-info compiled/ .profile_baseline.txt
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+# ---- L5: 全量清洁重建 (清空 + 编译 + 推理 + 精度对比) ----
+.PHONY: rebuild rebuild-clean rebuild-mlir rebuild-dylib rebuild-test rebuild-cosine
+
+# 全量重建: 清空 → 导出 model.mlir → 编译 .dylib → forward 测试 → cosine 对比
+rebuild: rebuild-clean rebuild-mlir rebuild-dylib rebuild-test rebuild-cosine
+
+# 清空编译产物 (保留其他模型)
+rebuild-clean:
+	rm -rf compiled/opt_125m_fresh
+
+# 从 PyTorch 导出模型 → model.mlir
+rebuild-mlir: $(VENV)
+	$(PYTHON) scripts/compile.py opt-125m --output-dir ./compiled/opt_125m_fresh
+
+# model.mlir → .dylib (C++ lowering + LLVM pipeline + llc + link)
+rebuild-dylib: $(VENV)
+	DYLD_LIBRARY_PATH="$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
+	$(PYTHON) scripts/compile_dylib.py compiled/opt_125m_fresh --model-name opt_125m
+
+# Rust forward 测试
+rebuild-test:
+	cd rust && cargo test test_opt_125m_forward_runs -- --nocapture 2>&1 | tail -5
+
+# Cosine 精度对比 (Rust vs Python vs HF)
+rebuild-cosine: $(VENV)
+	$(PYTHON) scripts/diagnose_issue45.py 2>&1 | grep -E "Cosine|DIAGNOSIS|argmax"

@@ -264,10 +264,12 @@ impl Scheduler {
 
     // ── Query helpers ───────────────────────────────────────
 
+    #[allow(dead_code)]
     pub fn waiting_count(&self) -> usize {
         self.waiting.len()
     }
 
+    #[allow(dead_code)]
     pub fn running_count(&self) -> usize {
         self.running.len()
     }

@@ -9,3 +9,8 @@
 !.opencode/
 !outputs/
 !logs/
+!*.so
+!*.o
+!.omo/
+!*.dylib
+!*.bin

@@ -36,6 +36,7 @@ pub struct StepResult {
 #[derive(Debug, Clone)]
 pub struct GenerationResult {
     pub text: String,
+    #[allow(dead_code)]
     pub tokens: Vec<u32>,
 }
 
@@ -79,6 +80,7 @@ pub struct InferenceRunner {
     /// Cache prefix hits from the previous step (fed into scheduler).
     cache_hits: Vec<crate::types::PrefixCacheHit>,
     /// Track per-request last logits position for logits→token extraction.
+    #[allow(dead_code)]
     last_positions: HashMap<String, usize>,
 }
 
@@ -294,6 +296,7 @@ impl InferenceRunner {
     }
 
     /// True if there are any pending or running requests.
+    #[allow(dead_code)]
     pub fn has_work(&self) -> bool {
         self.scheduler.has_work()
     }

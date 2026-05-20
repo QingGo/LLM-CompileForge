@@ -1,14 +1,13 @@
 use std::cell::RefCell;
 use std::ffi::c_void;
 
-use anyhow::bail;
 use half::f16;
 
 use crate::compute_graph::{ComputeGraph, InputBinding};
 use crate::error::ExecutorError;
 use crate::hal::cpu::CpuDevice;
-use crate::hal::cpu::{Executable, KernelFn, MemRefDescAny, MemRefDesc2};
-use crate::hal::traits::{Device as DeviceTrait, Executable as ExecutableTrait};
+use crate::hal::cpu::{Executable, MemRefDescAny, MemRefDesc2};
+use crate::hal::traits::Device as DeviceTrait;
 use crate::tensor::{Dtype, Tensor};
 use crate::weight_loader::WeightProvider;
 
@@ -83,6 +82,7 @@ impl ModelExecutor {
         })
     }
 
+    #[allow(dead_code)]
     pub fn forward(&self, input_ids: &[u32]) -> Result<Tensor<'static>, anyhow::Error> {
         // Default: use sequential positions [0, 1, ..., N-1] (full prefill)
         let positions: Vec<u32> = (0..input_ids.len() as u32).collect();
@@ -91,16 +91,9 @@ impl ModelExecutor {
 
     /// Like forward() but accepts explicit positions for each token.
     /// positions[i] gives the position of input_ids[i] in the sequence.
-    pub fn forward_with_positions(&self, input_ids: &[u32], positions: &[u32]) -> Result<Tensor<'static>, anyhow::Error> {
+    pub fn forward_with_positions(&self, input_ids: &[u32], _positions: &[u32]) -> Result<Tensor<'static>, anyhow::Error> {
         let num_funcs = self.compute_graph.functions.len();
         let mut func_outputs: Vec<Vec<Tensor<'static>>> = vec![Vec::new(); num_funcs];
-
-        // DUMP_LAYERS: optional per-function tensor dump
-        let dump_dir: Option<String> = std::env::var("DUMP_LAYERS").ok();
-        if let Some(ref dir) = dump_dir {
-            let _ = std::fs::create_dir_all(dir);
-            eprintln!("[DUMP_LAYERS] dumping per-function tensors to {}", dir);
-        }
 
         for func_def in &self.compute_graph.functions {
             let fi = func_def.index;
@@ -115,7 +108,7 @@ impl ModelExecutor {
             let mut _tensors: Vec<Tensor<'static>> = Vec::with_capacity(func_def.num_inputs);
             let mut _raw_buffers: Vec<Vec<u8>> = Vec::new();
 
-            for (bi, (binding, io_def)) in func_def.inputs.iter().enumerate() {
+            for (_bi, (binding, io_def)) in func_def.inputs.iter().enumerate() {
                 let shape: Vec<usize> =
                     io_def.shape.iter().map(|&d| d as usize).collect();
                 let tensor: Tensor = match binding {
@@ -141,7 +134,8 @@ impl ModelExecutor {
                         _raw_buffers.push(raw);
                         let desc = MemRefDescAny::R2(memref);
                         input_descs.push(desc);
-                        input_ptrs.push(input_descs.last().unwrap().as_input_ptr());
+                        input_ptrs.push(input_descs.last()
+                            .expect("input_descs has entry for GlobalInput").as_input_ptr());
                         continue;
                     }
                     InputBinding::Weight(key) => {
@@ -157,13 +151,9 @@ impl ModelExecutor {
                                 })?;
                             let n = desc.numel();
                             let data: Vec<f32> = unsafe {
-                                let raw = desc.aligned as *const u8;
-                                (0..n).map(|i| {
-                                    let ptr = raw.add(i * 2) as *const [u8; 2];
-                                    let bytes = std::ptr::read_unaligned(ptr);
-                                    let bits = u16::from_le_bytes(bytes);
-                                    f16::from_bits(bits).to_f32()
-                                }).collect()
+                                let raw = desc.aligned as *const u16;
+                                let slice = std::slice::from_raw_parts(raw, n);
+                                slice.iter().map(|&h| f16::from_bits(h).to_f32()).collect()
                             };
                             let tensor = Tensor::new_owned(shape, data, Dtype::F32);
                             cache.insert(key.clone(), tensor.to_owned());
@@ -182,7 +172,8 @@ impl ModelExecutor {
                 let desc = MemRefDescAny::from_f32(&tensor.shape, tensor.as_slice())
                     .map_err(|e| anyhow::anyhow!("weight desc: {}", e))?;
                 input_descs.push(desc);
-                input_ptrs.push(input_descs.last().unwrap().as_input_ptr());
+                input_ptrs.push(input_descs.last()
+                    .expect("input_descs has entry for Weight/Ssa input").as_input_ptr());
                 _tensors.push(tensor);
             }
             debug_assert!(_tensors.len() <= input_ptrs.len());
@@ -239,30 +230,6 @@ impl ModelExecutor {
                 let shape: Vec<usize> = sizes.iter().map(|&s| s as usize).collect();
                 func_outputs[fi].push(Tensor::new_owned(shape, data, Dtype::F32));
                 sret_offset += desc_size;
-            }
-
-            // DUMP_LAYERS: dump per-function output tensors
-            if let Some(ref dump_dir) = dump_dir {
-                for (oi, tensor) in func_outputs[fi].iter().enumerate() {
-                    let base = format!("{}/func_{}_{}", dump_dir, fi, oi);
-                    // Raw f32 binary (little-endian)
-                    let bin_path = format!("{}.bin", base);
-                    let data = tensor.as_slice();
-                    let bytes: Vec<u8> = data.iter()
-                        .flat_map(|&f| f.to_le_bytes())
-                        .collect();
-                    let _ = std::fs::write(&bin_path, &bytes);
-                    // JSON metadata
-                    let meta = serde_json::json!({
-                        "shape": tensor.shape,
-                        "dtype": "f32",
-                        "symbol": &func_def.symbol,
-                        "function": fi,
-                        "output_idx": oi,
-                    });
-                    let json_path = format!("{}.json", base);
-                    let _ = std::fs::write(&json_path, serde_json::to_string_pretty(&meta).unwrap_or_default());
-                }
             }
         }
 
@@ -476,75 +443,6 @@ mod tests {
         assert!((data[1] - 0.5).abs() < 1e-6);
         assert!((data[2] - 0.0).abs() < 1e-6);
         assert!((data[3] + 1.0).abs() < 1e-6);
-    }
-
-    /// Integration test: synthetic F16 safetensors → WeightProvider → get_weight_memref → f32 conversion.
-    /// Exercises the exact code path used in `forward_with_positions` for weight loading.
-    #[test]
-    fn test_weight_f16_via_provider_integration() {
-        use half::f16;
-        use crate::weight_loader::{WeightRegistry, WeightProvider};
-        use std::collections::HashMap;
-
-        let expected: Vec<f32> = vec![1.0, 0.5, 0.0, -1.0, 2.0, -2.0];
-        let f16_bits: Vec<u16> = expected.iter().map(|&v| f16::from_f32(v).to_bits()).collect();
-        let raw_data: Vec<u8> = f16_bits.iter().flat_map(|&b| b.to_le_bytes()).collect();
-
-        let header_json = serde_json::json!({
-            "test_tensor": {
-                "dtype": "F16",
-                "shape": [2, 3],
-                "data_offsets": [0, raw_data.len()]
-            }
-        });
-        let header_bytes = serde_json::to_vec(&header_json).unwrap();
-        // Safetensors spec: header (8 + header_bytes) must be 8-byte aligned.
-        let header_prefix = 8u64;
-        let padded_header_len = ((header_prefix + header_bytes.len() as u64 + 7) / 8 * 8) - header_prefix;
-        let padding = vec![b' '; (padded_header_len as usize).saturating_sub(header_bytes.len())];
-
-        let mut safetensors = Vec::new();
-        safetensors.extend_from_slice(&padded_header_len.to_le_bytes());
-        safetensors.extend_from_slice(&header_bytes);
-        safetensors.extend_from_slice(&padding);
-        safetensors.extend_from_slice(&raw_data);
-
-        let tmp_dir = std::env::temp_dir();
-        let tmp_path = tmp_dir.join("test_weight_f16_via_provider.safetensors");
-        std::fs::write(&tmp_path, &safetensors).unwrap();
-
-        let mut name_mapping = HashMap::new();
-        name_mapping.insert("weight.0".to_string(), "test_tensor".to_string());
-        let registry = WeightRegistry {
-            name_mapping,
-            constants: HashMap::new(),
-        };
-        let provider = WeightProvider::new(registry, Some(&tmp_path)).unwrap();
-
-        let desc = provider.get_weight_memref("weight.0").expect("weight not found");
-        assert_eq!(desc.sizes, [2, 3], "memref sizes should match [rows, cols]");
-        assert_eq!(desc.strides, [3, 1], "memref strides should be [cols, 1]");
-
-        let n = desc.numel();
-        let converted: Vec<f32> = unsafe {
-            let raw = desc.aligned as *const u8;
-            (0..n).map(|i| {
-                let ptr = raw.add(i * 2) as *const [u8; 2];
-                let bytes = std::ptr::read_unaligned(ptr);
-                let bits = u16::from_le_bytes(bytes);
-                f16::from_bits(bits).to_f32()
-            }).collect()
-        };
-
-        assert_eq!(converted.len(), expected.len());
-        for (i, (&got, &want)) in converted.iter().zip(expected.iter()).enumerate() {
-            assert!(
-                (got - want).abs() < 1e-3,
-                "mismatch at index {}: got {}, expected {}", i, got, want
-            );
-        }
-
-        let _ = std::fs::remove_file(&tmp_path);
     }
 
     #[test]

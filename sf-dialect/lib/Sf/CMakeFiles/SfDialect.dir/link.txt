@@ -1,0 +1,2 @@
+/usr/bin/ar qc libSfDialect.a CMakeFiles/obj.SfDialect.dir/SfDialect.cpp.o CMakeFiles/obj.SfDialect.dir/SfOps.cpp.o CMakeFiles/obj.SfDialect.dir/SfLowerToLinalg.cpp.o
+/usr/bin/ranlib libSfDialect.a

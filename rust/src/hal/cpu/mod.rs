@@ -31,6 +31,7 @@ impl CpuDevice {
         Self { allocated: AtomicUsize::new(0) }
     }
 
+    #[allow(dead_code)]
     pub fn total_allocated(&self) -> usize {
         self.allocated.load(Ordering::Relaxed)
     }
@@ -69,6 +70,7 @@ impl traits::Device for CpuDevice {
 // ── CpuBuffer ─────────────────────────────────────────────────────────
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct CpuBuffer(RawCpuBuffer);
 
 impl traits::Buffer for CpuBuffer {
@@ -95,12 +97,15 @@ impl traits::Buffer for CpuBuffer {
 
 #[derive(Debug)]
 pub struct CpuExecutable {
+    #[allow(dead_code)]
     inner: RawCpuExecutable,
 }
 
 impl CpuExecutable {
+    #[allow(dead_code)]
     pub fn inner(&self) -> &RawCpuExecutable { &self.inner }
 
+    #[allow(dead_code)]
     pub fn lookup_typed(&self, name: &str, arity: usize) -> Result<kernel::KernelFn, anyhow::Error> {
         self.inner.lookup_typed(name, arity)
     }
@@ -116,20 +121,17 @@ impl traits::Executable for CpuExecutable {
 // ── CpuStream ─────────────────────────────────────────────────────────
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct CpuStream;
 
 impl traits::Stream for CpuStream {
     fn synchronize(&self) -> Result<(), anyhow::Error> { Ok(()) }
 }
 
-// ── Re-exports (backward compat, used by executor.rs, weight_loader.rs) ─
+// ── Re-exports (used by executor.rs, weight_loader.rs) ─
 
-pub use buffer::CpuBuffer as RawBuffer;
-pub use device::CpuDevice as RawDevice;
-pub use executable::CpuExecutable as RawExecutable;
 pub use executable::CpuExecutable as Executable;
-pub use kernel::{CifaceFn1, CifaceFn2, CifaceFn3, CifaceFn4, CifaceFn5, CifaceFn6, CifaceFn7, CifaceFn8, KernelFn};
-pub use memref::{MemRefDesc, MemRefDesc0, MemRefDesc1, MemRefDesc2, MemRefDesc3, MemRefDesc4, MemRefDescAny};
+pub use memref::{MemRefDesc2, MemRefDescAny};
 
 // ── Tests ─────────────────────────────────────────────────────────────
 

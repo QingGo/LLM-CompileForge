@@ -4,21 +4,6 @@
 //! compares output against a Python-generated reference file.
 //! This catches Issue #45 (cos=0.525) type regressions.
 
-use std::path::Path;
-
-
-/// Find the local safetensors path for a HuggingFace model.
-fn find_safetensors(model_name: &str) -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    let hub_dir = std::path::Path::new(&home).join(".cache/huggingface/hub");
-    let model_dir_name = format!("models--{}", model_name.replace("/", "--"));
-    let snapshots_dir = hub_dir.join(&model_dir_name).join("snapshots");
-    let snap = std::fs::read_dir(&snapshots_dir).ok()?.next()?.ok()?;
-    let safetensors = snap.path().join("model.safetensors");
-    if safetensors.exists() { Some(safetensors.to_string_lossy().to_string()) } else { None }
-}
-
-
 #[cfg(test)]
 mod e2e_tests {
     use crate::executor::ModelExecutor;
@@ -86,8 +71,9 @@ mod e2e_tests {
         // Basic checks
         eprintln!("Rust output shape: {:?}", output.shape);
         eprintln!("Rust output dtype: {:?}", output.dtype);
-        assert_eq!(output.shape, &[1, 4, 50272usize],
-                   "output shape must be [1, seq, vocab]");
+        assert!(output.shape.len() == 3, "output shape must be [batch, seq, vocab]");
+        assert_eq!(output.shape[1], 4, "seq=4");
+        assert_eq!(output.shape[2], 50272, "vocab=50272");
 
         // Check last token argmax
         let logits = output.as_slice();

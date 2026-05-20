@@ -23,6 +23,7 @@ impl ChatMessage {
         }
     }
 
+    #[allow(dead_code)]
     pub fn system(content: &str) -> Self {
         Self {
             role: "system".to_string(),
@@ -30,6 +31,7 @@ impl ChatMessage {
         }
     }
 
+    #[allow(dead_code)]
     pub fn assistant(content: &str) -> Self {
         Self {
             role: "assistant".to_string(),
@@ -152,6 +154,7 @@ impl Tokenizer {
         self.inner.get_vocab_size(true)
     }
 
+    #[allow(dead_code)]
     pub fn bos_token_id(&self) -> Option<u32> {
         self.inner
             .get_vocab(true)

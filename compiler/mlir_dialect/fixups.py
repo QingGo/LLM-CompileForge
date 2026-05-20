@@ -256,6 +256,38 @@ def _fixup_mlir_for_translate(mlir_text: str) -> str:
     return mlir_text
 
 
+def _fixup_arith_constant_scalar_tensor(mlir_text: str) -> str:
+    """Fix arith.constant ops with scalar value + tensor result type.
+
+    C++ lowering produces::
+
+        %r = "arith.constant"() <{value = 1.25 : f32}> : () -> tensor<1xf32>
+
+    But the correct form requires a dense attribute when the result type is
+    a tensor::
+
+        %r = "arith.constant"() <{value = dense<1.25> : tensor<1xf32>}> : () -> tensor<1xf32>
+
+    This fixup wraps the scalar value in ``dense<...>`` and changes the type
+    to match the result tensor type.
+    """
+    _const_fix_count = 0
+    _lines = mlir_text.split('\n')
+    for _i in range(len(_lines)):
+        _m = re.match(
+            r'^(\s*%\w+\s*=\s*"arith\.constant"\s*\(\)\s*<{value\s*=\s*)([\d.eE+-]+)(\s*:\s*f32\s*}>\s*:\s*\(\)\s*->\s*)(tensor<1xf32>)(\s*)$',
+            _lines[_i],
+        )
+        if _m:
+            _val = _m.group(2)
+            _lines[_i] = f'{_m.group(1)}dense<{_val}> : tensor<1xf32>}}> : () -> tensor<1xf32>{_m.group(5)}'
+            _const_fix_count += 1
+    if _const_fix_count:
+        mlir_text = '\n'.join(_lines)
+        print(f"   Fixed {_const_fix_count} arith.constant ops with scalar→tensor type mismatch")
+    return mlir_text
+
+
 def _fixup_vector_arith_constant(mlir_text: str) -> str:
     """Replace ``arith.constant dense<...> : vector<...>`` with
     ``arith.constant scalar + vector.broadcast`` pattern, and convert

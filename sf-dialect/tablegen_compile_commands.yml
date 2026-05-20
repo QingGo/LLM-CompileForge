@@ -1,0 +1,60 @@
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/python/mlir_sf/dialects/SfOps.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/python;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/python/mlir_sf/dialects/SfOps.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/python;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/SfOps.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/SfOps.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/SfOps.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/SfOps.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/SfOps.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/SfOps.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/SfOps.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/SfOps.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/SfOps.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/SfOps.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/SfOps.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/SfOps.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/SfOps.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/SfOps.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/SfOps.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/SfOps.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/SfPasses.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"
+--- !FileInfo:
+  filepath: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/SfPasses.td"
+  includes: "/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf;/Users/zeng/code/LLM-CompileForge/llvm-project/llvm/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/include;/Users/zeng/code/LLM-CompileForge/llvm-project/mlir/include;/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/include;/Users/zeng/code/LLM-CompileForge/sf-dialect/include;/Users/zeng/code/LLM-CompileForge/sf-dialect;/Users/zeng/code/LLM-CompileForge/sf-dialect/include"

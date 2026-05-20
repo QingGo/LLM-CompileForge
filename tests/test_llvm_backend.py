@@ -204,12 +204,12 @@ class TestQwenMain2FullPipeline:
         """Run sf→linalg→LLVM pipeline on Qwen main_2, return LLVM IR text."""
         from compiler.mlir_artifact import MlirModule, mlir_module_to_ir_module
         from compiler.mlir_dialect.llvm_backend import lower_linalg_to_llvm_ir, mlir_module_to_llvm_ir
-        from compiler.mlir_dialect.lowering import sf_to_linalg_pass_on_module
+        from compiler.pipeline import _apply_sf_to_linalg as sf_to_linalg_pass_on_module
         from compiler.serialize import load_artifact
 
         compiled_path = Path("compiled/qwen3_0.8b/model.mlir")
         if not compiled_path.is_file():
-            pytest.skip("Qwen model not compiled — run: python scripts/compile.py qwen --lowering")
+            pytest.skip("Qwen model not compiled — run: python scripts/compile.py qwen")
 
         mod = load_artifact(str(Path("compiled/qwen3_0.8b")))
         func = mod.functions[2]  # main_2: 500 compute ops, 0 weights
@@ -253,7 +253,7 @@ class TestQwenMain2FullPipeline:
 
         from compiler.mlir_artifact import MlirModule, mlir_module_to_ir_module
         from compiler.mlir_dialect.llvm_backend import compile_mlir_to_dylib, lower_linalg_to_llvm_ir
-        from compiler.mlir_dialect.lowering import sf_to_linalg_pass_on_module
+        from compiler.pipeline import _apply_sf_to_linalg as sf_to_linalg_pass_on_module
         from compiler.serialize import load_artifact
 
         compiled_path = Path("compiled/qwen3_0.8b/model.mlir")

@@ -6,10 +6,12 @@ use std::ptr::NonNull;
 use super::buffer::CpuBuffer;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct CpuDevice {
     allocated_bytes: usize,
 }
 
+#[allow(dead_code)]
 impl CpuDevice {
     pub fn new() -> Self {
         Self {

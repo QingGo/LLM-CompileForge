@@ -35,7 +35,8 @@ STEP_TIMEOUT: dict[str, int] = {
     "link": 30,
 }
 
-LLVM_BIN = os.environ.get("SERVE_FORGE_LLVM_BIN", "/Users/zeng/code/LLM-CompileForge/llvm-project/build/bin")
+LLVM_BIN = os.environ.get("SERVE_FORGE_LLVM_BIN",
+    str(Path(__file__).resolve().parent.parent / "llvm-project/build/bin"))
 
 
 def _step(
@@ -86,9 +87,10 @@ def time_pipeline(artifact_dir: str) -> None:
         sys.stderr.write(f"model.mlir not found at {mlir_path}\n")
         sys.exit(1)
 
+    _project_root = Path(__file__).resolve().parent.parent
     env = os.environ.copy()
     env.setdefault("DYLD_LIBRARY_PATH",
-        "/Users/zeng/code/LLM-CompileForge/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs")
+        str(_project_root / "llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs"))
     env["KMP_DUPLICATE_LIB_OK"] = "TRUE"
     if "CONDA_PREFIX" in env:
         del env["CONDA_PREFIX"]

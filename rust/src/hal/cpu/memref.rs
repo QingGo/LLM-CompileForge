@@ -39,6 +39,7 @@ pub type MemRefDesc2 = MemRefDesc<2>;
 pub type MemRefDesc3 = MemRefDesc<3>;
 pub type MemRefDesc4 = MemRefDesc<4>;
 
+#[allow(dead_code)]
 impl<const RANK: usize> MemRefDesc<RANK> {
     /// Build a descriptor from a ``&[f32]`` slice with given logical shape.
     pub fn from_f32_slice(data: &[f32], shape: [usize; RANK]) -> Self {
@@ -188,6 +189,7 @@ pub enum MemRefDescAny {
     R4(MemRefDesc4),
 }
 
+#[allow(dead_code)]
 impl MemRefDescAny {
     pub fn from_f32(shape: &[usize], data: &[f32]) -> Result<Self, anyhow::Error> {
         match shape.len() {

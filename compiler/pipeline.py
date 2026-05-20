@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +39,7 @@ def compile_mlir(
     cache_export: bool = False,
     apply_fusion: bool = True,
     cache_policy: Any | None = None,
-    apply_lowering: bool = False,
+    **kwargs,
 ) -> MlirModule:
     """Compile a PyTorch model through the MLIR-native pipeline.
 
@@ -66,6 +67,17 @@ def compile_mlir(
 
     _log = get_logger("compiler.pipeline")
     _t0 = time.perf_counter()
+
+    apply_lowering = kwargs.pop("apply_lowering", False)
+    if apply_lowering:
+        warnings.warn(
+            "apply_lowering=True is deprecated. Use 'python scripts/compile_dylib.py <dir>"
+            " --model-name <name>' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if kwargs:
+        raise TypeError(f"Unexpected keyword arguments: {kwargs}")
 
     args = example_args or ()
     kwargs = example_kwargs or {}
@@ -165,7 +177,7 @@ def compile_mlir(
 
 
 def _apply_mlir_passes(
-    mlir_text: str, orig_mlir_mod: Any = None, apply_lowering: bool = False,
+    mlir_text: str, orig_mlir_mod: Any = None, **kwargs,
 ) -> tuple[str, str | None]:
     """Apply MLIR optimization passes.
 
@@ -173,13 +185,27 @@ def _apply_mlir_passes(
     Phase 2: fusion (fuse_silu, fuse_rms_norm)
     Phase 3: sf→linalg lowering (via C++ DialectConversion pass)
 
+    Args:
+        apply_lowering (deprecated): If True, run sf→linalg lowering.
+
     Returns:
         (optimized_sf_text, lowered_linalg_text_or_None).
         optimized_sf_text is always sf-dialect (suitable for MlirModule re-parse).
         lowered_linalg_text is the mixed-dialect output of sf-to-linalg pass.
     """
     import logging
+
     _log = logging.getLogger("compiler.pipeline")
+
+    apply_lowering = kwargs.pop("apply_lowering", False)
+    if apply_lowering:
+        warnings.warn(
+            "apply_lowering=True is deprecated. Use compile_dylib.py instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if kwargs:
+        raise TypeError(f"Unexpected keyword arguments in _apply_mlir_passes: {kwargs}")
 
     from compiler.mlir_passes.fusion import _has_bindings, fuse_rms_norm_pass, fuse_silu_pass
 
@@ -271,6 +297,13 @@ def _post_lowering_canonicalize(mlir_text: str) -> str:
                 mlir_text = str(module)
         except Exception as e:
             _log.warning("post-lowering canonicalize failed, continuing: %s", e)
+
+    # Fix arith.constant ops with scalar value + tensor result type
+    try:
+        from compiler.mlir_dialect.fixups import _fixup_arith_constant_scalar_tensor
+        mlir_text = _fixup_arith_constant_scalar_tensor(mlir_text)
+    except Exception as e:
+        _log.warning("arith.constant scalar→tensor fixup failed, continuing: %s", e)
 
     return mlir_text
 

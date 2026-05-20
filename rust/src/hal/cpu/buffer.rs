@@ -4,6 +4,7 @@ use std::alloc::{self, Layout};
 use std::ptr::NonNull;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct CpuBuffer {
     ptr: NonNull<u8>,
     size: usize,
@@ -11,6 +12,7 @@ pub struct CpuBuffer {
     initialized: bool,
 }
 
+#[allow(dead_code)]
 impl CpuBuffer {
     pub fn empty() -> Self {
         Self {

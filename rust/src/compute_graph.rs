@@ -6,7 +6,6 @@
 //! functions.
 
 use crate::sfcf;
-use crate::tensor::Dtype;
 
 // ── Input binding ──────────────────────────────────────────────────
 
@@ -26,6 +25,7 @@ pub struct IOTensorDef {
 }
 
 impl IOTensorDef {
+    #[allow(dead_code)]
     pub fn numel(&self) -> usize {
         self.shape.iter().filter(|&&d| d > 0).product::<u64>() as usize
     }
@@ -38,6 +38,7 @@ pub struct FuncDef {
     pub index: usize,
     pub symbol: String,
     pub num_inputs: usize,
+    #[allow(dead_code)]
     pub num_outputs: usize,
     pub inputs: Vec<(InputBinding, IOTensorDef)>,
     pub outputs: Vec<IOTensorDef>,
@@ -56,6 +57,7 @@ impl FuncDef {
 #[derive(Debug, Clone)]
 pub struct ComputeGraph {
     pub functions: Vec<FuncDef>,
+    #[allow(dead_code)]
     pub global_input: (usize, usize),
     pub global_output: (usize, usize),
 }

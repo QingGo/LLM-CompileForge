@@ -1,0 +1,13 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/zeng/code/LLM-CompileForge/sf-dialect/cmake_install.cmake",
+		"/Users/zeng/code/LLM-CompileForge/sf-dialect/python/cmake_install.cmake",
+		"/Users/zeng/code/LLM-CompileForge/sf-dialect/include/cmake_install.cmake",
+		"/Users/zeng/code/LLM-CompileForge/sf-dialect/include/Sf/cmake_install.cmake",
+		"/Users/zeng/code/LLM-CompileForge/sf-dialect/lib/cmake_install.cmake",
+		"/Users/zeng/code/LLM-CompileForge/sf-dialect/lib/Sf/cmake_install.cmake",
+		"/Users/zeng/code/LLM-CompileForge/sf-dialect/lib/CAPI/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

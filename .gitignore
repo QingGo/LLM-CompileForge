@@ -18,4 +18,8 @@ sf-dialect/build/
 .opencode/
 outputs/
 logs/
-sf-dialect/python/mlir_sf/_mlir_libs/_sfDialectsNanobind.cpython-310-darwin.so
+*.so
+*.o
+.omo/
+*.dylib
+*.bin

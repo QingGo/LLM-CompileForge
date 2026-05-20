@@ -99,8 +99,10 @@ impl BlockManager {
         }
         let mut allocated = Vec::with_capacity(needed);
         for _ in 0..needed {
-            let bid = self.free_blocks.pop().unwrap();
-            self.blocks.get_mut(&bid).unwrap().ref_count += 1;
+            let bid = self.free_blocks.pop()
+                .expect("invariant: enough free blocks checked above");
+            self.blocks.get_mut(&bid)
+                .expect("invariant: bid from free_blocks is valid").ref_count += 1;
             allocated.push(bid);
         }
         self.block_tables.insert(request_id.to_string(), allocated.clone());
@@ -115,19 +117,21 @@ impl BlockManager {
             None => return,
         };
         for bid in &table {
-            let block = self.blocks.get_mut(bid).unwrap();
-            block.ref_count = block.ref_count.saturating_sub(1);
-            if let Some(owners) = self.shared_owners.get_mut(bid) {
-                owners.retain(|o| o != request_id);
-            }
-            if block.ref_count == 0 {
-                self.free_blocks.push(*bid);
-                self.shared_owners.remove(bid);
+            if let Some(block) = self.blocks.get_mut(bid) {
+                block.ref_count = block.ref_count.saturating_sub(1);
+                if let Some(owners) = self.shared_owners.get_mut(bid) {
+                    owners.retain(|o| o != request_id);
+                }
+                if block.ref_count == 0 {
+                    self.free_blocks.push(*bid);
+                    self.shared_owners.remove(bid);
+                }
             }
         }
     }
 
     /// Release a single physical block (used by RadixCache eviction).
+    #[allow(dead_code)]
     pub fn free_block(&mut self, block_id: usize) {
         let block = match self.blocks.get_mut(&block_id) {
             Some(b) => b,
@@ -188,8 +192,10 @@ impl BlockManager {
             .entry(request_id.to_string())
             .or_default();
         for _ in 0..n_extra {
-            let bid = self.free_blocks.pop().unwrap();
-            self.blocks.get_mut(&bid).unwrap().ref_count += 1;
+            let bid = self.free_blocks.pop()
+                .expect("invariant: enough free blocks checked above");
+            self.blocks.get_mut(&bid)
+                .expect("invariant: bid from free_blocks is valid").ref_count += 1;
             table.push(bid);
         }
         Ok(())
@@ -198,6 +204,7 @@ impl BlockManager {
     // ── Prefix Cache via Block Sharing ──────────────────────
 
     /// Share prefix KV cache blocks between two requests.
+    #[allow(dead_code)]
     pub fn share_prefix(
         &mut self,
         src_request_id: &str,
@@ -220,7 +227,8 @@ impl BlockManager {
         }
         let shared = &src_blocks[..n_blocks];
         for bid in shared {
-            self.blocks.get_mut(bid).unwrap().ref_count += 1;
+            self.blocks.get_mut(bid)
+                .ok_or_else(|| format!("block {} not found in share_prefix", bid))?.ref_count += 1;
             self.shared_owners
                 .entry(*bid)
                 .or_default()
@@ -240,10 +248,12 @@ impl BlockManager {
             .ok_or_else(|| format!("Unknown request_id: {}", request_id))
     }
 
+    #[allow(dead_code)]
     pub fn num_free_blocks(&self) -> usize {
         self.free_blocks.len()
     }
 
+    #[allow(dead_code)]
     pub fn num_allocated_blocks(&self) -> usize {
         self.num_blocks - self.free_blocks.len()
     }
@@ -255,6 +265,7 @@ impl BlockManager {
         }
     }
 
+    #[allow(dead_code)]
     pub fn utilization(&self) -> f64 {
         if self.num_blocks == 0 {
             return 0.0;

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from compiler.mlir_dialect.lowering import sf_to_linalg_pass
+from compiler.pipeline import _apply_sf_to_linalg as sf_to_linalg_pass
 
 
 def _check_op_count(text: str, op_name: str, min_count: int = 1) -> None:
@@ -225,7 +225,6 @@ class TestLoweringMiscOps:
     def test_zeros_lowered(self):
         pass
 
-    @pytest.mark.xfail(reason="sf.ones_like may fail — C++ pass handles it, need to check (tracking: C++-gap-12)")
     def test_ones_like_lowered(self):
         pass
 
@@ -347,7 +346,7 @@ class TestLoweringProducesValidLinalg:
         import mlir.ir as ir
         import mlir.passmanager as pm
 
-        from compiler.mlir_dialect.lowering import sf_to_linalg_pass_on_module
+        from compiler.pipeline import _apply_sf_to_linalg as sf_to_linalg_pass_on_module
 
         ctx = ir.Context()
         ctx.allow_unregistered_dialects = True

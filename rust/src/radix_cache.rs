@@ -160,7 +160,8 @@ impl RadixCache {
                         remaining = &remaining[common..];
                         node_ptr = {
                             let parent = unsafe { &mut *node_ptr };
-                            parent.children.get_mut(&first).unwrap() as *mut RadixTreeNode
+                            parent.children.get_mut(&first)
+                                .expect("invariant: just inserted child node above") as *mut RadixTreeNode
                         };
                     } else {
                         block_offset += child_node.kv_blocks.len();
@@ -176,6 +177,7 @@ impl RadixCache {
     /// Evict subtrees whose ref_count is zero, freeing blocks via `bm.free_block`.
     ///
     /// Returns the number of blocks actually freed.
+    #[allow(dead_code)]
     pub fn evict(&mut self, target_blocks: usize, bm: &mut BlockManager) -> usize {
         let mut freed: usize = 0;
         if target_blocks == 0 {
@@ -195,11 +197,13 @@ impl RadixCache {
     }
 
     /// Returns total number of cached blocks across all nodes.
+    #[allow(dead_code)]
     pub fn cached_blocks(&self) -> usize {
         count_blocks(&self.root)
     }
 
     /// Returns total number of nodes in the tree.
+    #[allow(dead_code)]
     pub fn node_count(&self) -> usize {
         count_nodes(&self.root)
     }
@@ -236,6 +240,7 @@ fn add_node(
     parent.children.insert(first, node);
 }
 
+#[allow(dead_code)]
 fn dfs_evict_child(
     parent: &mut RadixTreeNode,
     first_token: u32,
@@ -282,6 +287,7 @@ fn dfs_evict_child(
     parent.children.remove(&first_token);
 }
 
+#[allow(dead_code)]
 fn count_blocks(node: &RadixTreeNode) -> usize {
     let mut total = node.kv_blocks.len();
     for child in node.children.values() {
@@ -290,6 +296,7 @@ fn count_blocks(node: &RadixTreeNode) -> usize {
     total
 }
 
+#[allow(dead_code)]
 fn count_nodes(node: &RadixTreeNode) -> usize {
     let mut total = 1;
     for child in node.children.values() {

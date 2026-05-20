@@ -382,6 +382,7 @@ def main() -> None:
                         cos = _cosine_similarity(r_cmp, e_cmp)
                         max_diff = _max_abs_diff(r_cmp, e_cmp)
                     except Exception:
+                        print("  WARNING: cosine similarity calculation failed, skipping")
                         skipped += 1
                         continue
                     checked += 1

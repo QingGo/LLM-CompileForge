@@ -59,6 +59,21 @@ pub enum KernelFn {
 }
 
 impl KernelFn {
+    pub fn as_raw_ptr(&self) -> *const () {
+        match self {
+            KernelFn::Arity1(f) => *f as *const (),
+            KernelFn::Arity2(f) => *f as *const (),
+            KernelFn::Arity3(f) => *f as *const (),
+            KernelFn::Arity4(f) => *f as *const (),
+            KernelFn::Arity5(f) => *f as *const (),
+            KernelFn::Arity6(f) => *f as *const (),
+            KernelFn::Arity7(f) => *f as *const (),
+            KernelFn::Arity8(f) => *f as *const (),
+            KernelFn::HighArity(f) => f.0 as *const (),
+        }
+    }
+
+    #[allow(dead_code)]
     pub fn arity(&self) -> usize {
         match self {
             KernelFn::Arity1(_) => 1,
@@ -74,6 +89,7 @@ impl KernelFn {
     }
 
     /// Call with sret convention: first arg is sret buffer, rest are inputs.
+    #[allow(dead_code)]
     pub unsafe fn call_high_arity_raw(
         &self,
         fn_ptr: unsafe extern "C" fn(),
@@ -83,6 +99,7 @@ impl KernelFn {
         crate::ciface_high::call_high_arity(ptr, args);
     }
 
+    #[allow(dead_code)]
     pub unsafe fn call(
         &self,
         outputs: &[*mut c_void],

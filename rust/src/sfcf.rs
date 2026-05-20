@@ -17,7 +17,7 @@ pub fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32, anyhow::Error> {
     if *pos + 4 > data.len() {
         anyhow::bail!("truncated at pos {} (need u32)", pos);
     }
-    let val = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap());
+    let val = u32::from_le_bytes(data[*pos..*pos + 4].try_into()?);
     *pos += 4;
     Ok(val)
 }
@@ -26,7 +26,7 @@ pub fn read_u64(data: &[u8], pos: &mut usize) -> Result<u64, anyhow::Error> {
     if *pos + 8 > data.len() {
         anyhow::bail!("truncated at pos {} (need u64)", pos);
     }
-    let val = u64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
+    let val = u64::from_le_bytes(data[*pos..*pos + 8].try_into()?);
     *pos += 8;
     Ok(val)
 }

@@ -32,23 +32,22 @@ static Value makeEmpty(OpBuilder &b, Location loc, Type t, ValueRange inputs) {
   if (!shaped) return Value();
   SmallVector<Value> dynSizes;
   SmallVector<bool> filled(shaped.getRank(), false);
-  if (!inputs.empty()) {
-    auto idxType = b.getIndexType();
-    for (auto input : inputs) {
-      if (auto inType = dyn_cast<RankedTensorType>(input.getType())) {
-        for (int64_t i = 0; i < std::min((int64_t)shaped.getRank(), inType.getRank()); ++i) {
-          if (shaped.isDynamicDim(i) && inType.isDynamicDim(i) && !filled[i]) {
-            dynSizes.push_back(b.create<tensor::DimOp>(loc, input,
-                b.create<arith::ConstantOp>(loc, idxType, b.getIndexAttr(i))));
-            filled[i] = true;
-          }
+  auto idxType = b.getIndexType();
+  for (auto input : inputs) {
+    if (auto inType = dyn_cast<RankedTensorType>(input.getType())) {
+      for (int64_t i = 0; i < std::min((int64_t)shaped.getRank(), inType.getRank()); ++i) {
+        if (shaped.isDynamicDim(i) && inType.isDynamicDim(i) && !filled[i]) {
+          dynSizes.push_back(b.create<tensor::DimOp>(loc, input,
+              b.create<arith::ConstantOp>(loc, idxType, b.getIndexAttr(i))));
+          filled[i] = true;
         }
       }
     }
-    for (int64_t i = 0; i < (int64_t)shaped.getRank(); ++i)
-      if (shaped.isDynamicDim(i) && !filled[i])
-        dynSizes.push_back(b.create<arith::ConstantIndexOp>(loc, 0));
   }
+  // Fill remaining dynamic dims with 0 (will be replaced by proper dim ops later)
+  for (int64_t i = 0; i < (int64_t)shaped.getRank(); ++i)
+    if (shaped.isDynamicDim(i) && !filled[i])
+      dynSizes.push_back(b.create<arith::ConstantIndexOp>(loc, 1));
   return b.create<tensor::EmptyOp>(loc, shaped, dynSizes);
 }
 
@@ -983,7 +982,12 @@ struct SfScaledDotProductAttentionOpLowering
     int64_t rank = qType.getRank();
   int64_t dk = qType.getDimSize(rank - 1);
   if (dk < 0) return failure();
-  float scaleVal = 1.0f / std::sqrt(static_cast<float>(dk));
+  // Use explicit scale attribute if present; otherwise default to 1/sqrt(d_k)
+  float scaleVal = 1.0f;
+  if (auto scaleAttr = op->getAttrOfType<mlir::FloatAttr>("scale"))
+    scaleVal = scaleAttr.getValueAsDouble();
+  else
+    scaleVal = 1.0f / std::sqrt(static_cast<float>(dk));
   auto ctx = rewriter.getContext();
 
   // Phase 1: tiled online softmax decision

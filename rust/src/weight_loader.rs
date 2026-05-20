@@ -27,12 +27,14 @@ pub struct WeightRegistry {
 
 #[derive(Debug, Clone)]
 pub struct ConstantTensor {
+    #[allow(dead_code)]
     pub dtype: Dtype,
     pub shape: Vec<usize>,
     pub data: Vec<u8>,
 }
 
 impl ConstantTensor {
+    #[allow(dead_code)]
     pub fn numel(&self) -> usize {
         self.shape.iter().product()
     }
@@ -51,7 +53,7 @@ pub fn parse_embedded(data: &[u8]) -> Result<(WeightRegistry, usize), anyhow::Er
             "bad magic: {:?}", &data[0..4],
         )).into());
     }
-    let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    let version = u32::from_le_bytes(data[4..8].try_into()?);
     if version != 2 {
         return Err(ExecutorError::SfcfParse(format!(
             "unsupported binary version: {} (expected 2)", version,
@@ -117,6 +119,7 @@ pub fn parse_embedded(data: &[u8]) -> Result<(WeightRegistry, usize), anyhow::Er
 
 // ── Dylib loading ─────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub fn load_registry_from_dylib(
     lib: &libloading::Library,
 ) -> Result<(WeightRegistry, usize), anyhow::Error> {
@@ -191,6 +194,7 @@ impl WeightProvider {
         })
     }
 
+    #[allow(dead_code)]
     pub fn has_safetensors(&self) -> bool {
         self.safetensors_mmap.is_some()
     }

@@ -30,6 +30,7 @@ impl Default for SamplerConfig {
 }
 
 impl SamplerConfig {
+    #[allow(dead_code)]
     pub fn greedy() -> Self {
         Self {
             temperature: 0.0,
@@ -168,7 +169,7 @@ fn apply_top_p(logits: &mut [f32], p: f32) {
 
     let mut cumsum = 0.0f32;
     let mut cutoff = 0usize;
-    for (i, (&(val, _), &e)) in indexed.iter().zip(exps.iter()).enumerate() {
+    for (i, (&(_val, _), &e)) in indexed.iter().zip(exps.iter()).enumerate() {
         cumsum += e / exp_sum;
         cutoff = i;
         if cumsum >= p {

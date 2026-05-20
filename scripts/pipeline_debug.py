@@ -49,7 +49,7 @@ def run_pipeline():
         _mlirRegisterEverything.register_dialects(reg)
         ctx.append_dialect_registry(reg)
     except Exception:
-        pass
+        print("  WARNING: MLIR registry registration failed, continuing with default dialects")
 
     def stage_steps(pipeline_str, in_path, label, is_optional=False):
         """Run pass pipeline on file in_path, write result to label.mlir.
@@ -119,7 +119,8 @@ def run_pipeline():
             try:
                 pm.PassManager.parse(
                     "builtin.module(transform-interpreter)", ctx).run(c.operation)
-            except Exception:
+            except Exception as e:
+                print(f"  WARNING: transform-interpreter failed for a matmul function: {e}")
                 continue
             for op in list(c.operation.regions[0].blocks[0]):
                 name = str(op.operation.name)

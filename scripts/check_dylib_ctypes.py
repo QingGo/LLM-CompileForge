@@ -196,7 +196,7 @@ def main():
                 symbols.append(line.strip())
                 print(f"  {line.strip()}")
     except Exception:
-        pass
+        print("  WARNING: nm symbol listing failed for " + dylib_path)
 
     # Check if we can find and read constants data
     nm_result = subprocess.run(["nm", "-g", dylib_path],

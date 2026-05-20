@@ -22,11 +22,13 @@ use std::fmt::Debug;
 pub trait Device: Debug + Send + Sync {
     /// Allocate `size` bytes on the device.
     /// Returns uninitialized memory.
+    #[allow(dead_code)]
     fn alloc(&self, size: usize) -> Result<Box<dyn Buffer>, anyhow::Error>;
 
     /// Create an asynchronous execution stream.
     /// Operations on the same Stream execute in FIFO order.
     /// Operations on different Streams may execute in parallel.
+    #[allow(dead_code)]
     fn create_stream(&self) -> Result<Box<dyn Stream>, anyhow::Error>;
 
     /// Compile a serialized compute module into an executable.
@@ -36,10 +38,12 @@ pub trait Device: Debug + Send + Sync {
     fn compile(&self, module_data: &[u8]) -> Result<Box<dyn Executable>, anyhow::Error>;
 
     /// Human-readable device name (for logging and debugging).
+    #[allow(dead_code)]
     fn name(&self) -> &str;
 }
 
 /// Device memory buffer.
+#[allow(dead_code)]
 pub trait Buffer: Debug + Send + Sync {
     /// Read-only pointer to buffer data.
     /// For GPU buffers this returns a device pointer (not directly host-accessible).
@@ -70,6 +74,7 @@ pub trait Executable: Debug + Send + Sync {
     /// Execute the compiled module with given inputs and outputs.
     /// `stream` provides execution ordering (no-op for CPU).
     /// `inputs` and `outputs` are Buffer reference arrays.
+    #[allow(dead_code)]
     fn execute(
         &self,
         stream: &dyn Stream,
@@ -78,10 +83,12 @@ pub trait Executable: Debug + Send + Sync {
     ) -> Result<(), anyhow::Error>;
 
     /// Number of functions / entry points in this module.
+    #[allow(dead_code)]
     fn entry_count(&self) -> usize;
 }
 
 /// Asynchronous execution stream.
+#[allow(dead_code)]
 pub trait Stream: Debug + Send + Sync {
     /// Wait for all operations on this stream to complete.
     /// CPU implementation is a no-op.

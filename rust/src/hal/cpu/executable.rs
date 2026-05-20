@@ -29,6 +29,7 @@ impl CpuExecutable {
     }
 
     /// Look up a raw symbol by name (for sret-based ciface calls).
+    #[allow(dead_code)]
     pub fn lookup_symbol(
         &self,
         name: &str,
