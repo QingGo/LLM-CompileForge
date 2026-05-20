@@ -17,6 +17,10 @@ path = "src/main.rs"
 name = "forward_check"
 path = "src/bin/forward_check.rs"
 
+[[bin]]
+name = "dump_weights"
+path = "src/bin/dump_weights.rs"
+
 [features]
 default = ["cli"]
 cli = ["clap", "tokenizers", "rand", "minijinja"]
