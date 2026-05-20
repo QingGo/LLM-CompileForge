@@ -45,8 +45,7 @@ def _lower(sf_text: str) -> str:
 def _check_lowered(lowered: str, expected: str = "linalg.", not_expected: str = "sf.") -> None:
     """Verify lowered output contains expected and lacks not_expected."""
     if not_expected and not_expected in lowered:
-        # Also accept lowering that failed gracefully (returns original text)
-        return
+        assert False, f"Lowered IR still contains '{not_expected}'. First 500 chars: {lowered[:500]}"
     if expected and expected not in lowered:
         # Some ops lower to tensor.dialect ops, not linalg
         if "tensor." in lowered or "arith." in lowered:
@@ -96,6 +95,7 @@ def test_activation_op(op):
 
 # ── Matmul / Linear ──────────────────────────────────────────
 
+@pytest.mark.unit
 def test_matmul():
     lowered = _lower("""module {
   func.func @test(%a: tensor<4x4xf32>, %b: tensor<4x4xf32>) -> tensor<4x4xf32> {
@@ -106,6 +106,7 @@ def test_matmul():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_linear():
     lowered = _lower("""module {
   func.func @test(%a: tensor<2x64xf32>, %w: tensor<128x64xf32>) -> tensor<2x128xf32> {
@@ -118,6 +119,7 @@ def test_linear():
 
 # ── Shape ops ────────────────────────────────────────────────
 
+@pytest.mark.unit
 def test_sym_size_scalar():
     """sf.sym_size must produce tensor<f32> (scalar), not copy input type."""
     lowered = _lower("""module {
@@ -129,6 +131,7 @@ def test_sym_size_scalar():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_view():
     lowered = _lower("""module {
   func.func @test(%a: tensor<2x4xf32>) -> tensor<8xf32> {
@@ -139,6 +142,7 @@ def test_view():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_transpose():
     lowered = _lower("""module {
   func.func @test(%a: tensor<2x4xf32>) -> tensor<4x2xf32> {
@@ -149,6 +153,7 @@ def test_transpose():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_unsqueeze():
     lowered = _lower("""module {
   func.func @test(%a: tensor<2x4xf32>) -> tensor<1x2x4xf32> {
@@ -159,6 +164,7 @@ def test_unsqueeze():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_slice():
     """sf.slice with static end (basic case)."""
     lowered = _lower("""module {
@@ -170,6 +176,7 @@ def test_slice():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_slice_int64_max():
     """sf.slice with INT64_MAX end (PyTorch 'until end' sentinel)."""
     lowered = _lower("""module {
@@ -182,6 +189,7 @@ def test_slice_int64_max():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_slice_dynamic_input():
     """sf.slice with dynamic input dim (must not copy kDynamic as static size)."""
     lowered = _lower("""module {
@@ -195,6 +203,7 @@ def test_slice_dynamic_input():
 
 # ── Comparison ops ───────────────────────────────────────────
 
+@pytest.mark.unit
 def test_le():
     lowered = _lower("""module {
   func.func @test(%a: tensor<2x4xf32>, %b: tensor<2x4xf32>) -> tensor<2x4xf32> {
@@ -205,6 +214,7 @@ def test_le():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_logical_and():
     lowered = _lower("""module {
   func.func @test(%a: tensor<2x4xf32>, %b: tensor<2x4xf32>) -> tensor<2x4xf32> {
@@ -217,6 +227,7 @@ def test_logical_and():
 
 # ── Phase 0: broadcast comparison/logic ops ────────────────────
 
+@pytest.mark.unit
 def test_le_broadcast():
     """sf.le with different-rank operands (scalar vs tensor)."""
     lowered = _lower("""module {
@@ -228,6 +239,7 @@ def test_le_broadcast():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_logical_and_broadcast():
     """sf.logical_and with different-rank operands (scalar vs tensor)."""
     lowered = _lower("""module {
@@ -241,6 +253,7 @@ def test_logical_and_broadcast():
 
 # ── Norm ops ─────────────────────────────────────────────────
 
+@pytest.mark.unit
 def test_layer_norm():
     lowered = _lower("""module {
   func.func @test(%a: tensor<2x4xf32>, %w: tensor<4xf32>, %b: tensor<4xf32>) -> tensor<2x4xf32> {
@@ -251,6 +264,7 @@ def test_layer_norm():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_rms_norm():
     lowered = _lower("""module {
   func.func @test(%a: tensor<2x4xf32>, %w: tensor<4xf32>) -> tensor<2x4xf32> {
@@ -263,6 +277,7 @@ def test_rms_norm():
 
 # ── Complex ops ──────────────────────────────────────────────
 
+@pytest.mark.unit
 def test_embedding_static():
     """Embedding with static indices must lower to linalg.generic."""
     lowered = _lower("""module {
@@ -274,11 +289,13 @@ def test_embedding_static():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_arange_static():
     """arange with static length — pre-existing crash, skip."""
     pytest.skip("arange pattern crashes on static output (pre-existing bug)")
 
 
+@pytest.mark.unit
 def test_ones_like():
     lowered = _lower("""module {
   func.func @test(%a: tensor<2x4xf32>) -> tensor<2x4xf32> {
@@ -291,6 +308,8 @@ def test_ones_like():
 
 # ── Edge cases ───────────────────────────────────────────────
 
+@pytest.mark.unit
+@pytest.mark.xfail(reason="known pass-through: lowering leaves sf. ops")
 def test_binary_broadcast():
     """Binary ops with different-rank operands (tensor<Nxf32> + tensor<f32>)."""
     lowered = _lower("""module {
@@ -307,6 +326,7 @@ def test_binary_broadcast():
 
 # ── Phase 2: dynamic dim regression tests ─────────────────────
 
+@pytest.mark.unit
 def test_embedding_dynamic():
     """sf.embedding with dynamic batch dim (TOSA gather pattern)."""
     lowered = _lower("""module {
@@ -318,6 +338,7 @@ def test_embedding_dynamic():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_ones_like_dynamic():
     """sf.ones_like with dynamic input shape."""
     lowered = _lower("""module {
@@ -329,6 +350,8 @@ def test_ones_like_dynamic():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
+@pytest.mark.xfail(reason="known pass-through: lowering leaves sf. ops")
 def test_new_ones_dynamic():
     """sf.new_ones with dynamic shape (accept pass-through for dynamic dim)."""
     lowered = _lower("""module {
@@ -343,6 +366,7 @@ def test_new_ones_dynamic():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_layer_norm_dynamic():
     """sf.layer_norm with dynamic batch dim."""
     lowered = _lower("""module {
@@ -354,6 +378,7 @@ def test_layer_norm_dynamic():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_rms_norm_dynamic():
     """sf.rms_norm with dynamic batch dim."""
     lowered = _lower("""module {
@@ -365,6 +390,8 @@ def test_rms_norm_dynamic():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
+@pytest.mark.xfail(reason="known pass-through: lowering leaves sf. ops")
 def test_matmul_dynamic():
     """sf.matmul with dynamic batch dim (3D — accept pass-through)."""
     lowered = _lower("""module {
@@ -379,6 +406,7 @@ def test_matmul_dynamic():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_linear_dynamic():
     """sf.linear with dynamic batch dim (2D input)."""
     lowered = _lower("""module {
@@ -390,6 +418,8 @@ def test_linear_dynamic():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
+@pytest.mark.xfail(reason="known pass-through: lowering leaves sf. ops")
 def test_view_dynamic():
     """sf.view with dynamic input shape."""
     lowered = _lower("""module {
@@ -401,6 +431,7 @@ def test_view_dynamic():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_sdpa_dynamic():
     """sf.scaled_dot_product_attention with dynamic seq len."""
     lowered = _lower("""module {
@@ -414,6 +445,7 @@ def test_sdpa_dynamic():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_cumsum_dynamic():
     """sf.cumsum with dynamic batch dim."""
     lowered = _lower("""module {
@@ -427,6 +459,7 @@ def test_cumsum_dynamic():
 
 # ── Phase 3/4: edge case tests ────────────────────────────────
 
+@pytest.mark.unit
 def test_arange_scalar():
     """sf.arange with scalar output (edge case: not meaningful, should not crash)."""
     lowered = _lower("""module {
@@ -438,6 +471,7 @@ def test_arange_scalar():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_cumsum_scalar():
     """sf.cumsum with scalar input (dim out of range → identity copy)."""
     lowered = _lower("""module {
@@ -449,6 +483,7 @@ def test_cumsum_scalar():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_identity():
     """sf.identity is a no-op (replaced by its input)."""
     lowered = _lower("""module {
@@ -460,6 +495,7 @@ def test_identity():
     assert "sf." not in lowered, f"sf ops remain:\n{lowered}"
 
 
+@pytest.mark.unit
 def test_view_reshape():
     """sf.view changing tensor rank (uses tensor.reshape)."""
     lowered = _lower("""module {
@@ -473,6 +509,7 @@ def test_view_reshape():
 
 # ── Remaining fix tests ──────────────────────────────────────
 
+@pytest.mark.unit
 def test_unsqueeze_rank_change():
     """sf.unsqueeze adding a dimension (rank change)."""
     lowered = _lower("""module {
@@ -484,6 +521,7 @@ def test_unsqueeze_rank_change():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_expand():
     """sf.expand is a no-op (broadcast handled by downstream ops)."""
     lowered = _lower("""module {
@@ -495,6 +533,7 @@ def test_expand():
     assert "sf." not in lowered, f"sf ops remain:\n{lowered}"
 
 
+@pytest.mark.unit
 def test_le_i1():
     """sf.le producing i1 output (comparison for boolean mask)."""
     lowered = _lower("""module {
@@ -506,6 +545,7 @@ def test_le_i1():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_logical_and_i1():
     """sf.logical_and with i1 inputs producing i1 output (boolean chain)."""
     lowered = _lower("""module {
@@ -517,6 +557,7 @@ def test_logical_and_i1():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_index():
     """sf.index with index tensors of different rank than output."""
     lowered = _lower("""module {
@@ -528,6 +569,7 @@ def test_index():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_identity_type_cast():
     """sf.identity with type change (i1→f32) should insert uitofp."""
     lowered = _lower("""module {
@@ -540,6 +582,7 @@ def test_identity_type_cast():
     assert "arith.uitofp" in lowered
 
 
+@pytest.mark.unit
 def test_matmul_1d():
     """sf.matmul with 1D input and 2D weight (vector * matrix)."""
     lowered = _lower("""module {
@@ -551,6 +594,7 @@ def test_matmul_1d():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_linear_1d_input():
     """sf.linear with 1D input (promoted to 2D, matmulled, collapsed)."""
     lowered = _lower("""module {
@@ -562,6 +606,7 @@ def test_linear_1d_input():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_linear_batch_2d_result():
     """sf.linear with 3D input producing 2D output (lm_head style)."""
     lowered = _lower("""module {
@@ -574,6 +619,7 @@ def test_linear_batch_2d_result():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_add_squeeze_rank_mismatch():
     """sf.add with 1D rhs squeezed to scalar to match scalar output."""
     lowered = _lower("""module {
@@ -587,6 +633,7 @@ def test_add_squeeze_rank_mismatch():
 
 # ── Regression tests for this session's bugs ─────────────────────
 
+@pytest.mark.unit
 def test_binary_broadcast_3d_1d():
     """Regression: sf.add(3D, 1D) must produce 3D output (not 1D).
 
@@ -604,6 +651,8 @@ def test_binary_broadcast_3d_1d():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
+@pytest.mark.xfail(reason="known pass-through: lowering leaves sf. ops")
 def test_view_dyn_shape_infer():
     """Regression: sf.view with dyn_shape operands and -1 inference.
 
@@ -620,6 +669,7 @@ def test_view_dyn_shape_infer():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_transpose_permuted_dynamic():
     """Regression: sf.transpose with permuted dynamic dims.
 
@@ -637,6 +687,8 @@ def test_transpose_permuted_dynamic():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
+@pytest.mark.xfail(reason="known pass-through: lowering leaves sf. ops")
 def test_expand_broadcast():
     """Regression: sf.expand with shape attr and rank-increasing broadcast.
 
@@ -654,6 +706,7 @@ def test_expand_broadcast():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_binary_broadcast_dynamic_out():
     """Regression: binary op where outDim = kDynamic and rhs has size-1 dim.
 
@@ -672,6 +725,7 @@ def test_binary_broadcast_dynamic_out():
     _check_lowered(lowered)
 
 
+@pytest.mark.unit
 def test_compare_broadcast_3d_1d():
     """Regression: compare op (sf.le) with ranked broadcast like 3D+1D.
 
@@ -691,6 +745,7 @@ def test_compare_broadcast_3d_1d():
 # ── Session bugs: FP accuracy, lowering hang, type mismatches ───────
 
 
+@pytest.mark.unit
 def test_linear_3d_dynamic_batch():
     lowered = _lower('''module {
   func.func @test(%a: tensor<?x4x768xf32>, %w: tensor<768x768xf32>,
@@ -703,6 +758,8 @@ def test_linear_3d_dynamic_batch():
     assert "linalg.batch_matmul" in lowered
 
 
+@pytest.mark.unit
+@pytest.mark.xfail(reason="known pass-through: lowering leaves sf. ops")
 def test_ones_like_with_tensor_input():
     """Regression: sf.ones_like with 0 operands (aten.ones without tensor input).
 
@@ -723,6 +780,8 @@ def test_ones_like_with_tensor_input():
     # The important thing is the pipeline doesn't hang or crash
 
 
+@pytest.mark.unit
+@pytest.mark.xfail(reason="known pass-through: lowering leaves sf. ops")
 def test_cumsum_out_of_bounds_dim():
     lowered = _lower('''module {
   func.func @test(%a: tensor<1xf32>) -> tensor<1xf32> {
@@ -733,6 +792,7 @@ def test_cumsum_out_of_bounds_dim():
     assert lowered, "lowering should not crash"
 
 
+@pytest.mark.unit
 def test_layer_norm_with_dynamic_dim():
     lowered = _lower('''module {
   func.func @test(%a: tensor<?x768xf32>, %w: tensor<768xf32>,
@@ -745,6 +805,7 @@ def test_layer_norm_with_dynamic_dim():
     assert "linalg.generic" in lowered
 
 
+@pytest.mark.unit
 def test_batch_matmul_affine_maps():
     """Regression: batch_matmul must create correct affine maps.
 
@@ -769,6 +830,7 @@ def test_batch_matmul_affine_maps():
     assert "sf.matmul" not in lowered, "sf.matmul was not lowered"
 
 
+@pytest.mark.unit
 def test_batch_matmul_dynamic_dims():
     """batch_matmul with dynamic dims: no 0-size init tensors.
 
@@ -802,6 +864,7 @@ def test_batch_matmul_dynamic_dims():
             pytest.fail(f"Bufferization failed on batch_matmul with dynamic dims: {e}")
 
 
+@pytest.mark.unit
 def test_vector_contract_lowering_outerproduct():
     """Regression: vector.contract with outerproduct strategy must not hang on
     4D batch_matmul contracts with masks.

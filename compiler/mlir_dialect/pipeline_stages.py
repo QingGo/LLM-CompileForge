@@ -125,8 +125,8 @@ class Stage:
             error_msg = str(e).split("\n")[0] if "\n" in str(e) else str(e)
 
             if self.warn_only:
-                _log.info("  %6.2fs  %-40s skipped (%s)", elapsed,
-                          self.name, error_msg)
+                _log.warning("  %6.2fs  %-40s skipped (%s)", elapsed,
+                             self.name, error_msg, exc_info=True)
                 return StageResult(
                     success=False, elapsed=elapsed,
                     ir_lines=len(str(module).splitlines()),
@@ -192,9 +192,10 @@ def tile_matmuls_action(module: Any, tile_k: int = 64) -> None:
                 combined.operation
             )
         except Exception as e:
-            _log.debug("  tile_matmuls: func %s skipped (%s)",
-                       str(func.operation.name) if hasattr(func, "operation") else "?",
-                       str(e).split("\n")[0] if "\n" in str(e) else str(e))
+            _log.warning("  tile_matmuls: func %s skipped (%s)",
+                         str(func.operation.name) if hasattr(func, "operation") else "?",
+                         str(e).split("\n")[0] if "\n" in str(e) else str(e),
+                         exc_info=True)
             continue
 
         for op in list(combined.operation.regions[0].blocks[0]):
@@ -218,7 +219,7 @@ def _op_name(op):
     try:
         return op.operation.name
     except Exception as e:
-        _log.debug("  _op_name failed: %s", e)
+        _log.warning("  _op_name failed: %s", e, exc_info=True)
         return ""
 
 
@@ -229,7 +230,7 @@ def _def_op(value):
             _op_name(own)
             return own
     except Exception as e:
-        _log.debug("  _def_op failed: %s", e)
+        _log.warning("  _def_op failed: %s", e, exc_info=True)
     return None
 
 
@@ -311,10 +312,10 @@ def fuse_fma_action(module: Any) -> int:
                 try:
                     fmul_op.erase()
                 except Exception as e:
-                    _log.debug("  FMA: could not erase fmul (multi-use) — %s", e)
+                    _log.debug("  FMA: could not erase fmul (multi-use) — %s", e, exc_info=True)
                 n_fused += 1
             except Exception as e:
-                _log.debug("  FMA: fusion failed for a candidate — %s", e)
+                _log.debug("  FMA: fusion failed for a candidate — %s", e, exc_info=True)
 
     return n_fused
 

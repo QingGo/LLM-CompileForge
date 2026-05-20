@@ -9,10 +9,13 @@ Reference: design-phase2.md §2.1
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import torch
 import torch.nn as nn
+
+_log = logging.getLogger(__name__)
 
 
 def collect_activation_stats(

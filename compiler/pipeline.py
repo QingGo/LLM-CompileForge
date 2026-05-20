@@ -227,17 +227,17 @@ def _apply_mlir_passes(
                 pman.run(module.operation)
                 mlir_text = str(module)
         except Exception as e:
-            _log.warning("canonicalize pass failed, continuing with unoptimized IR: %s", e)
+            _log.warning("canonicalize pass failed, continuing with unoptimized IR: %s", e, exc_info=True)
 
     # Phase 2: fusion
     try:
         mlir_text = fuse_silu_pass(mlir_text)
     except Exception as e:
-        _log.warning("fuse_silu pass failed, continuing: %s", e)
+        _log.warning("fuse_silu pass failed, continuing: %s", e, exc_info=True)
     try:
         mlir_text = fuse_rms_norm_pass(mlir_text)
     except Exception as e:
-        _log.warning("fuse_rms_norm pass failed, continuing: %s", e)
+        _log.warning("fuse_rms_norm pass failed, continuing: %s", e, exc_info=True)
 
     # Phase 3: sf→linalg lowering (optional, after fusion, via C++ DialectConversion)
     lowered_text: str | None = None
@@ -296,14 +296,14 @@ def _post_lowering_canonicalize(mlir_text: str) -> str:
                 pman.run(module.operation)
                 mlir_text = str(module)
         except Exception as e:
-            _log.warning("post-lowering canonicalize failed, continuing: %s", e)
+            _log.warning("post-lowering canonicalize failed, continuing: %s", e, exc_info=True)
 
     # Fix arith.constant ops with scalar value + tensor result type
     try:
         from compiler.mlir_dialect.fixups import _fixup_arith_constant_scalar_tensor
         mlir_text = _fixup_arith_constant_scalar_tensor(mlir_text)
     except Exception as e:
-        _log.warning("arith.constant scalar→tensor fixup failed, continuing: %s", e)
+        _log.warning("arith.constant scalar→tensor fixup failed, continuing: %s", e, exc_info=True)
 
     return mlir_text
 

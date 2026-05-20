@@ -14,6 +14,7 @@ Reference: design-phase2.md §2.1.2; Lin et al., AWQ (2024)
 
 from __future__ import annotations
 
+import logging
 from typing import Any, cast
 
 import numpy as np
@@ -27,6 +28,8 @@ from compiler.quantize._utils import (
     set_layer_weight,
 )
 from kernels.quantize._utils import quantize_groupwise_int4
+
+_log = logging.getLogger(__name__)
 
 
 class AWQQuantizer:

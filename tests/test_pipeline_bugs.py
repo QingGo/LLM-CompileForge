@@ -54,7 +54,10 @@ try:
 except ImportError:
     pass
 
-pytestmark = pytest.mark.skipif(not _HAS_MLIR, reason="mlir-core not available")
+pytestmark = [
+    pytest.mark.skipif(not _HAS_MLIR, reason="mlir-core not available"),
+    pytest.mark.integration,
+]
 
 
 # ── Nested builtin.module flattening ───────────────────────────
@@ -62,6 +65,7 @@ pytestmark = pytest.mark.skipif(not _HAS_MLIR, reason="mlir-core not available")
 # one-shot-bufferize ignores nested modules → 0 memrefs → cf.br has tensors → crash.
 
 
+@pytest.mark.integration
 def test_vectorize_flattens_nested_module():
     """_vectorize_via_transform must flatten nested modules after clone-back."""
     import mlir.ir as ir
@@ -108,6 +112,7 @@ def test_vectorize_flattens_nested_module():
 # With 2 <= 0 → FAIL. Fix: use vector_sizes >= actual static dims.
 
 
+@pytest.mark.integration
 def test_exact_vector_sizes_work():
     """Exact vector_sizes matching static dims must not raise."""
     import mlir.ir as ir
@@ -152,6 +157,7 @@ func.func @test(%a: tensor<2x4x768xf32>, %b: tensor<2x768x768xf32>) -> tensor<2x
 # These carry tensor types that confuse one-shot-bufferize.
 
 
+@pytest.mark.integration
 def test_transform_ops_removed_after_vectorize():
     """_vectorize_via_transform must not leave transform.* ops in output."""
     import mlir.ir as ir
@@ -188,6 +194,7 @@ def test_transform_ops_removed_after_vectorize():
 # to handle vector.transfer_read/write tensor→memref conversion.
 
 
+@pytest.mark.integration
 def test_bufferize_produces_memrefs():
     """After bufferize, there must be memref< types and no tensor< types in output."""
     import mlir.ir as ir
@@ -240,6 +247,7 @@ def test_bufferize_produces_memrefs():
 # strategy caused the pass to hang for >10 min. `outerproduct` is fast.
 
 
+@pytest.mark.integration
 @pytest.mark.timeout(30)
 def test_contract_lowering_outerproduct_finishes():
     """convert-vector-to-llvm{vector-contract-lowering=outerproduct} must finish."""
@@ -304,6 +312,7 @@ def test_contract_lowering_outerproduct_finishes():
 # main_0's output is NOT the logits — main_1 is needed.
 
 
+@pytest.mark.integration
 def test_mlir_executor_multi_function():
     """MlirExecutor must chain multi-function models."""
     from compiler.serialize import load_artifact

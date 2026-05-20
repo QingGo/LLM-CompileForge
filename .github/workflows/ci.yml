@@ -45,9 +45,24 @@ jobs:
         continue-on-error: true
         run: make smoke
 
+      - name: Forward smoke test
+        continue-on-error: true
+        run: make test-forward-smoke
+
       - name: Upload coverage to Codecov
         if: success()
         uses: codecov/codecov-action@v5
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
+
+  rust-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run cargo test
+        continue-on-error: true
+        working-directory: rust
+        run: cargo test --lib

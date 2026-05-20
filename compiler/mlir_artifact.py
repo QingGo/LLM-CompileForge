@@ -15,6 +15,7 @@ parsed by `mlir.parse_string()` (pymlir) for downstream processing.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import struct
 from pathlib import Path
@@ -30,8 +31,12 @@ from compiler.mlir_dialect.mlir_op_types import (  # noqa: F401
     MlirFunction,
     MlirModule,
     MlirOp,
+)
+from compiler.mlir_dialect.mlir_op_types import (
     ssa as _ssa,
 )
+
+_log = logging.getLogger(__name__)
 
 
 def mlir_module_to_text(module: MlirModule) -> str:
@@ -805,6 +810,10 @@ def _type_str_to_ir_type(type_str: str) -> ir.Type:
     try:
         return _ir.RankedTensorType.get(dims, elt_type)
     except Exception as e:
+        _log.warning(
+            "Failed to create RankedTensorType for '%s': dims=%s, elt=%s",
+            type_str, dims, elt_type, exc_info=True,
+        )
         raise RuntimeError(
             f"Failed to create RankedTensorType for '{type_str}': dims={dims}, elt={elt_type}"
         ) from e
@@ -940,9 +949,11 @@ def _infer_result_types(op: MlirOp, operands: list[ir.Value], ctx: Any) -> list[
             _rank = len(opnd_type.shape)
             return [opnd_type]
         except Exception:
+            _log.debug("Shape inference failed for operand type, trying element type", exc_info=True)
             try:
                 elt = opnd_type.element_type
             except Exception:
+                _log.debug("Element type inference failed, defaulting to F32", exc_info=True)
                 elt = _ir.F32Type.get(ctx)
             return [_ir.RankedTensorType.get([1], elt)]
     return [_ir.RankedTensorType.get([1], _ir.F32Type.get(ctx))]
@@ -976,6 +987,7 @@ def _emit_compute_op(op: MlirOp, operands: list[ir.Value], body_blk: Any, ctx: A
                 attributes=mlir_attrs if mlir_attrs else {},
             )
     except Exception as e:
+        _log.warning("Failed to build op '%s': %s", op.name, e, exc_info=True)
         raise RuntimeError(
             f"Failed to build op '{op.name}' (result '{op.results[0] if op.results else '?'}'): "
             f"output_types={op.output_types}, operands_count={len(op.operands)}, "
