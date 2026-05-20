@@ -252,6 +252,8 @@ def main():
     parser = argparse.ArgumentParser(description="Diagnose Issue #45")
     parser.add_argument("--save-ref", action="store_true", help="Save Python + HF reference logits")
     parser.add_argument("--skip-rust", action="store_true", help="Skip Rust forward run")
+    parser.add_argument("--fast", action="store_true",
+        help="Skip Rust cargo test, read pre-computed logits from /tmp/rust_logits.csv")
     parser.add_argument("--ctypes", action="store_true", help="Also try ctypes direct call")
     args = parser.parse_args()
 
@@ -284,12 +286,21 @@ def main():
 
     # Step 2: Run Rust forward
     if not args.skip_rust:
-        rust_raw = run_rust_forward()
-        if rust_raw is None:
-            print("\n❌ No Rust logits available")
-            return 1
-
-        rust_logits = reshape_rust_logits(rust_raw, py_ref.shape)
+        if args.fast:
+            csv_path = "/tmp/rust_logits.csv"
+            if not os.path.exists(csv_path):
+                print("  ❌ --fast mode requires /tmp/rust_logits.csv from forward_check binary")
+                print("     Run: cargo run --bin forward_check")
+                sys.exit(1)
+            rust_raw = np.loadtxt(csv_path, delimiter=",")
+            rust_logits = rust_raw.reshape(1, 4, 50272)
+            print(f"  Rust logits loaded (--fast): shape={rust_logits.shape}, first={rust_logits[0,0,0]:.6f}")
+        else:
+            rust_raw = run_rust_forward()
+            if rust_raw is None:
+                print("\n❌ No Rust logits available")
+                return 1
+            rust_logits = reshape_rust_logits(rust_raw, py_ref.shape)
         print(f"  Reshaped to: {rust_logits.shape}")
 
         # Rust vs Python ref
