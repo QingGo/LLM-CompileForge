@@ -125,8 +125,10 @@ class Stage:
             error_msg = str(e).split("\n")[0] if "\n" in str(e) else str(e)
 
             if self.warn_only:
-                _log.warning("  %6.2fs  %-40s skipped (%s)", elapsed,
-                             self.name, error_msg, exc_info=True)
+                _log.warning("  %6.2fs  %-40s FAILED (warn_only=%s)", elapsed,
+                             self.name, error_msg)
+                if self.save_snapshot:
+                    _log.warning("  Snapshot saved: %s", snapshot_path)
                 return StageResult(
                     success=False, elapsed=elapsed,
                     ir_lines=len(str(module).splitlines()),
