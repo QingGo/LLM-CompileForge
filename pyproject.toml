@@ -66,6 +66,7 @@ markers = [
     "smoke: minimal smoke test",
     "baseline: model-output cosine regression test (>0.999 vs HF)",
     "benchmark: performance benchmark test",
+    "slow: slow test, excluded from quick runs",
 ]
 
 [tool.coverage.run]

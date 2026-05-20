@@ -1,4 +1,4 @@
-.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke build-rust install-rust
+.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency build-rust install-rust
 
 # ---- 环境 ----
 VENV := .venv
@@ -164,6 +164,10 @@ test-changed: $(VENV)
 		echo "⚠️  scripts/run_related_tests.py 不存在，回退到 test-fast"; \
 		$(MAKE) test-fast; \
 	fi
+
+# ---- L1n: 权重一致性测试 (三路验证: GT/Python/Rust, <30s) ----
+test-weight-consistency: $(VENV)
+	$(PYTEST) tests/test_weight_consistency.py -v --tb=short --timeout=120 -m "not slow"
 
 # ---- L2a: 全模型编译测试 (逐步骤检测, <300s) ----
 test-compile-full: $(VENV)
