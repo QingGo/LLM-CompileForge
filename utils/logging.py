@@ -119,6 +119,15 @@ def log_step_begin(
     logger.info(
         "step %d begin | waiting=%d running=%d",
         step_id, waiting, running,
+        extra={
+            "event_type": "engine_step",
+            "event_data": {
+                "step_id": step_id,
+                "phase": "begin",
+                "waiting": waiting,
+                "running": running,
+            },
+        },
     )
 
 
@@ -133,6 +142,17 @@ def log_step_end(
     logger.info(
         "step %d end | %.1fms batch=%d tokens=%d results=%d",
         step_id, duration_ms, batch_size, total_tokens, results,
+        extra={
+            "event_type": "engine_step",
+            "event_data": {
+                "step_id": step_id,
+                "phase": "end",
+                "duration_ms": duration_ms,
+                "batch_size": batch_size,
+                "total_tokens": total_tokens,
+                "results": results,
+            },
+        },
     )
 
 
@@ -145,7 +165,17 @@ def log_request_lifecycle(
     parts = f"req={request_id} {event}"
     if extra:
         parts += " | " + " ".join(f"{k}={v}" for k, v in extra.items())
-    logger.debug(parts)
+    logger.debug(
+        parts,
+        extra={
+            "event_type": "request_lifecycle",
+            "event_data": {
+                "request_id": request_id,
+                "event": event,
+                **extra,
+            },
+        },
+    )
 
 
 class StepTimer:
