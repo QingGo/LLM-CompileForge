@@ -151,7 +151,7 @@ class CtypesOracle:
         executor = MlirExecutor(self._artifact, backend)
         with torch.no_grad():
             logits = executor.forward(torch.tensor(self.INPUT_IDS))
-        self._py_logits = logits.numpy()
+        self._py_logits = np.ascontiguousarray(logits.numpy().astype(np.float32))
         np.save(cache_path, self._py_logits)
         _log.info("Cached reference logits to %s", cache_path)
 
