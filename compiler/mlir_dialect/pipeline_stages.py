@@ -14,7 +14,9 @@ locally inside functions to allow module-level import without bindings.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import shutil
 import time as _time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -40,6 +42,27 @@ def _save_ir_snapshot(ir_module: Any, stage_name: str) -> str:
     path.write_text(str(ir_module))
     _log.info("  IR snapshot saved to %s", path)
     return str(path)
+
+
+def _count_module_ops(module_str: str) -> tuple[int, dict[str, int]]:
+    """Count MLIR operations by dialect from a module string.
+
+    Returns ``(total_op_count, dialect_counts)``.
+
+    Used for summary logging and as a fallback when ``StageResult.context``
+    does not contain ``mlir_count_ops`` data (e.g. on failed stages).
+    """
+    dialect_counts: dict[str, int] = {}
+    for line in module_str.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//") or stripped.startswith("#"):
+            continue
+        if stripped.startswith("module ") or stripped == "}":
+            continue
+        m = re.search(r'\b([a-zA-Z_]\w*)\.', stripped)
+        if m:
+            dialect_counts[m.group(1)] = dialect_counts.get(m.group(1), 0) + 1
+    return sum(dialect_counts.values()), dialect_counts
 
 
 @dataclass
@@ -81,7 +104,10 @@ class Stage:
         """Execute this stage with timeout and IR snapshot on failure."""
         import mlir.passmanager as pm
 
+        from compiler.mlir_passes._ops import mlir_count_ops
+
         t0 = _time.perf_counter()
+        pre_stats = mlir_count_ops(module, ctx)
         snapshot_path: str | None = None
 
         try:
@@ -113,9 +139,28 @@ class Stage:
             elapsed = _time.perf_counter() - t0
             n_lines = len(str(module).splitlines())
             _log.info("  %6.2fs  %-40s %5d lines", elapsed, self.name, n_lines)
+
+            # ── IR dialect op count tracking ──
+            post_stats = mlir_count_ops(module, ctx)
+            all_keys = set(pre_stats) | set(post_stats)
+            deltas = {
+                k: post_stats.get(k, 0) - pre_stats.get(k, 0)
+                for k in all_keys
+            }
+            delta_parts = [
+                f"{k}:{d:+d}" for k, d in sorted(deltas.items()) if d != 0
+            ]
+            total_delta = sum(deltas.values())
+            delta_parts.append(f"total:{total_delta:+d}")
+            _log.info("  Stage '%s' IR stats: %s", self.name, ", ".join(delta_parts))
+
             return StageResult(
                 success=True, elapsed=elapsed,
                 ir_lines=n_lines,
+                context={
+                    "dialect_counts_pre": pre_stats,
+                    "dialect_counts_post": post_stats,
+                },
             )
 
         except Exception as e:
@@ -518,13 +563,69 @@ def run_stages(
     Tracks IR line count across stages and warns if growth exceeds 5x
     (indicating possible IR explosion).
 
+    When ``LLM_SERVEFORGE_LOG=DEBUG``, full IR snapshots are saved to
+    ``logs/pipeline/stages/`` after each stage.
+
+    When ``LLM_SERVEFORGE_LOG_FORMAT=json``, structured events with
+    ``event_type="pipeline_stage"`` and ``event_type="pipeline_complete"``
+    are emitted via the JSON log formatter.
+
     Returns a list of StageResult objects, one per stage.
     """
     results: list[StageResult] = []
     prev_line_count: int = len(str(module).splitlines())
+
+    # ── Structured event / DEBUG snapshot setup ──
+    _emit_json = os.environ.get("LLM_SERVEFORGE_LOG_FORMAT", "text").lower() == "json"
+    _is_debug = logging.getLogger().isEnabledFor(logging.DEBUG)
+
+    # Clean stages directory before starting
+    stages_dir = Path("logs") / "pipeline" / "stages"
+    shutil.rmtree(stages_dir, ignore_errors=True)
+    stages_dir.mkdir(parents=True, exist_ok=True)
+
+    # Capture initial state for summary
+    initial_module_str = str(module)
+    initial_line_count = prev_line_count
+    initial_op_count, _ = _count_module_ops(initial_module_str)
+
     for stage in stages:
         result = stage.run(module, ctx, log_dir)
         results.append(result)
+
+        # ── Per-stage analysis ──
+        pre_counts = result.context.get("dialect_counts_pre", {})
+        post_counts = result.context.get("dialect_counts_post", {})
+        op_count_pre = sum(pre_counts.values()) if pre_counts else 0
+        op_count_post = sum(post_counts.values()) if post_counts else 0
+        all_dialects = set(pre_counts.keys()) | set(post_counts.keys())
+        dialect_deltas = {
+            d: post_counts.get(d, 0) - pre_counts.get(d, 0)
+            for d in sorted(all_dialects)
+        }
+
+        # DEBUG: save per-stage snapshot
+        if _is_debug:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", stage.name)
+            snapshot_path = stages_dir / f"{safe_name}_{timestamp}.mlir"
+            snapshot_path.write_text(str(module))
+            _log.debug("  Stage '%s' IR saved to %s", stage.name, snapshot_path)
+
+        # JSON structured event: per-stage
+        if _emit_json:
+            _log.info("", extra={"event_type": "pipeline_stage", "event_data": {
+                "stage_name": stage.name,
+                "elapsed_secs": round(result.elapsed, 3),
+                "ir_lines": result.ir_lines,
+                "op_count_pre": op_count_pre,
+                "op_count_post": op_count_post,
+                "dialect_deltas": dialect_deltas,
+                "warn_only": stage.warn_only,
+                "success": result.success,
+            }})
+
+        # ── Growth check (existing) ──
         if result.ir_lines > 0 and prev_line_count > 0:
             growth_ratio = result.ir_lines / prev_line_count
             if growth_ratio > 5.0:
@@ -539,7 +640,34 @@ def run_stages(
                     )
         if result.ir_lines > 0:
             prev_line_count = result.ir_lines
+
         if not result.success and not stage.warn_only:
             _log.error("  Pipeline stopped at stage '%s'", stage.name)
             break
+
+    # ── Pipeline summary ──
+    _log.info("=" * 60)
+    total_elapsed = sum(r.elapsed for r in results)
+    final_line_count = results[-1].ir_lines if results else initial_line_count
+    _log.info("  Pipeline summary: %d stages in %.2f s", len(results), total_elapsed)
+    _log.info("  Initial IR: %d lines → Final: %d lines (%+.1f%%)",
+              initial_line_count, final_line_count,
+              ((final_line_count - initial_line_count) / max(initial_line_count, 1)) * 100)
+    _log.info("=" * 60)
+
+    # JSON structured event: pipeline complete
+    if _emit_json and results:
+        final_module_str = str(module)
+        final_op_count, _ = _count_module_ops(final_module_str)
+        _log.info("", extra={"event_type": "pipeline_complete", "event_data": {
+            "num_stages": len(results),
+            "total_elapsed_secs": round(total_elapsed, 3),
+            "initial_ir_lines": initial_line_count,
+            "final_ir_lines": final_line_count,
+            "initial_op_count": initial_op_count,
+            "final_op_count": final_op_count,
+            "all_success": all(r.success for r in results),
+            "stages_completed": sum(1 for r in results if r.success),
+        }})
+
     return results
