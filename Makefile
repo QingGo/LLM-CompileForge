@@ -1,4 +1,4 @@
-.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean diagnose-bt test-fixup test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke build-rust install-rust
+.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke build-rust install-rust
 
 # ---- 环境 ----
 VENV := .venv
@@ -106,6 +106,10 @@ test-pipeline-debug: $(VENV)
 # ---- L1j: _fixup_unrealized_casts 单元测试 (16 patterns, <1s) ----
 test-fixup: $(VENV)
 	$(PYTEST) tests/test_fixup_casts.py -v --tb=short --timeout=10
+
+# ---- L1m: ctypes oracle e2e 测试 (dylib vs Python executor, <30s) ----
+test-ctypes-oracle: $(VENV)
+	$(PYTEST) tests/test_ctypes_oracle.py -v --tb=short --timeout=30
 
 # ---- L1k: Pipeline 冒烟测试 (全流程限时验证, <120s) ----
 test-pipeline-smoke: $(VENV)
