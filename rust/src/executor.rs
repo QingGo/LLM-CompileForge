@@ -231,6 +231,18 @@ impl ModelExecutor {
                 func_outputs[fi].push(Tensor::new_owned(shape, data, Dtype::F32));
                 sret_offset += desc_size;
             }
+
+            // Dump layer outputs if DUMP_LAYERS is set
+            if let Ok(dump_dir) = std::env::var("DUMP_LAYERS") {
+                let _ = std::fs::create_dir_all(&dump_dir);
+                for (oi, t) in func_outputs[fi].iter().enumerate() {
+                    let path = format!("{}/func_{}_{}.npy", dump_dir, fi, oi);
+                    let slice = t.as_slice();
+                    if !slice.is_empty() {
+                        let _ = write_npy(&path, slice, &t.shape);
+                    }
+                }
+            }
         }
 
         let (g_func, g_idx) = self.compute_graph.global_output;
@@ -255,6 +267,67 @@ unsafe fn parse_sret_descriptor(slice: &[u8], rank: usize) -> (*mut u8, Vec<i64>
         std::ptr::read_unaligned(slice.as_ptr().add(offset) as *const i64)
     }).collect();
     (aligned, sizes)
+}
+
+// ---------------------------------------------------------------------------
+// DUMP_LAYERS: write per-function output tensors as .npy files
+// ---------------------------------------------------------------------------
+
+/// Write an f32 tensor to a .npy file (NumPy format v1.0).
+///
+/// The format is:
+///   - Magic: \x93NUMPY
+///   - Version: major=1, minor=0
+///   - Header length: u16 LE
+///   - Header: ASCII Python dict literal, padded with spaces to 64-byte boundary
+///   - Raw data: little-endian f32 values
+fn write_npy(path: &str, data: &[f32], shape: &[usize]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(path)?;
+
+    // Build the header dict literal with proper NumPy 1.x shape syntax.
+    //   rank 0: shape=()
+    //   rank 1: shape=(N,)
+    //   rank 2+: shape=(d0, d1, ...)
+    let shape_str = shape
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let header = if shape.is_empty() {
+        "{'descr': '<f4', 'fortran_order': False, 'shape': (), }".to_string()
+    } else if shape.len() == 1 {
+        format!("{{'descr': '<f4', 'fortran_order': False, 'shape': ({},), }}", shape_str)
+    } else {
+        format!("{{'descr': '<f4', 'fortran_order': False, 'shape': ({}), }}", shape_str)
+    };
+
+    // Pad header to a multiple of 64 bytes (from start of magic)
+    let header_bytes = header.as_bytes();
+    let header_len = header_bytes.len() as u16;
+    let total_before_pad = 10 + header_bytes.len(); // 6 magic + 2 ver + 2 hdr_len + header
+    let padding = (64 - (total_before_pad % 64)) % 64;
+
+    // Write magic + version + header_len + header + padding
+    file.write_all(b"\x93NUMPY")?;       // 6 bytes magic
+    file.write_all(&[1, 0])?;            // 2 bytes version (v1.0)
+    file.write_all(&header_len.to_le_bytes())?; // 2 bytes header length
+    file.write_all(header_bytes)?;       // header dict
+    for _ in 0..padding {
+        file.write_all(b" ")?;
+    }
+
+    // Write raw f32 data (little-endian via <f4 descriptor)
+    // SAFETY: f32 has no padding bits; reinterpreting &[f32] as &[u8] is valid.
+    let byte_slice = unsafe {
+        std::slice::from_raw_parts(
+            data.as_ptr() as *const u8,
+            data.len() * std::mem::size_of::<f32>(),
+        )
+    };
+    file.write_all(byte_slice)?;
+
+    Ok(())
 }
 
 #[cfg(test)]
