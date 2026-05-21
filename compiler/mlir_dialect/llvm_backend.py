@@ -71,6 +71,11 @@ def lower_linalg_to_llvm_ir(
     Any remaining sf.* or other unregistered dialect ops will cause
     bufferization failures.
 
+    The first BUILTIN_STAGES ``canonicalize,cse`` stage is always skipped
+    because the lowered IR may contain shape specializations (from index_op
+    dim mappings) that the canonicalize pass cannot verify before bufferization.
+    The second ``canonicalize,cse-2`` at stage 14 handles any remaining cleanup.
+
     Args:
         ir_module: The MLIR module to lower.
         skip_first_canonicalize: If True, skip the first ``canonicalize,cse``
@@ -101,12 +106,11 @@ def lower_linalg_to_llvm_ir(
         )
 
     with ir.Location.unknown(ctx):
-        stages = BUILTIN_STAGES
-        if skip_first_canonicalize:
-            _log.info(
-                "[no-verify] Skipping BUILTIN_STAGES stage 1 canonicalize,cse"
-            )
-            stages = BUILTIN_STAGES[1:]
+        # Always skip the first canonicalize,cse. The second one at stage 14
+        # handles the same cleanup. The first one fails on shape-specialized
+        # index_op outputs whose dynamic dims canonicalize resolves to
+        # conflicting concrete values (batch vs seq) before bufferization.
+        stages = BUILTIN_STAGES[1:]
         run_stages(ir_module, ctx, stages)
         return str(ir_module)
 

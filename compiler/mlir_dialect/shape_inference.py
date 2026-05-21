@@ -89,9 +89,10 @@ def _broadcast_shapes(*shapes: tuple[int | None, ...]) -> tuple[int | None, ...]
         for s in shapes:
             idx = len(s) - max_rank + i
             dims.append(s[idx] if idx >= 0 else 1)
-        non_one = [d for d in dims if d != 1 and d is not None]
+        non_one = [d for d in dims if d is not None and d != 1]
+        any_dynamic = any(d is None for d in dims)
         if not non_one:
-            result.append(dims[0])
+            result.append(None if any_dynamic else dims[0])
         elif len(non_one) == 1:
             result.append(non_one[0])
         else:
@@ -776,8 +777,17 @@ def _infer_slice_pure(
         dim_val = s[dim]
         if dim_val is not None:
             st = int(start) if start is not None else 0
-            en = int(end) if end is not None and end >= 0 else dim_val
-            s[dim] = (en - st + int(step) - 1) // int(step)
+            # 9223372036854775807 (INT64_MAX) is PyTorch's sys.maxsize
+            # sentinel for aten.slice, meaning "to the end". When end is
+            # the sentinel, the output dim is unknown at compile time
+            # (depends on the input's runtime dim), so use None (dynamic).
+            _int64_max_sentinel = 9223372036854775807
+            if end is not None and end >= 0 and end != _int64_max_sentinel:
+                en = int(end)
+                s[dim] = (en - st + int(step) - 1) // int(step)
+            else:
+                # end == INT64_MAX sentinel or end < 0: runtime-dependent size
+                s[dim] = None
     return [(tuple(s), elts[0])]
 
 

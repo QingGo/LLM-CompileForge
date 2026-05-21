@@ -2037,14 +2037,13 @@ struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
       return failure();
     }
 
-    // Create empty tensor with correct output type (static or dynamic)
-    Value empty;
-    if (outType.hasStaticShape()) {
-      empty = rewriter.create<tensor::EmptyOp>(loc, outType, ValueRange{});
-    } else {
-      SmallVector<int64_t> dynShape = {ShapedType::kDynamic};
-      empty = rewriter.create<tensor::EmptyOp>(loc, dynShape, eltType, ValueRange{nIdx});
-    }
+    // Create empty tensor with dynamic output type.
+    // Always use tensor<?xf32> even when outType is tensor<1xf32>, because
+    // the arange length depends on the input VALUE at runtime (not its type).
+    // Using the declared static type (e.g. tensor<1xf32>) causes canonicalize
+    // to specialize to the wrong concrete size, creating shape mismatches.
+    SmallVector<int64_t> dynShape = {ShapedType::kDynamic};
+    Value empty = rewriter.create<tensor::EmptyOp>(loc, dynShape, eltType, ValueRange{nIdx});
 
     // scf.for %i = 0 to N
     Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
