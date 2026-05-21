@@ -644,9 +644,13 @@ def _emit_compute_graph_section(
         # The Rust runtime uses _mlir_ciface_* wrappers, so prefix the symbol.
         _emit_string(parts, f"_mlir_ciface_{func.name}")
 
-        # Collect weight/constant ops in this function — these become additional
-        # function arguments after C++ lowering promotes them from ops to args.
-        weight_ops = [op for op in func.ops if op.op_name in ("weight", "constant")]
+        # Collect weight ops in this function — these become additional
+        # function arguments after C++ promotion. Scalar constant weight ops
+        # (with _const_ prefix) are inlined as arith.constant during C++
+        # conversion and are NOT function parameters.
+        weight_ops = [op for op in func.ops
+                      if op.op_name == "weight"
+                      and not op.attributes.get("name", "").startswith("_const_")]
         weight_ops_with_names = [op for op in weight_ops if op.attributes.get("name", "")]
 
         num_inputs = len(func.inputs) + len(weight_ops_with_names)
@@ -876,9 +880,10 @@ def _emit_weight_op(op: MlirOp, ctx: Any, ssa_map: dict[str, ir.Value], body_blk
             elt_type = result_type.element_type
             with _ir.InsertionPoint(body_blk):
                 if isinstance(wt.item(), float):
-                    attr = _ir.FloatAttr.get(elt_type, float(wt.item()))
+                    elt_attr = _ir.FloatAttr.get(elt_type, float(wt.item()))
                 else:
-                    attr = _ir.IntegerAttr.get(elt_type, int(wt.item()))
+                    elt_attr = _ir.IntegerAttr.get(elt_type, int(wt.item()))
+                attr = _ir.DenseElementsAttr.get_splat(result_type, elt_attr)
                 ir_op = _ir.Operation.create("arith.constant",
                     results=[result_type],
                     attributes={"value": attr})

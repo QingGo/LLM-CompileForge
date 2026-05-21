@@ -55,6 +55,11 @@ class CtypesOracle:
         self._load_artifact()
         self._load_reference()
 
+        # Verify parameter binding consistency
+        issues = self.verify_bindings()
+        for msg in issues:
+            _log.info("  %s", msg)
+
     # ------------------------------------------------------------------
     # Initialization
     # ------------------------------------------------------------------
@@ -186,6 +191,119 @@ class CtypesOracle:
         raise KeyError(f"Weight '{name}' not found")
 
     # ------------------------------------------------------------------
+    # Parameter binding verification
+    # ------------------------------------------------------------------
+
+    def dump_weight_binding(self, func_idx: int) -> None:
+        """Print weight name at each input position for a given function.
+
+        For func 0, this shows inputs[0] = global_input,
+        inputs[1..] = weight names like model_decoder_embed_tokens_weight, etc.
+        """
+        func_def = self._graph["functions"][func_idx]
+        print(f"\n=== Weight Bindings for func_{func_idx} ({func_def['symbol']}) ===")
+        print(f"Total inputs: {func_def['num_inputs']}")
+        for i, inp in enumerate(func_def["inputs"]):
+            binding = inp["binding"]
+            shape = inp["shape"]
+            if binding[0] == "global_input":
+                print(f"  input[{i:3d}]: GLOBAL_INPUT shape={shape}")
+            elif binding[0] == "weight":
+                key = binding[1]
+                print(f"  input[{i:3d}]: WEIGHT '{key}' shape={shape}")
+            elif binding[0] == "ssa":
+                print(f"  input[{i:3d}]: SSA func_{binding[1]}_output[{binding[2]}] shape={shape}")
+
+    def verify_bindings(self) -> list[str]:
+        """Verify compute graph bindings are consistent.
+
+        Returns list of diagnostic messages (empty = perfect).
+
+        Checks:
+        1. For each function, count inputs by type (weight/ssa/global_input)
+        2. Try to resolve each weight: warn if not found
+        3. Report total weight count for diagnostics
+        """
+        issues: list[str] = []
+        for fi, func_def in enumerate(self._graph["functions"]):
+            weight_count = sum(
+                1 for inp in func_def["inputs"] if inp["binding"][0] == "weight"
+            )
+            ssa_count = sum(
+                1 for inp in func_def["inputs"] if inp["binding"][0] == "ssa"
+            )
+            global_count = sum(
+                1 for inp in func_def["inputs"] if inp["binding"][0] == "global_input"
+            )
+
+            total_inputs = len(func_def["inputs"])
+            assert (
+                weight_count + ssa_count + global_count == total_inputs
+            ), f"Input type counts don't add up for func_{fi}"
+
+            issues.append(
+                f"func_{fi} ({func_def['symbol']}): "
+                f"inputs={total_inputs}, "
+                f"weights={weight_count}, "
+                f"ssa={ssa_count}, "
+                f"global={global_count}"
+            )
+
+            # Try to resolve each weight
+            missing: list[str] = []
+            for inp in func_def["inputs"]:
+                if inp["binding"][0] == "weight":
+                    try:
+                        self._get_weight(inp["binding"][1])
+                    except KeyError:
+                        missing.append(inp["binding"][1])
+
+            if missing:
+                issues.append(
+                    f"  !! func_{fi}: {len(missing)} unresolved weights: {missing[:5]}..."
+                )
+
+        return issues
+
+    def diagnose_per_function(self, dylib_path: str | None = None) -> None:
+        """Run forward pass and print per-function output diagnostics.
+
+        Reports shape, min, max, mean, std for each function output.
+        Flags suspicious values: all zeros, all same value, NaN.
+
+        Args:
+            dylib_path: Path to dylib (uses original if None).
+        """
+        if dylib_path is None:
+            dylib_path = os.path.join(self.artifact_dir, "libmodel.dylib")
+            if not os.path.exists(dylib_path):
+                dylib_path = os.path.join(self.artifact_dir, "libopt_125m.dylib")
+
+        # Run comparison to populate func_outputs
+        self.compare(dylib_path)
+
+        print(f"\n=== Per-function diagnostic ({os.path.basename(dylib_path)}) ===")
+        for fi, outputs in enumerate(self._func_outputs):
+            for oi, arr in enumerate(outputs):
+                f = arr.ravel().astype(np.float64)
+                flags = []
+                if np.all(f == 0.0):
+                    flags.append("ALL ZEROS")
+                if len(f) >= 10 and np.all(f[:10] == f[0]):
+                    flags.append("ALL SAME VALUE")
+                if np.any(np.isnan(f)):
+                    flags.append("HAS NaN")
+                if np.any(np.isinf(f)):
+                    flags.append("HAS INF")
+
+                flag_str = " ⚠️ " + ", ".join(flags) if flags else ""
+                print(f"  func_{fi}_output[{oi:2d}]: "
+                      f"shape={list(arr.shape)}, "
+                      f"min={f.min():.4f}, max={f.max():.4f}, "
+                      f"mean={f.mean():.4f}, std={f.std():.4f}"
+                      f"{flag_str}")
+
+    # ------------------------------------------------------------------
     # Main comparison  (the public API)
     # ------------------------------------------------------------------
 
@@ -282,4 +400,5 @@ class CtypesOracle:
 
         go_func, go_idx = self._graph["global_output"]
         ctypes_logits = func_outputs[go_func][go_idx]
+        self._func_outputs = func_outputs
         return cosine_similarity(self._py_logits, ctypes_logits)

@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from compiler.serialize import load_artifact
 from engine.mlir_executor import MlirExecutor
 from hal.pytorch_backend import PyTorchBackend
+from scripts._cos import safe_cos as cosine_similarity
 from utils.logging import init_logging
 
 _log = None
@@ -38,13 +39,6 @@ _log = None
 INPUT_IDS = [2, 32826, 85, 4129]  # must match m1_tests.rs
 ARTIFACT_DIR = "./compiled/opt_125m_fresh"
 REF_DIR = os.path.join(ARTIFACT_DIR, "baselines")
-
-
-def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    a_f = a.ravel().astype(np.float64)
-    b_f = b.ravel().astype(np.float64)
-    denom = np.linalg.norm(a_f) * np.linalg.norm(b_f)
-    return float(np.dot(a_f, b_f) / (denom + 1e-12))
 
 
 def _patch_transformers_torch():

@@ -628,7 +628,7 @@ def _make_tile_stage() -> Stage:
         name="tile_matmuls (K,N=64)",
         action=_tile_action,
         timeout=60.0,
-        warn_only=True,
+        warn_only=False,
     )
 
 
@@ -642,7 +642,7 @@ def _make_fma_stage() -> Stage:
         name="fma-fusion",
         action=_fma_action,
         timeout=30.0,
-        warn_only=True,
+        warn_only=False,
     )
 
 
@@ -667,10 +667,10 @@ def _emit_c_interface_action(module: Any) -> None:
 
 BUILTIN_STAGES: list[Stage] = [
     Stage("canonicalize,cse", "canonicalize,cse"),
-    Stage("fuse+canonicalize", "linalg-fuse-elementwise-ops,canonicalize,cse", warn_only=True),
+    Stage("fuse+canonicalize", "linalg-fuse-elementwise-ops,canonicalize,cse", warn_only=False),
     _make_tile_stage(),
     Stage("emit_c_interface", action=_emit_c_interface_action, timeout=5.0),
-    Stage("ensure-filled-outputs", action=ensure_filled_matmul_outputs_action, timeout=30.0, warn_only=True),
+    Stage("ensure-filled-outputs", action=ensure_filled_matmul_outputs_action, timeout=30.0, warn_only=False),
     Stage("bufferize", (
         "one-shot-bufferize{bufferize-function-boundaries allow-unknown-ops},"
         "canonicalize,cse,convert-bufferization-to-memref"
@@ -831,8 +831,10 @@ def run_stages(
             prev_line_count = result.ir_lines
 
         if not result.success and not stage.warn_only:
-            _log.error("  Pipeline stopped at stage '%s'", stage.name)
-            break
+            raise RuntimeError(
+                f"Pipeline stage '{stage.name}' failed: {result.error}. "
+                f"IR snapshot saved to {result.ir_snapshot_path}"
+            )
 
     # ── Pipeline summary ──
     _log.info("=" * 60)

@@ -305,7 +305,6 @@ version = "0.1.0.dev0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
-    { name = "mlir-core" },
     { name = "numpy" },
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -332,7 +331,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "mlir-core", url = "https://github.com/QingGo/llvm-project/releases/download/llvmorg-23-init/mlir_core-23.0.0.dev0-cp310-cp310-macosx_11_0_x86_64.whl" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pydantic", specifier = ">=2" },
     { name = "pyyaml", specifier = ">=6" },
@@ -394,14 +392,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec958cb99bd3efefba235e65cdeb9c84d24a8293ba1d90/mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba", size = 8729, upload-time = "2022-08-14T12:40:10.846Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
-]
-
-[[package]]
-name = "mlir-core"
-version = "23.0.0.dev0"
-source = { url = "https://github.com/QingGo/llvm-project/releases/download/llvmorg-23-init/mlir_core-23.0.0.dev0-cp310-cp310-macosx_11_0_x86_64.whl" }
-wheels = [
-    { url = "https://github.com/QingGo/llvm-project/releases/download/llvmorg-23-init/mlir_core-23.0.0.dev0-cp310-cp310-macosx_11_0_x86_64.whl", hash = "sha256:dd65f93b31b4f9ddb8c75231606152a26098824b73d6c966e6a14ee5c52e0d73" },
 ]
 
 [[package]]

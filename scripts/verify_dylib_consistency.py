@@ -11,6 +11,8 @@ import re
 import subprocess
 import sys
 
+import numpy as np
+
 
 def find_dylib(compiled_dir: str) -> str | None:
     for f in os.listdir(compiled_dir):
@@ -55,11 +57,30 @@ def parse_compute_graph_outputs(compiled_dir: str) -> list[dict]:
         results = []
         for fi, func in enumerate(graph["functions"]):
             sym = re.sub(r'^_*mlir_ciface_', '', func["symbol"])
+            # Count input binding types
+            weight_inputs = 0
+            ssa_inputs = 0
+            global_inputs = 0
+            weight_names: list[str] = []
+            for inp in func["inputs"]:
+                bt = inp["binding"][0]
+                if bt == "weight":
+                    weight_inputs += 1
+                    weight_names.append(inp["binding"][1])  # the weight key name
+                elif bt == "ssa":
+                    ssa_inputs += 1
+                elif bt == "global_input":
+                    global_inputs += 1
             results.append({
                 "index": fi,
                 "symbol": sym,
                 "num_inputs": func["num_inputs"],
                 "num_outputs": func["num_outputs"],
+                "weight_inputs": weight_inputs,
+                "ssa_inputs": ssa_inputs,
+                "global_inputs": global_inputs,
+                "weight_names": weight_names,
+                "inputs": func["inputs"],  # raw input bindings for SSA/topological checks
             })
         return results
     except Exception as e:
@@ -150,6 +171,266 @@ def parse_lowered_ir_function_inputs(lowered_path: str) -> dict[str, int]:
         n = len(re.findall(r'tensor<[^>]+>', input_types))
         results[name] = n
     return results
+
+
+def _parse_tensor_shape(typ: str) -> tuple[int, ...]:
+    """Parse a tensor type string into shape tuple. Dynamic dims ('?') → 0."""
+    # typ is like "tensor<50272x768xf32>" or "tensor<f32>"
+    inner = typ[7:-1]  # strip "tensor<" and ">"
+    # Split off dtype (last segment after 'x')
+    parts = inner.rsplit('x', 1)
+    dims_str = parts[0]
+    if not dims_str or dims_str == parts[-1]:
+        # Scalar: no 'x' separator
+        return ()
+    dims = []
+    for d in dims_str.split('x'):
+        d = d.strip()
+        if d == '?':
+            dims.append(0)  # dynamic
+        else:
+            dims.append(int(d))
+    return tuple(dims)
+
+
+def parse_lowered_weight_names(lowered_path: str) -> dict[str, list[str]]:
+    """Parse sf.weight_names attributes from lowered MLIR func ops.
+
+    The C++ pass attaches sf.weight_names = ["name1", "name2", ...] on each
+    func::FuncOp, listing the original weight names for promoted block args
+    in declaration order. The MLIR is in generic op form:
+      "func.func"() <{sym_name = "main_0", ...}> ({...}) {sf.weight_names = [...]}
+
+    Returns: {"main_0": ["model_decoder_embed_tokens_weight", ...], ...}
+    """
+    results: dict[str, list[str]] = {}
+    if not os.path.exists(lowered_path):
+        return results
+
+    with open(lowered_path) as f:
+        content = f.read()
+
+    # Collect all function names with their positions (in file order)
+    sym_name_positions = list(
+        re.finditer(r'sym_name\s*=\s*"([^"]+)"', content)
+    )
+
+    # Find each sf.weight_names and associate with the preceding sym_name
+    for wm in re.finditer(r'sf\.weight_names\s*=\s*\[([^\]]*)\]', content):
+        wpos = wm.start()
+        func_name = None
+        for sm in reversed(sym_name_positions):
+            if sm.start() < wpos:
+                func_name = sm.group(1)
+                break
+        if func_name:
+            names_str = wm.group(1)
+            names = re.findall(r'"([^"]+)"', names_str)
+            results[func_name] = names
+
+    return results
+
+
+def parse_lowered_ir_input_shapes(lowered_path: str) -> dict[str, list[tuple[int, ...]]]:
+    """Parse lowered MLIR and return (name -> list of tensor shapes) per function.
+    Includes ALL params (including the first, which is input_ids in main_0).
+
+    Returns: {"main_0": [(2, 4), (50272, 768), ...], ...}
+    """
+    if not os.path.exists(lowered_path):
+        return {}
+
+    with open(lowered_path) as f:
+        content = f.read()
+
+    results: dict[str, list[tuple[int, ...]]] = {}
+    pattern = re.compile(
+        r'function_type = \(([^)]*)\) -> (?:\(([^)]*)\)|(\S+)),[^}]*?sym_name = "([^"]+)"',
+        re.DOTALL,
+    )
+    for m in pattern.finditer(content):
+        name = m.group(4)
+        input_types = m.group(1)
+        tensors = re.findall(r'tensor<[^>]+>', input_types)
+
+        shapes = [_parse_tensor_shape(t) for t in tensors]
+        results[name] = shapes
+
+    return results
+
+
+def check_parameter_binding(cg_funcs: list[dict], lowered_path: str) -> int:
+    """Compare compute graph weight+ssa count vs lowered MLIR non-input_ids param count.
+
+    Also compares weight name strings when sf.weight_names is present.
+
+    For each function:
+      CG param = weight_inputs + ssa_inputs
+      IR param = total_tensors - (1 if global_inputs > 0 else 0)
+
+    Returns 0 if consistent, 1+ if issues found.
+    """
+    issues = 0
+
+    ir_shapes = parse_lowered_ir_input_shapes(lowered_path)
+    if not ir_shapes:
+        print("❌ Cannot parse lowered IR input shapes")
+        return 1
+
+    ir_weight_names = parse_lowered_weight_names(lowered_path)
+
+    print("\n🔗 Parameter binding check (CG compute graph vs lowered MLIR)")
+    for cg in cg_funcs:
+        if "error" in cg:
+            continue
+
+        name = f"main_{cg['index']}"
+        cg_param_count = cg["weight_inputs"] + cg["ssa_inputs"]
+        ir_shapes_list = ir_shapes.get(name, [])
+        ir_total = len(ir_shapes_list)
+        # Subtract input_ids (global_input) from IR count if present
+        ir_param_count = ir_total - (1 if cg["global_inputs"] > 0 else 0)
+
+        if cg_param_count != ir_param_count:
+            print(f"  ❌ '{name}': CG expects {cg_param_count} params "
+                  f"(w={cg['weight_inputs']}, ssa={cg['ssa_inputs']}), "
+                  f"but lowered IR has {ir_param_count} non-input_ids params "
+                  f"({ir_total} total - {cg['global_inputs']} global_input)")
+            print(f"     Mismatch: {cg_param_count - ir_param_count:+d}")
+            if cg["weight_names"]:
+                n_show = min(8, len(cg["weight_names"]))
+                print(f"     CG weight names ({len(cg['weight_names'])} total, first {n_show}):")
+                for wn in cg["weight_names"][:n_show]:
+                    print(f"       - {wn}")
+            issues += 1
+        else:
+            print(f"  ✅ '{name}': {cg_param_count} params (consistent)")
+
+        # New: compare weight name strings
+        cg_w_names = cg.get("weight_names", [])
+        ir_w_names = ir_weight_names.get(name, [])
+        if cg_w_names and ir_w_names:
+            if cg_w_names != ir_w_names:
+                print(f"  ❌ '{name}': weight name mismatch")
+                for i, (cg_n, ir_n) in enumerate(zip(cg_w_names, ir_w_names, strict=False)):
+                    if cg_n != ir_n:
+                        print(f"     arg[{i}]: CG='{cg_n}' vs IR='{ir_n}'")
+                if len(cg_w_names) != len(ir_w_names):
+                    print(f"     CG has {len(cg_w_names)} names, IR has {len(ir_w_names)} names")
+                issues += 1
+            elif cg_param_count == ir_param_count:
+                # Only print name consistency when count is also consistent
+                print(f"     Weight names: {len(cg_w_names)} (consistent)")
+
+    return issues
+
+
+def check_ssa_bindings(cg_funcs: list[dict]) -> int:
+    """Verify every SSA binding references a valid function + output index.
+
+    Returns 0 if all valid, 1+ if issues found.
+    """
+    issues = 0
+    print("\n🔀 SSA binding reference check")
+    for fi, func in enumerate(cg_funcs):
+        for ii, inp in enumerate(func["inputs"]):
+            if inp["binding"][0] != "ssa":
+                continue
+            pf = inp["binding"][1]  # prev func index
+            oi = inp["binding"][2]  # output index
+
+            if pf >= len(cg_funcs):
+                print(f"  ❌ func_{fi} input[{ii}]: SSA references func_{pf} but only {len(cg_funcs)} functions exist")
+                issues += 1
+                continue
+            nout = cg_funcs[pf]["num_outputs"]
+            if oi >= nout:
+                print(f"  ❌ func_{fi} input[{ii}]: SSA references func_{pf} output[{oi}] "
+                      f"but func_{pf} only has {nout} outputs")
+                issues += 1
+                continue
+    if issues == 0:
+        print("  ✅ All SSA bindings valid")
+    return issues
+
+
+def check_topological_order(cg_funcs: list[dict]) -> int:
+    """Verify function call order respects SSA dependencies (no cycles).
+
+    For each function, all SSA dependencies must reference earlier functions.
+    Returns 0 if valid, 1+ if issues found.
+    """
+    issues = 0
+    print("\n🔗 Topological order check")
+    for fi, func in enumerate(cg_funcs):
+        for inp in func["inputs"]:
+            if inp["binding"][0] != "ssa":
+                continue
+            pf = inp["binding"][1]
+            if pf >= fi:
+                print(f"  ❌ func_{fi} depends on func_{pf} (forward reference) — violates topological order")
+                issues += 1
+    if issues == 0:
+        print("  ✅ All functions in topological order")
+    return issues
+
+
+def check_model_mlir_types(model_path: str) -> int:
+    """Check model.mlir for type/shape inconsistencies.
+
+    Specifically checks:
+    - sf.ones_like ops: result type should be consistent with shape attribute
+    - Any sf op with tensor<f32> (scalar) that should have a multi-dim type
+
+    Returns 0 if clean, 1+ if issues found.
+    """
+    if not os.path.exists(model_path):
+        print("\n⚠️  model.mlir not found — skipping type check")
+        return 0
+
+    with open(model_path) as f:
+        content = f.read()
+
+    issues = 0
+    print("\n📐 Type/shape consistency check (model.mlir)")
+
+    # Check sf.ones_like ops
+    # Pattern: "sf.ones_like"(...) -> tensor<f32> (scalar result with shape attr)
+    ones_like_pattern = re.compile(
+        r'"sf\.ones_like"\([^)]*\)\s*\{[^}]*shape\s*=\s*\[([^\]]*)\][^}]*\}\s*:\s*\([^)]*\)\s*->\s*(\S+)'
+    )
+
+    for m in ones_like_pattern.finditer(content):
+        shape_attr = m.group(1)  # e.g., "%sym_size_int_32, %sym_size_int_33"
+        result_type = m.group(2)  # e.g., "tensor<f32>"
+
+        # Count dynamic dimensions in shape attr
+        dim_count = len([d for d in shape_attr.split(',') if d.strip()])
+
+        # Check if result type has matching rank
+        result_rank_match = re.search(r'tensor<([^>]*)>', result_type)
+        if result_rank_match:
+            inner = result_rank_match.group(1)
+            result_rank = len(inner.split('x')) if inner else 0
+        else:
+            result_rank = 0
+
+        if dim_count != result_rank:
+            print(
+                f"  ❌ sf.ones_like: shape has {dim_count} dims "
+                f"but result is rank-{result_rank} tensor ('{result_type}')"
+            )
+            issues += 1
+        elif dim_count > 0 and result_rank == 0:
+            print(
+                f"  ❌ sf.ones_like: shape has {dim_count} dims "
+                f"but result is SCALAR ('{result_type}')"
+            )
+            issues += 1
+
+    if issues == 0:
+        print("  ✅ All type/shape checks pass")
+    return issues
 
 
 def verify(compiled_dir: str) -> int:
@@ -253,6 +534,29 @@ def verify(compiled_dir: str) -> int:
             else:
                 print(f"  ✅ '{name}': {actual_params} ptr params (consistent)")
 
+    # 6. Check parameter binding count consistency
+    if cg_funcs:
+        issues += check_parameter_binding(cg_funcs, lowered_path)
+
+    # 7. Check SSA binding references
+    if cg_funcs:
+        ssa_issues = check_ssa_bindings(cg_funcs)
+        issues += ssa_issues
+
+    # 8. Check topological order
+    if cg_funcs:
+        topo_issues = check_topological_order(cg_funcs)
+        issues += topo_issues
+
+    # 9. Type/shape consistency check (model.mlir)
+    model_path = os.path.join(compiled_dir, "model.mlir")
+    type_issues = check_model_mlir_types(model_path)
+    issues += type_issues
+
+    # 10. Diagnostic tool health check
+    diag_issues = check_diag_tool_health(compiled_dir)
+    issues += diag_issues
+
     # Summary
     print(f"\n{'='*50}")
     if issues == 0:
@@ -261,6 +565,116 @@ def verify(compiled_dir: str) -> int:
         print(f"⚠️  {issues} issue(s) found")
 
     return 1 if issues > 0 else 0
+
+
+def _setup_mlir_path() -> None:
+    """Set up MLIR Python bindings path for the MLIR build directory."""
+    _mlir_pkg = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "llvm-project", "build", "tools", "mlir", "python_packages",
+    )
+    if os.path.isdir(_mlir_pkg) and _mlir_pkg not in sys.path:
+        sys.path.insert(0, _mlir_pkg)
+
+
+def check_diag_tool_health(compiled_dir: str) -> int:
+    """Verify diagnostic tools are functioning correctly.
+
+    Checks:
+    1. ctypes oracle can load and compare (func_0 output must be non-zero)
+    2. forward_check output has reasonable stats (not all zeros/same)
+    3. ctypes vs Rust final output are consistent
+
+    Returns 0 if all healthy, 1+ if issues.
+    """
+    import glob as _glob
+
+    issues = 0
+    print("\n\U0001fa79 Diagnostic tool health check")
+
+    # Check 1: ctypes oracle
+    _setup_mlir_path()
+    try:
+        from scripts.ctypes_oracle import CtypesOracle
+
+        o = CtypesOracle(compiled_dir)
+
+        # Compare against baseline to get func_outputs
+        dylib = _glob.glob(os.path.join(compiled_dir, "lib*.dylib"))
+        if dylib:
+            o.compare(dylib[0])
+
+            # Check func_0 output 12 (hidden state) is non-zero
+            if hasattr(o, "_func_outputs") and len(o._func_outputs) > 0:
+                func0_out12 = o._func_outputs[0][12] if len(o._func_outputs[0]) > 12 else None
+                if func0_out12 is not None:
+                    f = func0_out12.ravel()
+                    if np.all(f == 0.0):
+                        print("  ❌ ctypes oracle: func_0 output 12 is ALL ZEROS (diagnostic broken)")
+                        issues += 1
+                    elif len(f) >= 10 and np.all(f[:10] == f[0]):
+                        print("  ❌ ctypes oracle: func_0 output 12 all same value (diagnostic corrupted)")
+                        issues += 1
+                    else:
+                        print(f"  ✅ ctypes oracle: func_0 output 12 OK "
+                              f"(min={f.min():.4f}, max={f.max():.4f}, mean={f.mean():.4f})")
+                else:
+                    print("  ⚠️ ctypes oracle: can't access func_0 output 12")
+
+            # ALSO check func_0 output 13 (mask) — should not be all same value
+            if hasattr(o, "_func_outputs") and len(o._func_outputs) > 0:
+                func0_out13 = o._func_outputs[0][13] if len(o._func_outputs[0]) > 13 else None
+                if func0_out13 is not None:
+                    f13 = func0_out13.ravel()
+                    f13_unique = np.unique(f13)
+                    if len(f13_unique) <= 1:
+                        print(f"  ❌ ctypes oracle: func_0 output 13 (mask) is all {f13_unique[0]:.1f} "
+                              f"(mask generation likely broken — type/shape issue)")
+                        issues += 1
+                    elif (
+                        len(f13_unique) == 2
+                        and 0.0 in f13_unique
+                        and (1.0 in f13_unique or any(v < -1e10 for v in f13_unique))
+                    ):
+                        print(f"  ✅ ctypes oracle: func_0 mask OK "
+                              f"(values: {[f'{v:.1f}' for v in f13_unique[:5]]})")
+                    else:
+                        print(f"  ⚠️  ctypes oracle: func_0 mask has {len(f13_unique)} unique values "
+                              f"({[f'{v:.1f}' for v in f13_unique[:5]]})")
+            else:
+                print("  ⚠️ ctypes oracle: _func_outputs not available")
+        else:
+            print("  ⚠️ ctypes oracle: no dylib found")
+    except Exception as e:
+        print(f"  ❌ ctypes oracle: failed to load: {e}")
+        issues += 1
+
+    # Check 2: Check forward_check output exists and has reasonable values
+    csv_path = "/tmp/rust_logits.csv"
+    if os.path.exists(csv_path):
+        try:
+            rust_raw = np.loadtxt(csv_path, delimiter=",")
+            if rust_raw.size == 0:
+                print("  ❌ forward_check: empty output")
+                issues += 1
+            else:
+                f = rust_raw.ravel()
+                if np.all(f == 0.0):
+                    print("  ❌ forward_check: all zeros (broken)")
+                    issues += 1
+                elif len(f) >= 10 and np.all(f[:10] == f[0]):
+                    print("  ❌ forward_check: all same value (broken)")
+                    issues += 1
+                else:
+                    print(f"  ✅ forward_check: OK "
+                          f"(min={f.min():.4f}, max={f.max():.4f}, mean={f.mean():.4f})")
+        except Exception as e:
+            print(f"  ❌ forward_check: failed to parse: {e}")
+            issues += 1
+    else:
+        print("  ⚠️ forward_check: /tmp/rust_logits.csv not found (run forward_check first)")
+
+    return issues
 
 
 def main():

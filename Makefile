@@ -1,4 +1,4 @@
-.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency verify-dylib build-rust install-rust diagnose-fast diagnose-ci
+.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency verify-dylib verify-consistency verify-diag verify-preflight build-rust install-rust diagnose-fast diagnose-ci
 
 # ---- 环境 ----
 VENV := .venv
@@ -172,6 +172,17 @@ test-weight-consistency: $(VENV)
 # ---- L1o: .dylib vs compute graph vs lowered IR 一致性检查 (<5s) ----
 verify-dylib:
 	$(PYTHON) scripts/verify_dylib_consistency.py compiled/opt_125m_fresh
+
+# ---- 编译产物一致性验证 (<5s) ----
+verify-consistency: $(VENV)
+	$(PYTHON) scripts/verify_dylib_consistency.py compiled/opt_125m_fresh
+
+# ---- 诊断工具健康检查 (<10s) ----
+verify-diag:
+	$(PYTHON) -c "import sys, os; sys.path.insert(0, os.getcwd()); from scripts.verify_dylib_consistency import check_diag_tool_health; sys.exit(check_diag_tool_health('compiled/opt_125m_fresh'))"
+
+# ---- 编译前快速验证 (<10s) ----
+verify-preflight: verify-consistency verify-diag
 
 # ---- L2a: 全模型编译测试 (逐步骤检测, <300s) ----
 test-compile-full: $(VENV)

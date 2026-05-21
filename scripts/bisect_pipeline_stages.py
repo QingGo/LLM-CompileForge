@@ -92,11 +92,10 @@ def compile_with_stages(
             _log.warning(f"  {len(failed)} stage(s) failed/skipped: {failed_names}")
 
         LLVM_IR = os.path.join(out_dir, f"model_{label}.ll")
-        from compiler.mlir_dialect.compile_utils import emit_llvm_ir_to_file
-        emit_llvm_ir_to_file(module, LLVM_IR)
 
-    from compiler.mlir_dialect.compile_utils import link_dylib, llc_compile
+    from compiler.mlir_dialect.compile_utils import emit_llvm_ir_to_file, link_dylib, llc_compile
     try:
+        emit_llvm_ir_to_file(module, LLVM_IR)
         obj_path = llc_compile(LLVM_IR, output=os.path.join(out_dir, f"model_{label}.o"))
         dylib_path = os.path.join(out_dir, f"lib_{label}.dylib")
         link_dylib([obj_path], dylib_path)

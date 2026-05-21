@@ -13,6 +13,7 @@ can be called safely without an MLIR Context.
 
 from __future__ import annotations
 
+import logging
 import re
 
 
@@ -71,6 +72,7 @@ def _fixup_unrealized_casts(mlir_text: str) -> str:
 
        → ``undef`` + ``llvm.insertvalue`` chain (unchanged).
     """
+    _log = logging.getLogger("compiler.compile_utils")
 
     lines = mlir_text.split('\n')
     indent = '    '
@@ -242,6 +244,14 @@ def _fixup_unrealized_casts(mlir_text: str) -> str:
             fi += 1
         lines[idx] = '\n'.join(chain)
 
+    changes = len(entry_casts) + len(direct_casts)
+    for exit_idx, _dst_name, src_name, _struct_type in exit_casts:
+        for e_idx, e_name, _e_args, _e_mtype in entry_casts:
+            if e_name == src_name and e_idx < exit_idx:
+                changes += 1
+                break
+
+    _log.warning("Removed %d unrealized_conversion_cast ops from LLVM IR", changes)
     return '\n'.join(lines)
 
 
@@ -252,7 +262,11 @@ def _fixup_mlir_for_translate(mlir_text: str) -> str:
     that LLVM 20's mlir-translate cannot parse.  These are semantically
     optional / already implicit, so stripping them is safe.
     """
+    original = mlir_text
     mlir_text = re.sub(r"inbounds\|nuw\b", "inbounds", mlir_text)
+    if mlir_text != original:
+        _log = logging.getLogger("compiler.compile_utils")
+        _log.warning("Applied mlir-translate compatibility fixups")
     return mlir_text
 
 
@@ -274,17 +288,22 @@ def _fixup_arith_constant_scalar_tensor(mlir_text: str) -> str:
     _const_fix_count = 0
     _lines = mlir_text.split('\n')
     for _i in range(len(_lines)):
+        # Match arith.constant with scalar value but tensor<1xT> result type.
+        # Groups: (1) prefix, (2) value, (3) type suffix (": T}> : () -> ", (4) T, (5) "tensor<1xT>"), (6) rest
         _m = re.match(
-            r'^(\s*%\w+\s*=\s*"arith\.constant"\s*\(\)\s*<{value\s*=\s*)([\d.eE+-]+)(\s*:\s*f32\s*}>\s*:\s*\(\)\s*->\s*)(tensor<1xf32>)(\s*)$',
+            r'^(\s*%\w+\s*=\s*"arith\.constant"\s*\(\)\s*<{value\s*=\s*)([\w.eE+-]+)(\s*:\s*(f32|f64|i1|i8|i16|i32|i64)\s*}>\s*:\s*\(\)\s*->\s*)(tensor<1x(f32|f64|i1|i8|i16|i32|i64)>)(\s*)$',
             _lines[_i],
         )
-        if _m:
+        if _m and _m.group(4) == _m.group(6):  # value and result element types match
             _val = _m.group(2)
-            _lines[_i] = f'{_m.group(1)}dense<{_val}> : tensor<1xf32>}}> : () -> tensor<1xf32>{_m.group(5)}'
+            _elt_type = _m.group(4)
+            _tensor_type = _m.group(5)
+            _lines[_i] = f'{_m.group(1)}dense<{_val}> : {_tensor_type}}}> : () -> {_tensor_type}{_m.group(7)}'
             _const_fix_count += 1
     if _const_fix_count:
         mlir_text = '\n'.join(_lines)
-        print(f"   Fixed {_const_fix_count} arith.constant ops with scalar→tensor type mismatch")
+        _log = logging.getLogger("compiler.fixups")
+        _log.warning("Fixed %d arith.constant ops with scalar→tensor type mismatch", _const_fix_count)
     return mlir_text
 
 

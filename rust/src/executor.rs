@@ -211,7 +211,14 @@ impl ModelExecutor {
                 // from the sret buffer written by the MLIR ciface kernel.
                 // desc_size was computed from the known rank r.  The slice
                 // bounds are validated above (end <= SRET_BUF_SIZE).
-                let (aligned, runtime_sizes) = unsafe { parse_sret_descriptor(ptr_slice, r) };
+                let (aligned, runtime_sizes) = match unsafe { parse_sret_descriptor(ptr_slice, r) } {
+                    Ok(result) => result,
+                    Err(e) => {
+                        eprintln!("[executor] func_{} output_{}: {} — skipping", fi, oi, e);
+                        sret_offset += desc_size;
+                        continue;
+                    }
+                };
                 let fallback: Vec<i64> = io_def.shape.iter().map(|&d|
                     if d == 0 { 1 } else { d as i64 }
                 ).collect();
@@ -245,7 +252,9 @@ impl ModelExecutor {
                     // output shapes are fully static (e.g. func_0).
                     let has_nan = !slice.is_empty()
                         && slice.iter().take(100).any(|&x| x.is_nan());
-                    if slice.is_empty() || has_nan {
+                    let all_same = !slice.is_empty()
+                        && slice.iter().take(10).all(|&x| x == slice[0]);
+                    if slice.is_empty() || has_nan || all_same {
                         continue;
                     }
 
@@ -260,22 +269,26 @@ impl ModelExecutor {
     }
 }
 
-unsafe fn parse_sret_descriptor(slice: &[u8], rank: usize) -> (*mut u8, Vec<i64>) {
+unsafe fn parse_sret_descriptor(slice: &[u8], rank: usize) -> Result<(*mut u8, Vec<i64>), String> {
     let min_len = 24 + rank * 8;
-    assert!(
-        slice.len() >= min_len,
-        "parse_sret_descriptor: slice too short ({} bytes, need {} for rank {})",
-        slice.len(), min_len, rank,
-    );
+    if slice.len() < min_len {
+        return Err(format!(
+            "slice too short: {} < {}",
+            slice.len(), min_len,
+        ));
+    }
     // SAFETY: caller guarantees slice is long enough for the full descriptor
     // (rank-sized offset 24 + rank*8).  read_unaligned is safe for any aligned
     // or unaligned byte address on x86_64/aarch64.
     let aligned = std::ptr::read_unaligned(slice.as_ptr().add(8) as *const *mut u8);
+    if aligned.is_null() {
+        return Err("aligned pointer is null".to_string());
+    }
     let sizes: Vec<i64> = (0..rank).map(|i| {
         let offset = 24 + i * 8;
         std::ptr::read_unaligned(slice.as_ptr().add(offset) as *const i64)
     }).collect();
-    (aligned, sizes)
+    Ok((aligned, sizes))
 }
 
 // ---------------------------------------------------------------------------
@@ -445,7 +458,7 @@ mod tests {
         buf.extend_from_slice(&3u64.to_ne_bytes());
         buf.extend_from_slice(&1u64.to_ne_bytes());
         assert_eq!(buf.len(), 40);
-        let (aligned, sizes) = unsafe { parse_sret_descriptor(&buf, 1) };
+        let (aligned, sizes) = unsafe { parse_sret_descriptor(&buf, 1).unwrap() };
         assert_eq!(aligned as u64, dummy_allocated);
         assert_eq!(sizes, vec![3]);
     }
@@ -467,7 +480,7 @@ mod tests {
         buf.extend_from_slice(&1u64.to_ne_bytes());
         buf.extend_from_slice(&1u64.to_ne_bytes());
         assert_eq!(buf.len(), 88);
-        let (aligned, sizes) = unsafe { parse_sret_descriptor(&buf, 4) };
+        let (aligned, sizes) = unsafe { parse_sret_descriptor(&buf, 4).unwrap() };
         assert_eq!(aligned as u64, p);
         assert_eq!(sizes, vec![2, 1, 4, 4]);
     }
