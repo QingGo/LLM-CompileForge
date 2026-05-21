@@ -43,11 +43,13 @@ from compiler.mlir_dialect.fixups import (
 )
 from compiler.mlir_dialect.pipeline_stages import (
     BUILTIN_STAGES,
+    BUILTIN_STAGES_NO_FMA,
     Stage,
     StageResult,
     _save_ir_snapshot,
     ensure_filled_matmul_outputs_action,
     fuse_fma_action,
+    get_stages,
     run_stages,
     tile_matmuls_action,
 )

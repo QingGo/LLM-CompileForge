@@ -543,6 +543,22 @@ BUILTIN_STAGES: list[Stage] = [
 ]
 
 
+BUILTIN_STAGES_NO_FMA: list[Stage] = [s for s in BUILTIN_STAGES if s.name != "fma-fusion"]
+"""BUILTIN_STAGES without FMA fusion stage — for testing if FMA causes cos degradation."""
+
+
+def get_stages(enable_fma: bool = True) -> list[Stage]:
+    """Return BUILTIN_STAGES, optionally without FMA fusion.
+
+    Args:
+        enable_fma: If True (default), returns BUILTIN_STAGES as-is.
+                    If False, returns BUILTIN_STAGES with the "fma-fusion" stage removed.
+    """
+    if enable_fma:
+        return BUILTIN_STAGES
+    return [s for s in BUILTIN_STAGES if s.name != "fma-fusion"]
+
+
 def get_pipeline_specs() -> list[tuple[str, str, float, bool]]:
     """Return BUILTIN_STAGES as (name, pipeline, timeout, warn_only) tuples.
 
