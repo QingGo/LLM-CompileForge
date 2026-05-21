@@ -2047,7 +2047,22 @@ struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
     // Using the declared static type (e.g. tensor<1xf32>) causes canonicalize
     // to specialize to the wrong concrete size, creating shape mismatches.
     SmallVector<int64_t> dynShape = {ShapedType::kDynamic};
-    Value empty = tensor::EmptyOp::create(rewriter, loc, dynShape, eltType, ValueRange{nIdx});
+    Value rawEmpty = tensor::EmptyOp::create(rewriter, loc, dynShape, eltType, ValueRange{nIdx});
+
+    // Initialize with zeros — tensor::EmptyOp produces uninitialized memory,
+    // and the scf.for loop only fills positions [0, nIdx), leaving gaps
+    // if the loop doesn't converge or if downstream uses uninitialized elements
+    // before the loop completes. Fill with 0.0 to prevent NaN propagation.
+    Value zeroInit;
+    if (isa<FloatType>(eltType)) {
+      zeroInit = arith::ConstantOp::create(rewriter, loc, eltType,
+          rewriter.getFloatAttr(eltType, 0.0));
+    } else {
+      zeroInit = arith::ConstantOp::create(rewriter, loc, eltType,
+          rewriter.getIntegerAttr(eltType, 0));
+    }
+    auto fillOp = rewriter.create<linalg::FillOp>(loc, ValueRange{zeroInit}, ValueRange{rawEmpty});
+    Value empty = fillOp.getResult(0);
 
     // scf.for %i = 0 to N
     Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
