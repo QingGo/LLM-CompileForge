@@ -1,4 +1,4 @@
-.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency build-rust install-rust diagnose-fast diagnose-ci
+.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency verify-dylib build-rust install-rust diagnose-fast diagnose-ci
 
 # ---- 环境 ----
 VENV := .venv
@@ -168,6 +168,10 @@ test-changed: $(VENV)
 # ---- L1n: 权重一致性测试 (三路验证: GT/Python/Rust, <30s) ----
 test-weight-consistency: $(VENV)
 	$(PYTEST) tests/test_weight_consistency.py -v --tb=short --timeout=120 -m "not slow"
+
+# ---- L1o: .dylib vs compute graph vs lowered IR 一致性检查 (<5s) ----
+verify-dylib:
+	$(PYTHON) scripts/verify_dylib_consistency.py compiled/opt_125m_fresh
 
 # ---- L2a: 全模型编译测试 (逐步骤检测, <300s) ----
 test-compile-full: $(VENV)

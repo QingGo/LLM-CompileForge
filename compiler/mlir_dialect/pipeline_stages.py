@@ -65,6 +65,161 @@ def _count_module_ops(module_str: str) -> tuple[int, dict[str, int]]:
     return sum(dialect_counts.values()), dialect_counts
 
 
+def _count_values(s: str) -> int:
+    """Count comma-separated values at the top level (not inside brackets).
+
+    Handles MLIR types like ``tensor<1x2xf32>`` where commas inside ``<>``
+    should not be treated as separators, as well as plain SSA value lists
+    like ``%0, %1, %2``.
+    """
+    s = s.strip()
+    if not s:
+        return 0
+    depth = 0
+    count = 1
+    for ch in s:
+        if ch in "<({":
+            depth += 1
+        elif ch in ">)}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            count += 1
+    return count
+
+
+def _verify_function_signatures(
+    ir_text: str, module_name: str = "unknown"
+) -> list[str]:
+    """Verify each ``func.func`` return count matches its declared signature.
+
+    After bufferization, a function declared as ::
+
+        (tensor<...>) -> (tensor<A>, tensor<B>, tensor<C>)
+
+    must return **exactly 3 values**.  If it returns fewer, the missing
+    outputs read uninitialized memory — exactly the Issue #45 bug.
+
+    Handles both standard MLIR text format and generic (quoted) op format.
+    If no ``func.func`` ops remain (e.g. already lowered to ``llvm.func``),
+    the verification is a no-op.
+
+    Returns list of error messages (empty = all good).
+    """
+    errors: list[str] = []
+    lines = ir_text.split("\n")
+
+    # ── Pass 1: collect function declarations ──
+    func_decls: dict[str, int] = {}
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = re.search(r"func\.func\s+@(\w+)\(", line)
+        if m:
+            func_name = m.group(1)
+
+            # Join signature lines until we find the opening brace
+            sig_lines = [line]
+            j = i + 1
+            while j < len(lines) and "{" not in sig_lines[-1]:
+                sig_lines.append(lines[j])
+                j += 1
+            sig_text = " ".join(sig_lines)
+
+            # Find the closing paren of the argument list
+            paren_depth = 0
+            start_after_args = 0
+            for k, ch in enumerate(sig_text):
+                if ch == "(":
+                    paren_depth += 1
+                elif ch == ")":
+                    paren_depth -= 1
+                    if paren_depth == 0:
+                        start_after_args = k + 1
+                        break
+
+            # Look for -> after the argument list
+            arrow_pos = sig_text.find("->", start_after_args)
+            if arrow_pos >= 0:
+                return_part = sig_text[arrow_pos + 2 :].strip()
+
+                # Find where return declaration ends
+                end_pos = len(return_part)
+                for term in ("{", "attributes"):
+                    p = return_part.find(term)
+                    if 0 <= p < end_pos:
+                        end_pos = p
+                return_part = return_part[:end_pos].strip()
+
+                if return_part.startswith("("):
+                    inner = return_part[1:-1].strip()
+                    declared = _count_values(inner)
+                elif return_part:
+                    declared = 1
+                else:
+                    declared = 0
+                func_decls[func_name] = declared
+
+            i = j
+        else:
+            i += 1
+
+    # ── Pass 2: collect func.return operand counts ──
+    func_returns: dict[str, list[int]] = {}
+    current_func: str | None = None
+
+    for line in lines:
+        # Track current function
+        m = re.search(r"func\.func\s+@(\w+)\(", line)
+        if m:
+            current_func = m.group(1)
+            continue
+
+        stripped = line.strip()
+
+        # Standard format:  func.return %0, %1 : types
+        m = re.match(r"func\.return\s+(.*?)\s*:", stripped)
+        if m:
+            op_str = m.group(1).strip()
+            op_count = _count_values(op_str)
+            if current_func is not None:
+                func_returns.setdefault(current_func, []).append(op_count)
+            continue
+
+        # Generic format:  "func.return"(%0, %1) : types
+        m = re.match(r'"func\.return"\(([^)]*)\)', stripped)
+        if m:
+            op_str = m.group(1).strip()
+            op_count = _count_values(op_str)
+            if current_func is not None:
+                func_returns.setdefault(current_func, []).append(op_count)
+            continue
+
+        # Void return:  func.return  (no values)
+        if re.match(r"func\.return\s*(?::.*)?$", stripped):
+            if current_func is not None:
+                func_returns.setdefault(current_func, []).append(0)
+
+    # ── Pass 3: compare declared vs actual ──
+    for func_name, declared in func_decls.items():
+        ret_counts = func_returns.get(func_name, [])
+        if not ret_counts:
+            if declared > 0:
+                errors.append(
+                    f"  '{func_name}': declares {declared} outputs "
+                    f"but has no func.return"
+                )
+        else:
+            for idx, rc in enumerate(ret_counts):
+                if rc != declared:
+                    errors.append(
+                        f"  '{func_name}': declares {declared} outputs "
+                        f"but return #{idx} has {rc} values ({module_name})"
+                    )
+
+    return errors
+
+
 @dataclass
 class StageResult:
     """Structured result from running a pipeline stage."""
@@ -688,6 +843,19 @@ def run_stages(
               initial_line_count, final_line_count,
               ((final_line_count - initial_line_count) / max(initial_line_count, 1)) * 100)
     _log.info("=" * 60)
+
+    # ── Post-pipeline: function signature verification ──
+    final_text = str(module)
+    sig_errors = _verify_function_signatures(final_text)
+    if sig_errors:
+        for err in sig_errors:
+            _log.warning("Post-pipeline function signature mismatch: %s", err)
+        sig_snapshot_path = _save_ir_snapshot(module, "signature_mismatch")
+        _log.warning(
+            "  %d function(s) with signature/return mismatch — IR saved to %s "
+            "(this may cause uninitialized output buffers at runtime, see Issue #45)",
+            len(sig_errors), sig_snapshot_path,
+        )
 
     # JSON structured event: pipeline complete
     if _emit_json and results:
