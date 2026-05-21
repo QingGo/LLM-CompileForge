@@ -56,7 +56,7 @@ def main():
             "builtin.module("
             "sf-promote-weights,canonicalize,cse,sf-lower-to-linalg"
             ")", ctx)
-        pman.enable_verifier(False)
+        pman.enable_verifier(True)
         pman.run(module.operation)
         t = time.time() - t0
         text = str(module)

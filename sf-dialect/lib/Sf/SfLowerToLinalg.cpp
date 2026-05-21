@@ -35,11 +35,15 @@ static Value makeEmpty(OpBuilder &b, Location loc, Type t, ValueRange inputs) {
   auto idxType = b.getIndexType();
   for (auto input : inputs) {
     if (auto inType = dyn_cast<RankedTensorType>(input.getType())) {
-      for (int64_t i = 0; i < std::min((int64_t)shaped.getRank(), inType.getRank()); ++i) {
-        if (shaped.isDynamicDim(i) && inType.isDynamicDim(i) && !filled[i]) {
-          dynSizes.push_back(b.create<tensor::DimOp>(loc, input,
-              b.create<arith::ConstantOp>(loc, idxType, b.getIndexAttr(i))));
-          filled[i] = true;
+      int64_t rankDiff = (int64_t)shaped.getRank() - (int64_t)inType.getRank();
+      for (int64_t i = 0; i < (int64_t)shaped.getRank(); ++i) {
+        int64_t inIdx = i - rankDiff;
+        if (inIdx >= 0 && inIdx < (int64_t)inType.getRank()) {
+          if (shaped.isDynamicDim(i) && inType.isDynamicDim(inIdx) && !filled[i]) {
+            dynSizes.push_back(tensor::DimOp::create(b, loc, input,
+                arith::ConstantIndexOp::create(b, loc, inIdx)));
+            filled[i] = true;
+          }
         }
       }
     }
@@ -49,8 +53,8 @@ static Value makeEmpty(OpBuilder &b, Location loc, Type t, ValueRange inputs) {
   // a -1 dynamic dim knows the size could not be inferred at lowering time.
   for (int64_t i = 0; i < (int64_t)shaped.getRank(); ++i)
     if (shaped.isDynamicDim(i) && !filled[i])
-      dynSizes.push_back(b.create<arith::ConstantIndexOp>(loc, -1));
-  return b.create<tensor::EmptyOp>(loc, shaped, dynSizes);
+      dynSizes.push_back(arith::ConstantIndexOp::create(b, loc, -1));
+  return tensor::EmptyOp::create(b, loc, shaped, dynSizes);
 }
 
 // Create tensor.empty initialized to zero (for reduction init tensors).
@@ -60,10 +64,10 @@ static Value makeZeroedEmpty(OpBuilder &b, Location loc, Type t, ValueRange inpu
   auto eltType = cast<ShapedType>(t).getElementType();
   Value zero;
   if (isa<FloatType>(eltType)) {
-    zero = b.create<arith::ConstantOp>(loc, eltType,
+    zero = arith::ConstantOp::create(b, loc, eltType,
         b.getFloatAttr(eltType, 0.0f));
   } else if (eltType.isInteger(64)) {
-    zero = b.create<arith::ConstantOp>(loc, eltType,
+    zero = arith::ConstantOp::create(b, loc, eltType,
         b.getIntegerAttr(eltType, 0));
   } else {
     llvm::errs() << "  [makeZeroedEmpty] unsupported element type: " << eltType << "\n";
@@ -82,10 +86,10 @@ static Value makeEmptyFromShape(OpBuilder &b, Location loc,
   auto idxType = b.getIndexType();
   for (int64_t i = 0; i < (int64_t)shape.size(); ++i)
     if (ShapedType::isDynamic(shape[i]))
-      dynSizes.push_back(b.create<arith::ConstantOp>(loc, idxType,
+      dynSizes.push_back(arith::ConstantOp::create(b, loc, idxType,
           b.getIndexAttr(shape[i])));  // will be replaced by proper dim op
   // For now, all dynamic dims get 0 as placeholder (must be overridden)
-  return b.create<tensor::EmptyOp>(loc, tensorType, dynSizes);
+  return tensor::EmptyOp::create(b, loc, tensorType, dynSizes);
 }
 
 static SmallVector<AffineMap> identityMaps(unsigned rank, unsigned count, MLIRContext *ctx) {
@@ -162,9 +166,9 @@ static RankedTensorType refineBroadcastType(RankedTensorType resultType,
 // Safe constant creation — checks that the type is handled.
 static Value createSafeConst(OpBuilder &b, Location loc, Type eltType, double floatVal, int64_t intVal = 0) {
   if (isa<FloatType>(eltType))
-    return b.create<arith::ConstantOp>(loc, eltType, b.getFloatAttr(eltType, floatVal));
+    return arith::ConstantOp::create(b, loc, eltType, b.getFloatAttr(eltType, floatVal));
   if (eltType.isInteger(64))
-    return b.create<arith::ConstantOp>(loc, eltType, b.getIntegerAttr(eltType, intVal));
+    return arith::ConstantOp::create(b, loc, eltType, b.getIntegerAttr(eltType, intVal));
   return Value();
 }
 
@@ -226,8 +230,8 @@ struct SfBinaryLowering : public OpRewritePattern<SfOpTy> {
           ValueRange{val}, promInit,
           identityMaps(promRank, 2, rewriter.getContext()), promIter,
           [&](OpBuilder &b, Location ploc, ValueRange args) {
-            Value f = b.create<arith::SIToFPOp>(ploc, outEltTy, args[0]);
-            b.create<linalg::YieldOp>(ploc, f);
+            Value f = arith::SIToFPOp::create(b, ploc, outEltTy, args[0]);
+            linalg::YieldOp::create(b, ploc, f);
           });
       llvm::errs() << "  [SfBinary] type=" << SfOpTy::getOperationName()
                    << " promoted " << side << " " << valEltTy << " -> f32\n";
@@ -253,17 +257,17 @@ struct SfBinaryLowering : public OpRewritePattern<SfOpTy> {
       SmallVector<Value> shapeVals;
       for (int64_t i = 0; i < (int64_t)outShape.size(); ++i) {
         if (ShapedType::isDynamic(outShape[i]))
-          shapeVals.push_back(rewriter.create<tensor::DimOp>(loc, val, squeeze + i));
+          shapeVals.push_back(tensor::DimOp::create(rewriter, loc, val, squeeze + i));
         else
-          shapeVals.push_back(rewriter.create<arith::ConstantIndexOp>(loc, outShape[i]));
+          shapeVals.push_back(arith::ConstantIndexOp::create(rewriter, loc, outShape[i]));
       }
       auto shapeType = RankedTensorType::get({(int64_t)shapeVals.size()}, rewriter.getIndexType());
       Value shape;
       if (shapeVals.empty())
-        shape = rewriter.create<tensor::EmptyOp>(loc, shapeType, ValueRange{});
+        shape = tensor::EmptyOp::create(rewriter, loc, shapeType, ValueRange{});
       else
-        shape = rewriter.create<tensor::FromElementsOp>(loc, shapeType, shapeVals);
-      auto reshaped = rewriter.create<tensor::ReshapeOp>(loc, squeezedType, val, shape);
+        shape = tensor::FromElementsOp::create(rewriter, loc, shapeType, shapeVals);
+      auto reshaped = tensor::ReshapeOp::create(rewriter, loc, squeezedType, val, shape);
       llvm::errs() << "  [squeeze] " << valRank << "->" << rank << " OK\n";
       return reshaped.getResult();
     };
@@ -294,8 +298,8 @@ struct SfBinaryLowering : public OpRewritePattern<SfOpTy> {
         rewriter, loc, refinedType, ValueRange{lhs, rhs}, empty,
         {lhsMap, rhsMap, outMap}, iterTypes);
     populateBody(generic, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
-      Value v = b.create<ArithOpTy>(loc, args[0], args[1]);
-      b.create<linalg::YieldOp>(loc, v);
+      Value v = ArithOpTy::create(b, loc, args[0], args[1]);
+      linalg::YieldOp::create(b, loc, v);
     });
 
     rewriter.replaceOp(op, generic.getResult(0));
@@ -321,10 +325,10 @@ struct ReluLowering : public OpRewritePattern<sf::ReluOp> {
         rewriter, loc, resultType, op.getInput(), empty,
         identityMaps(rank, 2, rewriter.getContext()), iterTypes);
     populateBody(generic, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
-      Value zero = b.create<arith::ConstantOp>(loc, eltType,
+      Value zero = arith::ConstantOp::create(b, loc, eltType,
           b.getFloatAttr(eltType, 0.0));
-      Value v = b.create<arith::MaxNumFOp>(loc, args[0], zero);
-      b.create<linalg::YieldOp>(loc, v);
+      Value v = arith::MaxNumFOp::create(b, loc, args[0], zero);
+      linalg::YieldOp::create(b, loc, v);
     });
 
     rewriter.replaceOp(op, generic.getResult(0));
@@ -363,12 +367,12 @@ struct IdentityLowering : public OpRewritePattern<sf::IdentityOp> {
         [&](OpBuilder &b, Location bodyLoc, ValueRange args) {
           Value v;
           if (isa<IntegerType>(inElt) && isa<FloatType>(outElt))
-            v = b.create<arith::UIToFPOp>(bodyLoc, outElt, args[0]);
+            v = arith::UIToFPOp::create(b, bodyLoc, outElt, args[0]);
           else if (isa<FloatType>(inElt) && isa<IntegerType>(outElt))
-            v = b.create<arith::FPToUIOp>(bodyLoc, outElt, args[0]);
+            v = arith::FPToUIOp::create(b, bodyLoc, outElt, args[0]);
           else
             v = args[0];
-          b.create<linalg::YieldOp>(bodyLoc, v);
+          linalg::YieldOp::create(b, bodyLoc, v);
         });
     rewriter.replaceOp(op, generic.getResult(0));
     return success();
@@ -406,40 +410,40 @@ struct SfActivationOpLowering : public OpRewritePattern<SfOpTy> {
       Value val;
       StringRef opName = SfOpTy::getOperationName();
       if (opName == "sf.gelu") {
-        Value half = b.create<arith::ConstantOp>(loc, eltType, b.getFloatAttr(eltType, 0.5));
-        Value one = b.create<arith::ConstantOp>(loc, eltType, b.getFloatAttr(eltType, 1.0));
-        Value c1 = b.create<arith::ConstantOp>(loc, eltType, b.getFloatAttr(eltType, 0.7978845608));
-        Value c2 = b.create<arith::ConstantOp>(loc, eltType, b.getFloatAttr(eltType, 0.044715));
-        Value x = args[0]; Value x3 = b.create<arith::MulFOp>(loc, x, x);
-        x3 = b.create<arith::MulFOp>(loc, x3, x);
-        Value i1 = b.create<arith::MulFOp>(loc, c2, x3);
-        Value i2 = b.create<arith::AddFOp>(loc, x, i1);
-        Value sc = b.create<arith::MulFOp>(loc, c1, i2);
-        Value th = b.create<math::TanhOp>(loc, sc);
-        Value p1 = b.create<arith::AddFOp>(loc, one, th);
-        Value hx = b.create<arith::MulFOp>(loc, half, x);
-        val = b.create<arith::MulFOp>(loc, hx, p1);
+        Value half = arith::ConstantOp::create(b, loc, eltType, b.getFloatAttr(eltType, 0.5));
+        Value one = arith::ConstantOp::create(b, loc, eltType, b.getFloatAttr(eltType, 1.0));
+        Value c1 = arith::ConstantOp::create(b, loc, eltType, b.getFloatAttr(eltType, 0.7978845608));
+        Value c2 = arith::ConstantOp::create(b, loc, eltType, b.getFloatAttr(eltType, 0.044715));
+        Value x = args[0]; Value x3 = arith::MulFOp::create(b, loc, x, x);
+        x3 = arith::MulFOp::create(b, loc, x3, x);
+        Value i1 = arith::MulFOp::create(b, loc, c2, x3);
+        Value i2 = arith::AddFOp::create(b, loc, x, i1);
+        Value sc = arith::MulFOp::create(b, loc, c1, i2);
+        Value th = math::TanhOp::create(b, loc, sc);
+        Value p1 = arith::AddFOp::create(b, loc, one, th);
+        Value hx = arith::MulFOp::create(b, loc, half, x);
+        val = arith::MulFOp::create(b, loc, hx, p1);
       } else if (opName == "sf.silu") {
-        Value x = args[0]; Value neg = b.create<arith::NegFOp>(loc, x);
-        Value exp = b.create<math::ExpOp>(loc, neg);
-        Value one = b.create<arith::ConstantOp>(loc, eltType, b.getFloatAttr(eltType, 1.0));
-        Value denom = b.create<arith::AddFOp>(loc, one, exp);
-        Value sig = b.create<arith::DivFOp>(loc, one, denom);
-        val = b.create<arith::MulFOp>(loc, x, sig);
+        Value x = args[0]; Value neg = arith::NegFOp::create(b, loc, x);
+        Value exp = math::ExpOp::create(b, loc, neg);
+        Value one = arith::ConstantOp::create(b, loc, eltType, b.getFloatAttr(eltType, 1.0));
+        Value denom = arith::AddFOp::create(b, loc, one, exp);
+        Value sig = arith::DivFOp::create(b, loc, one, denom);
+        val = arith::MulFOp::create(b, loc, x, sig);
       } else if (opName == "sf.sigmoid") {
-        Value neg = b.create<arith::NegFOp>(loc, args[0]);
-        Value exp = b.create<math::ExpOp>(loc, neg);
-        Value one = b.create<arith::ConstantOp>(loc, eltType, b.getFloatAttr(eltType, 1.0));
-        Value denom = b.create<arith::AddFOp>(loc, one, exp);
-        val = b.create<arith::DivFOp>(loc, one, denom);
+        Value neg = arith::NegFOp::create(b, loc, args[0]);
+        Value exp = math::ExpOp::create(b, loc, neg);
+        Value one = arith::ConstantOp::create(b, loc, eltType, b.getFloatAttr(eltType, 1.0));
+        Value denom = arith::AddFOp::create(b, loc, one, exp);
+        val = arith::DivFOp::create(b, loc, one, denom);
       } else if (opName == "sf.exp") {
-        val = b.create<math::ExpOp>(loc, args[0]);
+        val = math::ExpOp::create(b, loc, args[0]);
       } else if (opName == "sf.neg") {
-        val = b.create<arith::NegFOp>(loc, args[0]);
+        val = arith::NegFOp::create(b, loc, args[0]);
       } else if (opName == "sf.tanh") {
-        val = b.create<math::TanhOp>(loc, args[0]);
+        val = math::TanhOp::create(b, loc, args[0]);
       } else { return; }
-      b.create<linalg::YieldOp>(loc, val);
+      linalg::YieldOp::create(b, loc, val);
     });
     rewriter.replaceOp(op, generic.getResult(0));
     return success();
@@ -463,7 +467,7 @@ struct SfMatmulOpLowering : public OpRewritePattern<sf::MatmulOp> {
     if (lhsRank == 2 && rhsRank == 2) {
     Value empty = makeZeroedEmpty(rewriter, loc, resultType, {lhs});
       if (!empty) return failure();
-      auto mo = rewriter.create<linalg::MatmulOp>(loc, resultType,
+      auto mo = linalg::MatmulOp::create(rewriter, loc, resultType,
           ValueRange{lhs, rhs}, empty);
       mo->setAttr("operandSegmentSizes", rewriter.getDenseI32ArrayAttr({2, 1}));
       rewriter.replaceOp(op, mo.getResult(0));
@@ -484,7 +488,7 @@ struct SfMatmulOpLowering : public OpRewritePattern<sf::MatmulOp> {
     for (int64_t i = 0; i < resultRT.getRank(); ++i) {
       outShape.push_back(resultRT.getDimSize(i));
       if (resultRT.isDynamicDim(i))
-        dynSizes.push_back(rewriter.create<tensor::DimOp>(loc, resultRT.getRank() > lhsRank ? rhs : lhs, i));
+        dynSizes.push_back(tensor::DimOp::create(rewriter, loc, resultRT.getRank() > lhsRank ? rhs : lhs, i));
     }
     while ((int64_t)outShape.size() < outerRank - 1)
       outShape.insert(outShape.begin(), 1);
@@ -524,9 +528,9 @@ struct SfMatmulOpLowering : public OpRewritePattern<sf::MatmulOp> {
          AffineMap::get(loopRank, 0, rhsExprs, ctx),
          AffineMap::get(loopRank, 0, outExprs, ctx)}, matIter,
         [&](OpBuilder &b, Location bodyLoc, ValueRange args) {
-          Value mul = b.create<arith::MulFOp>(bodyLoc, args[0], args[1]);
-          Value add = b.create<arith::AddFOp>(bodyLoc, args[2], mul);
-          b.create<linalg::YieldOp>(bodyLoc, add);
+          Value mul = arith::MulFOp::create(b, bodyLoc, args[0], args[1]);
+          Value add = arith::AddFOp::create(b, bodyLoc, args[2], mul);
+          linalg::YieldOp::create(b, bodyLoc, add);
         });
     rewriter.replaceOp(op, generic.getResult(0));
     return success();
@@ -552,24 +556,24 @@ struct SfLinearOpLowering : public OpRewritePattern<sf::LinearOp> {
     int64_t kDim = inputType.getDimSize(0), nDim = wType.getDimSize(1);
     auto t1 = RankedTensorType::get({1, kDim < 0 ? ShapedType::kDynamic : kDim}, eltType);
     auto tOut = RankedTensorType::get({1, nDim < 0 ? ShapedType::kDynamic : nDim}, eltType);
-    SmallVector<Value> t1Dyn; if (kDim < 0) t1Dyn.push_back(rewriter.create<tensor::DimOp>(loc, input, 0));
-    SmallVector<Value> tOutDyn; if (nDim < 0) tOutDyn.push_back(rewriter.create<tensor::DimOp>(loc, weight, 1));
-    Value pInput = rewriter.create<tensor::ExpandShapeOp>(loc, t1, input, ArrayRef<ReassociationIndices>{{0, 1}});
+    SmallVector<Value> t1Dyn; if (kDim < 0) t1Dyn.push_back(tensor::DimOp::create(rewriter, loc, input, 0));
+    SmallVector<Value> tOutDyn; if (nDim < 0) tOutDyn.push_back(tensor::DimOp::create(rewriter, loc, weight, 1));
+    Value pInput = tensor::ExpandShapeOp::create(rewriter, loc, t1, input, ArrayRef<ReassociationIndices>{{0, 1}});
     Value pEmpty = makeZeroedEmpty(rewriter, loc, tOut, {input});
-    auto mo = rewriter.create<linalg::MatmulOp>(loc, tOut, ValueRange{pInput, weight}, pEmpty);
+    auto mo = linalg::MatmulOp::create(rewriter, loc, tOut, ValueRange{pInput, weight}, pEmpty);
     mo->setAttr("operandSegmentSizes", rewriter.getDenseI32ArrayAttr({2, 1}));
     Value mmr = mo.getResult(0);
     // Reshape from [1, N] to result type via tensor.reshape
     auto rtt = cast<RankedTensorType>(resultType);
     SmallVector<Value> sv;
     for (int64_t i = 0; i < rtt.getRank(); ++i) {
-      if (rtt.isDynamicDim(i)) sv.push_back(rewriter.create<tensor::DimOp>(loc, mmr, i == 0 ? 0 : 1));
-      else sv.push_back(rewriter.create<arith::ConstantIndexOp>(loc, rtt.getDimSize(i)));
+      if (rtt.isDynamicDim(i)) sv.push_back(tensor::DimOp::create(rewriter, loc, mmr, i == 0 ? 0 : 1));
+      else sv.push_back(arith::ConstantIndexOp::create(rewriter, loc, rtt.getDimSize(i)));
     }
     auto st = RankedTensorType::get({(int64_t)sv.size()}, rewriter.getIndexType());
-    Value sh = sv.empty() ? (Value)rewriter.create<tensor::EmptyOp>(loc, st, ValueRange{})
-                          : (Value)rewriter.create<tensor::FromElementsOp>(loc, st, sv);
-    rewriter.replaceOp(op, rewriter.create<tensor::ReshapeOp>(loc, resultType, mmr, sh).getResult());
+    Value sh = sv.empty() ? (Value)tensor::EmptyOp::create(rewriter, loc, st, ValueRange{})
+                          : (Value)tensor::FromElementsOp::create(rewriter, loc, st, sv);
+    rewriter.replaceOp(op, tensor::ReshapeOp::create(rewriter, loc, resultType, mmr, sh).getResult());
     return success();
   }
 
@@ -580,7 +584,7 @@ struct SfLinearOpLowering : public OpRewritePattern<sf::LinearOp> {
     // The model stores weight as [out, in], so transpose to [in, out] first.
     SmallVector<int64_t> transShape = {wType.getDimSize(1), wType.getDimSize(0)};
     auto transType = RankedTensorType::get(transShape, eltType);
-    auto emptyT = rewriter.create<tensor::EmptyOp>(loc, transType, ValueRange{});
+    auto emptyT = tensor::EmptyOp::create(rewriter, loc, transType, ValueRange{});
     SmallVector<unsigned> perm = {1u, 0u};
     SmallVector<utils::IteratorType> titer(2, utils::IteratorType::parallel);
     Value emptyTVal = emptyT;
@@ -589,16 +593,16 @@ struct SfLinearOpLowering : public OpRewritePattern<sf::LinearOp> {
         {AffineMap::getPermutationMap(perm, rewriter.getContext()),
          AffineMap::getMultiDimIdentityMap(2, rewriter.getContext())}, titer);
     populateBody(transposeOp, rewriter, [&](OpBuilder &b, Location loc2, ValueRange args) {
-      b.create<linalg::YieldOp>(loc2, args[0]);
+      linalg::YieldOp::create(b, loc2, args[0]);
     });
     Value transW = transposeOp.getResult(0);
     // Broadcast transposed weight from 2D to 3D: [in, out] → [batch, in, out].
-    Value batchDim = rewriter.create<tensor::DimOp>(loc, input, 0);
+    Value batchDim = tensor::DimOp::create(rewriter, loc, input, 0);
     SmallVector<int64_t> w3dShape = {ShapedType::kDynamic,
                                        transType.getDimSize(0),
                                        transType.getDimSize(1)};
     auto w3dType = RankedTensorType::get(w3dShape, eltType);
-    Value w3dEmpty = rewriter.create<tensor::EmptyOp>(loc, w3dType, ValueRange{batchDim});
+    Value w3dEmpty = tensor::EmptyOp::create(rewriter, loc, w3dType, ValueRange{batchDim});
     SmallVector<utils::IteratorType> biter(3, utils::IteratorType::parallel);
     Value w3dEmptyVal = w3dEmpty;
     auto w3dOp = linalg::GenericOp::create(rewriter, loc, w3dType,
@@ -606,7 +610,7 @@ struct SfLinearOpLowering : public OpRewritePattern<sf::LinearOp> {
         {broadcastMap(3, 2, rewriter.getContext()),
          AffineMap::getMultiDimIdentityMap(3, rewriter.getContext())}, biter);
     populateBody(w3dOp, rewriter, [&](OpBuilder &b, Location loc2, ValueRange args) {
-      b.create<linalg::YieldOp>(loc2, args[0]);
+      linalg::YieldOp::create(b, loc2, args[0]);
     });
     resultWeight = w3dOp.getResult(0);
   } else {
@@ -615,7 +619,7 @@ struct SfLinearOpLowering : public OpRewritePattern<sf::LinearOp> {
     if (wType.getRank() == 2) {
       SmallVector<int64_t> transShape = {wType.getDimSize(1), wType.getDimSize(0)};
       auto transType = RankedTensorType::get(transShape, eltType);
-      auto emptyT = rewriter.create<tensor::EmptyOp>(loc, transType, ValueRange{});
+      auto emptyT = tensor::EmptyOp::create(rewriter, loc, transType, ValueRange{});
       SmallVector<unsigned> perm = {1u, 0u};
       SmallVector<utils::IteratorType> titer(2, utils::IteratorType::parallel);
       Value emptyTVal = emptyT;
@@ -624,7 +628,7 @@ struct SfLinearOpLowering : public OpRewritePattern<sf::LinearOp> {
           {AffineMap::getPermutationMap(perm, rewriter.getContext()),
            AffineMap::getMultiDimIdentityMap(2, rewriter.getContext())}, titer);
       populateBody(transposeOp, rewriter, [&](OpBuilder &b, Location loc2, ValueRange args) {
-        b.create<linalg::YieldOp>(loc2, args[0]);
+        linalg::YieldOp::create(b, loc2, args[0]);
       });
       resultWeight = transposeOp.getResult(0);
     }
@@ -652,7 +656,7 @@ struct SfLinearOpLowering : public OpRewritePattern<sf::LinearOp> {
     Value bmEmpty = makeZeroedEmpty(rewriter, loc, bmResultType, {input});
     if (!bmEmpty) { llvm::errs() << "  [SfLinear] bmEmpty failed\n"; return failure(); }
     llvm::errs() << "  [SfLinear] creating batch_matmul target=" << bmResultType << "\n";
-    auto mo = rewriter.create<linalg::BatchMatmulOp>(loc, bmResultType,
+    auto mo = linalg::BatchMatmulOp::create(rewriter, loc, bmResultType,
         ValueRange{input, resultWeight}, bmEmpty);
     mo->setAttr("operandSegmentSizes", rewriter.getDenseI32ArrayAttr({2, 1}));
     Value bmR = mo.getResult(0);
@@ -661,20 +665,20 @@ struct SfLinearOpLowering : public OpRewritePattern<sf::LinearOp> {
       SmallVector<Value> sv;
       for (int64_t i = 0; i < resultTypeRT.getRank(); ++i) {
         if (resultTypeRT.isDynamicDim(i))
-          sv.push_back(rewriter.create<tensor::DimOp>(loc, bmR, i + 1));
+          sv.push_back(tensor::DimOp::create(rewriter, loc, bmR, i + 1));
         else
-          sv.push_back(rewriter.create<arith::ConstantIndexOp>(loc, resultTypeRT.getDimSize(i)));
+          sv.push_back(arith::ConstantIndexOp::create(rewriter, loc, resultTypeRT.getDimSize(i)));
       }
       auto st = RankedTensorType::get({(int64_t)sv.size()}, rewriter.getIndexType());
-      Value sh = sv.empty() ? (Value)rewriter.create<tensor::EmptyOp>(loc, st, ValueRange{})
-                            : (Value)rewriter.create<tensor::FromElementsOp>(loc, st, sv);
-      result = rewriter.create<tensor::ReshapeOp>(loc, resultType, bmR, sh).getResult();
+      Value sh = sv.empty() ? (Value)tensor::EmptyOp::create(rewriter, loc, st, ValueRange{})
+                            : (Value)tensor::FromElementsOp::create(rewriter, loc, st, sv);
+      result = tensor::ReshapeOp::create(rewriter, loc, resultType, bmR, sh).getResult();
     } else {
       result = bmR;
     }
   } else {
     // 2D matmul
-    auto mo = rewriter.create<linalg::MatmulOp>(loc, resultType,
+    auto mo = linalg::MatmulOp::create(rewriter, loc, resultType,
         ValueRange{input, resultWeight}, empty);
     mo->setAttr("operandSegmentSizes", rewriter.getDenseI32ArrayAttr({2, 1}));
     result = mo.getResult(0);
@@ -710,7 +714,7 @@ struct SfViewOpLowering : public OpRewritePattern<sf::ViewOp> {
     for (int64_t i = 0; i < outType.getRank(); ++i) {
       if (!outType.isDynamicDim(i)) {
         // Static dim → constant index
-        shapeVals.push_back(rewriter.create<arith::ConstantIndexOp>(loc, outType.getDimSize(i)));
+        shapeVals.push_back(arith::ConstantIndexOp::create(rewriter, loc, outType.getDimSize(i)));
         continue;
       }
       // Dynamic dim — consult the shape attribute
@@ -722,7 +726,7 @@ struct SfViewOpLowering : public OpRewritePattern<sf::ViewOp> {
             inferredIdx = i;
             shapeVals.push_back(nullptr);  // placeholder for pass 2
           } else {
-            shapeVals.push_back(rewriter.create<arith::ConstantIndexOp>(loc, val));
+            shapeVals.push_back(arith::ConstantIndexOp::create(rewriter, loc, val));
           }
         } else if (dyn_cast<StringAttr>(elem)) {
           // SSA reference → use corresponding dyn_shape operand.
@@ -732,20 +736,20 @@ struct SfViewOpLowering : public OpRewritePattern<sf::ViewOp> {
             Value dynVal = dynShapeOperands[dynIdx++];
             auto dynTy = dyn_cast<RankedTensorType>(dynVal.getType());
             if (dynTy && dynTy.getRank() == 0) {
-              Value extracted = rewriter.create<tensor::ExtractOp>(loc, dynVal, ValueRange{});
-              Value asInt = rewriter.create<arith::FPToUIOp>(loc, rewriter.getIntegerType(64), extracted);
-              dynVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), asInt);
+              Value extracted = tensor::ExtractOp::create(rewriter, loc, dynVal, ValueRange{});
+              Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
+              dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), asInt);
             } else if (dynTy && dynTy.getRank() == 1 && dynTy.getDimSize(0) == 1) {
-              Value extracted = rewriter.create<tensor::ExtractOp>(loc, dynVal,
-                  ValueRange{rewriter.create<arith::ConstantIndexOp>(loc, 0)});
+              Value extracted = tensor::ExtractOp::create(rewriter, loc, dynVal,
+                  ValueRange{arith::ConstantIndexOp::create(rewriter, loc, 0)});
               if (dynTy.getElementType().isF32() || dynTy.getElementType().isF64()) {
-                Value asInt = rewriter.create<arith::FPToUIOp>(loc, rewriter.getIntegerType(64), extracted);
-                dynVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), asInt);
+                Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
+                dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), asInt);
               } else {
-                dynVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), extracted);
+                dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), extracted);
               }
             } else if (!dynVal.getType().isIndex()) {
-              dynVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), dynVal);
+              dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), dynVal);
             }
             shapeVals.push_back(dynVal);
           } else {
@@ -762,25 +766,25 @@ struct SfViewOpLowering : public OpRewritePattern<sf::ViewOp> {
     // Pass 2: compute the -1 inferred dimension if present.
     if (inferredIdx >= 0) {
       // Compute total input elements = product of input dims
-      Value total = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      Value total = arith::ConstantIndexOp::create(rewriter, loc, 1);
       for (int64_t i = 0; i < inType.getRank(); ++i)
-        total = rewriter.create<arith::MulIOp>(loc, total,
-                    rewriter.create<tensor::DimOp>(loc, input, i));
+        total = arith::MulIOp::create(rewriter, loc, total,
+                    tensor::DimOp::create(rewriter, loc, input, i));
 
       // Compute product of known output dims
-      Value known = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      Value known = arith::ConstantIndexOp::create(rewriter, loc, 1);
       for (int64_t i = 0; i < outType.getRank(); ++i) {
         if (i != inferredIdx && shapeVals[i])
-          known = rewriter.create<arith::MulIOp>(loc, known, shapeVals[i]);
+          known = arith::MulIOp::create(rewriter, loc, known, shapeVals[i]);
       }
 
       // Inferred dim value: total / known (must be exact)
-      shapeVals[inferredIdx] = rewriter.create<arith::DivUIOp>(loc, total, known);
+      shapeVals[inferredIdx] = arith::DivUIOp::create(rewriter, loc, total, known);
     }
 
     auto shapeTensorType = RankedTensorType::get({(int64_t)shapeVals.size()},
                                                   rewriter.getIndexType());
-    auto shapeTensor = rewriter.create<tensor::FromElementsOp>(loc, shapeTensorType, shapeVals);
+    auto shapeTensor = tensor::FromElementsOp::create(rewriter, loc, shapeTensorType, shapeVals);
     rewriter.replaceOpWithNewOp<tensor::ReshapeOp>(op, outType, input, shapeTensor);
     return success();
   }
@@ -809,20 +813,20 @@ struct SfExpandOpLowering : public OpRewritePattern<sf::ExpandOp> {
           Value dynVal = dynShapeOperands[dynIdx++];
           auto dynTy = dyn_cast<RankedTensorType>(dynVal.getType());
           if (dynTy && dynTy.getRank() == 0) {
-            Value extracted = rewriter.create<tensor::ExtractOp>(loc, dynVal, ValueRange{});
-            Value asInt = rewriter.create<arith::FPToUIOp>(loc, rewriter.getIntegerType(64), extracted);
-            dynVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), asInt);
+            Value extracted = tensor::ExtractOp::create(rewriter, loc, dynVal, ValueRange{});
+            Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
+            dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), asInt);
           } else if (dynTy && dynTy.getRank() == 1 && dynTy.getDimSize(0) == 1) {
-            Value extracted = rewriter.create<tensor::ExtractOp>(loc, dynVal,
-                ValueRange{rewriter.create<arith::ConstantIndexOp>(loc, 0)});
+            Value extracted = tensor::ExtractOp::create(rewriter, loc, dynVal,
+                ValueRange{arith::ConstantIndexOp::create(rewriter, loc, 0)});
             if (dynTy.getElementType().isF32() || dynTy.getElementType().isF64()) {
-              Value asInt = rewriter.create<arith::FPToUIOp>(loc, rewriter.getIntegerType(64), extracted);
-              dynVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), asInt);
+              Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
+              dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), asInt);
             } else {
-              dynVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), extracted);
+              dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), extracted);
             }
           } else if (!dynVal.getType().isIndex()) {
-            dynVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), dynVal);
+            dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), dynVal);
           }
           dynSizes.push_back(dynVal);
         } else if (auto intAttr = dyn_cast<IntegerAttr>(elem)) {
@@ -831,16 +835,16 @@ struct SfExpandOpLowering : public OpRewritePattern<sf::ExpandOp> {
             // -1 means "keep input dim at this position" → get from input
             int64_t inIdx = i - (outRank - inRank);
             if (inIdx >= 0 && inIdx < inRank && inType.isDynamicDim(inIdx))
-              dynSizes.push_back(rewriter.create<tensor::DimOp>(loc, input, inIdx));
+              dynSizes.push_back(tensor::DimOp::create(rewriter, loc, input, inIdx));
             else
-              dynSizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 1));
+              dynSizes.push_back(arith::ConstantIndexOp::create(rewriter, loc, 1));
           } else {
-            dynSizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, val));
+            dynSizes.push_back(arith::ConstantIndexOp::create(rewriter, loc, val));
           }
         }
       }
     }
-    Value empty = rewriter.create<tensor::EmptyOp>(loc, outType, dynSizes);
+    Value empty = tensor::EmptyOp::create(rewriter, loc, outType, dynSizes);
 
     // linalg.generic with broadcast: input maps to trailing output dims.
     // Size-1 input dims must use affine constant 0, not the loop dim,
@@ -862,7 +866,7 @@ struct SfExpandOpLowering : public OpRewritePattern<sf::ExpandOp> {
     auto g = linalg::GenericOp::create(rewriter, loc, outType,
         ValueRange{input}, ValueRange{empty}, {inMap, outMap}, iters);
     populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
-      b.create<linalg::YieldOp>(loc, args[0]);
+      linalg::YieldOp::create(b, loc, args[0]);
     });
     rewriter.replaceOp(op, g.getResult(0));
     return success();
@@ -891,18 +895,18 @@ struct SfUnsqueezeOpLowering : public OpRewritePattern<sf::UnsqueezeOp> {
     for (int64_t i = 0; i < outType.getRank(); ++i) {
       if (outType.isDynamicDim(i)) {
         if (i < unsqueezeDim)
-          shapeVals.push_back(rewriter.create<tensor::DimOp>(loc, input, i));
+          shapeVals.push_back(tensor::DimOp::create(rewriter, loc, input, i));
         else if (i == unsqueezeDim)
-          shapeVals.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 1));
+          shapeVals.push_back(arith::ConstantIndexOp::create(rewriter, loc, 1));
         else
-          shapeVals.push_back(rewriter.create<tensor::DimOp>(loc, input, i - 1));
+          shapeVals.push_back(tensor::DimOp::create(rewriter, loc, input, i - 1));
       } else {
-        shapeVals.push_back(rewriter.create<arith::ConstantIndexOp>(loc, outType.getDimSize(i)));
+        shapeVals.push_back(arith::ConstantIndexOp::create(rewriter, loc, outType.getDimSize(i)));
       }
     }
     auto shapeTensorType = RankedTensorType::get({(int64_t)shapeVals.size()},
                                                   rewriter.getIndexType());
-    auto shapeTensor = rewriter.create<tensor::FromElementsOp>(loc, shapeTensorType, shapeVals);
+    auto shapeTensor = tensor::FromElementsOp::create(rewriter, loc, shapeTensorType, shapeVals);
     rewriter.replaceOpWithNewOp<tensor::ReshapeOp>(op, outType, input, shapeTensor);
     return success();
   }
@@ -919,8 +923,8 @@ struct SfSumOpLowering : public OpRewritePattern<sf::SumOp> {
     auto g = linalg::GenericOp::create(rewriter, loc, rt, op.getInput(), empty,
         identityMaps(rank, 2, rewriter.getContext()), iterTypes);
     populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
-      Value add = b.create<arith::AddFOp>(loc, args[0], args[1]);
-      b.create<linalg::YieldOp>(loc, add);
+      Value add = arith::AddFOp::create(b, loc, args[0], args[1]);
+      linalg::YieldOp::create(b, loc, add);
     });
     rewriter.replaceOp(op, g.getResult(0));
     return success();
@@ -934,7 +938,7 @@ struct SfSumOpLowering : public OpRewritePattern<sf::SumOp> {
 static Value makeBinaryOp(OpBuilder &builder, Location loc, Value lhs, Value rhs,
                            Type outType, PatternRewriter &rewriter,
                            function_ref<Value(OpBuilder &, Location, Value, Value)> fn) {
-  Value empty = makeEmpty(builder, loc, outType, {lhs});
+  Value empty = makeEmpty(builder, loc, outType, {lhs, rhs});
   if (!empty) return Value();
   auto outRank = cast<ShapedType>(outType).getRank();
   auto lhsType = cast<RankedTensorType>(lhs.getType());
@@ -968,7 +972,7 @@ static Value makeBinaryOp(OpBuilder &builder, Location loc, Value lhs, Value rhs
       ValueRange{lhs, rhs}, empty, {lhsMap, rhsMap, outMap}, iters);
   populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
     Value v = fn(b, loc, args[0], args[1]);
-    b.create<linalg::YieldOp>(loc, v);
+    linalg::YieldOp::create(b, loc, v);
   });
   return g.getResult(0);
 }
@@ -1001,7 +1005,7 @@ static Value makeUnaryOp(OpBuilder &builder, Location loc, Value in, Type outTyp
       in, empty, {inMap, outMap}, iters);
   populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
     Value v = fn(b, loc, args[0]);
-    b.create<linalg::YieldOp>(loc, v);
+    linalg::YieldOp::create(b, loc, v);
   });
   return g.getResult(0);
 }
@@ -1062,13 +1066,13 @@ struct SfScaledDotProductAttentionOpLowering
       for (int64_t i = 0; i < rank; ++i) {
         if (!ktType.isDynamicDim(i)) continue;
         if (i == rank - 1)
-          dyns.push_back(rewriter.create<tensor::DimOp>(loc, K, rank - 2));
+          dyns.push_back(tensor::DimOp::create(rewriter, loc, K, rank - 2));
         else
-          dyns.push_back(rewriter.create<tensor::DimOp>(loc, K, i));
+          dyns.push_back(tensor::DimOp::create(rewriter, loc, K, i));
       }
       return dyns;
     };
-    Value ktEmpty = rewriter.create<tensor::EmptyOp>(loc, ktType, ktDyn());
+    Value ktEmpty = tensor::EmptyOp::create(rewriter, loc, ktType, ktDyn());
     SmallVector<unsigned> ktPerm(rank);
     for (int64_t i = 0; i < rank; ++i) ktPerm[i] = i;
     std::swap(ktPerm[rank - 1], ktPerm[rank - 2]);
@@ -1077,7 +1081,7 @@ struct SfScaledDotProductAttentionOpLowering
         {AffineMap::getPermutationMap(ktPerm, rewriter.getContext()),
          AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext())}, ktIterTypes);
     populateBody(ktOp, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
-      b.create<linalg::YieldOp>(loc, args[0]);
+      linalg::YieldOp::create(b, loc, args[0]);
     });
     Value Kt = ktOp.getResult(0);
 
@@ -1087,9 +1091,9 @@ struct SfScaledDotProductAttentionOpLowering
       for (int64_t i = 0; i < rank; ++i) {
         if (!type.isDynamicDim(i)) continue;
         if (i == rank - 1)
-          dyns.push_back(rewriter.create<tensor::DimOp>(loc, K, rank - 2));
+          dyns.push_back(tensor::DimOp::create(rewriter, loc, K, rank - 2));
         else
-          dyns.push_back(rewriter.create<tensor::DimOp>(loc, Q, i));
+          dyns.push_back(tensor::DimOp::create(rewriter, loc, Q, i));
       }
       return dyns;
     };
@@ -1098,10 +1102,10 @@ struct SfScaledDotProductAttentionOpLowering
     SmallVector<int64_t> scoresShape(qType.getShape());
     scoresShape[rank - 1] = qType.getDimSize(rank - 2);
     auto scoresType = RankedTensorType::get(scoresShape, eltType);
-    Value scoresInit = rewriter.create<tensor::EmptyOp>(loc, scoresType, scoresDyn(scoresType));
-    Value scoresZero = rewriter.create<arith::ConstantOp>(loc, eltType,
+    Value scoresInit = tensor::EmptyOp::create(rewriter, loc, scoresType, scoresDyn(scoresType));
+    Value scoresZero = arith::ConstantOp::create(rewriter, loc, eltType,
         rewriter.getFloatAttr(eltType, 0.0f));
-    Value scoresEmpty = rewriter.create<linalg::FillOp>(loc,
+    Value scoresEmpty = linalg::FillOp::create(rewriter, loc,
         ValueRange{scoresZero}, ValueRange{scoresInit}).getResult(0);
     Value scores;
     {
@@ -1126,23 +1130,23 @@ struct SfScaledDotProductAttentionOpLowering
            AffineMap::get(loopRank, 0, rhsMaps, ctx),
            AffineMap::get(loopRank, 0, outMaps, ctx)}, matIter,
           [&](OpBuilder &b, Location bodyLoc, ValueRange args) {
-            Value _mul = b.create<arith::MulFOp>(bodyLoc, args[0], args[1]);
-            Value _add = b.create<arith::AddFOp>(bodyLoc, args[2], _mul);
-            b.create<linalg::YieldOp>(bodyLoc, _add);
+            Value _mul = arith::MulFOp::create(b, bodyLoc, args[0], args[1]);
+            Value _add = arith::AddFOp::create(b, bodyLoc, args[2], _mul);
+            linalg::YieldOp::create(b, bodyLoc, _add);
           });
       scores = scoreGeneric.getResult(0);
     }
 
     // Step 3: scores_scaled = scores * (1/sqrt(d_k))
-    Value scaleConst = rewriter.create<arith::ConstantOp>(loc, eltType,
+    Value scaleConst = arith::ConstantOp::create(rewriter, loc, eltType,
         rewriter.getFloatAttr(eltType, scaleVal));
-    Value scaledEmpty = rewriter.create<tensor::EmptyOp>(loc, scoresType, scoresDyn(scoresType));
+    Value scaledEmpty = tensor::EmptyOp::create(rewriter, loc, scoresType, scoresDyn(scoresType));
     SmallVector<utils::IteratorType> iterTypes(rank, utils::IteratorType::parallel);
     auto scaleOp = linalg::GenericOp::create(rewriter, loc, scoresType,
         scores, scaledEmpty,
         identityMaps(rank, 2, rewriter.getContext()), iterTypes);
     populateBody(scaleOp, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
-      Value _scaled = b.create<arith::MulFOp>(loc, args[0], scaleConst); b.create<linalg::YieldOp>(loc, _scaled);
+      Value _scaled = arith::MulFOp::create(b, loc, args[0], scaleConst); linalg::YieldOp::create(b, loc, _scaled);
     });
     Value scoresScaled = scaleOp.getResult(0);
 
@@ -1153,9 +1157,9 @@ struct SfScaledDotProductAttentionOpLowering
     // Approach: transpose mask (swap last two dims) so maskT[i,j] = mask[j,i] = position[j],
     // then compare: mask >= maskT  =>  position[i] >= position[j].
     if (Value mask = op.getAttnMask()) {
-      Value zeroF32 = rewriter.create<arith::ConstantOp>(loc, eltType,
+      Value zeroF32 = arith::ConstantOp::create(rewriter, loc, eltType,
           rewriter.getFloatAttr(eltType, 0.0f));
-      Value negLarge = rewriter.create<arith::ConstantOp>(loc, eltType,
+      Value negLarge = arith::ConstantOp::create(rewriter, loc, eltType,
           rewriter.getFloatAttr(eltType, -1.0e20f));
 
       // Step 3b-i: Transpose mask (swap last two dims)
@@ -1174,9 +1178,9 @@ struct SfScaledDotProductAttentionOpLowering
       SmallVector<Value> maskTDynSizes;
       for (int64_t i = 0; i < maskRank; ++i) {
         if (maskTType.isDynamicDim(i))
-          maskTDynSizes.push_back(rewriter.create<tensor::DimOp>(loc, mask, perm[i]));
+          maskTDynSizes.push_back(tensor::DimOp::create(rewriter, loc, mask, perm[i]));
       }
-      Value maskTEmpty = rewriter.create<tensor::EmptyOp>(loc, maskTType, maskTDynSizes);
+      Value maskTEmpty = tensor::EmptyOp::create(rewriter, loc, maskTType, maskTDynSizes);
 
       SmallVector<utils::IteratorType> tIter(maskRank, utils::IteratorType::parallel);
       auto transposeOp = linalg::GenericOp::create(rewriter, loc, maskTType,
@@ -1184,7 +1188,7 @@ struct SfScaledDotProductAttentionOpLowering
           {AffineMap::getPermutationMap(perm, rewriter.getContext()),
            AffineMap::getMultiDimIdentityMap(maskRank, rewriter.getContext())}, tIter);
       populateBody(transposeOp, rewriter, [&](OpBuilder &b, Location loc2, ValueRange args) {
-        b.create<linalg::YieldOp>(loc2, args[0]);
+        linalg::YieldOp::create(b, loc2, args[0]);
       });
       Value maskT = transposeOp.getResult(0);
 
@@ -1192,14 +1196,14 @@ struct SfScaledDotProductAttentionOpLowering
       // makeBinaryOp broadcasts maskT from [b,1,s,s] -> scoresScaled shape [b,h,s,s]
       Value additive = makeBinaryOp(rewriter, loc, mask, maskT, scoresScaled.getType(), rewriter,
           [&](OpBuilder &b, Location loc, Value m, Value mT) {
-            Value cmp = b.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OGE, m, mT);
-            Value sel = b.create<arith::SelectOp>(loc, cmp, zeroF32, negLarge);
+            Value cmp = arith::CmpFOp::create(b, loc, arith::CmpFPredicate::OGE, m, mT);
+            Value sel = arith::SelectOp::create(b, loc, cmp, zeroF32, negLarge);
             return sel;
           });
       // Step 3b-iii: scoresScaled = scoresScaled + additive
       scoresScaled = makeBinaryOp(rewriter, loc, scoresScaled, additive, scoresScaled.getType(), rewriter,
           [&](OpBuilder &b, Location loc, Value a, Value bVal) {
-            return b.create<arith::AddFOp>(loc, a, bVal);
+            return arith::AddFOp::create(b, loc, a, bVal);
           });
     }
 
@@ -1213,9 +1217,9 @@ struct SfScaledDotProductAttentionOpLowering
       for (int64_t i = 0; i < rank; ++i) {
         if (!type.isDynamicDim(i)) continue;
         if (i == rank - 2)
-          dyns.push_back(rewriter.create<tensor::DimOp>(loc, Q, rank - 2));
+          dyns.push_back(tensor::DimOp::create(rewriter, loc, Q, rank - 2));
         else
-          dyns.push_back(rewriter.create<tensor::DimOp>(loc, Q, i));
+          dyns.push_back(tensor::DimOp::create(rewriter, loc, Q, i));
       }
       return dyns;
     };
@@ -1225,9 +1229,9 @@ struct SfScaledDotProductAttentionOpLowering
     maxShape[lastDim] = 1;
     auto maxType = RankedTensorType::get(maxShape, eltType);
     // Softmax max reduction: init to -inf
-    Value negInf = rewriter.create<arith::ConstantOp>(loc, eltType,
+    Value negInf = arith::ConstantOp::create(rewriter, loc, eltType,
         rewriter.getFloatAttr(eltType, -1.0e20f));
-    Value maxEmpty = rewriter.create<tensor::EmptyOp>(loc, maxType, maxDyn(maxType));
+    Value maxEmpty = tensor::EmptyOp::create(rewriter, loc, maxType, maxDyn(maxType));
     auto fillMax = linalg::FillOp::create(rewriter, loc, ValueRange{negInf}, ValueRange{maxEmpty});
     maxEmpty = fillMax.getResult(0);
     SmallVector<utils::IteratorType> reduIters(rank);
@@ -1241,27 +1245,27 @@ struct SfScaledDotProductAttentionOpLowering
                                      : getAffineDimExpr(i, rewriter.getContext());
              }), rewriter.getContext())}, reduIters);
     populateBody(maxOp, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
-      Value _mx = b.create<arith::MaxNumFOp>(loc, args[0], args[1]); b.create<linalg::YieldOp>(loc, _mx);
+      Value _mx = arith::MaxNumFOp::create(b, loc, args[0], args[1]); linalg::YieldOp::create(b, loc, _mx);
     });
     Value maxVal = maxOp.getResult(0);
 
     // 4b: sub = x - max (broadcast)
     Value sub = makeBinaryOp(rewriter, loc, scoresScaled, maxVal, scoresType, rewriter,
         [&](OpBuilder &b, Location loc, Value a, Value bVal) {
-          return b.create<arith::SubFOp>(loc, a, bVal);
+          return arith::SubFOp::create(b, loc, a, bVal);
         });
 
     // 4c: exp(x - max)
     Value expVal = makeUnaryOp(rewriter, loc, sub, scoresType, rewriter,
         [&](OpBuilder &b, Location loc, Value v) {
-          return b.create<math::ExpOp>(loc, v);
+          return math::ExpOp::create(b, loc, v);
         });
 
     // 4d: sum reduction
-    Value sumInit = rewriter.create<tensor::EmptyOp>(loc, maxType, maxDyn(maxType));
-    Value sumZero = rewriter.create<arith::ConstantOp>(loc, eltType,
+    Value sumInit = tensor::EmptyOp::create(rewriter, loc, maxType, maxDyn(maxType));
+    Value sumZero = arith::ConstantOp::create(rewriter, loc, eltType,
         rewriter.getFloatAttr(eltType, 0.0f));
-    Value sumEmpty = rewriter.create<linalg::FillOp>(loc,
+    Value sumEmpty = linalg::FillOp::create(rewriter, loc,
         ValueRange{sumZero}, ValueRange{sumInit}).getResult(0);
     auto sumOp = linalg::GenericOp::create(rewriter, loc, maxType, expVal, sumEmpty,
         {AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext()),
@@ -1271,14 +1275,14 @@ struct SfScaledDotProductAttentionOpLowering
                                      : getAffineDimExpr(i, rewriter.getContext());
              }), rewriter.getContext())}, reduIters);
     populateBody(sumOp, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
-      Value _ad = b.create<arith::AddFOp>(loc, args[0], args[1]); b.create<linalg::YieldOp>(loc, _ad);
+      Value _ad = arith::AddFOp::create(b, loc, args[0], args[1]); linalg::YieldOp::create(b, loc, _ad);
     });
     Value sumVal = sumOp.getResult(0);
 
     // 4e: softmax = exp / sum (broadcast)
     Value attn = makeBinaryOp(rewriter, loc, expVal, sumVal, scoresType, rewriter,
         [&](OpBuilder &b, Location loc, Value a, Value bVal) {
-          return b.create<arith::DivFOp>(loc, a, bVal);
+          return arith::DivFOp::create(b, loc, a, bVal);
         });
 
     // Step 5: output = matmul(attn, V) via linalg.generic (supports any rank)
@@ -1290,16 +1294,16 @@ struct SfScaledDotProductAttentionOpLowering
     for (int64_t i = 0; i < rank; ++i) {
       if (!outEmptyType.isDynamicDim(i)) continue;
       if (i == rank - 1)
-        outDyn.push_back(rewriter.create<tensor::DimOp>(loc, V, rank - 1));
+        outDyn.push_back(tensor::DimOp::create(rewriter, loc, V, rank - 1));
       else if (i == rank - 2)
-        outDyn.push_back(rewriter.create<tensor::DimOp>(loc, Q, rank - 2));
+        outDyn.push_back(tensor::DimOp::create(rewriter, loc, Q, rank - 2));
       else
-        outDyn.push_back(rewriter.create<tensor::DimOp>(loc, Q, i));
+        outDyn.push_back(tensor::DimOp::create(rewriter, loc, Q, i));
     }
-    Value outInit = rewriter.create<tensor::EmptyOp>(loc, outEmptyType, outDyn);
-    Value outZero = rewriter.create<arith::ConstantOp>(loc, eltType,
+    Value outInit = tensor::EmptyOp::create(rewriter, loc, outEmptyType, outDyn);
+    Value outZero = arith::ConstantOp::create(rewriter, loc, eltType,
         rewriter.getFloatAttr(eltType, 0.0f));
-    Value outEmpty = rewriter.create<linalg::FillOp>(loc,
+    Value outEmpty = linalg::FillOp::create(rewriter, loc,
         ValueRange{outZero}, ValueRange{outInit}).getResult(0);
     Value attnVResult;
     {
@@ -1324,9 +1328,9 @@ struct SfScaledDotProductAttentionOpLowering
            AffineMap::get(loopRank, 0, vMaps, ctx),
            AffineMap::get(loopRank, 0, outMaps, ctx)}, outMatIter,
           [&](OpBuilder &b, Location bodyLoc, ValueRange args) {
-            Value _mul = b.create<arith::MulFOp>(bodyLoc, args[0], args[1]);
-            Value _add = b.create<arith::AddFOp>(bodyLoc, args[2], _mul);
-            b.create<linalg::YieldOp>(bodyLoc, _add);
+            Value _mul = arith::MulFOp::create(b, bodyLoc, args[0], args[1]);
+            Value _add = arith::AddFOp::create(b, bodyLoc, args[2], _mul);
+            linalg::YieldOp::create(b, bodyLoc, _add);
           });
       attnVResult = outGeneric.getResult(0);
     }
@@ -1359,14 +1363,14 @@ struct SfLayerNormOpLowering : public OpRewritePattern<sf::LayerNormOp> {
     // Compute 1.0 / dimSize — either constant or runtime
     Value invDim;
     if (dynNormDim) {
-      Value dimVal = rewriter.create<tensor::DimOp>(loc, input, lastDim);
-      Value dimI64 = rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), dimVal);
-      Value dimF32 = rewriter.create<arith::UIToFPOp>(loc, eltType, dimI64);
-      Value one = rewriter.create<arith::ConstantOp>(loc, eltType,
+      Value dimVal = tensor::DimOp::create(rewriter, loc, input, lastDim);
+      Value dimI64 = arith::IndexCastOp::create(rewriter, loc, rewriter.getI64Type(), dimVal);
+      Value dimF32 = arith::UIToFPOp::create(rewriter, loc, eltType, dimI64);
+      Value one = arith::ConstantOp::create(rewriter, loc, eltType,
           rewriter.getFloatAttr(eltType, 1.0));
-      invDim = rewriter.create<arith::DivFOp>(loc, one, dimF32);
+      invDim = arith::DivFOp::create(rewriter, loc, one, dimF32);
     } else {
-      invDim = rewriter.create<arith::ConstantOp>(loc, eltType,
+      invDim = arith::ConstantOp::create(rewriter, loc, eltType,
           rewriter.getFloatAttr(eltType, 1.0f / dimSize));
     }
 
@@ -1378,7 +1382,7 @@ struct SfLayerNormOpLowering : public OpRewritePattern<sf::LayerNormOp> {
     // Helper: create element-wise binary generic with broadcast maps
     auto makeBinary = [&](Value lhs, Value rhs, Type outType,
                            function_ref<Value(OpBuilder &, Location, Value, Value)> fn) -> Value {
-      Value empty = makeEmpty(rewriter, loc, outType, {lhs});
+      Value empty = makeEmpty(rewriter, loc, outType, {lhs, rhs});
       if (!empty) return Value();
       auto outRank = ::mlir::cast<::mlir::ShapedType>(outType).getRank();
       auto lhsType = ::mlir::cast<::mlir::RankedTensorType>(lhs.getType());
@@ -1394,7 +1398,7 @@ struct SfLayerNormOpLowering : public OpRewritePattern<sf::LayerNormOp> {
         int64_t rhsI = i - (outRank - rhsRank);
         if (lhsI >= 0) {
           int64_t lhsDim = lhsType.getDimSize(lhsI);
-          lhsExprs.push_back((lhsDim == 1 && outDim > 1)
+          lhsExprs.push_back((lhsDim == 1 && (outDim == ShapedType::kDynamic || outDim > 1))
               ? getAffineConstantExpr(0, rewriter.getContext())
               : getAffineDimExpr(i, rewriter.getContext()));
         }
@@ -1414,7 +1418,7 @@ struct SfLayerNormOpLowering : public OpRewritePattern<sf::LayerNormOp> {
           ValueRange{lhs, rhs}, empty, {lhsMap, rhsMap, outMap}, iters);
       populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
         Value _v = fn(b, loc, args[0], args[1]);
-        b.create<linalg::YieldOp>(loc, _v);
+        linalg::YieldOp::create(b, loc, _v);
       });
       return g.getResult(0);
     };
@@ -1447,7 +1451,7 @@ struct SfLayerNormOpLowering : public OpRewritePattern<sf::LayerNormOp> {
           in, empty, {inMap, outMap}, iters);
       populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
         Value _v = fn(b, loc, args[0]);
-        b.create<linalg::YieldOp>(loc, _v);
+        linalg::YieldOp::create(b, loc, _v);
       });
       return g.getResult(0);
     };
@@ -1457,7 +1461,7 @@ struct SfLayerNormOpLowering : public OpRewritePattern<sf::LayerNormOp> {
       Value empty = makeEmpty(rewriter, loc, reduType, {in});
       if (!empty) return Value();
       // Initialize reduction output to 0 before reduction
-      Value zero = rewriter.create<arith::ConstantOp>(loc, eltType,
+      Value zero = arith::ConstantOp::create(rewriter, loc, eltType,
           rewriter.getFloatAttr(eltType, 0.0f));
       auto fill = linalg::FillOp::create(rewriter, loc, ValueRange{zero}, ValueRange{empty});
       Value filled = fill.getResult(0);
@@ -1477,7 +1481,7 @@ struct SfLayerNormOpLowering : public OpRewritePattern<sf::LayerNormOp> {
       auto g = linalg::GenericOp::create(rewriter, loc, reduType, in, filled,
           {inMap, outMap}, iters);
       populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
-        Value _ad = b.create<arith::AddFOp>(loc, args[0], args[1]); b.create<linalg::YieldOp>(loc, _ad);
+        Value _ad = arith::AddFOp::create(b, loc, args[0], args[1]); linalg::YieldOp::create(b, loc, _ad);
       });
       return g.getResult(0);
     };
@@ -1485,49 +1489,49 @@ struct SfLayerNormOpLowering : public OpRewritePattern<sf::LayerNormOp> {
     // Step 1: mean = reduce_sum(x) / dimSize
     Value sumVal = makeReduce(input, reducedType);
     Value meanVal = makeUnary(sumVal, reducedType, [&](OpBuilder &b, Location loc, Value v) {
-      return b.create<arith::MulFOp>(loc, v, invDim);
+      return arith::MulFOp::create(b, loc, v, invDim);
     });
 
     // Step 2: diff = x - mean (broadcast)
     Value diff = makeBinary(input, meanVal, inputType,
         [&](OpBuilder &b, Location loc, Value a, Value bVal) {
-          return b.create<arith::SubFOp>(loc, a, bVal);
+          return arith::SubFOp::create(b, loc, a, bVal);
         });
 
     // Step 3: diff_sq = diff * diff
     Value diffSq = makeBinary(diff, diff, inputType,
         [&](OpBuilder &b, Location loc, Value a, Value bVal) {
-          return b.create<arith::MulFOp>(loc, a, bVal);
+          return arith::MulFOp::create(b, loc, a, bVal);
         });
 
     // Step 4: var = reduce_sum(diff_sq) / dimSize
     Value varSum = makeReduce(diffSq, reducedType);
     Value varVal = makeUnary(varSum, reducedType, [&](OpBuilder &b, Location loc, Value v) {
-      return b.create<arith::MulFOp>(loc, v, invDim);
+      return arith::MulFOp::create(b, loc, v, invDim);
     });
 
     // Step 5: std = sqrt(var + eps)
     Value stdVal = makeUnary(varVal, reducedType, [&](OpBuilder &b, Location loc, Value v) {
-      Value epsVal = b.create<arith::ConstantOp>(loc, eltType,
+      Value epsVal = arith::ConstantOp::create(b, loc, eltType,
           b.getFloatAttr(eltType, eps));
-      Value add = b.create<arith::AddFOp>(loc, v, epsVal);
-      return b.create<math::SqrtOp>(loc, add);
+      Value add = arith::AddFOp::create(b, loc, v, epsVal);
+      return math::SqrtOp::create(b, loc, add);
     });
 
     // Step 6: norm = diff / std (broadcast)
     Value norm = makeBinary(diff, stdVal, inputType,
         [&](OpBuilder &b, Location loc, Value a, Value bVal) {
-          return b.create<arith::DivFOp>(loc, a, bVal);
+          return arith::DivFOp::create(b, loc, a, bVal);
         });
 
     // Step 7: result = norm * weight + bias
     Value weighted = makeBinary(norm, weight, inputType,
         [&](OpBuilder &b, Location loc, Value a, Value bVal) {
-          return b.create<arith::MulFOp>(loc, a, bVal);
+          return arith::MulFOp::create(b, loc, a, bVal);
         });
     Value result = makeBinary(weighted, bias, inputType,
         [&](OpBuilder &b, Location loc, Value a, Value bVal) {
-          return b.create<arith::AddFOp>(loc, a, bVal);
+          return arith::AddFOp::create(b, loc, a, bVal);
         });
 
     rewriter.replaceOp(op, result);
@@ -1569,7 +1573,7 @@ struct SfRmsNormOpLowering : public OpRewritePattern<sf::RmsNormOp> {
       Value empty = makeEmpty(rewriter, loc, reduType, {in});
       if (!empty) return Value();
       // Initialize to 0 before reduction (same as LayerNorm makeReduce)
-      Value zero = rewriter.create<arith::ConstantOp>(loc, eltType,
+      Value zero = arith::ConstantOp::create(rewriter, loc, eltType,
           rewriter.getFloatAttr(eltType, 0.0f));
       auto fill = linalg::FillOp::create(rewriter, loc, ValueRange{zero}, ValueRange{empty});
       Value filled = fill.getResult(0);
@@ -1586,8 +1590,8 @@ struct SfRmsNormOpLowering : public OpRewritePattern<sf::RmsNormOp> {
       auto g = linalg::GenericOp::create(rewriter, loc, reduType, in, filled,
           {inMap, outMap}, iters);
       populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
-        Value _ad = b.create<arith::AddFOp>(loc, args[0], args[1]);
-        b.create<linalg::YieldOp>(loc, _ad);
+        Value _ad = arith::AddFOp::create(b, loc, args[0], args[1]);
+        linalg::YieldOp::create(b, loc, _ad);
       });
       return g.getResult(0);
     };
@@ -1618,7 +1622,7 @@ struct SfRmsNormOpLowering : public OpRewritePattern<sf::RmsNormOp> {
           {inMap, outMap}, iters);
       populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
         Value _v = fn(b, loc, args[0]);
-        b.create<linalg::YieldOp>(loc, _v);
+        linalg::YieldOp::create(b, loc, _v);
       });
       return g.getResult(0);
     };
@@ -1626,7 +1630,7 @@ struct SfRmsNormOpLowering : public OpRewritePattern<sf::RmsNormOp> {
     // Helper: binary generic with broadcast
     auto makeBinary = [&](Value lhs, Value rhs, Type outType,
                            function_ref<Value(OpBuilder &, Location, Value, Value)> fn) -> Value {
-      Value empty = makeEmpty(rewriter, loc, outType, {lhs});
+      Value empty = makeEmpty(rewriter, loc, outType, {lhs, rhs});
       if (!empty) return Value();
       auto outRank = ::mlir::cast<::mlir::ShapedType>(outType).getRank();
       auto lhsType = ::mlir::cast<::mlir::RankedTensorType>(lhs.getType());
@@ -1639,7 +1643,7 @@ struct SfRmsNormOpLowering : public OpRewritePattern<sf::RmsNormOp> {
         int64_t rhsI = i - (outRank - rhsRank);
         if (lhsI >= 0) {
           int64_t lhsDim = lhsType.getDimSize(lhsI);
-          lhsExprs.push_back((lhsDim == 1 && outDim > 1)
+          lhsExprs.push_back((lhsDim == 1 && (outDim == ShapedType::kDynamic || outDim > 1))
               ? getAffineConstantExpr(0, rewriter.getContext())
               : getAffineDimExpr(i, rewriter.getContext()));
         }
@@ -1658,7 +1662,7 @@ struct SfRmsNormOpLowering : public OpRewritePattern<sf::RmsNormOp> {
           ValueRange{lhs, rhs}, empty, {lhsMap, rhsMap, outMap}, iters);
       populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
         Value _v = fn(b, loc, args[0], args[1]);
-        b.create<linalg::YieldOp>(loc, _v);
+        linalg::YieldOp::create(b, loc, _v);
       });
       return g.getResult(0);
     };
@@ -1666,35 +1670,35 @@ struct SfRmsNormOpLowering : public OpRewritePattern<sf::RmsNormOp> {
     // Step 1: x² = x * x
     Value sq = makeBinary(input, input, inputType,
         [&](OpBuilder &b, Location loc, Value a, Value bVal) {
-          return b.create<arith::MulFOp>(loc, a, bVal);
+          return arith::MulFOp::create(b, loc, a, bVal);
         });
 
     // Step 2: mean_x2 = reduce_sum(x²) / dimSize
     Value sumSq = makeReduce(sq, reducedType);
     Value meanSq = makeUnary(sumSq, reducedType, [&](OpBuilder &b, Location loc, Value v) {
-      Value scale = b.create<arith::ConstantOp>(loc, eltType,
+      Value scale = arith::ConstantOp::create(b, loc, eltType,
           b.getFloatAttr(eltType, 1.0f / dimSize));
-      return b.create<arith::MulFOp>(loc, v, scale);
+      return arith::MulFOp::create(b, loc, v, scale);
     });
 
     // Step 3: rms = sqrt(mean_x2 + eps)
     Value rmsVal = makeUnary(meanSq, reducedType, [&](OpBuilder &b, Location loc, Value v) {
-      Value epsVal = b.create<arith::ConstantOp>(loc, eltType,
+      Value epsVal = arith::ConstantOp::create(b, loc, eltType,
           b.getFloatAttr(eltType, eps));
-      Value add = b.create<arith::AddFOp>(loc, v, epsVal);
-      return b.create<math::SqrtOp>(loc, add);
+      Value add = arith::AddFOp::create(b, loc, v, epsVal);
+      return math::SqrtOp::create(b, loc, add);
     });
 
     // Step 4: normed = x / rms (broadcast)
     Value normed = makeBinary(input, rmsVal, inputType,
         [&](OpBuilder &b, Location loc, Value a, Value bVal) {
-          return b.create<arith::DivFOp>(loc, a, bVal);
+          return arith::DivFOp::create(b, loc, a, bVal);
         });
 
     // Step 5: out = normed * weight
     Value result = makeBinary(normed, weight, inputType,
         [&](OpBuilder &b, Location loc, Value a, Value bVal) {
-          return b.create<arith::MulFOp>(loc, a, bVal);
+          return arith::MulFOp::create(b, loc, a, bVal);
         });
 
     rewriter.replaceOp(op, result);
@@ -1730,12 +1734,12 @@ struct SfTransposeOpLowering : public OpRewritePattern<sf::TransposeOp> {
     for (int64_t i = 0; i < rank; ++i) {
       if (!rt.isDynamicDim(i)) continue;
       int64_t srcDim = invPerm[i];
-      dynSizes.push_back(rewriter.create<tensor::DimOp>(loc, input, srcDim));
+      dynSizes.push_back(tensor::DimOp::create(rewriter, loc, input, srcDim));
     }
-    Value empty = rewriter.create<tensor::EmptyOp>(loc, rt, dynSizes);
+    Value empty = tensor::EmptyOp::create(rewriter, loc, rt, dynSizes);
     if (!empty) return failure();
 
-    auto transposeOp = rewriter.create<linalg::TransposeOp>(
+    auto transposeOp = linalg::TransposeOp::create(rewriter, 
         loc, input, empty, rewriter.getDenseI64ArrayAttr(perm));
     rewriter.replaceOp(op, transposeOp->getResult(0));
     return success();
@@ -1760,11 +1764,11 @@ struct SfSliceOpLowering : public OpRewritePattern<sf::SliceOp> {
       offs.push_back(rewriter.getIndexAttr((i == dim) ? start : 0));
       if (i == dim && sEnd == kDynSentinel) {
         // INT64_MAX sentinel: size = dim(input, i) - start (runtime)
-        Value dimVal = rewriter.create<tensor::DimOp>(loc, input, i);
-        Value startVal = rewriter.create<arith::ConstantIndexOp>(loc, start);
-        szs.push_back(Value(rewriter.create<arith::SubIOp>(loc, dimVal, startVal).getResult()));
+        Value dimVal = tensor::DimOp::create(rewriter, loc, input, i);
+        Value startVal = arith::ConstantIndexOp::create(rewriter, loc, start);
+        szs.push_back(Value(arith::SubIOp::create(rewriter, loc, dimVal, startVal).getResult()));
       } else if (inType.isDynamicDim(i)) {
-        szs.push_back(Value(rewriter.create<tensor::DimOp>(loc, input, i).getResult()));
+        szs.push_back(Value(tensor::DimOp::create(rewriter, loc, input, i).getResult()));
       } else {
         szs.push_back(rewriter.getIndexAttr((i == dim) ? (sEnd - start) : inType.getDimSize(i)));
       }
@@ -1810,15 +1814,15 @@ struct SfLeOpLowering : public OpRewritePattern<sf::LeOp> {
       Value cmp;
       if (isa<IntegerType>(args[0].getType()) || isa<IntegerType>(args[1].getType())) {
         // Integer comparison: use CmpIOp
-        auto lhsInt = b.create<arith::IndexCastOp>(loc, b.getIndexType(), args[0]);
-        auto rhsInt = b.create<arith::IndexCastOp>(loc, b.getIndexType(), args[1]);
-        cmp = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sle, lhsInt, rhsInt);
+        auto lhsInt = arith::IndexCastOp::create(b, loc, b.getIndexType(), args[0]);
+        auto rhsInt = arith::IndexCastOp::create(b, loc, b.getIndexType(), args[1]);
+        cmp = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sle, lhsInt, rhsInt);
       } else {
         // Float comparison
-        cmp = b.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OLE, args[0], args[1]);
+        cmp = arith::CmpFOp::create(b, loc, arith::CmpFPredicate::OLE, args[0], args[1]);
       }
-      Value result = b.create<arith::UIToFPOp>(loc, rewriter.getF32Type(), cmp);
-      b.create<linalg::YieldOp>(loc, result);
+      Value result = arith::UIToFPOp::create(b, loc, rewriter.getF32Type(), cmp);
+      linalg::YieldOp::create(b, loc, result);
     });
     rewriter.replaceOp(op, g.getResult(0));
     return success();
@@ -1897,30 +1901,30 @@ struct SfOnesLikeOpLowering : public OpRewritePattern<sf::OnesLikeOp> {
         Value extracted;
         auto operandTy = dyn_cast<RankedTensorType>(operand.getType());
         if (operandTy && operandTy.getRank() == 0) {
-          extracted = rewriter.create<tensor::ExtractOp>(loc, operand, ValueRange{});
+          extracted = tensor::ExtractOp::create(rewriter, loc, operand, ValueRange{});
         } else if (operandTy && operandTy.getRank() > 0) {
           SmallVector<Value> indices(operandTy.getRank(),
-              rewriter.create<arith::ConstantIndexOp>(loc, 0));
-          extracted = rewriter.create<tensor::ExtractOp>(loc, operand, indices);
+              arith::ConstantIndexOp::create(rewriter, loc, 0));
+          extracted = tensor::ExtractOp::create(rewriter, loc, operand, indices);
         } else {
           return failure();
         }
         Value i64Val;
         if (isa<FloatType>(extracted.getType())) {
-          i64Val = rewriter.create<arith::FPToUIOp>(loc, rewriter.getI64Type(), extracted);
+          i64Val = arith::FPToUIOp::create(rewriter, loc, rewriter.getI64Type(), extracted);
         } else if (isa<IntegerType>(extracted.getType())) {
-          i64Val = rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), extracted);
+          i64Val = arith::IndexCastOp::create(rewriter, loc, rewriter.getI64Type(), extracted);
         } else {
           return failure();
         }
-        Value idx = rewriter.create<arith::IndexCastOp>(loc, idxType, i64Val);
+        Value idx = arith::IndexCastOp::create(rewriter, loc, idxType, i64Val);
         dynSizes.push_back(idx);
       }
 
-      Value empty = rewriter.create<tensor::EmptyOp>(loc, tensorType, dynSizes);
+      Value empty = tensor::EmptyOp::create(rewriter, loc, tensorType, dynSizes);
       if (!empty) return failure();
 
-      Value oneVal = rewriter.create<arith::ConstantOp>(loc, eltType,
+      Value oneVal = arith::ConstantOp::create(rewriter, loc, eltType,
           rewriter.getFloatAttr(eltType, 1.0));
       rewriter.replaceOpWithNewOp<linalg::FillOp>(op, ValueRange{oneVal}, ValueRange{empty});
       return success();
@@ -1929,7 +1933,7 @@ struct SfOnesLikeOpLowering : public OpRewritePattern<sf::OnesLikeOp> {
     // Default path: no dyn_shape, copy shape from input tensor
     Value empty = makeEmpty(rewriter, loc, rt, {op.getInput()});
     if (!empty) return failure();
-    Value oneVal = rewriter.create<arith::ConstantOp>(loc, eltType,
+    Value oneVal = arith::ConstantOp::create(rewriter, loc, eltType,
         rewriter.getFloatAttr(eltType, 1.0));
     rewriter.replaceOpWithNewOp<linalg::FillOp>(op, ValueRange{oneVal}, ValueRange{empty});
     return success();
@@ -1946,7 +1950,7 @@ struct SfNewOnesOpLowering : public OpRewritePattern<sf::NewOnesOp> {
     if (!empty) return failure();
     auto elt = getElementTypeOrSelf(rt);
     if (!isa<FloatType>(elt)) return failure();
-    Value oneVal = rewriter.create<arith::ConstantOp>(loc, elt,
+    Value oneVal = arith::ConstantOp::create(rewriter, loc, elt,
         rewriter.getFloatAttr(elt, 1.0));
     rewriter.replaceOpWithNewOp<linalg::FillOp>(op, ValueRange{oneVal}, ValueRange{empty});
     return success();
@@ -1971,14 +1975,14 @@ struct SfSymSizeOpLowering : public OpRewritePattern<sf::SymSizeOp> {
       dim = dimAttr.getInt();
     if (dim < 0 || dim >= inputType.getRank()) return failure();
 
-    Value dimVal = rewriter.create<tensor::DimOp>(loc, input, dim);
-    Value dimI64 = rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), dimVal);
+    Value dimVal = tensor::DimOp::create(rewriter, loc, input, dim);
+    Value dimI64 = arith::IndexCastOp::create(rewriter, loc, rewriter.getI64Type(), dimVal);
     auto f32Type = rewriter.getF32Type();
-    Value dimF32 = rewriter.create<arith::UIToFPOp>(loc, f32Type, dimI64);
+    Value dimF32 = arith::UIToFPOp::create(rewriter, loc, f32Type, dimI64);
     RankedTensorType outTensorType = RankedTensorType::get({1}, f32Type);
-    Value empty = rewriter.create<tensor::EmptyOp>(loc, outTensorType, ValueRange{});
-    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    Value result = rewriter.create<tensor::InsertOp>(loc, dimF32, empty, ValueRange{c0});
+    Value empty = tensor::EmptyOp::create(rewriter, loc, outTensorType, ValueRange{});
+    Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value result = tensor::InsertOp::create(rewriter, loc, dimF32, empty, ValueRange{c0});
     rewriter.replaceOp(op, result);
     return success();
   }
@@ -2002,7 +2006,7 @@ struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
       auto eltType = getElementTypeOrSelf(rt);
       Value zero = createSafeConst(rewriter, loc, eltType, 0.0, 0);
       if (!zero) return failure();
-      auto empty = rewriter.create<tensor::EmptyOp>(loc, ArrayRef<int64_t>{}, eltType, ValueRange{});
+      auto empty = tensor::EmptyOp::create(rewriter, loc, ArrayRef<int64_t>{}, eltType, ValueRange{});
       rewriter.replaceOpWithNewOp<tensor::InsertOp>(op, zero, empty, ValueRange{});
       return success();
     }
@@ -2021,17 +2025,17 @@ struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
     auto inType = ::mlir::dyn_cast<::mlir::RankedTensorType>(input.getType());
     SmallVector<Value> zeroIdx;
     if (inType) for (int64_t _i = 0; _i < inType.getRank(); ++_i)
-      zeroIdx.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
-    Value scalarVal = rewriter.create<tensor::ExtractOp>(loc, input, zeroIdx);
+      zeroIdx.push_back(arith::ConstantIndexOp::create(rewriter, loc, 0));
+    Value scalarVal = tensor::ExtractOp::create(rewriter, loc, input, zeroIdx);
     auto scalarType = scalarVal.getType();
     Value nIdx;
     if (scalarType.isInteger(64)) {
       // Input already i64 → direct index cast
-      nIdx = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), scalarVal);
+      nIdx = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), scalarVal);
     } else if (isa<FloatType>(scalarType)) {
       // Input is f32 → fptoui + index cast
-      Value nI64 = rewriter.create<arith::FPToUIOp>(loc, rewriter.getI64Type(), scalarVal);
-      nIdx = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), nI64);
+      Value nI64 = arith::FPToUIOp::create(rewriter, loc, rewriter.getI64Type(), scalarVal);
+      nIdx = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), nI64);
     } else {
       llvm::errs() << "  [sf.arange] unsupported input type: " << scalarType << "\n";
       return failure();
@@ -2043,29 +2047,29 @@ struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
     // Using the declared static type (e.g. tensor<1xf32>) causes canonicalize
     // to specialize to the wrong concrete size, creating shape mismatches.
     SmallVector<int64_t> dynShape = {ShapedType::kDynamic};
-    Value empty = rewriter.create<tensor::EmptyOp>(loc, dynShape, eltType, ValueRange{nIdx});
+    Value empty = tensor::EmptyOp::create(rewriter, loc, dynShape, eltType, ValueRange{nIdx});
 
     // scf.for %i = 0 to N
-    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    Value zeroI64 = rewriter.create<arith::ConstantIntOp>(loc, 0, 64);
-    auto forOp = rewriter.create<scf::ForOp>(loc, c0, nIdx, c1, empty);
+    Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value zeroI64 = arith::ConstantIntOp::create(rewriter, loc, 0, 64);
+    auto forOp = scf::ForOp::create(rewriter, loc, c0, nIdx, c1, empty);
     Value iv = forOp.getInductionVar();
 
     rewriter.setInsertionPointToStart(forOp.getBody());
     // Region iter arg (not init value) — required for bufferization correctness
     Value iterArg = forOp.getBody()->getArgument(1);
-    Value ivI64 = rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), iv);
+    Value ivI64 = arith::IndexCastOp::create(rewriter, loc, rewriter.getI64Type(), iv);
     Value outVal;
     if (eltType.isInteger(64)) {
-      outVal = rewriter.create<tensor::InsertOp>(loc, iterArg.getType(), ivI64, iterArg, iv);
+      outVal = tensor::InsertOp::create(rewriter, loc, iterArg.getType(), ivI64, iterArg, iv);
     } else if (isa<FloatType>(eltType)) {
-      Value ivF32 = rewriter.create<arith::UIToFPOp>(loc, eltType, ivI64);
-      outVal = rewriter.create<tensor::InsertOp>(loc, iterArg.getType(), ivF32, iterArg, iv);
+      Value ivF32 = arith::UIToFPOp::create(rewriter, loc, eltType, ivI64);
+      outVal = tensor::InsertOp::create(rewriter, loc, iterArg.getType(), ivF32, iterArg, iv);
     } else {
       return failure();
     }
-    rewriter.create<scf::YieldOp>(loc, outVal);
+    scf::YieldOp::create(rewriter, loc, outVal);
 
     rewriter.setInsertionPointAfter(forOp);
     rewriter.replaceOp(op, forOp.getResult(0));
@@ -2099,15 +2103,15 @@ struct SfCumsumOpLowering : public OpRewritePattern<sf::CumsumOp> {
     // Copy input to output first.
     Value empty = makeEmpty(rewriter, loc, outType, {input});
     if (!empty) return failure();
-    Value initOut = rewriter.create<linalg::CopyOp>(loc, input, empty).getResult(0);
+    Value initOut = linalg::CopyOp::create(rewriter, loc, input, empty).getResult(0);
 
     // Get runtime dim size for the cumsum axis
     Value dimSize;
     bool dimIsStatic = (inType.getDimSize(dim) > 0);
     if (dimIsStatic) {
-      dimSize = rewriter.create<arith::ConstantIndexOp>(loc, inType.getDimSize(dim));
+      dimSize = arith::ConstantIndexOp::create(rewriter, loc, inType.getDimSize(dim));
     } else {
-      dimSize = rewriter.create<tensor::DimOp>(loc, input, dim);
+      dimSize = tensor::DimOp::create(rewriter, loc, input, dim);
     }
 
     // Build non-dim runtime sizes for linearization
@@ -2121,11 +2125,11 @@ struct SfCumsumOpLowering : public OpRewritePattern<sf::CumsumOp> {
       nonDimIdxs.push_back(j);
       int64_t sz = inType.getDimSize(j);
       if (sz > 0) {
-        nonDimSizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, sz));
+        nonDimSizes.push_back(arith::ConstantIndexOp::create(rewriter, loc, sz));
         nonTotalStatic *= sz;
       } else {
         nonDimAllStatic = false;
-        Value dynSz = rewriter.create<tensor::DimOp>(loc, input, j);
+        Value dynSz = tensor::DimOp::create(rewriter, loc, input, j);
         nonDimSizes.push_back(dynSz);
       }
     }
@@ -2137,25 +2141,25 @@ struct SfCumsumOpLowering : public OpRewritePattern<sf::CumsumOp> {
 
     // Compute total non-dim elements at runtime if any dim is dynamic
     if (nonDimAllStatic) {
-      nonTotalVal = rewriter.create<arith::ConstantIndexOp>(loc, nonTotalStatic);
+      nonTotalVal = arith::ConstantIndexOp::create(rewriter, loc, nonTotalStatic);
     } else {
       nonTotalVal = nonDimSizes[0];
       for (size_t s = 1; s < nonDimSizes.size(); ++s) {
-        nonTotalVal = rewriter.create<arith::MulIOp>(loc, nonTotalVal, nonDimSizes[s]);
+        nonTotalVal = arith::MulIOp::create(rewriter, loc, nonTotalVal, nonDimSizes[s]);
       }
     }
 
     // For i = 1 to dimSize-1: cumsum along dim
     // scf.for %i = 1 to dimSize
-    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    auto dimLoop = rewriter.create<scf::ForOp>(loc, c1, dimSize, c1, initOut);
+    Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    auto dimLoop = scf::ForOp::create(rewriter, loc, c1, dimSize, c1, initOut);
     Value iv = dimLoop.getInductionVar();
     rewriter.setInsertionPointToStart(dimLoop.getBody());
     Value dimIterOut = dimLoop.getBody()->getArgument(1);  // loop-carried tensor
 
     // Inner loop: iterate over all non-dim positions
-    auto innerLoop = rewriter.create<scf::ForOp>(loc, c0, nonTotalVal, c1, dimIterOut);
+    auto innerLoop = scf::ForOp::create(rewriter, loc, c0, nonTotalVal, c1, dimIterOut);
     rewriter.setInsertionPointToStart(innerLoop.getBody());
     Value innerIv = innerLoop.getInductionVar();
     Value curOut = innerLoop.getBody()->getArgument(1);
@@ -2174,24 +2178,24 @@ struct SfCumsumOpLowering : public OpRewritePattern<sf::CumsumOp> {
         }
         if (localIdx < 0) { coords[j] = c0; continue; }
         Value dSz = nonDimSizes[localIdx];
-        Value idx = rewriter.create<arith::RemSIOp>(loc, remaining, dSz);
+        Value idx = arith::RemSIOp::create(rewriter, loc, remaining, dSz);
         coords[j] = idx;
-        remaining = rewriter.create<arith::DivSIOp>(loc, remaining, dSz);
+        remaining = arith::DivSIOp::create(rewriter, loc, remaining, dSz);
       }
     }
 
     // prev = curOut[..., i-1, ...], cur = input[..., i, ...]
     SmallVector<Value> prevCoords = coords;
-    Value oneIdx = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    prevCoords[dim] = rewriter.create<arith::SubIOp>(loc, coords[dim], oneIdx);
-    Value prev = rewriter.create<tensor::ExtractOp>(loc, curOut, prevCoords);
-    Value cur = rewriter.create<tensor::ExtractOp>(loc, input, coords);
-    Value sum = rewriter.create<arith::AddFOp>(loc, prev, cur);
-    Value newOutVal = rewriter.create<tensor::InsertOp>(loc, outType, sum, curOut, coords);
-    rewriter.create<scf::YieldOp>(loc, newOutVal);
+    Value oneIdx = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    prevCoords[dim] = arith::SubIOp::create(rewriter, loc, coords[dim], oneIdx);
+    Value prev = tensor::ExtractOp::create(rewriter, loc, curOut, prevCoords);
+    Value cur = tensor::ExtractOp::create(rewriter, loc, input, coords);
+    Value sum = arith::AddFOp::create(rewriter, loc, prev, cur);
+    Value newOutVal = tensor::InsertOp::create(rewriter, loc, outType, sum, curOut, coords);
+    scf::YieldOp::create(rewriter, loc, newOutVal);
 
     rewriter.setInsertionPointAfter(innerLoop);
-    rewriter.create<scf::YieldOp>(loc, innerLoop.getResult(0));
+    scf::YieldOp::create(rewriter, loc, innerLoop.getResult(0));
 
     rewriter.setInsertionPointAfter(dimLoop);
     rewriter.replaceOp(op, dimLoop.getResult(0));
@@ -2224,11 +2228,11 @@ struct SfEmbeddingOpLowering : public OpRewritePattern<sf::EmbeddingOp> {
     SmallVector<Value> dynSizes;
     for (int64_t i = 0; i < idxRank; ++i)
       if (correctType.isDynamicDim(i))
-        dynSizes.push_back(rewriter.create<tensor::DimOp>(loc, indices, i));
+        dynSizes.push_back(tensor::DimOp::create(rewriter, loc, indices, i));
     // If embed dim is dynamic in rt, add its size at runtime
     if (correctRank > idxRank && correctType.isDynamicDim(idxRank))
-      dynSizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, wType.getDimSize(1)));
-    Value empty = rewriter.create<tensor::EmptyOp>(loc, correctType, dynSizes);
+      dynSizes.push_back(arith::ConstantIndexOp::create(rewriter, loc, wType.getDimSize(1)));
+    Value empty = tensor::EmptyOp::create(rewriter, loc, correctType, dynSizes);
 
     // Affine maps: indices (batch, seq) → output (batch, seq, embed)
     int64_t embedRank = idxRank + 1;
@@ -2248,18 +2252,18 @@ struct SfEmbeddingOpLowering : public OpRewritePattern<sf::EmbeddingOp> {
           Value rawIdx = bodyArgs[0];
           Value embedIdx;
           if (isa<IntegerType>(rawIdx.getType())) {
-            embedIdx = b.create<arith::IndexCastOp>(bodyLoc, b.getIndexType(), rawIdx);
+            embedIdx = arith::IndexCastOp::create(b, bodyLoc, b.getIndexType(), rawIdx);
           } else if (isa<FloatType>(rawIdx.getType())) {
-            Value i64Idx = b.create<arith::FPToUIOp>(bodyLoc, b.getI64Type(), rawIdx);
-            embedIdx = b.create<arith::IndexCastOp>(bodyLoc, b.getIndexType(), i64Idx);
+            Value i64Idx = arith::FPToUIOp::create(b, bodyLoc, b.getI64Type(), rawIdx);
+            embedIdx = arith::IndexCastOp::create(b, bodyLoc, b.getIndexType(), i64Idx);
           } else {
-            embedIdx = b.create<arith::ConstantIndexOp>(bodyLoc, 0);
+            embedIdx = arith::ConstantIndexOp::create(b, bodyLoc, 0);
           }
           // Extract embedding row: weight[embedIdx, embed_dim]
-          Value embedDim = b.create<linalg::IndexOp>(bodyLoc, embedRank - 1);
-          Value wVal = b.create<tensor::ExtractOp>(bodyLoc, weight,
+          Value embedDim = linalg::IndexOp::create(b, bodyLoc, embedRank - 1);
+          Value wVal = tensor::ExtractOp::create(b, bodyLoc, weight,
                                                      ValueRange{embedIdx, embedDim});
-          b.create<linalg::YieldOp>(bodyLoc, wVal);
+          linalg::YieldOp::create(b, bodyLoc, wVal);
         });
 
     rewriter.replaceOp(op, genericOp.getResult(0));
@@ -2310,11 +2314,11 @@ struct SfIndexOpLowering : public OpRewritePattern<sf::IndexOp> {
       if (outType.isDynamicDim(i)) {
         int64_t dataIdx = i - dynOffset;
         if (dataIdx >= 0 && dataIdx < dataRank && dataType.isDynamicDim(dataIdx))
-          outDims.push_back(rewriter.create<tensor::DimOp>(loc, data, dataIdx));
+          outDims.push_back(tensor::DimOp::create(rewriter, loc, data, dataIdx));
         else
-          outDims.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 1));
+          outDims.push_back(arith::ConstantIndexOp::create(rewriter, loc, 1));
       } else {
-        outDims.push_back(rewriter.create<arith::ConstantIndexOp>(loc, outType.getDimSize(i)));
+        outDims.push_back(arith::ConstantIndexOp::create(rewriter, loc, outType.getDimSize(i)));
       }
     }
 
@@ -2322,21 +2326,21 @@ struct SfIndexOpLowering : public OpRewritePattern<sf::IndexOp> {
     SmallVector<Value> dynSizes;
     for (int64_t i = 0; i < outType.getRank(); ++i)
       if (outType.isDynamicDim(i)) dynSizes.push_back(outDims[i]);
-    Value empty = rewriter.create<tensor::EmptyOp>(loc, outType, dynSizes);
+    Value empty = tensor::EmptyOp::create(rewriter, loc, outType, dynSizes);
 
-    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
     Value total;
     if (hasDynamic) {
-      total = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      total = arith::ConstantIndexOp::create(rewriter, loc, 1);
       for (int64_t i = 0; i < outType.getRank(); ++i)
         total = (i == 0) ? outDims[i]
-                         : rewriter.create<arith::MulIOp>(loc, total, outDims[i]);
+                         : arith::MulIOp::create(rewriter, loc, total, outDims[i]);
     } else {
-      total = rewriter.create<arith::ConstantIndexOp>(loc, outNumel);
+      total = arith::ConstantIndexOp::create(rewriter, loc, outNumel);
     }
 
-    auto forOp = rewriter.create<scf::ForOp>(loc, c0, total, c1, ValueRange{empty});
+    auto forOp = scf::ForOp::create(rewriter, loc, c0, total, c1, ValueRange{empty});
     Value iv = forOp.getInductionVar();
 
     rewriter.setInsertionPointToStart(forOp.getBody());
@@ -2348,8 +2352,8 @@ struct SfIndexOpLowering : public OpRewritePattern<sf::IndexOp> {
     SmallVector<Value> outCoords(outType.getRank());
     Value remaining = iv;
     for (int64_t j = 0; j < outType.getRank(); ++j) {
-      outCoords[j] = rewriter.create<arith::RemSIOp>(loc, remaining, outDims[j]);
-      remaining = rewriter.create<arith::DivSIOp>(loc, remaining, outDims[j]);
+      outCoords[j] = arith::RemSIOp::create(rewriter, loc, remaining, outDims[j]);
+      remaining = arith::DivSIOp::create(rewriter, loc, remaining, outDims[j]);
     }
 
     // Read values from index tensors. idxCoords must match index tensor's rank (not outType's).
@@ -2362,23 +2366,23 @@ struct SfIndexOpLowering : public OpRewritePattern<sf::IndexOp> {
         if (j < (int64_t)outCoords.size())
           idxCoords.push_back(outCoords[j]);
         else
-          idxCoords.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
+          idxCoords.push_back(arith::ConstantIndexOp::create(rewriter, loc, 0));
       }
-      Value rawIdx = rewriter.create<tensor::ExtractOp>(loc, indexTensors[i], idxCoords);
+      Value rawIdx = tensor::ExtractOp::create(rewriter, loc, indexTensors[i], idxCoords);
       if (isa<IntegerType>(rawIdx.getType()))
-        dataCoords[i] = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), rawIdx);
+        dataCoords[i] = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), rawIdx);
       else
-        dataCoords[i] = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+        dataCoords[i] = arith::ConstantIndexOp::create(rewriter, loc, 0);
     }
 
     Value val;
     if (dataType.getRank() == 0) {
-      val = rewriter.create<tensor::ExtractOp>(loc, data, ValueRange{});
+      val = tensor::ExtractOp::create(rewriter, loc, data, ValueRange{});
     } else {
-      val = rewriter.create<tensor::ExtractOp>(loc, data, dataCoords);
+      val = tensor::ExtractOp::create(rewriter, loc, data, dataCoords);
     }
-    Value newOut = rewriter.create<tensor::InsertOp>(loc, outType, val, curOut, outCoords);
-    rewriter.create<scf::YieldOp>(loc, newOut);
+    Value newOut = tensor::InsertOp::create(rewriter, loc, outType, val, curOut, outCoords);
+    scf::YieldOp::create(rewriter, loc, newOut);
 
     rewriter.setInsertionPointAfter(forOp);
     rewriter.replaceOp(op, forOp.getResult(0));
@@ -2668,6 +2672,7 @@ struct SfLowerToLinalgPass
       if (failed(result)) {
         llvm::errs() << "  [sf-lower-to-linalg] greedy rewriter did not converge for '"
                      << func.getName() << "'\n";
+        signalPassFailure();
       }
       llvm::errs() << "  [sf-lower-to-linalg] after lowering func '" << func.getName() << "'\n";
     }
@@ -2685,6 +2690,7 @@ struct SfLowerToLinalgPass
     if (remaining > 0) {
       llvm::errs() << "  [sf-lower-to-linalg] " << remaining
                    << " sf ops remain unconverted\n";
+      signalPassFailure();
     } else {
       llvm::errs() << "  [sf-lower-to-linalg] all sf ops converted\n";
     }

@@ -149,7 +149,7 @@ def run_test(name: str, mlir_text: str, timeout_s: int = 5) -> tuple[bool, str]:
                 "builtin.module("
                 "sf-promote-weights,canonicalize,cse,sf-lower-to-linalg"
                 ")", ctx)
-            pman.enable_verifier(False)
+            pman.enable_verifier(True)
             t0 = time.time()
             pman.run(module.operation)
             elapsed = time.time() - t0

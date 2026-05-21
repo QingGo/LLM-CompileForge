@@ -74,8 +74,9 @@ def main():
     # Step 2: fuse elementwise (optional)
     try:
         pm.PassManager.parse("builtin.module(linalg-fuse-elementwise-ops,canonicalize,cse)", ctx).run(mod.operation)
-    except Exception:
-        pass
+    except Exception as e:
+        import warnings
+        warnings.warn(f"Fusion pass skipped: {e}")
 
     # Step 3: tile matmul K dim by 64
     from compiler.mlir_dialect.llvm_backend import _tile_matmuls_per_func

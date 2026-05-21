@@ -104,7 +104,7 @@ sf.register_dialects(ctx._CAPIPtr, load=True)
 ir_mod = mlir_module_to_ir_module(module, ctx=ctx)
 pman = pm.PassManager.parse(
     'builtin.module(sf-promote-weights,canonicalize,cse,sf-lower-to-linalg)', ctx)
-pman.enable_verifier(False)
+pman.enable_verifier(True)
 pman.run(ir_mod.operation)
 asm = ir_mod.operation.get_asm(print_generic_op_form=True)
 open(r'{self.lowered_path}', 'w').write(asm)

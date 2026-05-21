@@ -669,7 +669,7 @@ BUILTIN_STAGES: list[Stage] = [
     Stage("canonicalize,cse", "canonicalize,cse"),
     Stage("fuse+canonicalize", "linalg-fuse-elementwise-ops,canonicalize,cse", warn_only=False),
     _make_tile_stage(),
-    Stage("emit_c_interface", action=_emit_c_interface_action, timeout=5.0, warn_only=True),
+    Stage("emit_c_interface", action=_emit_c_interface_action, timeout=5.0, warn_only=False),
     Stage("ensure-filled-outputs", action=ensure_filled_matmul_outputs_action, timeout=30.0, warn_only=False),
     Stage("bufferize", (
         "one-shot-bufferize{bufferize-function-boundaries allow-unknown-ops},"
