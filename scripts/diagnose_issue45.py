@@ -237,10 +237,50 @@ def call_dylib_ctypes() -> np.ndarray | None:
         strides=(c_int64 * 2)(4, 1),
     )
 
-    # We need all weight arguments too. The dylib expects ~214 weight inputs.
-    # Without the full compute graph, we can't construct the call.
-    print("  ⚠ ctypes call requires full weight argument construction (not yet implemented)")
-    print("  Use --rust-only for diagnostics via Rust executor.")
+    print("\n  ┌─ Three-way comparison (ctypes mode) ──────────────────────────")
+    print("  │")
+    print("  │  This script would isolate which layer introduces the bug:")
+    print("  │")
+    print("  │  Python Executor ──── cos(Py, HF) ────► HuggingFace (reference)")
+    print("  │       │                                      validates compilation")
+    print("  │       │                                      pipeline lowering")
+    print("  │       │")
+    print("  │    cos(Rust, Py)")
+    print("  │       │")
+    print("  │       ▼")
+    print("  │  Rust Executor ───── cos(Rust, ctypes) ──► ctypes (.dylib)")
+    print("  │                              isolates Rust runtime vs dylib")
+    print("  │")
+    print("  │  cos(Py, HF)          — validates compilation pipeline")
+    print("  │  cos(Rust, ctypes)    — isolates Rust executor vs dylib")
+    print("  │  cos(ctypes, Py)      — isolates dylib vs Python executor")
+    print("  │")
+    print("  │  Currently ctypes is stub (needs all 215 weight args).")
+    print("  │  Use `--skip-rust` to test Python pipeline separately.")
+    print("  │")
+    print("  └────────────────────────────────────────────────────────────")
+
+    if os.path.exists("/tmp/rust_logits.csv"):
+        rust_raw = np.loadtxt("/tmp/rust_logits.csv", delimiter=",")
+        ref_path = os.path.join(REF_DIR, "python_ref_logits.npy")
+        if os.path.exists(ref_path):
+            py_ref = np.load(ref_path)
+            r = rust_raw.ravel().astype(np.float64)
+            p = py_ref.ravel().astype(np.float64)
+            denom = float(np.linalg.norm(r) * np.linalg.norm(p))
+            c = float(np.dot(r, p) / (denom + 1e-12))
+            print(f"\n  cos(Rust vs Python) from /tmp/rust_logits.csv: {c:.6f}")
+            if c < 0.99:
+                print("  → Bug is between Python executor output and Rust executor output.")
+                print("  → To further isolate: implement ctypes call to compare")
+                print("    Rust runtime vs dylib directly.")
+            else:
+                print("  → Rust matches Python. Bug is in Python compilation pipeline vs HF.")
+        else:
+            print("  (python_ref_logits.npy not found — run with --save-ref first)")
+    else:
+        print("  (/tmp/rust_logits.csv not found — run Rust forward to get data)")
+
     return None
 
 
@@ -293,7 +333,7 @@ def main():
                 print("     Run: cargo run --bin forward_check")
                 sys.exit(1)
             rust_raw = np.loadtxt(csv_path, delimiter=",")
-            rust_logits = rust_raw.reshape(1, 4, 50272)
+            rust_logits = reshape_rust_logits(rust_raw, py_ref.shape)
             print(f"  Rust logits loaded (--fast): shape={rust_logits.shape}, first={rust_logits[0,0,0]:.6f}")
         else:
             rust_raw = run_rust_forward()
@@ -332,36 +372,57 @@ def main():
         if args.ctypes:
             call_dylib_ctypes()
 
+        per_token_cos = [
+            cosine_similarity(rust_logits[0, t:t+1], py_ref[0, t:t+1])
+            for t in range(rust_logits.shape[1])
+        ]
+
         # Diagnosis summary
         print("\n" + "=" * 60)
         print("DIAGNOSIS SUMMARY")
         print("=" * 60)
-        identify_bug_location(cosine_similarity(rust_logits, py_ref))
+        identify_bug_location(sim_rust_py, sim_py_hf, per_token_cos)
 
     return 0
 
 
-def identify_bug_location(cos_rust_py: float):
-    """Based on cosine values, suggest where the bug might be."""
-    print(f"  Cosine(Rust vs Python): {cos_rust_py:.6f}")
+def identify_bug_location(cos_rust_py: float, cos_py_hf: float = 1.0, per_token_cos: list[float] | None = None):
+    """Based on cosine values, suggest where the bug might be.
 
-    if cos_rust_py > 0.999:
-        print("  ✅ Issue #45 appears RESOLVED")
+    Args:
+        cos_rust_py: Cosine similarity between Rust executor and Python executor.
+        cos_py_hf: Cosine similarity between Python executor and HuggingFace reference.
+        per_token_cos: Per-token cosine similarities (Rust vs Python) for positional diagnosis.
+    """
+    print(f"  cos(Rust vs Python) = {cos_rust_py:.6f}")
+    print(f"  cos(Python vs HF)   = {cos_py_hf:.6f}")
+
+    if cos_py_hf < 0.99:
+        print("  → Bug 在 Python 编译流水线中（pipeline 或 lowering）")
+        return
+    if cos_rust_py > 0.99:
+        print("  → ✅ Issue #45 已解决")
         return
 
-    # Check per-position pattern
-    print("\n  Likely bug locations based on cosine:")
-    print("    If cos < 0.1:         Weight loading corrupted (f16→f32 bug, wrong weights)")
-    print("    If cos ≈ 0.5:         Systematic error in computation (position embed, layer norm)")
-    print("    If cos token[0] good, token[3] bad: Position embedding issue")
-    print("    If all tokens equally bad: Weight loading or constant folding issue")
-    print("    If first layer output good, last layer bad: Layer-specific bug")
+    if per_token_cos:
+        print(f"  Per-token cos: {[f'{c:.4f}' for c in per_token_cos]}")
 
-    print("\n  Next steps:")
-    print("    1. Check weight f16→f32 conversion in weight_loader.rs")
-    print("    2. Verify position embedding lowering in C++ passes")
-    print("    3. Compare intermediate layer outputs (use --layer-dumps)")
-    print("    4. Run `check_dylib_ctypes.py` to isolate dylib vs Rust runtime")
+        if per_token_cos[0] >= 0.99 and per_token_cos[-1] < 0.8:
+            print("  → 模式：token[0] 正确，后续 token 退化")
+            print("  → 怀疑：position embedding / KV cache / SSA routing")
+            print("  → 排查：使用 DUMP_LAYERS 做 per-layer 对比")
+            print("     DUMP_LAYERS=/tmp/ld cargo run --bin forward_check")
+        elif all(c < 0.1 for c in per_token_cos):
+            print("  → 所有 token 都错 → 权重加载或常量 folding 问题")
+        else:
+            print("  → 系统性计算错误（layer norm / matmul 精度）")
+    else:
+        print("  (no per-token data — run with full diagnose for per-token analysis)")
+        print("\n  Likely bug locations based on cosine:")
+        print("    If cos < 0.1:         Weight loading corrupted (f16→f32 bug, wrong weights)")
+        print("    If cos ≈ 0.5:         Systematic error in computation (position embed, layer norm)")
+        print("    If cos token[0] good, token[3] bad: Position embedding issue")
+        print("    If all tokens equally bad: Weight loading or constant folding issue")
 
 
 if __name__ == "__main__":

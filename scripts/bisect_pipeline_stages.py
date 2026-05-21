@@ -279,6 +279,17 @@ def _ctypes_skip_and_test(oracle, stages, out_dir: str, skip_indices: list[int],
     return cos
 
 
+def _check_signal_saturation(results: list[dict], threshold: float = 0.01) -> None:
+    cos_values = [r["cos"] for r in results if "cos" in r]
+    if len(cos_values) < 3:
+        return
+    spread = max(cos_values) - min(cos_values)
+    if spread < threshold:
+        print(f"\n  ⚠️ SIGNAL SATURATION: All variants produce cos within {spread:.4f}")
+        print("     The bisect target may not be in the pipeline stages being tested.")
+        print("     Consider testing: weight loading, position embedding, or bufferization.")
+
+
 def _run_ctypes_bisect(args, stages, out_dir: str) -> int:
     """Handle all --ctypes modes."""
     from scripts.ctypes_oracle import CtypesOracle
@@ -315,6 +326,7 @@ def _run_ctypes_bisect(args, stages, out_dir: str) -> int:
 
         _log.info("\n=== Baseline (--ctypes) ===")
         baseline_cos = _ctypes_baseline(oracle, stages, out_dir)
+        results = []
 
         for name, cfg in suspects.items():
             _log.info("\n=== Testing: skip %s ===", name)
@@ -327,7 +339,9 @@ def _run_ctypes_bisect(args, stages, out_dir: str) -> int:
                 _log.info(
                     "  => cos=%.6f  Δ=%+.6f%s", cos, delta, flag
                 )
+                results.append({"stage": name, "cos": cos})
 
+        _check_signal_saturation(results)
         _log.info("\n=== All suspect tests done ===")
         return 0
 
@@ -337,6 +351,7 @@ def _run_ctypes_bisect(args, stages, out_dir: str) -> int:
     _log.info("Threshold for significance: |Δ| > %.4f", args.threshold)
 
     _log.info("\n=== Testing each stage by skipping it ===")
+    results = []
     for i, s in enumerate(stages):
         trial = make_pipeline_without(stages, i)
         dylib_path = compile_with_stages(
@@ -350,7 +365,9 @@ def _run_ctypes_bisect(args, stages, out_dir: str) -> int:
         delta = cos - baseline_cos
         flag = " ← SIGNIFICANT" if abs(delta) > args.threshold else ""
         _log.info("  [%2d] %-30s skip   cos=%.6f  Δ=%+.6f%s", i, s.name, cos, delta, flag)
+        results.append({"stage": i, "cos": cos})
 
+    _check_signal_saturation(results)
     _log.info("\n=== All stage-skip tests done ===")
     return 0
 

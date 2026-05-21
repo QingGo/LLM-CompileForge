@@ -460,6 +460,15 @@ def _make_tile_stage() -> Stage:
         tile_matmuls_action(m, tile_k=64)
         ctx = m.operation.context
         pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx).run(m.operation)
+
+        # ── Verify tiling actually happened ──
+        txt = str(m)
+        scf_count = txt.count("scf.for")
+        if scf_count == 0:
+            _log.error("  ⚠️ TILING VERIFICATION FAILED: zero scf.for produced after tile_matmuls_action")
+            _log.error("  ⚠️ Check transform-interpreter setup — matmuls remain untiled")
+        else:
+            _log.info("  ✓ Tiling verification: %d scf.for loops produced", scf_count)
     return Stage(
         name="tile_matmuls (K,N=64)",
         action=_tile_action,
@@ -504,7 +513,6 @@ def _emit_c_interface_action(module: Any) -> None:
 BUILTIN_STAGES: list[Stage] = [
     Stage("canonicalize,cse", "canonicalize,cse"),
     Stage("fuse+canonicalize", "linalg-fuse-elementwise-ops,canonicalize,cse", warn_only=True),
-    Stage("tile K=64,N=64", "transform-interpreter", warn_only=True),
     _make_tile_stage(),
     Stage("emit_c_interface", action=_emit_c_interface_action, timeout=5.0),
     Stage("ensure-filled-outputs", action=ensure_filled_matmul_outputs_action, timeout=30.0, warn_only=True),
