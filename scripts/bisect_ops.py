@@ -234,7 +234,8 @@ def main():
     tests.append((
         """module {
   func.func @f(%a: tensor<2x64xf32>, %w: tensor<64xf32>, %b: tensor<64xf32>) -> tensor<2x64xf32> {
-    %0 = "sf.layer_norm"(%a, %w, %b) {eps = 1.000000e-05 : f32} : (tensor<2x64xf32>, tensor<64xf32>, tensor<64xf32>) -> tensor<2x64xf32>
+    %0 = "sf.layer_norm"(%a, %w, %b) {eps = 1.000000e-05 : f32}"""
+        """ : (tensor<2x64xf32>, tensor<64xf32>, tensor<64xf32>) -> tensor<2x64xf32>
     return %0 : tensor<2x64xf32>
   }
 }""",

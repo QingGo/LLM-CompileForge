@@ -73,14 +73,17 @@ def parse_sfcf_blob(blob: bytes):
     constants: dict[str, np.ndarray] = {}
     for _ in range(const_count):
         name, pos = _read_str(blob, pos)
-        dtype_code = blob[pos]; pos += 1
-        ndim = blob[pos]; pos += 1
+        dtype_code = blob[pos]
+        pos += 1
+        ndim = blob[pos]
+        pos += 1
         shape: list[int] = []
         for _ in range(ndim):
             d, pos = _read_u64(blob, pos)
             shape.append(int(d))
         data_len, pos = _read_u64(blob, pos)
-        raw = blob[pos:pos + data_len]; pos += data_len
+        raw = blob[pos:pos + data_len]
+        pos += data_len
         # dtype codes: 0=F32, 1=F16, 2=BF16, 3=I64, 4=I32, 5=I8, 6=U8
         dtype_map = {0: np.float32, 1: np.float16, 2: np.float16,
                      3: np.int64, 4: np.int32, 5: np.int8, 6: np.uint8}
@@ -110,7 +113,8 @@ def parse_compute_graph(data: bytes, pos: int):
 
         inputs = []
         for _ in range(num_inputs):
-            bt = data[pos]; pos += 1
+            bt = data[pos]
+            pos += 1
             if bt == 0:        # Weight
                 key, pos = _read_str(data, pos)
                 binding = ('weight', key)
@@ -122,7 +126,8 @@ def parse_compute_graph(data: bytes, pos: int):
                 binding = ('global_input',)
             else:
                 raise ValueError(f"Unknown binding type {bt}")
-            rank = data[pos]; pos += 1
+            rank = data[pos]
+            pos += 1
             ndims, pos = _read_u32(data, pos)
             shape = []
             for _ in range(ndims):
@@ -132,7 +137,8 @@ def parse_compute_graph(data: bytes, pos: int):
 
         outputs = []
         for _ in range(num_outputs):
-            rank = data[pos]; pos += 1
+            rank = data[pos]
+            pos += 1
             ndims, pos = _read_u32(data, pos)
             shape = []
             for _ in range(ndims):
@@ -245,16 +251,16 @@ def parse_sret_outputs(sret_bytes: bytes, output_defs: list[dict]) -> list[np.nd
 # =====================================================================
 
 def main():
-    ARTIFACT_DIR = "./compiled/opt_125m_fresh"
-    DYLIB_PATH = os.path.join(ARTIFACT_DIR, "libopt_125m.dylib")
-    INPUT_IDS = np.array([[2, 32826, 85, 4129], [0, 0, 0, 0]], dtype=np.int64)
+    artifact_dir = "./compiled/opt_125m_fresh"
+    dylib_path = os.path.join(artifact_dir, "libopt_125m.dylib")
+    input_ids = np.array([[2, 32826, 85, 4129], [0, 0, 0, 0]], dtype=np.int64)
 
     # ── Step 1: Load Python executor reference weights ──────────────
     print("=" * 60)
     print("Step 1/5: Load artifact weights (Python executor path)")
     print("=" * 60)
     from compiler.serialize import load_artifact
-    artifact = load_artifact(ARTIFACT_DIR)
+    artifact = load_artifact(artifact_dir)
 
     all_weights: dict[str, np.ndarray] = {}
     for func in artifact.functions:
@@ -281,13 +287,14 @@ def main():
         py_logits = np.load(py_logits_path)
     else:
         # Generate them on the fly
-        from hal.pytorch_backend import PyTorchBackend
-        from engine.mlir_executor import MlirExecutor
         import torch
+
+        from engine.mlir_executor import MlirExecutor
+        from hal.pytorch_backend import PyTorchBackend
         backend = PyTorchBackend('cpu')
         executor = MlirExecutor(artifact, backend)
         with torch.no_grad():
-            logits = executor.forward(torch.tensor(INPUT_IDS))
+            logits = executor.forward(torch.tensor(input_ids))
         py_logits = logits.numpy()
         np.save(py_logits_path, py_logits)
 
@@ -301,7 +308,7 @@ def main():
     print("=" * 60)
     print("Step 3/5: Load dylib and parse embedded SFCF blob")
     print("=" * 60)
-    lib = ctypes.CDLL(DYLIB_PATH)
+    lib = ctypes.CDLL(dylib_path)
 
     # Read embedded SFCF blob from dylib symbols
     data_ptr = ctypes.cast(
@@ -337,7 +344,7 @@ def main():
     print("Step 4/5: Run forward pass via ctypes")
     print("=" * 60)
 
-    SRET_SIZE = 131072  # 128KB should be ample for 211 output descriptors
+    sret_size = 131072  # 128KB should be ample for 211 output descriptors
     func_outputs: list[list[np.ndarray]] = [[] for _ in range(len(graph['functions']))]
 
     # Build a combined weight lookup with multi-strategy key resolution.
@@ -409,7 +416,7 @@ def main():
             io_shape = inp['shape']
 
             if binding[0] == 'global_input':
-                arr = INPUT_IDS
+                arr = input_ids
 
             elif binding[0] == 'weight':
                 key = binding[1]
@@ -449,7 +456,7 @@ def main():
             input_args.append(ctypes.byref(desc))
 
         # Allocate sret buffer
-        sret = (ctypes.c_uint8 * SRET_SIZE)()
+        sret = (ctypes.c_uint8 * sret_size)()
 
         # Build arg list: sret + all input descriptors
         all_args = [ctypes.byref(sret)] + input_args
@@ -491,7 +498,7 @@ def main():
     print(f"    mean={ctypes_logits.mean():.6f}, std={ctypes_logits.std():.6f}")
 
     # Compare with Python executor per-token
-    print(f"\n  Per-token cosine (ctypes vs Python executor):")
+    print("\n  Per-token cosine (ctypes vs Python executor):")
     for b in range(min(ctypes_logits.shape[0], py_logits.shape[0])):
         for p in range(min(ctypes_logits.shape[1], py_logits.shape[1])):
             sim = cosine_similarity(ctypes_logits[b, p], py_logits[b, p])

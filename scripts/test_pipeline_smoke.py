@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import time
+import warnings
 from pathlib import Path
 
 
@@ -40,7 +41,6 @@ def main():
 
     artifact = Path(compiled_dir)
     lowered_path = artifact / "model.lowered.mlir"
-    model_path = artifact / "model.mlir"
 
     if not lowered_path.exists():
         print(f"❌ {lowered_path} not found — run 'python scripts/compile_dylib.py {compiled_dir}' first")
@@ -52,7 +52,7 @@ def main():
 
     # Step 0: Environment setup
     t0 = time.time()
-    import warnings; warnings.filterwarnings("ignore")
+    warnings.filterwarnings("ignore")
     import mlir.ir as ir
     import mlir.passmanager as pm
     from mlir._mlir_libs import _mlirRegisterEverything
@@ -119,7 +119,8 @@ def main():
 
     # Step 7: llc + link
     import tempfile
-    from compiler.mlir_dialect.llvm_backend import llc_compile, _compile_embedded_data, link_dylib
+
+    from compiler.mlir_dialect.llvm_backend import _compile_embedded_data, link_dylib, llc_compile
     t7 = time.time()
     with tempfile.TemporaryDirectory() as td:
         ll_path = os.path.join(td, "model.ll")

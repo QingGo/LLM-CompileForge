@@ -55,7 +55,8 @@ def _patch_transformers_torch() -> None:
         _maybe_fx_imp = getattr(transformers, "_torch_fx_imported", None)
         if _maybe_fx_imp is not None:
             transformers._torch_fx_imported = True
-        if hasattr(transformers.dynamic_module_utils, "_torch_fx_imported") if hasattr(transformers, "dynamic_module_utils") else False:
+        _has_dyn = hasattr(transformers, "dynamic_module_utils")
+        if _has_dyn and hasattr(transformers.dynamic_module_utils, "_torch_fx_imported"):
             transformers.dynamic_module_utils._torch_fx_imported = True
         if hasattr(transformers, "modeling_utils"):
             if hasattr(transformers.modeling_utils, "_model_output_unflatten"):
@@ -200,7 +201,7 @@ def main() -> None:
     exec_errors = 0
 
     t0 = time.time()
-    for i, op in enumerate(ir_func.ops):
+    for _i, op in enumerate(ir_func.ops):
         if op.name == "constant":
             if op.inputs and op.inputs[0] in all_weights:
                 result = all_weights[op.inputs[0]]

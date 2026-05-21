@@ -80,7 +80,6 @@ def main():
 
     # Build JIT input: same as what the Rust executor uses
     # [2, 32826, 85, 4129, 0, 0, 0, 0] reshaped to [2, 4]
-    input_ids = np.array([[2, 32826, 85, 4129], [0, 0, 0, 0]], dtype=np.int64)
 
     # We need to load weights from pytorch_model.bin to match the Python executor
     hub_dir = os.path.expanduser("~/.cache/huggingface/hub/models--facebook--opt-125m")
@@ -108,8 +107,8 @@ def main():
     _setup_mlir_path()
     import mlir.ir as ir
     import mlir.passmanager as pm
-    from mlir.execution_engine import ExecutionEngine
     from mlir._mlir_libs import _mlirRegisterEverything
+    from mlir.execution_engine import ExecutionEngine
 
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
@@ -126,7 +125,7 @@ def main():
         module = ir.Module.parse(lowered_text, ctx)
 
         # Run vectorization + bufferize + lowering pipeline
-        from compiler.mlir_dialect.llvm_backend import lower_linalg_to_llvm_ir, _vectorize_via_transform
+        from compiler.mlir_dialect.llvm_backend import lower_linalg_to_llvm_ir
         try:
             llvm_text = lower_linalg_to_llvm_ir(module)
             print(f"  Pipeline OK, LLVM text: {len(llvm_text)} chars")
@@ -153,7 +152,7 @@ def main():
         # Try JIT
         print("  Creating ExecutionEngine...")
         try:
-            engine = ExecutionEngine(llvm_mod, opt_level=0)
+            _ = ExecutionEngine(llvm_mod, opt_level=0)
         except Exception as e:
             print(f"  ExecutionEngine FAILED: {e}")
             return

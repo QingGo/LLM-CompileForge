@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Tests for individual sf→linalg lowering patterns.
 
 Each test constructs a minimal MLIR module with a single sf op, runs
@@ -46,7 +47,7 @@ def _lower(sf_text: str) -> str:
 def _check_lowered(lowered: str, expected: str = "linalg.", not_expected: str = "sf.") -> None:
     """Verify lowered output contains expected and lacks not_expected."""
     if not_expected and not_expected in lowered:
-        assert False, f"Lowered IR still contains '{not_expected}'. First 500 chars: {lowered[:500]}"
+        raise AssertionError(f"Lowered IR still contains '{not_expected}'. First 500 chars: {lowered[:500]}")
     if expected and expected not in lowered:
         # Some ops lower to tensor.dialect ops, not linalg
         if "tensor." in lowered or "arith." in lowered:
@@ -886,9 +887,10 @@ def test_vector_contract_lowering_outerproduct():
     if not _has_vec_bindings():
         pytest.skip("MLIR vector bindings not available (transform dialect)")
 
-    from compiler.mlir_dialect.llvm_backend import _vectorize_via_transform
     import mlir.ir as ir
     import mlir.passmanager as pm
+
+    from compiler.mlir_dialect.llvm_backend import _vectorize_via_transform
 
     mlir_text = """module {
   func.func @test(%a: tensor<1x12x4x64xf32>, %b: tensor<1x12x64x4xf32>) -> tensor<1x12x4x4xf32> {

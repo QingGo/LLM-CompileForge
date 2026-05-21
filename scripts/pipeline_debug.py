@@ -33,9 +33,8 @@ def run_pipeline():
     mlir_path = os.path.join(artifact_dir, "model.lowered.mlir")
     if not os.path.exists(mlir_path):
         mlir_path = os.path.join(artifact_dir, "model.mlir")
-    shutil.copy(mlir_path, f"{out_dir}/00_input.mlir") if 'shutil' in dir() else None
-
     import shutil
+    shutil.copy(mlir_path, f"{out_dir}/00_input.mlir")
     shutil.copy(mlir_path, f"{out_dir}/00_input.mlir")
     print(f"  [00_input          ] {os.path.getsize(f'{out_dir}/00_input.mlir')/1e6:.2f}MB\n")
 
@@ -68,7 +67,7 @@ def run_pipeline():
             with open(out_path, "w") as f:
                 f.write(text)
             return out_path, elapsed, text
-        except Exception as e:
+        except Exception:
             signal.alarm(0)
             elapsed = time.time() - t0
             if is_optional:
@@ -130,7 +129,8 @@ def run_pipeline():
                 elif name == "builtin.module":
                     for inner in op.operation.regions[0].blocks[0]:
                         if str(inner.operation.name) == "func.func":
-                            src = inner; break
+                            src = inner
+                            break
                 if src is not None:
                     cloned = src.operation.clone()
                     func.operation.erase()
@@ -191,7 +191,9 @@ def run_pipeline():
 
     cur, e, txt = stage_custom(_vectorize, "05_vectorized")
     print(f"  [05_vectorize      ] {e:6.2f}s  {os.path.getsize(cur)/1e6:.2f}MB"
-          f"  contracts={txt.count('vector.contract')} matmul={txt.count('linalg.matmul')} batch={txt.count('linalg.batch_matmul')}")
+          f"  contracts={txt.count('vector.contract')}"
+          f" matmul={txt.count('linalg.matmul')}"
+          f" batch={txt.count('linalg.batch_matmul')}")
 
     # ── S6: one-shot-bufferize ──────────────────────────────────────────
     cur, e, txt = stage_steps(
@@ -224,7 +226,7 @@ def run_pipeline():
           f"  contracts={txt.count('vector.contract')}")
 
     # ── S10: convert-vector-to-llvm (default strategy=dot) ──────────────
-    print(f"  [10_vec_to_llvm    ] ", end="", flush=True)
+    print("  [10_vec_to_llvm    ] ", end="", flush=True)
     signal.alarm(timeout_default)
     t0 = time.time()
     try:

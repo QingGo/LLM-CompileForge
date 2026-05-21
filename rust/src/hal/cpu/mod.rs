@@ -131,8 +131,7 @@ impl traits::Stream for CpuStream {
 // ── Re-exports (used by executor.rs, weight_loader.rs) ─
 
 pub use executable::CpuExecutable as Executable;
-pub use kernel::CifaceFn3;
-pub use memref::{MemRefDesc1, MemRefDesc2, MemRefDescAny};
+pub use memref::{MemRefDesc2, MemRefDescAny};
 
 // ── Tests ─────────────────────────────────────────────────────────────
 

@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Unit tests for bugs found during the tile+vectorize pipeline development.
 
 Each test targets a specific bug that was found in the wild, so we have
@@ -44,7 +45,7 @@ _mlir_pkg = Path(__file__).resolve().parent.parent / "mlir_binding" / "mlir_pack
 if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
     sys.path.insert(0, str(_mlir_pkg))
 
-import pytest
+import pytest  # noqa: E402
 
 _HAS_MLIR = False
 try:
@@ -236,7 +237,7 @@ def test_bufferize_produces_memrefs():
         text = str(m2)
         n_memref = text.count("memref<")
         n_tensor = text.count("tensor<")
-        assert n_memref > 0, f"Expected memref<, got 0 (vector ops not bufferized)"
+        assert n_memref > 0, "Expected memref<, got 0 (vector ops not bufferized)"
         assert n_tensor == 0, (
             f"Expected 0 tensor<, got {n_tensor} (tensors leaked)"
         )

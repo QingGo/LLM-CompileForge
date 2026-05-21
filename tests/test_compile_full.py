@@ -13,9 +13,7 @@ remaining, ciface wrappers missing).
 Requires: compiled/opt_125m_fresh/model.mlir (the model artifact).
 """
 
-import json
 import os
-import re
 import subprocess
 import sys
 import time
@@ -23,7 +21,6 @@ from pathlib import Path
 
 import pytest
 
-from compiler.pipeline import _apply_sf_to_linalg
 from tests.test_pipeline_lowering import MLIR_BINDINGS
 
 pytestmark = [
@@ -75,7 +72,7 @@ def _llvm_step(label, script, timeout=STEP_TIMEOUT):
         stderr_last = "\n".join(result.stderr.strip().split("\n")[-3:])
         print(f"  FAIL (exit {result.returncode})\n    {stderr_last}")
         pytest.fail(f"{label} failed: {stderr_last}")
-    print(f"  OK")
+    print("  OK")
     return result.stdout, elapsed
 
 
@@ -261,7 +258,7 @@ exit(result.returncode)
             ["nm", "-g", str(self.dylib_path)],
             capture_output=True, text=True,
         )
-        text_syms = [l.strip() for l in nm.stdout.split("\n") if " T " in l]
+        text_syms = [line.strip() for line in nm.stdout.split("\n") if " T " in line]
         main_syms = [s for s in text_syms if "main" in s.split()[-1]]
         print(f"  Symbols: {len(text_syms)} total, {len(main_syms)} main functions")
         for s in main_syms:

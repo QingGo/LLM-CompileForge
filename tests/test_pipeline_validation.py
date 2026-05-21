@@ -16,7 +16,6 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -24,8 +23,6 @@ from pathlib import Path
 import pytest
 
 # ── helpers ──────────────────────────────────────────────────────────────
-
-
 from tests.helpers import has_mlir_bindings
 
 
@@ -61,6 +58,7 @@ def test_no_arith_ops_after_lowering():
 
     mod, ctx, ir = _load_lowered("compiled/opt_125m_v8")
     import mlir.passmanager as pm
+
     from compiler.mlir_dialect.llvm_backend import (
         _tile_matmuls_per_func,
         lower_linalg_to_llvm_ir,
@@ -118,6 +116,7 @@ def test_tile_sizes_within_bounds():
 
     mod, ctx, ir = _load_lowered("compiled/opt_125m_v8")
     import mlir.passmanager as pm
+
     from compiler.mlir_dialect.llvm_backend import _tile_matmuls_per_func
 
     with ir.Location.unknown(ctx):
@@ -161,6 +160,7 @@ def test_pipeline_timing():
 
     mod, ctx, ir = _load_lowered("compiled/opt_125m_v8")
     import mlir.passmanager as pm
+
     from compiler.mlir_dialect.llvm_backend import (
         _tile_matmuls_per_func,
         lower_linalg_to_llvm_ir,
@@ -179,7 +179,7 @@ def test_pipeline_timing():
 
         # Time lowering
         t0 = time.perf_counter()
-        mlir_text = lower_linalg_to_llvm_ir(mod)
+        lower_linalg_to_llvm_ir(mod)
         t_lower = time.perf_counter() - t0
         print(f"  lowering: {t_lower:.1f}s")
         assert t_lower < 30, f"Lowering took {t_lower:.1f}s (>30s)"
@@ -220,6 +220,7 @@ def test_fma_fusion_fires():
 
     mod, ctx, ir = _load_lowered("compiled/opt_125m_v8")
     import mlir.passmanager as pm
+
     from compiler.mlir_dialect.llvm_backend import (
         _tile_matmuls_per_func,
         lower_linalg_to_llvm_ir,

@@ -30,7 +30,7 @@ def _patch_transformers_torch() -> None:
     def _flatten(output: _Any) -> _Any:  # type: ignore[no-untyped-def]
         return list(output.values()), list(output.keys())
     def _unflatten(values: _Any, context: _Any, output_type: _Any = None) -> _Any:  # type: ignore[no-untyped-def]
-        return (output_type or type(context[0]))(**dict(zip(context, values)))
+        return (output_type or type(context[0]))(**dict(zip(context, values, strict=False)))
     _generic._model_output_flatten = _flatten  # type: ignore[attr-defined]
     _generic._model_output_unflatten = _unflatten  # type: ignore[attr-defined]
 

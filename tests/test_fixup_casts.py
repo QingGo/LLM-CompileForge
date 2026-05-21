@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Unit tests for _fixup_unrealized_casts — all known cast patterns.
 
 This test file covers every pattern that _fixup_unrealized_casts must handle:
@@ -17,7 +18,6 @@ from __future__ import annotations
 import pytest
 
 from compiler.mlir_dialect.llvm_backend import _fixup_unrealized_casts
-
 
 # ── Fixtures: MLIR module templates ─────────────────────────────────
 

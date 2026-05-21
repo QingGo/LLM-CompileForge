@@ -26,7 +26,7 @@ def fix_extract_issues(text: str) -> str:
                 rank = len(dim_parts)
                 # Need to add zero indices for all dims
                 zero_vals = []
-                for i in range(rank):
+                for _i in range(rank):
                     zero_idx += 1
                     z = f"%z{zero_idx}"
                     fixed.append(f"      {z} = \"arith.constant\"() <{{value = 0 : index}}> : () -> index")
@@ -45,7 +45,7 @@ def fix_extract_issues(text: str) -> str:
             line,
         )
         if m2:
-            lhs, tensor_val, idx1, idx2 = m2.group(1), m2.group(2), m2.group(3), m2.group(4)
+            lhs, tensor_val, _idx1, _idx2 = m2.group(1), m2.group(2), m2.group(3), m2.group(4)
             new_line = (
                 f'{lhs} = "tensor.extract"({tensor_val})'
                 f" : (tensor<f32>) -> f32"

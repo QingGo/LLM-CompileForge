@@ -225,10 +225,12 @@ impl WeightProvider {
         })
     }
 
+    #[allow(dead_code)]
     pub fn name_mapping(&self) -> &HashMap<String, String> {
         &self.registry.name_mapping
     }
 
+    #[allow(dead_code)]
     pub fn constants(&self) -> &HashMap<String, ConstantTensor> {
         &self.registry.constants
     }

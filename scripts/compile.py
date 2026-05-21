@@ -34,7 +34,7 @@ def _patch_transformers_torch() -> None:
         return list(output.values()), list(output.keys())
 
     def _unflatten(values: Any, context: Any, output_type: Any = None) -> Any:  # type: ignore[no-untyped-def]
-        return (output_type or type(context[0]))(**dict(zip(context, values)))
+        return (output_type or type(context[0]))(**dict(zip(context, values, strict=False)))
 
     _generic._model_output_flatten = _flatten  # type: ignore[attr-defined]
     _generic._model_output_unflatten = _unflatten  # type: ignore[attr-defined]
@@ -155,7 +155,8 @@ def compile_qwen(output_dir: str, apply_lowering: bool = False) -> None:
     from compiler.cache_policy import CachePolicy
     from compiler.pipeline import compile_mlir
 
-    model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models", "Qwen", "Qwen3.5-0.8B")
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    model_dir = os.path.join(_root, "models", "Qwen", "Qwen3.5-0.8B")
     model_dir = os.path.abspath(model_dir)
 
     if not os.path.isdir(model_dir):
@@ -167,7 +168,9 @@ def compile_qwen(output_dir: str, apply_lowering: bool = False) -> None:
     tc = config.text_config if hasattr(config, "text_config") else config
     tc.use_cache = False
     config.use_cache = False
-    model = AutoModelForCausalLM.from_pretrained(model_dir, config=config, trust_remote_code=True, torch_dtype=torch.bfloat16)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_dir, config=config, trust_remote_code=True, torch_dtype=torch.bfloat16
+    )
     if hasattr(model, "lm_head") and hasattr(model.model, "embed_tokens"):
         if getattr(config, "tie_word_embeddings", False):
             model.lm_head.weight = model.model.embed_tokens.weight

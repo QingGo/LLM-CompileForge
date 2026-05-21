@@ -2,9 +2,11 @@
 """Dump all model weights from Python (safetensors) for comparison with Rust."""
 
 from __future__ import annotations
+
 import json
 import os
 import sys
+
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,7 +27,7 @@ for func in artifact.functions:
     for wname, wtensor in func.weights.items():
         if wname not in all_weights:
             all_weights[wname] = wtensor.numpy()
-            
+
 print(f"Found {len(all_weights)} unique weight tensors")
 
 # Save all weights as .npz
@@ -40,11 +42,11 @@ for wname, w in all_weights.items():
 
 print(f"Total tensors: {len(all_weights)}")
 for wname, w in all_weights.items():
-    print(f"  {wname}: shape={w.shape}, dtype={w.dtype}, first_val={w.ravel()[0]:.6f}, " 
+    print(f"  {wname}: shape={w.shape}, dtype={w.dtype}, first_val={w.ravel()[0]:.6f}, "
           f"min={w.min():.6f}, max={w.max():.6f}")
 
 # Save a manifest
-manifest = {wname: {"shape": list(w.shape), "dtype": str(w.dtype)} 
+manifest = {wname: {"shape": list(w.shape), "dtype": str(w.dtype)}
             for wname, w in all_weights.items()}
 json.dump(manifest, open(os.path.join(OUTPUT_DIR, "manifest_py.json"), "w"), indent=2)
 print(f"Manifest saved to {OUTPUT_DIR}/manifest_py.json")

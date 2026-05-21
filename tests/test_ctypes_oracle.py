@@ -6,6 +6,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
+
 from scripts.ctypes_oracle import CtypesOracle
 
 DYLIB_PATH = "compiled/opt_125m_fresh/libopt_125m.dylib"

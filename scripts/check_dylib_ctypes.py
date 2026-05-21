@@ -118,7 +118,7 @@ def run_main_0(so: ctypes.CDLL, input_ids: np.ndarray,
     try:
         main_0 = so._mlir_ciface_main_0
     except AttributeError:
-        raise RuntimeError("_mlir_ciface_main_0 not found in .dylib")
+        raise RuntimeError("_mlir_ciface_main_0 not found in .dylib") from None
 
     sret = make_sret_buffer()
 
@@ -163,7 +163,7 @@ def main():
     py_logits = np.load(os.path.join(baseline_dir, "python_executor_logits.npy"))
 
     # Load the dylib
-    so = ctypes.CDLL(dylib_path)
+    ctypes.CDLL(dylib_path)
 
     # Find safetensors
     hub_dir = os.path.expanduser("~/.cache/huggingface/hub/models--facebook--opt-125m")
@@ -181,7 +181,7 @@ def main():
     print(f"Name mappings: {len(hf_key_map)}")
 
     # Try to call main_0 with just the sret and global input to check ciface
-    input_ids = np.array([[2, 32826, 85, 4129], [0, 0, 0, 0]], dtype=np.int64)
+    np.array([[2, 32826, 85, 4129], [0, 0, 0, 0]], dtype=np.int64)
 
     # Actually, we need the weight inputs too. Let's read the compute graph
     # from constants.bin to know the input ordering.
@@ -204,10 +204,10 @@ def main():
     # Check if we can find and read constants data
     nm_result = subprocess.run(["nm", "-g", dylib_path],
                                capture_output=True, text=True)
-    const_data_line = [l for l in nm_result.stdout.splitlines()
-                       if "serveforge_constants_data" in l]
-    const_size_line = [l for l in nm_result.stdout.splitlines()
-                       if "serveforge_constants_size" in l]
+    const_data_line = [line for line in nm_result.stdout.splitlines()
+                       if "serveforge_constants_data" in line]
+    const_size_line = [line for line in nm_result.stdout.splitlines()
+                       if "serveforge_constants_size" in line]
     if const_data_line:
         print(f"\nConstants data symbol: {const_data_line[0]}")
     if const_size_line:
@@ -242,7 +242,7 @@ def main():
     for key in ["model.decoder.embed_tokens.weight",
                 "model.decoder.embed_positions.weight",
                 "model.decoder.layers.0.self_attn.k_proj.weight"]:
-        compiled_key = key.replace(".", "_")
+        key.replace(".", "_")
         hf_safe = state_dict[key].to(torch.float32).numpy()
         print(f"\n  HF weight '{key}': shape={hf_safe.shape}, first={hf_safe.flat[0]:.6f}, last={hf_safe.flat[-1]:.6f}")
 

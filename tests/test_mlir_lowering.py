@@ -174,7 +174,9 @@ class TestLoweringReductions:
     def test_mean_lowered(self):
         pass
 
-    @pytest.mark.xfail(reason="sf.sum not in C++ dialect — sum uses reduction; test needs update (tracking: C++-gap-04)")
+    @pytest.mark.xfail(
+        reason="sf.sum not in C++ dialect — sum uses reduction; test needs update (tracking: C++-gap-04)"
+    )
     def test_sum_lowered(self):
         pass
 
@@ -182,7 +184,9 @@ class TestLoweringReductions:
 @pytest.mark.unit
 class TestLoweringShapeOps:
 
-    @pytest.mark.xfail(reason="sf.view with same-rank handled by IdentityLowering, no linalg.copy (tracking: C++-gap-05)")
+    @pytest.mark.xfail(
+        reason="sf.view with same-rank handled by IdentityLowering, no linalg.copy (tracking: C++-gap-05)"
+    )
     def test_view_preserved(self):
         pass
 

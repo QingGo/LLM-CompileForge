@@ -15,7 +15,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from pathlib import Path
 
 # ── File → test mapping ───────────────────────────────────────────────
 # Key: glob pattern matched against relative file paths
@@ -167,7 +166,7 @@ def main():
         print(f"{'='*60}")
         ret = subprocess.run(cmd, timeout=120)
         if ret.returncode != 0:
-            print(f"❌ pytest failed")
+            print("❌ pytest failed")
             sys.exit(1)
 
     print("\n✅ All related tests passed")

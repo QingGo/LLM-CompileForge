@@ -62,7 +62,8 @@ def _patch_transformers_torch() -> None:
         _maybe_fx_imp = getattr(transformers, "_torch_fx_imported", None)
         if _maybe_fx_imp is not None:
             transformers._torch_fx_imported = True  # type: ignore[assignment]
-        if hasattr(transformers.dynamic_module_utils, "_torch_fx_imported") if hasattr(transformers, "dynamic_module_utils") else False:
+        _has_dyn = hasattr(transformers, "dynamic_module_utils")
+        if _has_dyn and hasattr(transformers.dynamic_module_utils, "_torch_fx_imported"):
             transformers.dynamic_module_utils._torch_fx_imported = True  # type: ignore[attr-defined]
 
         if hasattr(transformers, "modeling_utils"):
@@ -200,7 +201,8 @@ def _run_ep_capture(
                     if "neg_1" in interp.captured:
                         neg_out = interp.captured["neg_1"]
                         if isinstance(neg_out, torch.Tensor):
-                            print(f"    manual -input vs captured output: cos={_cosine_similarity(manual_neg, neg_out):.10f}")
+                            _cos = _cosine_similarity(manual_neg, neg_out)
+                            print(f"    manual -input vs captured output: cos={_cos:.10f}")
 
     return interp.captured
 
@@ -346,7 +348,7 @@ def main() -> None:
             if args.verbose or i < 200:
                 print(f"  [{i:5d}] MISSING INPUT: {op.name} needs '{e}'  "
                       f"(source={source_node}, all_inputs={op.inputs}, "
-                      f"attrs={dict((k,v) for k,v in op.attributes.items() if k!='source_node')})")
+                      f"attrs={ {k: v for k,v in op.attributes.items() if k!='source_node'} })")
             skipped += 1
             op_status[i] = "MISSING_INPUT"
             continue

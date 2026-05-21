@@ -18,8 +18,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional
 
 
 def default_compiled_dir() -> str:
@@ -51,7 +49,7 @@ class ArtifactPaths:
     tokenizer_config: str
 
     @classmethod
-    def for_model(cls, model_name: str, compiled_dir: Optional[str] = None) -> ArtifactPaths:
+    def for_model(cls, model_name: str, compiled_dir: str | None = None) -> ArtifactPaths:
         base = compiled_dir if compiled_dir is not None else default_compiled_dir()
         model_dir = _resolve(base, model_name)
         return cls(

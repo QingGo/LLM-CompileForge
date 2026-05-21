@@ -1,6 +1,11 @@
+# ruff: noqa: E501
 """Lowering diagnostic: test each sf op type individually."""
-import argparse, os, sys, time
+import argparse
+import os
+import sys
+import time
 from pathlib import Path
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Templates use ${var} syntax — replaced via .replace() not .format()

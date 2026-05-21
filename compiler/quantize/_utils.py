@@ -86,7 +86,7 @@ def collect_activation_stats(
                 try:
                     model(dummy)
                 except Exception:
-                    _log.debug("Model rejected dummy input during calibration (expected for non-forward models)", exc_info=True)
+                    _log.debug("Model rejected dummy input during calibration (expected for non-forward models)", exc_info=True)  # noqa: E501
         else:
             model.eval()
             with torch.no_grad():

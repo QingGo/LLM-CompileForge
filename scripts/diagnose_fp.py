@@ -62,15 +62,16 @@ def make_memref_2d(arr: np.ndarray) -> ctypes.Structure:
     return get_ranked_memref_descriptor(arr)
 
 
-def compile_matmul_dylib(M: int, K: int, N: int, work_dir: str,
+def compile_matmul_dylib(M: int, K: int, N: int, work_dir: str,  # noqa: N803
                          with_fill: bool = True) -> tuple[str, int, int]:
     """Compile a matmul test to dylib. Returns (dylib_path, fmuladd_count, ll_lines)."""
     import mlir.ir as ir
+
     from compiler.mlir_dialect.llvm_backend import (
         _tile_matmuls_per_func,
+        link_dylib,
         lower_linalg_to_llvm_ir,
         mlir_module_to_llvm_ir,
-        link_dylib,
     )
 
     if with_fill:
@@ -87,7 +88,8 @@ def compile_matmul_dylib(M: int, K: int, N: int, work_dir: str,
         f"func.func @main(%a: tensor<{M}x{K}xf32>, %b: tensor<{K}x{N}xf32>) -> tensor<{M}x{N}xf32> {{\n"
         f"    %empty = tensor.empty() : tensor<{M}x{N}xf32>\n"
         f"{fill_src}"
-        f"    %c = linalg.matmul ins(%a, %b : tensor<{M}x{K}xf32>, tensor<{K}x{N}xf32>) outs({out_name} : tensor<{M}x{N}xf32>) -> tensor<{M}x{N}xf32>\n"
+        f"    %c = linalg.matmul ins(%a, %b : tensor<{M}x{K}xf32>, tensor<{K}x{N}xf32>)"
+        f" outs({out_name} : tensor<{M}x{N}xf32>) -> tensor<{M}x{N}xf32>\n"
         f"    return %c : tensor<{M}x{N}xf32>\n"
         f"}}\n"
     )
@@ -149,7 +151,7 @@ def run_matmul_tests():
 
     all_ok = True
 
-    for name, M, K, N, do_tile in test_cases:
+    for name, M, K, N, do_tile in test_cases:  # noqa: N806
         if not do_tile:
             # Skip non-tiled fast path
             print(f"{name:<18} {'n/a':>4} {'fast':>6} {'n/a':>10} {'n/a':>12} {'n/a':>12} {'n/a':>10}")
@@ -180,7 +182,7 @@ def run_matmul_tests():
                 all_ok = False
                 continue
 
-            for opt_dir, opt_name in [(td, "O3")]:  # Only O3 for now
+            for _opt_dir, _opt_name in [(td, "O3")]:  # Only O3 for now
                 out_arr[:] = 0
                 ciface(ctypes.byref(out_d), ctypes.byref(a_d), ctypes.byref(b_d))
                 result = np.ctypeslib.as_array(
@@ -204,7 +206,7 @@ def run_matmul_tests():
 
 def diagnose_full_model(model_dir: str, ref_path: str | None = None):
     """Compile full model and compare with reference."""
-    print(f"Full model diagnosis not yet implemented. Provide --ref for reference comparison.")
+    print("Full model diagnosis not yet implemented. Provide --ref for reference comparison.")
     print(f"Model dir: {model_dir}, Ref: {ref_path}")
     return 1
 

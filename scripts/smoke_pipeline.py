@@ -5,8 +5,11 @@ with a tiny model, catching hangs and correctness issues within ~10 seconds.
 Run before any full model compilation to verify the pipeline is healthy.
 """
 
-import os, sys, time
+import os
+import sys
+import time
 from pathlib import Path
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 MINIMAL_MLIR = r"""
@@ -45,7 +48,7 @@ def main():
 
     with ir.Location.unknown(ctx):
         module = ir.Module.parse(MINIMAL_MLIR, ctx)
-        print(f"  [1/4] Parse: OK")
+        print("  [1/4] Parse: OK")
 
         # Step 2: C++ lowering
         t0 = time.time()
@@ -61,6 +64,7 @@ def main():
         print(f"  [2/4] C++ lowering: {t:.2f}s (sf remaining: {sf_rem})")
 
         # Step 3: LLVM lowering (bufferize + convert)
+        from compiler.mlir_dialect.compile_utils import mlir_module_to_llvm_ir
         from compiler.mlir_dialect.llvm_backend import lower_linalg_to_llvm_ir
         t0 = time.time()
         llvm_text = lower_linalg_to_llvm_ir(module)
@@ -79,7 +83,7 @@ def main():
 
     print(f"\n  {'✅ Pipeline smoke test passed' if sf_rem == 0 else '⚠ Some sf ops remain'}")
 
-    print(f"\n  ✅ Pipeline smoke test passed")
+    print("\n  ✅ Pipeline smoke test passed")
     return 0
 
 

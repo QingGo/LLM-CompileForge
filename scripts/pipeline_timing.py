@@ -13,13 +13,11 @@ Exit codes:
     2 — step crashed with non-zero exit
 """
 
-import json
 import os
 import subprocess
 import sys
 import time
 from pathlib import Path
-
 
 # ── Per-step time limits (seconds) ──────────────────────────────
 STEP_TIMEOUT: dict[str, int] = {
@@ -189,7 +187,8 @@ with ctx:
     print(f'vector={{n_vec}} memref={{n_mem}} ciface={{n_ciface}}')
 """], STEP_TIMEOUT["convert-to-llvm"])
     except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
-        sys.stdout.write(f"  ** convert-to-llvm {'TIMED OUT' if isinstance(e, subprocess.TimeoutExpired) else 'FAILED'}\n")
+        status = 'TIMED OUT' if isinstance(e, subprocess.TimeoutExpired) else 'FAILED'
+        sys.stdout.write(f"  ** convert-to-llvm {status}\n")
         sys.exit(1)
 
     # 2c: func-to-llvm + reconcile
@@ -237,8 +236,9 @@ with ctx:
     # ── Step 3: mlir-translate ────────────────────────────────────
     sys.stdout.write("Step 3: mlir-translate (LLVM dialect → LLVM IR)\n")
     try:
-        from compiler.mlir_dialect.llvm_backend import mlir_module_to_llvm_ir, _fixup_unrealized_casts
         import mlir.ir as ir
+
+        from compiler.mlir_dialect.llvm_backend import mlir_module_to_llvm_ir
         ctx = ir.Context()
         with ctx:
             mod = ir.Module.parse(lowered_text)
@@ -305,7 +305,7 @@ with ctx:
         ["nm", "-g", str(dylib_path)],
         capture_output=True, text=True,
     )
-    symbols = [l.strip() for l in nm_result.stdout.split("\n") if " T " in l]
+    symbols = [line.strip() for line in nm_result.stdout.split("\n") if " T " in line]
     sys.stdout.write(f"\nSymbols in .dylib: {len(symbols)} T (text) symbols\n")
     for s in symbols:
         name = s.split()[-1]

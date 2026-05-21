@@ -853,7 +853,6 @@ def _build_mlir_function(func: MlirFunction, ir_mod: Any, ctx: Any) -> tuple[Any
 
 def _build_ssa_map(func: MlirFunction, arg_values: list[ir.Value]) -> dict[str, ir.Value]:
     """Build SSA name → ir.Value mapping from function inputs."""
-    import mlir.ir as _ir
 
     ssa_map: dict[str, ir.Value] = {}
     for i, (name, _) in enumerate(func.inputs):
@@ -966,7 +965,6 @@ def _infer_result_types(op: MlirOp, operands: list[ir.Value], ctx: Any) -> list[
 
 def _build_mlir_attrs(op: MlirOp) -> dict[str, ir.Attribute]:
     """Build MLIR attributes dict from an MlirOp."""
-    import mlir.ir as _ir
 
     mlir_attrs: dict[str, ir.Attribute] = {}
     for k, v in op.attributes.items():

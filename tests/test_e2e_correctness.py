@@ -83,7 +83,7 @@ def _run_rust_forward(model_name: str) -> torch.Tensor | None:
 
     Returns the output Tensor or None if not available.
     """
-    dylib_path = next(MODEL_DIRS[model_name].glob("*.dylib"))
+    next(MODEL_DIRS[model_name].glob("*.dylib"))
     result = subprocess.run(
         [
             "cargo", "test", "--manifest-path",

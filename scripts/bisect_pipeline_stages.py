@@ -91,12 +91,12 @@ def compile_with_stages(
                 failed_names.append(name)
             _log.warning(f"  {len(failed)} stage(s) failed/skipped: {failed_names}")
 
-        LLVM_IR = os.path.join(out_dir, f"model_{label}.ll")
+        llvm_ir = os.path.join(out_dir, f"model_{label}.ll")
 
     from compiler.mlir_dialect.compile_utils import emit_llvm_ir_to_file, link_dylib, llc_compile
     try:
-        emit_llvm_ir_to_file(module, LLVM_IR)
-        obj_path = llc_compile(LLVM_IR, output=os.path.join(out_dir, f"model_{label}.o"))
+        emit_llvm_ir_to_file(module, llvm_ir)
+        obj_path = llc_compile(llvm_ir, output=os.path.join(out_dir, f"model_{label}.o"))
         dylib_path = os.path.join(out_dir, f"lib_{label}.dylib")
         link_dylib([obj_path], dylib_path)
         return dylib_path
@@ -402,7 +402,10 @@ def main():
     stages = parse_stages()
     _log.info(f"BUILTIN_STAGES: {len(stages)} stages")
     for i, s in enumerate(stages):
-        _log.info(f"  [{i:2d}] {s.name:30s} pipeline={s.pipeline or '(action)'!r:40s} timeout={s.timeout} warn={s.warn_only}")
+        _log.info(
+            f"  [{i:2d}] {s.name:30s} pipeline={s.pipeline or '(action)'!r:40s} "
+            f"timeout={s.timeout} warn={s.warn_only}"
+        )
 
     if args.ctypes:
         return _run_ctypes_bisect(args, stages, out_dir)

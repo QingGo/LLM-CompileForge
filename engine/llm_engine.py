@@ -16,7 +16,7 @@ state (sampling params, output tokens, KV cache) lives in InferenceLoop.
 from __future__ import annotations
 
 import time
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 import torch
 
@@ -33,7 +33,7 @@ from engine._scheduling_bridge import SchedulingBridge
 from engine.batch import GenerationResult, SamplingParams
 from hal.interface import OpExecutor
 from hal.protocols import Tokenizer
-from utils.logging import get_logger, log_request_lifecycle, log_step_begin, log_step_end
+from utils.logging import get_logger, log_request_lifecycle
 
 _log = get_logger("engine")
 

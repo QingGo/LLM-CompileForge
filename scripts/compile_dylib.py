@@ -353,7 +353,7 @@ def main() -> None:
             print(f"  [debug] Saved snapshot: {_snapshot_path}")
     # Serialize with generic op format (required for mlir-opt without sf dialect)
     lowered_text = ir_mod.operation.get_asm(print_generic_op_form=True)
-    print("   C++ lowering succeeded (verifier disabled)")
+    print(f"   C++ lowering succeeded (verifier {'disabled' if _no_verify else 'enabled'})")
 
     lowered_path = compiled_path / "model.lowered.mlir"
     lowered_path.write_text(lowered_text)
