@@ -612,6 +612,16 @@ def run_stages(
             for d in sorted(all_dialects)
         }
 
+        # ── Dead stage detection ──
+        if pre_counts and post_counts and pre_counts == post_counts and not stage.warn_only:
+            _log.warning(
+                "  ⚠️ Stage '%s' produced no dialect change (possible dead stage) — "
+                "pre=%s post=%s",
+                stage.name,
+                dict(sorted(pre_counts.items())),
+                dict(sorted(post_counts.items())),
+            )
+
         # DEBUG: save per-stage snapshot
         if _is_debug:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]

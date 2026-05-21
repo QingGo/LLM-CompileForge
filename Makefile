@@ -1,4 +1,4 @@
-.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency build-rust install-rust
+.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency build-rust install-rust diagnose-fast
 
 # ---- 环境 ----
 VENV := .venv
@@ -213,3 +213,8 @@ rebuild-test:
 # Cosine 精度对比 (Rust vs Python vs HF)
 rebuild-cosine: $(VENV)
 	$(PYTHON) scripts/diagnose_issue45.py 2>&1 | grep -E "Cosine|DIAGNOSIS|argmax"
+
+# 快速诊断循环 (使用已编译的 .dylib + 预计算的 logits)
+diagnose-fast:
+	cd rust && DUMP_LAYERS=/tmp/ld_rs cargo run --bin forward_check -- --compiled-dir /Users/zeng/code/LLM-CompileForge/compiled/opt_125m_fresh 2>&1 | tail -5
+	python scripts/diagnose_issue45.py --fast 2>&1 | grep -E "Cosine|argmax|→"

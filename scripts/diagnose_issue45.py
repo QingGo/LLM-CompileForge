@@ -16,10 +16,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import glob
 import logging
 import os
 import subprocess
 import sys
+import tempfile
+from collections import defaultdict
 
 import numpy as np
 import torch
@@ -198,6 +201,42 @@ def diagnose_stats(rust: np.ndarray, ref: np.ndarray):
         print(f"  {name}: mean={f.mean():.4f} std={f.std():.4f} min={f.min():.4f} max={f.max():.4f}")
 
 
+def diagnose_layers(rust_dump_dir: str) -> None:
+    """Compare per-function outputs between Rust dump and reference.
+
+    Args:
+        rust_dump_dir: Directory containing DUMP_LAYERS output (func_*.npy)
+    """
+    files = sorted(glob.glob(os.path.join(rust_dump_dir, "func_*.npy")))
+    print("\n=== Per-Layer Diagnosis ===")
+    print(f"Found {len(files)} function outputs in {rust_dump_dir}")
+
+    if not files:
+        print("No DUMP_LAYERS output found. Run with DUMP_LAYERS set.")
+        return
+
+    by_func = defaultdict(list)
+    for f in files:
+        basename = os.path.basename(f).replace('.npy', '')
+        parts = basename.split('_')
+        func_idx = int(parts[1])
+        call_idx = int(parts[2])
+        by_func[func_idx].append((call_idx, f))
+
+    print(f"Unique functions: {len(by_func)}")
+    for fid in sorted(by_func.keys()):
+        calls = sorted(by_func[fid], key=lambda x: x[0])
+        print(f"  func_{fid}: {len(calls)} calls")
+
+        first_arr = np.load(calls[0][1])
+        last_arr = np.load(calls[-1][1])
+        print(f"    First call: {first_arr.shape}, last call: {last_arr.shape}")
+
+    print("\nNote: Full Python vs Rust per-layer comparison requires")
+    print("Python-side function dump (add --py-dump to MlirExecutor)")
+    print("For now, this validates the DUMP_LAYERS mechanism itself.")
+
+
 def call_dylib_ctypes() -> np.ndarray | None:
     """Try calling the compiled .dylib directly via ctypes."""
     import ctypes
@@ -295,6 +334,8 @@ def main():
     parser.add_argument("--fast", action="store_true",
         help="Skip Rust cargo test, read pre-computed logits from /tmp/rust_logits.csv")
     parser.add_argument("--ctypes", action="store_true", help="Also try ctypes direct call")
+    parser.add_argument("--layers", type=str, nargs="?", const="/tmp/ld_rs", default=None,
+        help="Run per-layer diagnosis using DUMP_LAYERS output dir")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -371,6 +412,32 @@ def main():
 
         if args.ctypes:
             call_dylib_ctypes()
+
+        if args.layers:
+            manifest_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            rust_dir = os.path.join(manifest_dir, "rust")
+
+            if args.layers == "auto":
+                dump_dir = tempfile.mkdtemp(prefix="ld_")
+                print(f"\n=== Auto-running DUMP_LAYERS -> {dump_dir} ===")
+                env = os.environ.copy()
+                env["DUMP_LAYERS"] = dump_dir
+                result = subprocess.run(
+                    ["cargo", "run", "--bin", "forward_check"],
+                    cwd=rust_dir,
+                    capture_output=True, text=True,
+                    timeout=120,
+                    env=env,
+                )
+                for line in result.stdout.splitlines():
+                    print(f"  [forward_check] {line}")
+                for line in result.stderr.splitlines():
+                    print(f"  [forward_check stderr] {line}")
+                if result.returncode != 0:
+                    print(f"  ⚠ forward_check exited with code {result.returncode}")
+                diagnose_layers(dump_dir)
+            else:
+                diagnose_layers(args.layers)
 
         per_token_cos = [
             cosine_similarity(rust_logits[0, t:t+1], py_ref[0, t:t+1])
