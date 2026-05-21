@@ -238,9 +238,18 @@ impl ModelExecutor {
                 for (oi, t) in func_outputs[fi].iter().enumerate() {
                     let path = format!("{}/func_{}_{}.npy", dump_dir, fi, oi);
                     let slice = t.as_slice();
-                    if !slice.is_empty() {
-                        let _ = write_npy(&path, slice, &t.shape);
+
+                    // Skip outputs with dynamic shapes that couldn't be
+                    // captured via sret (produces NaN / garbage data).
+                    // DUMP_LAYERS only works reliably for functions whose
+                    // output shapes are fully static (e.g. func_0).
+                    let has_nan = !slice.is_empty()
+                        && slice.iter().take(100).any(|&x| x.is_nan());
+                    if slice.is_empty() || has_nan {
+                        continue;
                     }
+
+                    let _ = write_npy(&path, slice, &t.shape);
                 }
             }
         }
