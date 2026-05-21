@@ -1,4 +1,4 @@
-.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency build-rust install-rust diagnose-fast
+.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency build-rust install-rust diagnose-fast diagnose-ci
 
 # ---- 环境 ----
 VENV := .venv
@@ -218,3 +218,7 @@ rebuild-cosine: $(VENV)
 diagnose-fast:
 	DUMP_LAYERS=/tmp/ld_rs cargo run --manifest-path rust/Cargo.toml --bin forward_check 2>&1 | tail -3
 	$(PYTHON) scripts/diagnose_issue45.py --fast 2>&1 | grep -E "Cosine|argmax|→"
+
+# CI gate for cosine regression
+diagnose-ci:
+	$(PYTHON) scripts/diagnose_issue45.py --fast --ci --threshold 0.99 2>&1 | grep -E "CI|Cosine|argmax"

@@ -14,6 +14,7 @@ Key features:
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import torch
@@ -48,6 +49,7 @@ class MlirExecutor(_KVCacheMixin):
         self,
         module: MlirModule,
         hal_backend: OpExecutor,
+        dump_dir: str | None = None,
     ) -> None:
         self._module = module
         self._hal = hal_backend
@@ -118,6 +120,10 @@ class MlirExecutor(_KVCacheMixin):
         self._current_is_decode: bool = False
         self._sda_layer_count: int = 0
 
+        # ── Function output dump (for per-layer diagnosis) ──
+        self._dump_dir: str | None = dump_dir or os.environ.get("DUMP_PY_LAYERS")
+        self._dump_call_counter: dict[int, int] = {}
+
     def _detect_static_shape(self) -> bool:
         for _name, tp in self._function.inputs:
             import re
@@ -179,6 +185,22 @@ class MlirExecutor(_KVCacheMixin):
                 result = self._execute_op(op, ssa_values)
                 if result is not None and op.results:
                     ssa_values[op.results[0]] = result
+
+            # ── Dump function output (per-layer diagnosis) ──
+            if self._dump_dir:
+                import numpy as np
+
+                os.makedirs(self._dump_dir, exist_ok=True)
+                call_idx = self._dump_call_counter.get(fi, 0)
+                for out_name, _ in func.outputs:
+                    clean = out_name.replace("%", "")
+                    if clean in ssa_values:
+                        fpath = os.path.join(
+                            self._dump_dir, f"py_func_{fi}_{call_idx}.npy"
+                        )
+                        np.save(fpath, ssa_values[clean].detach().cpu().numpy())
+                        break
+                self._dump_call_counter[fi] = call_idx + 1
 
             # ── Store outputs for next function ──────────────
             for out_name, _ in func.outputs:

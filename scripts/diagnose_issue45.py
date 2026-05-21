@@ -201,11 +201,13 @@ def diagnose_stats(rust: np.ndarray, ref: np.ndarray):
         print(f"  {name}: mean={f.mean():.4f} std={f.std():.4f} min={f.min():.4f} max={f.max():.4f}")
 
 
-def diagnose_layers(rust_dump_dir: str) -> None:
-    """Compare per-function outputs between Rust dump and reference.
+def diagnose_layers(rust_dump_dir: str, py_dump_dir: str | None = None) -> None:
+    """Compare per-function outputs between Rust dump and optional Python dump.
 
     Args:
         rust_dump_dir: Directory containing DUMP_LAYERS output (func_*.npy)
+        py_dump_dir: Optional directory containing Python dumps (py_func_*.npy)
+            for per-function Python vs Rust comparison.
     """
     files = sorted(glob.glob(os.path.join(rust_dump_dir, "func_*.npy")))
     print("\n=== Per-Layer Diagnosis ===")
@@ -232,9 +234,87 @@ def diagnose_layers(rust_dump_dir: str) -> None:
         last_arr = np.load(calls[-1][1])
         print(f"    First call: {first_arr.shape}, last call: {last_arr.shape}")
 
-    print("\nNote: Full Python vs Rust per-layer comparison requires")
-    print("Python-side function dump (add --py-dump to MlirExecutor)")
-    print("For now, this validates the DUMP_LAYERS mechanism itself.")
+    # ── Python vs Rust per-function comparison ────────────────
+    if py_dump_dir and os.path.isdir(py_dump_dir):
+        _compare_py_vs_rust_layers(py_dump_dir, files)
+
+
+def _compare_py_vs_rust_layers(py_dump_dir: str, rust_files: list[str]) -> None:
+    """Compare Python and Rust per-function dumps layer by layer.
+
+    Matches py_func_{idx}_{call}.npy with func_{idx}_{call}.npy
+    and reports cosine similarity for each, finding first divergence.
+
+    Args:
+        py_dump_dir: Directory with py_func_*.npy files.
+        rust_files: List of paths to func_*.npy files from Rust.
+    """
+    py_files = sorted(glob.glob(os.path.join(py_dump_dir, "py_func_*.npy")))
+    print("\n=== Python vs Rust Per-Layer Comparison ===")
+    print(f"Found {len(py_files)} Python dumps in {py_dump_dir}")
+
+    if not py_files:
+        print("No Python dumps found.")
+        return
+
+    # Build Rust dict: (func_idx, call_idx) -> path
+    rust_by_key: dict[tuple[int, int], str] = {}
+    for f in rust_files:
+        basename = os.path.basename(f).replace(".npy", "")
+        parts = basename.split("_")
+        func_idx = int(parts[1])
+        call_idx = int(parts[2])
+        rust_by_key[(func_idx, call_idx)] = f
+
+    # Build Python dict: (func_idx, call_idx) -> path
+    py_by_key: dict[tuple[int, int], str] = {}
+    for f in py_files:
+        basename = os.path.basename(f).replace(".npy", "")
+        parts = basename.split("_")
+        # py_func_{idx}_{call}
+        func_idx = int(parts[2])
+        call_idx = int(parts[3])
+        py_by_key[(func_idx, call_idx)] = f
+
+    common_keys = sorted(set(rust_by_key.keys()) & set(py_by_key.keys()))
+    print(f"Matching (func, call) pairs: {len(common_keys)}")
+
+    if not common_keys:
+        print("No matching function-call pairs between Python and Rust.")
+        return
+
+    first_bad: tuple[int, int, float] | None = None
+    for func_idx, call_idx in common_keys:
+        rust_arr = np.load(rust_by_key[(func_idx, call_idx)])
+        py_arr = np.load(py_by_key[(func_idx, call_idx)])
+
+        if rust_arr.shape != py_arr.shape:
+            marker = " 💥 SHAPE MISMATCH"
+            print(f"  func_{func_idx}_{call_idx}: Rust={rust_arr.shape} vs Py={py_arr.shape}{marker}")
+            if first_bad is None:
+                first_bad = (func_idx, call_idx, 0.0)
+            continue
+
+        cos = cosine_similarity(rust_arr, py_arr)
+        if cos < 0.99:
+            marker = " ❌"
+        elif cos < 0.999:
+            marker = " ⚠"
+        else:
+            marker = " ✅"
+        print(f"  func_{func_idx}_{call_idx}: cos={cos:.8f}{marker}")
+
+        if cos < 0.999 and first_bad is None:
+            first_bad = (func_idx, call_idx, cos)
+
+    if first_bad:
+        fid, cid, cos_val = first_bad
+        if cos_val < 0.001:
+            print(f"\n  → First divergence at function {fid} call {cid} (shape mismatch)")
+        else:
+            print(f"\n  → First divergence at function {fid} call {cid} (cos={cos_val:.8f})")
+    else:
+        print("\n  → All matching layers pass ✅")
 
 
 def call_dylib_ctypes() -> np.ndarray | None:
@@ -336,6 +416,11 @@ def main():
     parser.add_argument("--ctypes", action="store_true", help="Also try ctypes direct call")
     parser.add_argument("--layers", type=str, nargs="?", const="/tmp/ld_rs", default=None,
         help="Run per-layer diagnosis using DUMP_LAYERS output dir")
+    parser.add_argument("--py-layers", type=str, nargs="?", const="/tmp/ld_py", default=None,
+        help="Python dump dir for per-function Py vs Rust comparison (use with --layers)")
+    parser.add_argument("--check-runtime-weights", type=str, nargs="?", const="auto", default=None,
+        help="Compare Python vs Rust runtime weights. Optionally specify dump_weights output dir. "
+             "If no dir given, auto-runs dump_weights binary.")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -416,6 +501,7 @@ def main():
         if args.layers:
             manifest_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             rust_dir = os.path.join(manifest_dir, "rust")
+            py_dump = args.py_layers if args.py_layers else None
 
             if args.layers == "auto":
                 dump_dir = tempfile.mkdtemp(prefix="ld_")
@@ -435,9 +521,9 @@ def main():
                     print(f"  [forward_check stderr] {line}")
                 if result.returncode != 0:
                     print(f"  ⚠ forward_check exited with code {result.returncode}")
-                diagnose_layers(dump_dir)
+                diagnose_layers(dump_dir, py_dump_dir=py_dump)
             else:
-                diagnose_layers(args.layers)
+                diagnose_layers(args.layers, py_dump_dir=py_dump)
 
         per_token_cos = [
             cosine_similarity(rust_logits[0, t:t+1], py_ref[0, t:t+1])
@@ -450,7 +536,71 @@ def main():
         print("=" * 60)
         identify_bug_location(sim_rust_py, sim_py_hf, per_token_cos)
 
-    return 0
+    # Runtime weight comparison (independent diagnostic signal)
+    if args.check_runtime_weights is not None:
+        _run_runtime_weight_check(args.check_runtime_weights)
+
+    # CI mode exit code
+    exit_code = 0
+    if args.ci:
+        if sim_py_hf < args.threshold:
+            print(f"\n❌ CI FAIL: Python vs HF cos={sim_py_hf:.6f} < {args.threshold}")
+            exit_code = 1
+        elif not args.skip_rust and sim_rust_py < args.threshold:  # type: ignore[possibly-undefined]
+            print(f"\n❌ CI FAIL: Rust vs Python cos={sim_rust_py:.6f} < {args.threshold}")
+            exit_code = 1
+        else:
+            print(f"\n✅ CI PASS: All cos >= {args.threshold}")
+    return exit_code
+
+
+def _run_runtime_weight_check(rust_dump_spec: str) -> None:
+    """Run runtime weight comparison as a subprocess.
+
+    Args:
+        rust_dump_spec: Either "auto" (run dump_weights binary) or a path to existing dump.
+    """
+    manifest_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    script = os.path.join(manifest_dir, "scripts", "check_runtime_weights.py")
+    model_dir = os.path.abspath(ARTIFACT_DIR)
+
+    print("\n" + "=" * 60)
+    print("RUNTIME WEIGHT COMPARISON")
+    print("=" * 60)
+
+    if rust_dump_spec == "auto":
+        rust_dir = os.path.join(manifest_dir, "rust")
+        dump_dir = tempfile.mkdtemp(prefix="dw_")
+        print(f"\nAuto-running dump_weights -> {dump_dir}")
+        result = subprocess.run(
+            ["cargo", "run", "--bin", "dump_weights", "--",
+             "--compiled-dir", model_dir, "--output-dir", dump_dir],
+            cwd=rust_dir,
+            capture_output=True, text=True,
+            timeout=120,
+        )
+        for line in result.stdout.splitlines():
+            print(f"  [dump_weights] {line}")
+        if result.returncode != 0:
+            print(f"  ⚠ dump_weights exited with code {result.returncode}")
+            for line in result.stderr.splitlines():
+                print(f"  [dump_weights stderr] {line}")
+        rust_dump = dump_dir
+    else:
+        rust_dump = rust_dump_spec
+
+    # Run comparison script
+    print(f"\nRunning check_runtime_weights.py with --rust-dump {rust_dump}")
+    result = subprocess.run(
+        [sys.executable, script, "--model", model_dir, "--rust-dump", rust_dump],
+        capture_output=True, text=True, timeout=120,
+    )
+    print(result.stdout)
+    if result.returncode != 0:
+        print(f"  ⚠ check_runtime_weights exited with code {result.returncode}")
+        if result.stderr:
+            for line in result.stderr.splitlines():
+                print(f"  [stderr] {line}")
 
 
 def identify_bug_location(cos_rust_py: float, cos_py_hf: float = 1.0, per_token_cos: list[float] | None = None):
