@@ -61,12 +61,23 @@ _tile_matmuls_per_func = tile_matmuls_action
 _log = logging.getLogger(__name__)
 
 
-def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
+def lower_linalg_to_llvm_ir(
+    ir_module: Any,
+    skip_first_canonicalize: bool = False,
+) -> str:
     """Run full linalg→LLVM lowering pipeline on an ir.Module.
 
     All ops must already be lowered to linalg/arith/math/tensor dialect.
     Any remaining sf.* or other unregistered dialect ops will cause
     bufferization failures.
+
+    Args:
+        ir_module: The MLIR module to lower.
+        skip_first_canonicalize: If True, skip the first ``canonicalize,cse``
+            stage (BUILTIN_STAGES[0]). Used with ``--no-verify`` to work
+            around benign canonicalization failures on shape-mismatched IR.
+            Only the first stage is skipped; the second ``canonicalize,cse-2``
+            at stage 14 still runs.
 
     Returns LLVM IR text.
     """
@@ -90,7 +101,13 @@ def lower_linalg_to_llvm_ir(ir_module: Any) -> str:
         )
 
     with ir.Location.unknown(ctx):
-        run_stages(ir_module, ctx, BUILTIN_STAGES)
+        stages = BUILTIN_STAGES
+        if skip_first_canonicalize:
+            _log.info(
+                "[no-verify] Skipping BUILTIN_STAGES stage 1 canonicalize,cse"
+            )
+            stages = BUILTIN_STAGES[1:]
+        run_stages(ir_module, ctx, stages)
         return str(ir_module)
 
 
