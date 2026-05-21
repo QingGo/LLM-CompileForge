@@ -20,6 +20,7 @@ if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
     sys.path.insert(0, str(_mlir_pkg))
 
 from compiler.pipeline import _apply_sf_to_linalg  # noqa: E402
+from scripts.compile_dylib import _verify_lowered_ir  # noqa: E402
 from tests.test_pipeline_lowering import MLIR_BINDINGS  # noqa: E402
 
 try:
@@ -952,4 +953,59 @@ def test_vector_contract_lowering_outerproduct():
         if "vector.contract" in result:
             pytest.skip("vector.contract not lowered — need different strategy")
         assert "vector." not in result or "vector" in text, "vector ops remain after lowering"
+
+
+# ── Zero-dim tensor regression prevention ────────────────────
+
+
+@pytest.mark.unit
+def test_zero_dim_tensor_prevention(caplog):
+    """Regression: no 0D tensors (tensor<f32>) should appear in lowered IR.
+
+    Task 5 fixed SfSymSizeOpLowering to produce tensor<1xf32> (1D) instead of
+    tensor<f32> (0D).  Task 7 added 0D detection to _verify_lowered_ir.
+    This test prevents regression on both.
+    """
+    import logging
+
+    # ── Part 1: sf.sym_size lowering must produce 1D, not 0D ──
+    lowered = _lower("""module {
+  func.func @test(%a: tensor<2x4xi64>) -> tensor<1xf32> {
+    %0 = "sf.sym_size"(%a) {dim = 0 : i64} : (tensor<2x4xi64>) -> tensor<1xf32>
+    return %0 : tensor<1xf32>
+  }
+}""")
+    assert "tensor<1xf32>" in lowered, (
+        f"Lowered IR must contain 1D tensor<1xf32>:\n{lowered}"
+    )
+    # Bare tensor<f32> (without a dimension prefix like 1x) is 0D
+    assert "tensor<f32>" not in lowered, (
+        f"Lowered IR must NOT contain 0D tensor<f32>:\n{lowered}"
+    )
+
+    # ── Part 2: _verify_lowered_ir warns on 0D tensors ──
+    bad_ir = '''module {
+  func.func @test(%a: tensor<f32>) -> tensor<f32> {
+    %0 = linalg.copy ins(%a : tensor<f32>) outs(%a : tensor<f32>)
+    return %0 : tensor<f32>
+  }
+}'''
+    caplog.set_level(logging.WARNING)
+    _verify_lowered_ir(bad_ir)
+    assert any("zero-dimensional" in r.getMessage() for r in caplog.records), (
+        f"Expected warning for 0D tensors, got: {[r.getMessage() for r in caplog.records]}"
+    )
+
+    # ── Part 3: clean 1D IR should not trigger warning ──
+    caplog.clear()
+    clean_ir = '''module {
+  func.func @test(%a: tensor<1xf32>) -> tensor<1xf32> {
+    %0 = linalg.copy ins(%a : tensor<1xf32>) outs(%a : tensor<1xf32>)
+    return %0 : tensor<1xf32>
+  }
+}'''
+    _verify_lowered_ir(clean_ir)
+    assert not any("zero-dimensional" in r.getMessage() for r in caplog.records), (
+        "Unexpected warning for clean 1D IR"
+    )
 
