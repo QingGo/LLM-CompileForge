@@ -1853,9 +1853,9 @@ struct SfLogicalAndOpLowering : public OpRewritePattern<sf::LogicalAndOp> {
         ValueRange{op.getLhs(), op.getRhs()}, empty,
         {lhsMap, rhsMap, outMap}, iterTypes,
         [&](OpBuilder &b, Location bodyLoc, ValueRange args) {
-      Value cmp = b.create<arith::CmpFOp>(bodyLoc, arith::CmpFPredicate::OLE, args[0], args[1]);
-      Value result = b.create<arith::UIToFPOp>(bodyLoc, rewriter.getF32Type(), cmp);
-      b.create<linalg::YieldOp>(bodyLoc, result);
+      // Both args are 0.0 (false) or 1.0 (true). Multiply gives AND.
+      Value result = arith::MulFOp::create(b, bodyLoc, args[0], args[1]);
+      linalg::YieldOp::create(b, bodyLoc, result);
     });
     rewriter.replaceOp(op, g.getResult(0));
     return success();
@@ -2083,116 +2083,118 @@ struct SfCumsumOpLowering : public OpRewritePattern<sf::CumsumOp> {
     auto loc = op.getLoc();
     Value input = op.getInput();
     Type rt = op.getResult().getType();
-    auto inType = ::mlir::dyn_cast<::mlir::RankedTensorType>(input.getType());
     auto outType = ::mlir::dyn_cast<::mlir::RankedTensorType>(rt);
+    auto inType = ::mlir::dyn_cast<::mlir::RankedTensorType>(input.getType());
     if (!inType || !outType) return failure();
-
-    // If the output rank is less than input rank, the op's result type was
-    // incorrectly inferred (e.g. tensor<f32> scalar from shape op, while
-    // actual input is higher-rank). Use the input type instead.
-    if (outType.getRank() < inType.getRank()) {
-      rt = input.getType();
-      outType = inType;
-    }
 
     int64_t dim = 0;
     if (auto dimAttr = op.getOperation()->getAttrOfType<IntegerAttr>("dim"))
       dim = dimAttr.getInt();
-    if (dim < 0 || dim >= inType.getRank() || inType.getDimSize(dim) < 0) {
-      // Out-of-range or dynamic dim: identity copy of input.
-      // Use makeEmpty to correctly handle dynamic dims from the input tensor.
-      Value empty = makeEmpty(rewriter, loc, outType, {input});
-      if (!empty) return failure();
-      rewriter.replaceOpWithNewOp<linalg::CopyOp>(op, input, empty);
-      return success();
-    }
+    if (dim < 0 || dim >= inType.getRank())
+      return failure();
+
     auto eltType = inType.getElementType();
+    int64_t rank = inType.getRank();
 
-    int64_t dimSize = inType.getDimSize(dim);
-
-    // Copy input to output first.  Use makeEmpty so dynamic dims (from other
-    // axes) are properly extracted from the input tensor.
+    // Copy input to output first.
     Value empty = makeEmpty(rewriter, loc, outType, {input});
     if (!empty) return failure();
     Value initOut = rewriter.create<linalg::CopyOp>(loc, input, empty).getResult(0);
 
-    // For i = 1 to dimSize-1: output[..., i, ...] += output[..., i-1, ...]
-    // We iterate over the dim axis and use tensor.extract/tensor.insert
-    // to accumulate. For each i > 0, we iterate over all non-dim positions.
-    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    Value dimEnd = rewriter.create<arith::ConstantIndexOp>(loc, dimSize);
-
-    Value forResult = initOut;
-    for (int64_t i = 1; i < dimSize; ++i) {
-      // For each i, we build a helper that updates position [..., i, ...]
-      // by reading current at [..., i] and prev at [..., i-1]
-      // Actually tensor.extract/insert already handles coordinates.
-      // We need to iterate over all combinations of non-dim coords.
-      // For simplicity in a first pass, handle the common case:
-      // since dimSize is known, iterate over all other dims.
-      auto forOuter = [&]() -> Value {
-        // Build a recursive or flat iteration over non-dim dimensions
-        SmallVector<int64_t> nonDims;
-        for (int64_t j = 0; j < inType.getRank(); ++j)
-          if (j != dim) nonDims.push_back(j);
-        int64_t nonTotal = 1;
-        for (int64_t j = 0; j < (int64_t)nonDims.size(); ++j)
-          nonTotal *= inType.getDimSize(nonDims[j]);
-        if (nonTotal <= 0) return forResult;
-
-        scf::ForOp outerFor = nullptr;
-        Value iterVal = forResult;
-
-        // For each non-dim dimension, build a nested scf.for
-        // Since we need to iterate over all combinations, process
-        // in a single scf.for over total_non_dim elements
-        Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-        Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-        Value total = rewriter.create<arith::ConstantIndexOp>(loc, nonTotal);
-
-        outerFor = rewriter.create<scf::ForOp>(loc, c0, total, c1, iterVal);
-        auto outerIv = outerFor.getInductionVar();
-        rewriter.setInsertionPointToStart(outerFor.getBody());
-        rewriter.setInsertionPointToStart(outerFor.getBody());
-        Value curOut = outerFor.getBody()->getArgument(1);
-
-        // Convert linear index to multi-dimensional coords
-        // For position [..., i, ...]: we need to compute coordinates
-        // where the dim axis has value i, and other axes come from linear index
-        SmallVector<Value> curCoords(inType.getRank());
-        Value remaining = outerIv;
-        for (int64_t j = 0; j < (int64_t)inType.getRank(); ++j) {
-          if (j == dim) {
-            curCoords[j] = rewriter.create<arith::ConstantIndexOp>(loc, i);
-          } else {
-            int64_t dSize = inType.getDimSize(j);
-            if (dSize > 1) {
-              Value dSz = rewriter.create<arith::ConstantIndexOp>(loc, dSize);
-              Value idx = rewriter.create<arith::RemSIOp>(loc, remaining, dSz);
-              curCoords[j] = idx;
-              remaining = rewriter.create<arith::DivSIOp>(loc, remaining, dSz);
-            } else {
-              curCoords[j] = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-            }
-          }
-        }
-
-        // Read prev = output[..., i-1, ...] and cur = input[..., i, ...]
-        SmallVector<Value> prevCoords = curCoords;
-        prevCoords[dim] = rewriter.create<arith::ConstantIndexOp>(loc, i - 1);
-        Value prev = rewriter.create<tensor::ExtractOp>(loc, curOut, prevCoords);
-        Value cur = rewriter.create<tensor::ExtractOp>(loc, input, curCoords);
-        Value sum = rewriter.create<arith::AddFOp>(loc, prev, cur);
-        Value newOut = rewriter.create<tensor::InsertOp>(loc, outType, sum, curOut, curCoords);
-        rewriter.create<scf::YieldOp>(loc, newOut);
-
-        rewriter.setInsertionPointAfter(outerFor);
-        return outerFor.getResult(0);
-      };
-      forResult = forOuter();
+    // Get runtime dim size for the cumsum axis
+    Value dimSize;
+    bool dimIsStatic = (inType.getDimSize(dim) > 0);
+    if (dimIsStatic) {
+      dimSize = rewriter.create<arith::ConstantIndexOp>(loc, inType.getDimSize(dim));
+    } else {
+      dimSize = rewriter.create<tensor::DimOp>(loc, input, dim);
     }
 
-    rewriter.replaceOp(op, forResult);
+    // Build non-dim runtime sizes for linearization
+    SmallVector<Value> nonDimSizes;
+    SmallVector<int64_t> nonDimIdxs;
+    Value nonTotalVal;
+    bool nonDimAllStatic = true;
+    int64_t nonTotalStatic = 1;
+    for (int64_t j = 0; j < rank; ++j) {
+      if (j == dim) continue;
+      nonDimIdxs.push_back(j);
+      int64_t sz = inType.getDimSize(j);
+      if (sz > 0) {
+        nonDimSizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, sz));
+        nonTotalStatic *= sz;
+      } else {
+        nonDimAllStatic = false;
+        Value dynSz = rewriter.create<tensor::DimOp>(loc, input, j);
+        nonDimSizes.push_back(dynSz);
+      }
+    }
+
+    if (nonDimAllStatic && nonTotalStatic <= 0) {
+      rewriter.replaceOp(op, initOut);
+      return success();
+    }
+
+    // Compute total non-dim elements at runtime if any dim is dynamic
+    if (nonDimAllStatic) {
+      nonTotalVal = rewriter.create<arith::ConstantIndexOp>(loc, nonTotalStatic);
+    } else {
+      nonTotalVal = nonDimSizes[0];
+      for (size_t s = 1; s < nonDimSizes.size(); ++s) {
+        nonTotalVal = rewriter.create<arith::MulIOp>(loc, nonTotalVal, nonDimSizes[s]);
+      }
+    }
+
+    // For i = 1 to dimSize-1: cumsum along dim
+    // scf.for %i = 1 to dimSize
+    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    auto dimLoop = rewriter.create<scf::ForOp>(loc, c1, dimSize, c1, initOut);
+    Value iv = dimLoop.getInductionVar();
+    rewriter.setInsertionPointToStart(dimLoop.getBody());
+    Value dimIterOut = dimLoop.getBody()->getArgument(1);  // loop-carried tensor
+
+    // Inner loop: iterate over all non-dim positions
+    auto innerLoop = rewriter.create<scf::ForOp>(loc, c0, nonTotalVal, c1, dimIterOut);
+    rewriter.setInsertionPointToStart(innerLoop.getBody());
+    Value innerIv = innerLoop.getInductionVar();
+    Value curOut = innerLoop.getBody()->getArgument(1);
+
+    // Linear index -> multi-dimensional coords
+    SmallVector<Value> coords(rank);
+    Value remaining = innerIv;
+    for (int64_t j = 0; j < rank; ++j) {
+      if (j == dim) {
+        coords[j] = iv;
+      } else {
+        // Find the index in nonDimIdxs
+        int64_t localIdx = -1;
+        for (size_t si = 0; si < nonDimIdxs.size(); ++si) {
+          if (nonDimIdxs[si] == j) { localIdx = si; break; }
+        }
+        if (localIdx < 0) { coords[j] = c0; continue; }
+        Value dSz = nonDimSizes[localIdx];
+        Value idx = rewriter.create<arith::RemSIOp>(loc, remaining, dSz);
+        coords[j] = idx;
+        remaining = rewriter.create<arith::DivSIOp>(loc, remaining, dSz);
+      }
+    }
+
+    // prev = curOut[..., i-1, ...], cur = input[..., i, ...]
+    SmallVector<Value> prevCoords = coords;
+    Value oneIdx = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    prevCoords[dim] = rewriter.create<arith::SubIOp>(loc, coords[dim], oneIdx);
+    Value prev = rewriter.create<tensor::ExtractOp>(loc, curOut, prevCoords);
+    Value cur = rewriter.create<tensor::ExtractOp>(loc, input, coords);
+    Value sum = rewriter.create<arith::AddFOp>(loc, prev, cur);
+    Value newOutVal = rewriter.create<tensor::InsertOp>(loc, outType, sum, curOut, coords);
+    rewriter.create<scf::YieldOp>(loc, newOutVal);
+
+    rewriter.setInsertionPointAfter(innerLoop);
+    rewriter.create<scf::YieldOp>(loc, innerLoop.getResult(0));
+
+    rewriter.setInsertionPointAfter(dimLoop);
+    rewriter.replaceOp(op, dimLoop.getResult(0));
     return success();
   }
 };

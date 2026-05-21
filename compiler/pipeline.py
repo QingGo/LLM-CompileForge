@@ -299,7 +299,7 @@ def _apply_sf_to_linalg(mlir_text: str, orig_mlir_mod: Any = None) -> str:
         pman = pm.PassManager.parse(
             "builtin.module(sf-promote-weights,canonicalize,cse,sf-lower-to-linalg)",
             ctx)
-        pman.enable_verifier(False)
+        pman.enable_verifier(True)
         pman.enable_timing()
         pman.run(ir_mod.operation)
         mlir_text = ir_mod.operation.get_asm(print_generic_op_form=True)

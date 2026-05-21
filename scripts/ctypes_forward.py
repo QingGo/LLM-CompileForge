@@ -475,6 +475,16 @@ def main():
         outputs = parse_sret_outputs(bytes(sret), func_def['outputs'])
         func_outputs[fi] = outputs
 
+        # Dump per-function output for layer-by-layer comparison
+        if outputs:
+            if fi > 0:
+                np.save(f'/tmp/dylib_func_{fi}.npy', np.array(outputs[0]))
+            # Also dump key func[0] outputs for debugging
+            if fi == 0:
+                for key_oi in [10, 12, 13]:
+                    if key_oi < len(outputs):
+                        np.save(f'/tmp/dylib_f0_out{key_oi}.npy', np.array(outputs[key_oi]))
+
         # Log function summary
         n_out = len(outputs)
         if fi == 0:
