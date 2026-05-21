@@ -672,7 +672,7 @@ BUILTIN_STAGES: list[Stage] = [
     Stage("emit_c_interface", action=_emit_c_interface_action, timeout=5.0),
     Stage("ensure-filled-outputs", action=ensure_filled_matmul_outputs_action, timeout=30.0, warn_only=True),
     Stage("bufferize", (
-        "one-shot-bufferize{bufferize-function-boundaries},"
+        "one-shot-bufferize{bufferize-function-boundaries allow-unknown-ops},"
         "canonicalize,cse,convert-bufferization-to-memref"
     ), timeout=60.0),
     Stage("linalg→loops", "convert-linalg-to-loops"),

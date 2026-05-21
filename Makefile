@@ -206,8 +206,12 @@ rebuild-mlir: $(VENV)
 	$(PYTHON) scripts/compile.py opt-125m --output-dir ./compiled/opt_125m_fresh
 
 # model.mlir → .dylib (C++ lowering + LLVM pipeline + llc + link)
+# IMPORTANT: sf dialect _mlir_libs dir must come BEFORE torch/lib in
+# DYLD_LIBRARY_PATH, or the sf dialect's nanobind symbols are shadowed by
+# PyTorch's copy, causing "symbol not found: nb_func_new" on import.
+SF_MLIR_LIBS := $(PWD)/sf-dialect/build/python_packages/sf/mlir_sf/_mlir_libs
 rebuild-dylib: $(VENV)
-	DYLD_LIBRARY_PATH="$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
+	DYLD_LIBRARY_PATH="$(SF_MLIR_LIBS):$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
 	$(PYTHON) scripts/compile_dylib.py compiled/opt_125m_fresh --model-name opt_125m
 
 # Rust forward 测试
