@@ -128,6 +128,36 @@ static AffineMap broadcastMap(unsigned loopRank, unsigned operandRank, MLIRConte
   return AffineMap::get(loopRank, 0, exprs, ctx);
 }
 
+// Refine the result type of a binary/broadcast op based on actual operand types
+// (which may have more static shape info after earlier lowering steps).
+// Each dimension is resolved by taking the max (broadcast) of operand dims,
+// preferring static sizes over dynamic when available.
+static RankedTensorType refineBroadcastType(RankedTensorType resultType,
+                                            ValueRange inputs) {
+  auto rank = resultType.getRank();
+  SmallVector<int64_t> refinedShape(rank, ShapedType::kDynamic);
+  for (int64_t i = 0; i < rank; ++i) {
+    if (!resultType.isDynamicDim(i)) {
+      refinedShape[i] = resultType.getDimSize(i);
+      continue;
+    }
+    // Dynamic dim — try to resolve from inputs.
+    // Only refine if ALL inputs either broadcast (dim not present) or agree
+    // on the same static size.  If any input has a truly dynamic dim, the
+    // result must stay dynamic (the runtime value is unknown at compile time).
+    int64_t bestSize = ShapedType::kDynamic;
+    bool anyDynamic = false;
+    for (auto input : inputs) {
+      auto inType = dyn_cast<RankedTensorType>(input.getType());
+      if (!inType || i >= inType.getRank()) continue;
+      int64_t inSize = inType.getDimSize(i);
+      if (inSize == ShapedType::kDynamic) { anyDynamic = true; continue; }
+      bestSize = std::max(bestSize, inSize);
+    }
+    refinedShape[i] = anyDynamic ? ShapedType::kDynamic : bestSize;
+  }
+  return RankedTensorType::get(refinedShape, resultType.getElementType());
+}
 
 // Safe constant creation — checks that the type is handled.
 static Value createSafeConst(OpBuilder &b, Location loc, Type eltType, double floatVal, int64_t intVal = 0) {
@@ -209,8 +239,6 @@ struct SfBinaryLowering : public OpRewritePattern<SfOpTy> {
     lhsType = cast<RankedTensorType>(lhs.getType());
     rhsType = cast<RankedTensorType>(rhs.getType());
     llvm::errs() << "  [SfBinary] type=" << SfOpTy::getOperationName() << " lhs=" << lhsType << " rhs=" << rhsType << " out=" << resultType << "\n";
-    Value empty = makeEmpty(rewriter, loc, resultType, {lhs});
-    if (!empty) { llvm::errs() << "  [SfBinary] makeEmpty failed\n"; return failure(); }
 
     // Handle rank mismatch: squeeze leading size-1 dims of higher-rank operands
     // so both operands match the output rank.
@@ -246,6 +274,14 @@ struct SfBinaryLowering : public OpRewritePattern<SfOpTy> {
     lhsRank = cast<RankedTensorType>(lhs.getType()).getRank();
     rhsRank = cast<RankedTensorType>(rhs.getType()).getRank();
 
+    // Refine output type from actual operand types (which may have more static
+    // shape info after earlier lowering steps, e.g. sym_size→1xf32).
+    auto refinedType = refineBroadcastType(
+        cast<RankedTensorType>(resultType),
+        ValueRange{lhs, rhs});
+    Value empty = makeEmpty(rewriter, loc, refinedType, {lhs, rhs});
+    if (!empty) { llvm::errs() << "  [SfBinary] makeEmpty failed\n"; return failure(); }
+
     // Build broadcast-aware affine maps for each operand
     auto lhsShaped = cast<RankedTensorType>(lhs.getType());
     auto rhsShaped = cast<RankedTensorType>(rhs.getType());
@@ -255,7 +291,7 @@ struct SfBinaryLowering : public OpRewritePattern<SfOpTy> {
 
     SmallVector<utils::IteratorType> iterTypes(rank, utils::IteratorType::parallel);
     auto generic = linalg::GenericOp::create(
-        rewriter, loc, resultType, ValueRange{lhs, rhs}, empty,
+        rewriter, loc, refinedType, ValueRange{lhs, rhs}, empty,
         {lhsMap, rhsMap, outMap}, iterTypes);
     populateBody(generic, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
       Value v = b.create<ArithOpTy>(loc, args[0], args[1]);
@@ -1753,9 +1789,12 @@ struct SfLeOpLowering : public OpRewritePattern<sf::LeOp> {
     if (!isa<ShapedType>(rt)) return failure();
     auto eltType = cast<ShapedType>(rt).getElementType();
     // Always use f32 output to avoid i1→f32 unrealized_conversion_cast
-    auto f32OutType = cast<ShapedType>(rt).cloneWith(
+    auto f32OutTypeRaw = cast<ShapedType>(rt).cloneWith(
         cast<ShapedType>(rt).getShape(), rewriter.getF32Type());
-    Value empty = makeEmpty(rewriter, loc, f32OutType, {op.getLhs()});
+    auto refinedType = refineBroadcastType(
+        cast<RankedTensorType>(f32OutTypeRaw),
+        ValueRange{op.getLhs(), op.getRhs()});
+    Value empty = makeEmpty(rewriter, loc, refinedType, {op.getLhs(), op.getRhs()});
     if (!empty) return failure();
     auto rank = cast<ShapedType>(rt).getRank();
     SmallVector<utils::IteratorType> iterTypes(rank, utils::IteratorType::parallel);
@@ -1764,7 +1803,7 @@ struct SfLeOpLowering : public OpRewritePattern<sf::LeOp> {
     auto lhsMap = broadcastMap(rank, lhsType2.getRank(), rewriter.getContext(), lhsType2.getShape());
     auto rhsMap = broadcastMap(rank, rhsType2.getRank(), rewriter.getContext(), rhsType2.getShape());
     auto outMap = AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext());
-    auto g = linalg::GenericOp::create(rewriter, loc, f32OutType,
+    auto g = linalg::GenericOp::create(rewriter, loc, refinedType,
         ValueRange{op.getLhs(), op.getRhs()}, empty,
         {lhsMap, rhsMap, outMap}, iterTypes,
         [&](OpBuilder &b, Location bodyLoc, ValueRange args) {
@@ -1797,8 +1836,11 @@ struct SfLogicalAndOpLowering : public OpRewritePattern<sf::LogicalAndOp> {
     if (!isa<ShapedType>(rt)) return failure();
     // Always use f32 output type to avoid i1→f32 unrealized_conversion_cast
     auto outType = cast<ShapedType>(rt);
-    auto f32OutType = outType.cloneWith(outType.getShape(), rewriter.getF32Type());
-    Value empty = makeEmpty(rewriter, loc, f32OutType, {op.getLhs()});
+    auto f32OutTypeRaw = outType.cloneWith(outType.getShape(), rewriter.getF32Type());
+    auto refinedType = refineBroadcastType(
+        cast<RankedTensorType>(f32OutTypeRaw),
+        ValueRange{op.getLhs(), op.getRhs()});
+    Value empty = makeEmpty(rewriter, loc, refinedType, {op.getLhs(), op.getRhs()});
     if (!empty) return failure();
     auto rank = outType.getRank();
     SmallVector<utils::IteratorType> iterTypes(rank, utils::IteratorType::parallel);
@@ -1807,7 +1849,7 @@ struct SfLogicalAndOpLowering : public OpRewritePattern<sf::LogicalAndOp> {
     auto lhsMap = broadcastMap(rank, lhsType2.getRank(), rewriter.getContext(), lhsType2.getShape());
     auto rhsMap = broadcastMap(rank, rhsType2.getRank(), rewriter.getContext(), rhsType2.getShape());
     auto outMap = AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext());
-    auto g = linalg::GenericOp::create(rewriter, loc, f32OutType,
+    auto g = linalg::GenericOp::create(rewriter, loc, refinedType,
         ValueRange{op.getLhs(), op.getRhs()}, empty,
         {lhsMap, rhsMap, outMap}, iterTypes,
         [&](OpBuilder &b, Location bodyLoc, ValueRange args) {
@@ -1848,10 +1890,21 @@ struct SfOnesLikeOpLowering : public OpRewritePattern<sf::OnesLikeOp> {
       auto tensorType = RankedTensorType::get(shape, eltType);
 
       // Extract scalar f32 from each operand → i64 → index for tensor.empty
+      // Operands can be 0D (tensor<f32>) or 1D (tensor<1xf32>).
       SmallVector<Value> dynSizes;
       auto idxType = rewriter.getIndexType();
       for (auto operand : allInputs) {
-        Value extracted = rewriter.create<tensor::ExtractOp>(loc, operand, ValueRange{});
+        Value extracted;
+        auto operandTy = dyn_cast<RankedTensorType>(operand.getType());
+        if (operandTy && operandTy.getRank() == 0) {
+          extracted = rewriter.create<tensor::ExtractOp>(loc, operand, ValueRange{});
+        } else if (operandTy && operandTy.getRank() > 0) {
+          SmallVector<Value> indices(operandTy.getRank(),
+              rewriter.create<arith::ConstantIndexOp>(loc, 0));
+          extracted = rewriter.create<tensor::ExtractOp>(loc, operand, indices);
+        } else {
+          return failure();
+        }
         Value i64Val;
         if (isa<FloatType>(extracted.getType())) {
           i64Val = rewriter.create<arith::FPToUIOp>(loc, rewriter.getI64Type(), extracted);
