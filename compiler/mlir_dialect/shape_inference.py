@@ -435,6 +435,30 @@ def infer_ones_like(input_types: list[ir.Type], shape: tuple[int, ...] | None = 
     return [_make_ranked_type((1, 1), "f32")]
 
 
+def _infer_ones_like_pure(
+    shapes: list[tuple[int | None, ...]],
+    elts: list[str],
+    **kwargs: Any,
+) -> list[tuple[tuple[int | None, ...], str]]:
+    """OnesLike: shape comes from kwargs (not from broadcasting inputs).
+
+    When `shape` kwarg contains strings (SSA references), those dimensions
+    are dynamic (None).  Static ints in the shape kwarg are kept as-is.
+    When no `shape` kwarg, fall back to copying the first input's shape.
+    """
+    shape_kwarg = kwargs.get("shape")
+    if shape_kwarg:
+        # shape entries can be str (SSA ref → dynamic/None) or int (static)
+        result_shape: tuple[int | None, ...] = tuple(
+            d if isinstance(d, int) else None
+            for d in shape_kwarg
+        )
+        return [(result_shape, elts[0] if elts else "f32")]
+    if shapes:
+        return [(shapes[0], elts[0] if elts else "f32")]
+    return [((), "f32")]
+
+
 def infer_full_like(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
     return infer_ones_like(input_types, **kwargs)
 
@@ -655,8 +679,8 @@ def _infer_scalar_pure(
     elts: list[str],
     **kwargs: Any,
 ) -> list[tuple[tuple[int | None, ...], str]]:
-    """SymSize: return scalar tensor (empty shape tuple) with f32 element type."""
-    return [((), "f32")]
+    """SymSize: return 1-element tensor (shape (1,)) with f32 element type."""
+    return [((1,), "f32")]
 
 
 def _infer_matmul_pure(
@@ -935,8 +959,8 @@ _PURE_TABLE: dict[str, Any] = {
     "cumsum": _infer_elementwise_pure,
     "masked_fill": _infer_elementwise_pure,
     "arange": _infer_elementwise_pure,
-    "ones_like": _infer_elementwise_pure,
-    "full_like": _infer_elementwise_pure,
+    "ones_like": _infer_ones_like_pure,
+    "full_like": _infer_ones_like_pure,
     "zeros": _infer_elementwise_pure,
     "eye": _infer_elementwise_pure,
     "pad": _infer_elementwise_pure,

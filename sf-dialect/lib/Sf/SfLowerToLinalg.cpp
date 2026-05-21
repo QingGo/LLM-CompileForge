@@ -167,6 +167,15 @@ struct SfBinaryLowering : public OpRewritePattern<SfOpTy> {
     auto rank = cast<ShapedType>(resultType).getRank();
     auto lhsRank = lhsType.getRank();
     auto rhsRank = rhsType.getRank();
+    // If result rank is less than operand rank(s), the op's result type was
+    // incorrectly inferred (e.g. tensor<f32> scalar while inputs are higher
+    // rank). Use the higher-rank operand type as the result type.
+    if (rank < lhsRank || rank < rhsRank) {
+      auto maxRankType = (lhsRank >= rhsRank) ? lhsType : rhsType;
+      resultType = RankedTensorType::get(maxRankType.getShape(),
+                                          cast<ShapedType>(resultType).getElementType());
+      rank = cast<ShapedType>(resultType).getRank();
+    }
     // Promote non-float operands: when result is float but operand is int,
     // insert sitofp via linalg.generic (bufferizable DPS pattern).
     auto outEltTy = cast<ShapedType>(resultType).getElementType();
@@ -1101,6 +1110,63 @@ struct SfScaledDotProductAttentionOpLowering
     });
     Value scoresScaled = scaleOp.getResult(0);
 
+    // Step 3b: Apply attention mask if present
+    // mask contains POSITION VALUES (0, 1, 2, 3...) — NOT booleans.
+    // mask shape: [batch, 1, seq, seq], all values in row i = position[i].
+    // Causal condition: position[row] >= position[col] → attend (0.0), else → -inf.
+    // Approach: transpose mask (swap last two dims) so maskT[i,j] = mask[j,i] = position[j],
+    // then compare: mask >= maskT  =>  position[i] >= position[j].
+    if (Value mask = op.getAttnMask()) {
+      Value zeroF32 = rewriter.create<arith::ConstantOp>(loc, eltType,
+          rewriter.getFloatAttr(eltType, 0.0f));
+      Value negLarge = rewriter.create<arith::ConstantOp>(loc, eltType,
+          rewriter.getFloatAttr(eltType, -1.0e20f));
+
+      // Step 3b-i: Transpose mask (swap last two dims)
+      auto maskType = cast<RankedTensorType>(mask.getType());
+      int64_t maskRank = maskType.getRank();
+      SmallVector<unsigned> perm;
+      for (int64_t i = 0; i < maskRank; ++i) perm.push_back(i);
+      std::swap(perm[maskRank - 1], perm[maskRank - 2]);
+
+      SmallVector<int64_t> maskTShape;
+      for (int64_t i = 0; i < maskRank; ++i)
+        maskTShape.push_back(maskType.getDimSize(perm[i]));
+      auto maskTType = RankedTensorType::get(maskTShape, maskType.getElementType());
+
+      // Build dynamic sizes for the transposed tensor (correctly remapped via perm)
+      SmallVector<Value> maskTDynSizes;
+      for (int64_t i = 0; i < maskRank; ++i) {
+        if (maskTType.isDynamicDim(i))
+          maskTDynSizes.push_back(rewriter.create<tensor::DimOp>(loc, mask, perm[i]));
+      }
+      Value maskTEmpty = rewriter.create<tensor::EmptyOp>(loc, maskTType, maskTDynSizes);
+
+      SmallVector<utils::IteratorType> tIter(maskRank, utils::IteratorType::parallel);
+      auto transposeOp = linalg::GenericOp::create(rewriter, loc, maskTType,
+          ValueRange{mask}, ValueRange{maskTEmpty},
+          {AffineMap::getPermutationMap(perm, rewriter.getContext()),
+           AffineMap::getMultiDimIdentityMap(maskRank, rewriter.getContext())}, tIter);
+      populateBody(transposeOp, rewriter, [&](OpBuilder &b, Location loc2, ValueRange args) {
+        b.create<linalg::YieldOp>(loc2, args[0]);
+      });
+      Value maskT = transposeOp.getResult(0);
+
+      // Step 3b-ii: additive[i,j] = (mask[i,j] >= maskT[i,j]) ? 0.0 : -inf
+      // makeBinaryOp broadcasts maskT from [b,1,s,s] -> scoresScaled shape [b,h,s,s]
+      Value additive = makeBinaryOp(rewriter, loc, mask, maskT, scoresScaled.getType(), rewriter,
+          [&](OpBuilder &b, Location loc, Value m, Value mT) {
+            Value cmp = b.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OGE, m, mT);
+            Value sel = b.create<arith::SelectOp>(loc, cmp, zeroF32, negLarge);
+            return sel;
+          });
+      // Step 3b-iii: scoresScaled = scoresScaled + additive
+      scoresScaled = makeBinaryOp(rewriter, loc, scoresScaled, additive, scoresScaled.getType(), rewriter,
+          [&](OpBuilder &b, Location loc, Value a, Value bVal) {
+            return b.create<arith::AddFOp>(loc, a, bVal);
+          });
+    }
+
     // Step 4: softmax along last dim
     // softmax(x) = exp(x - max) / sum(exp(x - max))
     int64_t lastDim = rank - 1;
@@ -1678,19 +1744,20 @@ struct SfSliceOpLowering : public OpRewritePattern<sf::SliceOp> {
 
 
 // Le comparison → arith.cmpf in generic
-// Uses body builder (not populateBody) so body args have input element type (f32),
-// not output element type (i1).
+// Computes lhs <= rhs element-wise. Output is f32 (0.0/1.0) to avoid
+// i1→f32 unrealized_conversion_cast downstream.
 struct SfLeOpLowering : public OpRewritePattern<sf::LeOp> {
   using OpRewritePattern<sf::LeOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(sf::LeOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc(); Type rt = op.getResult().getType();
     if (!isa<ShapedType>(rt)) return failure();
-    // Always use f32 output type to avoid i1→f32 unrealized_conversion_cast
-    auto outType = cast<ShapedType>(rt);
-    auto f32OutType = outType.cloneWith(outType.getShape(), rewriter.getF32Type());
+    auto eltType = cast<ShapedType>(rt).getElementType();
+    // Always use f32 output to avoid i1→f32 unrealized_conversion_cast
+    auto f32OutType = cast<ShapedType>(rt).cloneWith(
+        cast<ShapedType>(rt).getShape(), rewriter.getF32Type());
     Value empty = makeEmpty(rewriter, loc, f32OutType, {op.getLhs()});
     if (!empty) return failure();
-    auto rank = outType.getRank();
+    auto rank = cast<ShapedType>(rt).getRank();
     SmallVector<utils::IteratorType> iterTypes(rank, utils::IteratorType::parallel);
     auto lhsType2 = cast<RankedTensorType>(op.getLhs().getType());
     auto rhsType2 = cast<RankedTensorType>(op.getRhs().getType());
@@ -1701,23 +1768,17 @@ struct SfLeOpLowering : public OpRewritePattern<sf::LeOp> {
         ValueRange{op.getLhs(), op.getRhs()}, empty,
         {lhsMap, rhsMap, outMap}, iterTypes,
         [&](OpBuilder &b, Location bodyLoc, ValueRange args) {
-      Value lhsB, rhsB;
-      if (isa<IntegerType>(args[0].getType())) {
-        lhsB = args[0];
+      Value cmp;
+      if (isa<IntegerType>(args[0].getType()) || isa<IntegerType>(args[1].getType())) {
+        // Integer comparison: use CmpIOp
+        auto lhsInt = b.create<arith::IndexCastOp>(loc, b.getIndexType(), args[0]);
+        auto rhsInt = b.create<arith::IndexCastOp>(loc, b.getIndexType(), args[1]);
+        cmp = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sle, lhsInt, rhsInt);
       } else {
-        Value zero = b.create<arith::ConstantOp>(loc, rewriter.getF32Type(),
-            b.getFloatAttr(rewriter.getF32Type(), 0.0));
-        lhsB = b.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OGT, args[0], zero);
+        // Float comparison
+        cmp = b.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OLE, args[0], args[1]);
       }
-      if (isa<IntegerType>(args[1].getType())) {
-        rhsB = args[1];
-      } else {
-        Value zero = b.create<arith::ConstantOp>(loc, rewriter.getF32Type(),
-            b.getFloatAttr(rewriter.getF32Type(), 0.0));
-        rhsB = b.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OGT, args[1], zero);
-      }
-      Value andB = b.create<arith::AndIOp>(loc, lhsB, rhsB);
-      Value result = b.create<arith::UIToFPOp>(loc, rewriter.getF32Type(), andB);
+      Value result = b.create<arith::UIToFPOp>(loc, rewriter.getF32Type(), cmp);
       b.create<linalg::YieldOp>(loc, result);
     });
     rewriter.replaceOp(op, g.getResult(0));
@@ -1760,17 +1821,63 @@ struct SfLogicalAndOpLowering : public OpRewritePattern<sf::LogicalAndOp> {
 };
 
 // OnesLike → linalg.fill(1.0)
+// When dyn_shape operands are present (e.g., from aten.ones with symbolic
+// shapes), each operand is a scalar tensor<f32> providing one dynamic
+// dimension.  Extract their values and build a correctly-shaped tensor.
+// When dyn_shape is empty, fall back to copying the input tensor's shape.
 struct SfOnesLikeOpLowering : public OpRewritePattern<sf::OnesLikeOp> {
   using OpRewritePattern<sf::OnesLikeOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(sf::OnesLikeOp op, PatternRewriter &rewriter) const override {
-    auto loc = op.getLoc(); Type rt = op.getResult().getType();
+    auto loc = op.getLoc();
+    Type rt = op.getResult().getType();
     if (!isa<ShapedType>(rt)) return failure();
+    auto shapedType = cast<ShapedType>(rt);
+    auto eltType = shapedType.getElementType();
+    if (!isa<FloatType>(eltType)) return failure();
+
+    auto dynShape = op.getDynShape();
+    if (!dynShape.empty()) {
+      // Dynamic shape from scalar tensor operands.
+      // Collect all: input + dyn_shape together define the output rank.
+      SmallVector<Value> allInputs;
+      allInputs.push_back(op.getInput());
+      allInputs.append(dynShape.begin(), dynShape.end());
+
+      size_t numDims = allInputs.size();
+      SmallVector<int64_t> shape(numDims, ShapedType::kDynamic);
+      auto tensorType = RankedTensorType::get(shape, eltType);
+
+      // Extract scalar f32 from each operand → i64 → index for tensor.empty
+      SmallVector<Value> dynSizes;
+      auto idxType = rewriter.getIndexType();
+      for (auto operand : allInputs) {
+        Value extracted = rewriter.create<tensor::ExtractOp>(loc, operand, ValueRange{});
+        Value i64Val;
+        if (isa<FloatType>(extracted.getType())) {
+          i64Val = rewriter.create<arith::FPToUIOp>(loc, rewriter.getI64Type(), extracted);
+        } else if (isa<IntegerType>(extracted.getType())) {
+          i64Val = rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), extracted);
+        } else {
+          return failure();
+        }
+        Value idx = rewriter.create<arith::IndexCastOp>(loc, idxType, i64Val);
+        dynSizes.push_back(idx);
+      }
+
+      Value empty = rewriter.create<tensor::EmptyOp>(loc, tensorType, dynSizes);
+      if (!empty) return failure();
+
+      Value oneVal = rewriter.create<arith::ConstantOp>(loc, eltType,
+          rewriter.getFloatAttr(eltType, 1.0));
+      rewriter.replaceOpWithNewOp<linalg::FillOp>(op, ValueRange{oneVal}, ValueRange{empty});
+      return success();
+    }
+
+    // Default path: no dyn_shape, copy shape from input tensor
     Value empty = makeEmpty(rewriter, loc, rt, {op.getInput()});
     if (!empty) return failure();
-    auto elt = getElementTypeOrSelf(rt);
-    if (!isa<FloatType>(elt)) return failure();
-    Value oneVal = rewriter.create<arith::ConstantOp>(loc, elt,
-        rewriter.getFloatAttr(elt, 1.0));
+    Value oneVal = rewriter.create<arith::ConstantOp>(loc, eltType,
+        rewriter.getFloatAttr(eltType, 1.0));
     rewriter.replaceOpWithNewOp<linalg::FillOp>(op, ValueRange{oneVal}, ValueRange{empty});
     return success();
   }
@@ -1815,9 +1922,10 @@ struct SfSymSizeOpLowering : public OpRewritePattern<sf::SymSizeOp> {
     Value dimI64 = rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), dimVal);
     auto f32Type = rewriter.getF32Type();
     Value dimF32 = rewriter.create<arith::UIToFPOp>(loc, f32Type, dimI64);
-    RankedTensorType outTensorType = RankedTensorType::get({}, f32Type);
+    RankedTensorType outTensorType = RankedTensorType::get({1}, f32Type);
     Value empty = rewriter.create<tensor::EmptyOp>(loc, outTensorType, ValueRange{});
-    Value result = rewriter.create<tensor::InsertOp>(loc, dimF32, empty, ValueRange{});
+    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value result = rewriter.create<tensor::InsertOp>(loc, dimF32, empty, ValueRange{c0});
     rewriter.replaceOp(op, result);
     return success();
   }
@@ -1927,22 +2035,33 @@ struct SfCumsumOpLowering : public OpRewritePattern<sf::CumsumOp> {
     auto outType = ::mlir::dyn_cast<::mlir::RankedTensorType>(rt);
     if (!inType || !outType) return failure();
 
+    // If the output rank is less than input rank, the op's result type was
+    // incorrectly inferred (e.g. tensor<f32> scalar from shape op, while
+    // actual input is higher-rank). Use the input type instead.
+    if (outType.getRank() < inType.getRank()) {
+      rt = input.getType();
+      outType = inType;
+    }
+
     int64_t dim = 0;
     if (auto dimAttr = op.getOperation()->getAttrOfType<IntegerAttr>("dim"))
       dim = dimAttr.getInt();
-    if (dim < 0 || dim >= inType.getRank()) {
-      // Scalar cumsum: identity — return a copy of input
-      Value empty = rewriter.create<tensor::EmptyOp>(loc, outType, ValueRange{});
+    if (dim < 0 || dim >= inType.getRank() || inType.getDimSize(dim) < 0) {
+      // Out-of-range or dynamic dim: identity copy of input.
+      // Use makeEmpty to correctly handle dynamic dims from the input tensor.
+      Value empty = makeEmpty(rewriter, loc, outType, {input});
+      if (!empty) return failure();
       rewriter.replaceOpWithNewOp<linalg::CopyOp>(op, input, empty);
       return success();
     }
     auto eltType = inType.getElementType();
 
     int64_t dimSize = inType.getDimSize(dim);
-    if (dimSize < 0) return failure(); // dynamic dim, skip
 
-    // Copy input to output first
-    Value empty = rewriter.create<tensor::EmptyOp>(loc, outType, ValueRange{});
+    // Copy input to output first.  Use makeEmpty so dynamic dims (from other
+    // axes) are properly extracted from the input tensor.
+    Value empty = makeEmpty(rewriter, loc, outType, {input});
+    if (!empty) return failure();
     Value initOut = rewriter.create<linalg::CopyOp>(loc, input, empty).getResult(0);
 
     // For i = 1 to dimSize-1: output[..., i, ...] += output[..., i-1, ...]
@@ -2127,19 +2246,29 @@ struct SfIndexOpLowering : public OpRewritePattern<sf::IndexOp> {
       outNumel *= d;
     }
 
-    Value empty = !outType.hasStaticShape()
-        ? rewriter.create<tensor::EmptyOp>(loc, outType, ValueRange{})
-        : Value(rewriter.create<tensor::EmptyOp>(loc, outType, ValueRange{}));
-
-    // Pre-compute output dimension sizes outside the loop (tensor.dim inside
-    // scf.for would capture tensor values from outside, blocking bufferization).
+    // Pre-compute output dimension sizes outside the loop.
+    // For dynamic dims, extract from the data tensor with broadcasting offset:
+    //   output-dim-i = data-dim-(i - rank_offset) where rank_offset = outRank - dataRank.
     SmallVector<Value> outDims;
+    int64_t dataRank = dataType.getRank();
+    int64_t dynOffset = outType.getRank() - dataRank;
     for (int64_t i = 0; i < outType.getRank(); ++i) {
-      if (outType.isDynamicDim(i))
-        outDims.push_back(rewriter.create<tensor::DimOp>(loc, empty, i));
-      else
+      if (outType.isDynamicDim(i)) {
+        int64_t dataIdx = i - dynOffset;
+        if (dataIdx >= 0 && dataIdx < dataRank && dataType.isDynamicDim(dataIdx))
+          outDims.push_back(rewriter.create<tensor::DimOp>(loc, data, dataIdx));
+        else
+          outDims.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 1));
+      } else {
         outDims.push_back(rewriter.create<arith::ConstantIndexOp>(loc, outType.getDimSize(i)));
+      }
     }
+
+    // Create empty tensor with correct dynamic sizes.
+    SmallVector<Value> dynSizes;
+    for (int64_t i = 0; i < outType.getRank(); ++i)
+      if (outType.isDynamicDim(i)) dynSizes.push_back(outDims[i]);
+    Value empty = rewriter.create<tensor::EmptyOp>(loc, outType, dynSizes);
 
     Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
@@ -2251,6 +2380,18 @@ struct SfPromoteWeightsPass
       Block &entry = parentFunc.getBody().front();
       Value newArg = entry.insertArgument(
           entry.getNumArguments(), resultType, loc);
+
+      // Collect weight name for downstream verification
+      if (auto nameAttr = op->getAttrOfType<StringAttr>("name")) {
+        auto existing =
+            parentFunc->getAttrOfType<ArrayAttr>("sf.weight_names");
+        SmallVector<Attribute> names;
+        if (existing)
+          names.assign(existing.begin(), existing.end());
+        names.push_back(nameAttr);
+        parentFunc->setAttr("sf.weight_names",
+                            ArrayAttr::get(&getContext(), names));
+      }
 
       auto origType = parentFunc.getFunctionType();
       SmallVector<Type> newInputs(origType.getInputs());
@@ -2434,6 +2575,41 @@ struct SfLowerToLinalgPass
       func.walk([&](Operation *) { ++bodyOps; });
       llvm::errs() << "  [sf-lower-to-linalg] lowering func '" << func.getName()
                    << "' (" << bodyOps << " body ops, " << sfBefore << " sf ops)\n";
+      fprintf(stderr, "  [VERIFY] pre-walk about to start\n");
+      // Pre-walk: fix result types for ops whose dyn_shape operands imply a
+      // higher rank than the declared result type (e.g. sf.ones_like with
+      // 2 dyn_shape operands but tensor<f32> result). Without this fix, the
+      // greedy rewriter's LIFO processing would lower type-changing ops after
+      // their users, creating type mismatches in the lowered IR.
+      llvm::errs() << "  [sf-lower-to-linalg] pre-walk type fixing...\n";
+      func.walk([&](Operation *op) {
+        if (auto onesLike = dyn_cast<sf::OnesLikeOp>(op)) {
+          // Total dimensions = input (scalar tensor containing dim 0's size)
+          // + dyn_shape operands (additional dim sizes).
+          size_t numDims = 1 + onesLike.getDynShape().size();
+          auto resultTy = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+          if (resultTy && resultTy.getRank() < (int64_t)numDims) {
+            auto newTy = RankedTensorType::get(
+                SmallVector<int64_t>(numDims, ShapedType::kDynamic),
+                resultTy.getElementType());
+            op->getResult(0).setType(newTy);
+            llvm::errs() << "  [sf-lower-to-linalg] fix ones_like type: "
+                         << resultTy << " -> " << newTy << "\n";
+          }
+        }
+        if (auto arangeOp = dyn_cast<sf::ArangeOp>(op)) {
+          size_t numDims = 1 + arangeOp.getDynShape().size();
+          auto resultTy = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+          if (resultTy && resultTy.getRank() < (int64_t)numDims) {
+            auto newTy = RankedTensorType::get(
+                SmallVector<int64_t>(numDims, ShapedType::kDynamic),
+                resultTy.getElementType());
+            op->getResult(0).setType(newTy);
+            llvm::errs() << "  [sf-lower-to-linalg] fix arange type: "
+                         << resultTy << " -> " << newTy << "\n";
+          }
+        }
+      });
       LogicalResult result = applyPatternsGreedily(func, std::move(patterns));
       if (failed(result)) {
         llvm::errs() << "  [sf-lower-to-linalg] greedy rewriter did not converge for '"

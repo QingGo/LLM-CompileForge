@@ -120,12 +120,12 @@ def test_linear():
 # ── Shape ops ────────────────────────────────────────────────
 
 @pytest.mark.unit
-def test_sym_size_scalar():
-    """sf.sym_size must produce tensor<f32> (scalar), not copy input type."""
+def test_sym_size_1d():
+    """sf.sym_size must produce tensor<1xf32> (1D), not a 0D scalar tensor."""
     lowered = _lower("""module {
-  func.func @test(%a: tensor<2x4xi64>) -> tensor<f32> {
-    %0 = "sf.sym_size"(%a) {dim = 0 : i64} : (tensor<2x4xi64>) -> tensor<f32>
-    return %0 : tensor<f32>
+  func.func @test(%a: tensor<2x4xi64>) -> tensor<1xf32> {
+    %0 = "sf.sym_size"(%a) {dim = 0 : i64} : (tensor<2x4xi64>) -> tensor<1xf32>
+    return %0 : tensor<1xf32>
   }
 }""")
     _check_lowered(lowered)
