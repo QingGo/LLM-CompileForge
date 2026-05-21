@@ -154,7 +154,7 @@ static RankedTensorType refineBroadcastType(RankedTensorType resultType,
       if (inSize == ShapedType::kDynamic) { anyDynamic = true; continue; }
       bestSize = std::max(bestSize, inSize);
     }
-    refinedShape[i] = anyDynamic ? ShapedType::kDynamic : bestSize;
+    refinedShape[i] = anyDynamic ? ShapedType::kDynamic : (bestSize == ShapedType::kDynamic ? 1 : bestSize);
   }
   return RankedTensorType::get(refinedShape, resultType.getElementType());
 }
