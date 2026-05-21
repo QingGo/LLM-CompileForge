@@ -471,9 +471,50 @@ def _make_multi_functions(
             f_inputs = list(global_inputs)
         else:
             f_inputs = []
-            for val in sorted(needed, key=lambda v: (producer.get(v, 0), v)):
-                tp = type_map.get(val, "tensor<f32>")
-                f_inputs.append((f"%{val}", tp))
+            # Build producer order map: SSA name → (func_idx, op_sequence_number)
+            # op_sequence_number is the index of the producing op within its function
+            # block, used to preserve the original computation order across functions.
+            prod_order: dict[str, tuple[int, int]] = {}
+            for fii, block_i in enumerate(blocks):
+                for oi, op in enumerate(block_i):
+                    for r in op.results:
+                        prod_order[r.lstrip("%")] = (fii, oi)
+
+            # Sort inputs to match ciface calling convention:
+            #   Non-weight from func[0] first (sorted by func[0] output index),
+            #   then cross-function values (from func[fi-1] etc.),
+            #   then weights from func[0] last.
+            # Order inputs to match ciface calling convention:
+            # 1. Non-weight values from func[0] (scalar, hidden_state, mask)
+            # 2. Cross-function values (hidden state from func[fi-1])
+            # 3. Weight values from func[0]
+            # 4. sym_size scalars from func[0]
+            # Order inputs to match func[1]'s proven-correct convention:
+            # [scalar, hidden_state, mask, weights..., sym_size...]
+            nw_0 = [(v, prod_order.get(v, (999, 999))) for v in needed
+                    if prod_order.get(v, (999,))[0] == 0 and v not in weights]
+            xfunc = [(v, prod_order.get(v, (999, 999))) for v in needed
+                     if prod_order.get(v, (999,))[0] != 0 and v not in weights]
+            w_0 = [(v, (999, 999)) for v in needed if v in weights]
+            # First entry: earliest non-weight from func[0] (the scalar)
+            nw_sorted = sorted(nw_0, key=lambda x: x[1][1])
+            if nw_sorted:
+                f_inputs.append((f"%{nw_sorted[0][0]}", type_map.get(nw_sorted[0][0], "tensor<f32>")))
+                nw_sorted = nw_sorted[1:]
+            # Then cross-function values (hidden state from func[fi-1])
+            for val, _ in sorted(xfunc, key=lambda x: x[1]):
+                f_inputs.append((f"%{val}", type_map.get(val, "tensor<f32>")))
+            # Then remaining non-weight from func[0] (mask, etc.)
+            for val, _ in nw_sorted:
+                if not type_map.get(val, "").startswith("tensor<1x"):
+                    f_inputs.append((f"%{val}", type_map.get(val, "tensor<f32>")))
+            # Then weights
+            for val, _ in sorted(w_0, key=lambda x: x[0]):
+                f_inputs.append((f"%{val}", type_map.get(val, "tensor<f32>")))
+            # Finally sym_size scalars
+            for val, _ in nw_sorted:
+                if type_map.get(val, "").startswith("tensor<1x"):
+                    f_inputs.append((f"%{val}", type_map.get(val, "tensor<f32>")))
 
         # Values produced here that are consumed elsewhere (normalize %)
         produced_here: set[str] = set()
