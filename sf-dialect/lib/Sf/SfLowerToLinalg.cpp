@@ -153,8 +153,11 @@ static RankedTensorType refineBroadcastType(RankedTensorType resultType,
     bool anyDynamic = false;
     for (auto input : inputs) {
       auto inType = dyn_cast<RankedTensorType>(input.getType());
-      if (!inType || i >= inType.getRank()) continue;
-      int64_t inSize = inType.getDimSize(i);
+      if (!inType) continue;
+      // Align trailing dimensions: operand dim j maps to output dim (rank - inType.getRank() + j)
+      int64_t inDim = i - (rank - inType.getRank());
+      if (inDim < 0 || inDim >= inType.getRank()) continue;
+      int64_t inSize = inType.getDimSize(inDim);
       if (inSize == ShapedType::kDynamic) { anyDynamic = true; continue; }
       bestSize = std::max(bestSize, inSize);
     }
@@ -691,12 +694,12 @@ struct SfLinearOpLowering : public OpRewritePattern<sf::LinearOp> {
       int64_t rank = rt.getRank();
       auto biasRt = cast<RankedTensorType>(bias.getType());
       int64_t biasRank = biasRt.getRank();
+      // Bias map: trailing dims align, leading dims are implicit broadcast.
+      // For rank=3, biasRank=1: map = (d0,d1,d2) -> (d2)  [not (0,0,d2)]
       SmallVector<AffineExpr> rhsExprs;
-      for (int64_t i = 0; i < rank; ++i) {
-        int64_t rhsI = i - (rank - biasRank);
-        rhsExprs.push_back(rhsI >= 0
-            ? getAffineDimExpr(i, rewriter.getContext())
-            : getAffineConstantExpr(0, rewriter.getContext()));
+      int64_t biasOffset = rank - biasRank;
+      for (int64_t i = 0; i < biasRank; ++i) {
+        rhsExprs.push_back(getAffineDimExpr(biasOffset + i, rewriter.getContext()));
       }
       auto idMap = AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext());
       auto biasMap = AffineMap::get(rank, 0, rhsExprs, rewriter.getContext());
@@ -2156,6 +2159,7 @@ struct SfCumsumOpLowering : public OpRewritePattern<sf::CumsumOp> {
     } else {
       dimSize = tensor::DimOp::create(rewriter, loc, input, dim);
     }
+
 
     // Build non-dim runtime sizes for linearization
     SmallVector<Value> nonDimSizes;
