@@ -67,10 +67,12 @@ class TestFindTools:
 class TestFixupMLIRForTranslate:
 
     def test_strips_nuw_from_getelementptr(self) -> None:
+        """Text fallback strips ``nuw`` flag for LLVM 20 mlir-translate compat."""
         from compiler.mlir_dialect.llvm_backend import _fixup_mlir_for_translate
 
         mlir = "%0 = llvm.getelementptr inbounds|nuw %ptr[%idx] : (!llvm.ptr, i64) -> !llvm.ptr, f32\n"
         fixed = _fixup_mlir_for_translate(mlir)
+        # Strips |nuw while preserving |inbounds
         assert "inbounds|nuw" not in fixed
         assert "inbounds %ptr[%idx]" in fixed
 

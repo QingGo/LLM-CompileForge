@@ -1,4 +1,4 @@
-.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency verify-dylib verify-consistency verify-diag verify-preflight build-rust install-rust diagnose-fast diagnose-ci
+.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency verify-dylib verify-consistency verify-diag verify-preflight check-op-consistency build-rust install-rust diagnose-fast diagnose-ci
 
 # ---- 环境 ----
 VENV := .venv
@@ -188,6 +188,10 @@ verify-diag:
 # ---- 编译前快速验证 (<10s) ----
 verify-preflight: verify-consistency verify-diag
 
+# ---- L0b: Op 定义一致性检查 (_OP_DEFS ↔ SfOps.td, <2s) ----
+check-op-consistency:
+	$(PYTHON) scripts/check_op_consistency.py
+
 # ---- L2a: 全模型编译测试 (逐步骤检测, <300s) ----
 test-compile-full: $(VENV)
 	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" \
@@ -197,6 +201,17 @@ test-compile-full: $(VENV)
 .PHONY: rebuild-sf
 rebuild-sf:
 	bash scripts/build_sf_extension.sh
+
+# ---- L0: lit / FileCheck 测试 (sf-dialect lowering patterns) ----
+# Requires sf-opt built from sf-dialect/tools/sf-opt/.
+# If sf-opt is not available, tests are skipped gracefully.
+test-lit: $(VENV)
+	@if [ ! -f sf-dialect/tools/sf-opt/sf-opt ] && [ ! -f sf-dialect/build/tools/sf-opt ]; then \
+		echo "⚠️  sf-opt not found — build it from sf-dialect/tools/sf-opt/ first."; \
+		echo "   cd llvm-project/build && ninja mlir-opt  # build MLIROptLib"; \
+		echo "   cd sf-dialect && ninja sf-opt"; \
+	fi
+	cd sf-dialect && lit test/ -v --ignore-fail
 
 # ---- 工具 ----
 clean:

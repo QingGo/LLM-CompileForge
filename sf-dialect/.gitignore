@@ -8,4 +8,5 @@ cmake_install.cmake
 *.inc.d
 .ninja_*
 python_packages/
+python/dialects/
 tools/

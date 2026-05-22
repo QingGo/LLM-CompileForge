@@ -34,14 +34,10 @@ pytestmark = pytest.mark.skipif(not MLIR_BINDINGS, reason="mlir-core not availab
 
 def _lower(sf_text: str) -> str:
     """Lower a single-op module and return the lowered text."""
-    try:
-        lowered = _apply_sf_to_linalg(sf_text)
-        assert lowered is not None, "Lowering returned None"
-        assert len(lowered) > 0, "Lowering returned empty string"
-        return lowered
-    except Exception:
-        # Return original text on failure (pass-through for edge cases)
-        return sf_text
+    lowered = _apply_sf_to_linalg(sf_text)
+    assert lowered is not None, "Lowering returned None"
+    assert len(lowered) > 0, "Lowering returned empty string"
+    return lowered
 
 
 def _check_lowered(lowered: str, expected: str = "linalg.", not_expected: str = "sf.") -> None:
