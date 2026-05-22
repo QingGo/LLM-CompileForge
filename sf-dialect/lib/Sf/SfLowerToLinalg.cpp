@@ -1182,52 +1182,21 @@ struct SfScaledDotProductAttentionOpLowering
     Value scoresScaled = scaleOp.getResult(0);
 
     // Step 3b: Apply attention mask if present
-    // mask contains POSITION VALUES (0, 1, 2, 3...) — NOT booleans.
-    // mask shape: [batch, 1, seq, seq], all values in row i = position[i].
-    // Causal condition: position[row] >= position[col] → attend (0.0), else → -inf.
-    // Approach: transpose mask (swap last two dims) so maskT[i,j] = mask[j,i] = position[j],
-    // then compare: mask >= maskT  =>  position[i] >= position[j].
+    // mask is boolean (0.0 = masked, 1.0 = attend) from sf.logical_and.
+    // Causal condition: mask > 0.5 → attend (0.0 additive), else → -inf.
     if (Value mask = op.getAttnMask()) {
       Value zeroF32 = arith::ConstantOp::create(rewriter, loc, eltType,
           rewriter.getFloatAttr(eltType, 0.0f));
       Value negLarge = arith::ConstantOp::create(rewriter, loc, eltType,
           rewriter.getFloatAttr(eltType, -1.0e20f));
 
-      // Step 3b-i: Transpose mask (swap last two dims)
-      auto maskType = cast<RankedTensorType>(mask.getType());
-      int64_t maskRank = maskType.getRank();
-      SmallVector<unsigned> perm;
-      for (int64_t i = 0; i < maskRank; ++i) perm.push_back(i);
-      std::swap(perm[maskRank - 1], perm[maskRank - 2]);
-
-      SmallVector<int64_t> maskTShape;
-      for (int64_t i = 0; i < maskRank; ++i)
-        maskTShape.push_back(maskType.getDimSize(perm[i]));
-      auto maskTType = RankedTensorType::get(maskTShape, maskType.getElementType());
-
-      // Build dynamic sizes for the transposed tensor (correctly remapped via perm)
-      SmallVector<Value> maskTDynSizes;
-      for (int64_t i = 0; i < maskRank; ++i) {
-        if (maskTType.isDynamicDim(i))
-          maskTDynSizes.push_back(tensor::DimOp::create(rewriter, loc, mask, perm[i]));
-      }
-      Value maskTEmpty = tensor::EmptyOp::create(rewriter, loc, maskTType, maskTDynSizes);
-
-      SmallVector<utils::IteratorType> tIter(maskRank, utils::IteratorType::parallel);
-      auto transposeOp = linalg::GenericOp::create(rewriter, loc, maskTType,
-          ValueRange{mask}, ValueRange{maskTEmpty},
-          {AffineMap::getPermutationMap(perm, rewriter.getContext()),
-           AffineMap::getMultiDimIdentityMap(maskRank, rewriter.getContext())}, tIter);
-      populateBody(transposeOp, rewriter, [&](OpBuilder &b, Location loc2, ValueRange args) {
-        linalg::YieldOp::create(b, loc2, args[0]);
-      });
-      Value maskT = transposeOp.getResult(0);
-
-      // Step 3b-ii: additive[i,j] = (mask[i,j] >= maskT[i,j]) ? 0.0 : -inf
-      // makeBinaryOp broadcasts maskT from [b,1,s,s] -> scoresScaled shape [b,h,s,s]
-      Value additive = makeBinaryOp(rewriter, loc, mask, maskT, scoresScaled.getType(), rewriter,
+      // Step 3b-ii: additive[i,j] = (mask[i,j] > 0.5) ? 0.0 : -inf
+      // mask is boolean (0.0 = masked, 1.0 = attend). No transpose comparison needed.
+      Value additive = makeBinaryOp(rewriter, loc, mask, mask, scoresScaled.getType(), rewriter,
           [&](OpBuilder &b, Location loc, Value m, Value mT) {
-            Value cmp = arith::CmpFOp::create(b, loc, arith::CmpFPredicate::OGE, m, mT);
+            Value half = arith::ConstantOp::create(b, loc, b.getF32Type(),
+                b.getFloatAttr(b.getF32Type(), 0.5f));
+            Value cmp = arith::CmpFOp::create(b, loc, arith::CmpFPredicate::OGT, m, half);
             Value sel = arith::SelectOp::create(b, loc, cmp, zeroF32, negLarge);
             return sel;
           });
