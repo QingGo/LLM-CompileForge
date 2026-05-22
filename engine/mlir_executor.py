@@ -192,7 +192,7 @@ class MlirExecutor(_KVCacheMixin):
 
                 os.makedirs(self._dump_dir, exist_ok=True)
                 call_idx = self._dump_call_counter.get(fi, 0)
-                for out_name, _ in func.outputs:
+                for out_name, _, _ in func.outputs:
                     clean = out_name.replace("%", "")
                     if clean in ssa_values:
                         fpath = os.path.join(
@@ -203,7 +203,7 @@ class MlirExecutor(_KVCacheMixin):
                 self._dump_call_counter[fi] = call_idx + 1
 
             # ── Store outputs for next function ──────────────
-            for out_name, _ in func.outputs:
+            for out_name, _, _ in func.outputs:
                 clean = out_name.replace("%", "")
                 if clean not in ssa_values:
                     ssa_values[clean] = ssa_values.get(clean, torch.tensor([]))
@@ -226,7 +226,7 @@ class MlirExecutor(_KVCacheMixin):
 
         logits = torch.tensor([])
         kv_tensors: list[tuple[str, torch.Tensor]] = []
-        for i, (out_name, _) in enumerate(last_func.outputs):
+        for i, (out_name, _, _) in enumerate(last_func.outputs):
             if out_name in ssa_values:
                 if i == 0:
                     logits = ssa_values[out_name]

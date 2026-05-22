@@ -33,9 +33,12 @@ def _setup_mlir_path() -> None:
         sys.path.insert(0, str(_mlir_pkg))
 
     # Add sf-dialect Python bindings for C++ passes
-    _sf_pkg = Path(__file__).resolve().parent.parent.parent / "sf-dialect" / "build" / "python_packages" / "sf"
-    if _sf_pkg.is_dir() and str(_sf_pkg) not in sys.path:
-        sys.path.insert(0, str(_sf_pkg))
+    # Check both in-source build and build/ subdirectory build
+    _sf_base = Path(__file__).resolve().parent.parent.parent / "sf-dialect"
+    for _sf_candidate in [_sf_base / "python_packages" / "sf", _sf_base / "build" / "python_packages" / "sf"]:
+        if _sf_candidate.is_dir() and str(_sf_candidate) not in sys.path:
+            sys.path.insert(0, str(_sf_candidate))
+            break
 
 
 def _has_bindings() -> bool:

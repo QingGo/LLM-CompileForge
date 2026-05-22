@@ -23,6 +23,11 @@ def _setup_mlir_path() -> None:
     _mlir_pkg = Path(__file__).resolve().parent.parent.parent / "mlir_binding" / "mlir_package"
     if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
         sys.path.insert(0, str(_mlir_pkg))
+    _sf_base = Path(__file__).resolve().parent.parent.parent / "sf-dialect"
+    for _sf_candidate in [_sf_base / "python_packages" / "sf", _sf_base / "build" / "python_packages" / "sf"]:
+        if _sf_candidate.is_dir() and str(_sf_candidate) not in sys.path:
+            sys.path.insert(0, str(_sf_candidate))
+            break
 
 
 def _has_bindings() -> bool:
@@ -66,7 +71,6 @@ def _run_pattern(
 
     with ctx, ir.Location.unknown(ctx):
         module = ir.Module.parse(mlir_text, ctx)
-
         pattern_set = RewritePatternSet(ctx)
         pattern_set.add(pattern_name, callback)
         config = GreedyRewriteConfig()

@@ -29,8 +29,67 @@ from typing import Any
 _log = logging.getLogger(__name__)
 
 
+def _save_ir_stats(ir_module: Any, stage_name: str, timestamp: str = "") -> dict[str, int]:
+    """Walk ops by full name, save top-10 counts to logs/pipeline/stats_{name}.txt."""
+    op_counts: dict[str, int] = {}
+    total_ops = 0
+
+    import mlir.ir as ir
+
+    def _walk(op: ir.Operation) -> None:
+        nonlocal total_ops
+        name = str(op.name)
+        op_counts[name] = op_counts.get(name, 0) + 1
+        total_ops += 1
+        for region in op.regions:
+            for block in region.blocks:
+                for child in block.operations:
+                    _walk(child)
+
+    ctx = ir_module.operation.context
+    with ctx:
+        for region in ir_module.operation.regions:
+            for block in region.blocks:
+                for op in block.operations:
+                    _walk(op)
+
+    if not timestamp:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+
+    log_dir = Path("logs") / "pipeline"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', stage_name)
+    path = log_dir / f"stats_{safe_name}_{timestamp}.txt"
+
+    sorted_ops = sorted(op_counts.items(), key=lambda x: -x[1])
+    top10 = sorted_ops[:10]
+
+    lines = [
+        f"IR Statistics for stage: {stage_name}",
+        f"Total ops: {total_ops}",
+        f"Unique op types: {len(op_counts)}",
+        "",
+        "Top 10 op names:",
+    ]
+    for op_name, count in top10:
+        lines.append(f"  {op_name}: {count}")
+    lines.append("")
+    lines.append("All op name counts:")
+    for op_name, count in sorted_ops:
+        lines.append(f"  {op_name}: {count}")
+
+    path.write_text("\n".join(lines))
+    _log.info("  IR stats saved to %s (top op: %s, count=%d)",
+              path, top10[0][0] if top10 else "none", top10[0][1] if top10 else 0)
+
+    return op_counts
+
+
 def _save_ir_snapshot(ir_module: Any, stage_name: str) -> str:
     """Save IR module snapshot to logs/pipeline/ for debugging.
+
+    Also saves a companion IR stats file (via ``_save_ir_stats``) containing
+    per-op-name counts and the top 10 most frequent operations.
 
     Returns the path to the saved file.
     """
@@ -41,7 +100,39 @@ def _save_ir_snapshot(ir_module: Any, stage_name: str) -> str:
     path = log_dir / f"snapshot_{safe_name}_{timestamp}.mlir"
     path.write_text(str(ir_module))
     _log.info("  IR snapshot saved to %s", path)
+
+    try:
+        _save_ir_stats(ir_module, f"{stage_name}_snapshot", timestamp)
+    except Exception as exc:
+        _log.warning("  Failed to save IR stats for '%s': %s", stage_name, exc)
+
     return str(path)
+
+
+def _verify_stage_output(
+    ir_text_before: str, ir_text_after: str, stage_name: str
+) -> list[str]:
+    """Check func.func / func.return counts unchanged across a stage."""
+    warnings: list[str] = []
+
+    func_before = len(re.findall(r"func\.func\s+@", ir_text_before))
+    func_after = len(re.findall(r"func\.func\s+@", ir_text_after))
+    if func_before != func_after:
+        warnings.append(
+            f"func.func count changed: {func_before} -> {func_after} ({stage_name})"
+        )
+
+    ret_before = len(re.findall(r"func\.return", ir_text_before))
+    ret_after = len(re.findall(r"func\.return", ir_text_after))
+    if ret_before != ret_after:
+        warnings.append(
+            f"func.return count changed: {ret_before} -> {ret_after} ({stage_name})"
+        )
+
+    for w in warnings:
+        _log.warning("  Stage invariant [%s]: %s", stage_name, w)
+
+    return warnings
 
 
 def _count_module_ops(module_str: str) -> tuple[int, dict[str, int]]:
@@ -263,6 +354,7 @@ class Stage:
 
         t0 = _time.perf_counter()
         pre_stats = mlir_count_ops(module, ctx)
+        ir_text_before = str(module)
         snapshot_path: str | None = None
 
         try:
@@ -295,6 +387,12 @@ class Stage:
             n_lines = len(str(module).splitlines())
             _log.info("  %6.2fs  %-40s %5d lines", elapsed, self.name, n_lines)
 
+            # ── Stage-level IR verification ──
+            verify_warnings = _verify_stage_output(ir_text_before, str(module), self.name)
+            if verify_warnings:
+                for w in verify_warnings:
+                    _log.warning("  Stage '%s' verification: %s", self.name, w)
+
             # ── IR dialect op count tracking ──
             post_stats = mlir_count_ops(module, ctx)
             all_keys = set(pre_stats) | set(post_stats)
@@ -326,7 +424,7 @@ class Stage:
 
             if self.warn_only:
                 _log.warning("  %6.2fs  %-40s FAILED (warn_only=%s)", elapsed,
-                             self.name, error_msg)
+                             self.name, error_msg, exc_info=True)
                 if self.save_snapshot:
                     _log.warning("  Snapshot saved: %s", snapshot_path)
                 return StageResult(
@@ -652,7 +750,46 @@ def _count_potential_fma(module: Any) -> int:
     return txt.count("llvm.fmul")
 
 
+def _make_verify_stage() -> Stage:
+    """Build a warn-only Stage that validates module structure after lowering.
+
+    Checks all ``func.func`` ops have non-empty bodies and the module has at
+    least one function.  Never blocks compilation — only logs warnings.
+    """
+    from compiler.mlir_passes._ops import mlir_verify_structure
+
+    def _verify_action(m: Any) -> None:
+        ctx = m.operation.context
+        issues = mlir_verify_structure(m, ctx)
+        if issues:
+            for issue in issues:
+                _log.warning("  Module verification: %s", issue)
+        _log.info("  Module verification: %d issues found — %s",
+                  len(issues), "PASS" if not issues else "FAIL")
+
+    return Stage(
+        name="module-verify",
+        action=_verify_action,
+        timeout=10.0,
+        warn_only=True,
+    )
+
+
 # ── Main run function ─────────────────────────────────────────────────
+
+
+def _fixup_arith_tensor_constants_action(module: Any) -> int:
+    """Fix arith.constant ops with scalar value + tensor result type.
+
+    Uses MLIR Python bindings to walk the module and convert scalar-valued
+    ``arith.constant`` ops with tensor result types to use ``DenseElementsAttr``
+    (splat).  Replaces the regex-based fixup with proper MLIR API usage.
+    """
+    import mlir.ir as ir
+    if not isinstance(module, ir.Module):
+        return 0
+    from compiler.mlir_dialect.fixups import _walk_and_fix_tensor_constants
+    return _walk_and_fix_tensor_constants(module)
 
 
 def _emit_c_interface_action(module: Any) -> None:
@@ -690,6 +827,8 @@ BUILTIN_STAGES: list[Stage] = [
     Stage("func→llvm", "convert-func-to-llvm"),
     Stage("reconcile-casts", "reconcile-unrealized-casts"),
     _make_fma_stage(),
+    Stage("strip-gep-nuw", "sf-strip-gep-nuw", timeout=10.0, warn_only=True),
+    _make_verify_stage(),
 ]
 
 

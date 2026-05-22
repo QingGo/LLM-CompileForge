@@ -55,7 +55,7 @@ def mlir_module_to_text(module: MlirModule) -> str:
         args_str = ", ".join(arg_strs)
 
         # Return type
-        out_types = [tp for _, tp in func.outputs]
+        out_types = [tp for _, tp, _ in func.outputs]
         ret = out_types[0] if len(out_types) == 1 else f"({', '.join(out_types)})"
 
         lines.append(f"  func.func @{func.name}({args_str}) -> {ret} {{")
@@ -95,9 +95,9 @@ def mlir_module_to_text(module: MlirModule) -> str:
             )
 
         # Return
-        ret_names = [_ssa(name) for name, _ in func.outputs]
+        ret_names = [_ssa(name) for name, _, _ in func.outputs]
         ret_str = ", ".join(ret_names)
-        ret_types = [tp for _, tp in func.outputs]
+        ret_types = [tp for _, tp, _ in func.outputs]
         if len(ret_types) == 1:
             ret_type_str = f" : {ret_types[0]}"
         else:
@@ -529,7 +529,7 @@ def _build_constants_binary(module: MlirModule, name_mapping: dict[str, str]) ->
 
     Format (all integers little-endian):
         Magic:    4 bytes  "SFCF"
-        Version:  u32      = 2
+        Version:  u32      = 3
         ── name mapping ──
         Mapping entries: u32
         For each entry:
@@ -560,7 +560,12 @@ def _build_constants_binary(module: MlirModule, name_mapping: dict[str, str]) ->
                 rank: u8
                 num_dims: u32
                 shape: [u64; num_dims] (0 = dynamic)
-            For each output:
+            For each output (v3+):
+                consumed_internally: u8 (0=external, 1=internal)
+                rank: u8
+                num_dims: u32
+                shape: [u64; num_dims]
+            For each output (v2):
                 rank: u8
                 num_dims: u32
                 shape: [u64; num_dims]
@@ -572,7 +577,7 @@ def _build_constants_binary(module: MlirModule, name_mapping: dict[str, str]) ->
 
     # Header
     parts.append(b"SFCF")
-    parts.append(struct.pack("<I", 2))  # version
+    parts.append(struct.pack("<I", 3))  # version (v3 adds consumed_internally flag per output)
 
     # Name mapping
     parts.append(struct.pack("<I", len(name_mapping)))
@@ -626,7 +631,7 @@ def _emit_compute_graph_section(
         all_weight_names |= set(func.weights.keys())
 
     for fi, func in enumerate(module.functions):
-        for oi, (out_name, _out_type) in enumerate(func.outputs):
+        for oi, (out_name, _out_type, _consumed_internally) in enumerate(func.outputs):
             clean = out_name.lstrip("%")
             producer[clean] = (fi, oi)
 
@@ -695,8 +700,9 @@ def _emit_compute_graph_section(
             for d in shape_dims:
                 parts.append(struct.pack("<Q", d))
 
-        for _out_idx, (_out_name, out_type_str) in enumerate(func.outputs):
+        for _out_idx, (_out_name, out_type_str, consumed_internally) in enumerate(func.outputs):
             rank, shape_dims = _parse_type_shape(out_type_str)
+            parts.append(struct.pack("<B", 1 if consumed_internally else 0))
             parts.append(struct.pack("<B", rank))
             parts.append(struct.pack("<I", len(shape_dims)))
             for d in shape_dims:
@@ -953,11 +959,11 @@ def _infer_result_types(op: MlirOp, operands: list[ir.Value], ctx: Any) -> list[
             _rank = len(opnd_type.shape)
             return [opnd_type]
         except Exception:
-            _log.debug("Shape inference failed for operand type, trying element type", exc_info=True)
+            _log.warning("Shape inference failed for operand type, trying element type", exc_info=True)
             try:
                 elt = opnd_type.element_type
             except Exception:
-                _log.debug("Element type inference failed, defaulting to F32", exc_info=True)
+                _log.warning("Element type inference failed, defaulting to F32", exc_info=True)
                 elt = _ir.F32Type.get(ctx)
             return [_ir.RankedTensorType.get([1], elt)]
     return [_ir.RankedTensorType.get([1], _ir.F32Type.get(ctx))]
@@ -1011,7 +1017,7 @@ def _map_op_results(op: MlirOp, ir_op: Any, ssa_map: dict[str, ir.Value]) -> Non
 def _resolve_output_values(func: MlirFunction, ssa_map: dict[str, ir.Value]) -> list[ir.Value]:
     """Resolve function output values from SSA map."""
     output_values: list[ir.Value] = []
-    for out_name, _ in func.outputs:
+    for out_name, _, _ in func.outputs:
         if out_name in ssa_map:
             output_values.append(ssa_map[out_name])
         elif out_name.lstrip("%") in ssa_map:
@@ -1161,7 +1167,7 @@ def _parse_mlir_text(text: str) -> MlirModule:
                         ret_part = ret_part[1:-1]  # strip parens
                     for tp in _split_comma(ret_part):
                         ret_types.append(tp.strip())
-            outputs: list[tuple[str, str]] = [("", tp) for tp in ret_types]
+            outputs: list[tuple[str, str, bool]] = [("", tp, False) for tp in ret_types]
             current_func = MlirFunction(name=func_name, inputs=inputs, outputs=outputs)
             ssa_to_name = {}
             ssa_types = {}
@@ -1178,7 +1184,9 @@ def _parse_mlir_text(text: str) -> MlirModule:
                     new_outputs = []
                     for i, name in enumerate(ret_names):
                         tp = current_func.outputs[i][1] if i < len(current_func.outputs) else "tensor<f32>"
-                        new_outputs.append((name, tp))
+                        # Parsed from text MLIR — no consumed_internally info, default False
+                        consumed_internally = current_func.outputs[i][2] if len(current_func.outputs[i]) > 2 else False
+                        new_outputs.append((name, tp, consumed_internally))
                     if new_outputs:
                         current_func.outputs = new_outputs
             continue

@@ -247,7 +247,7 @@ def _apply_mlir_passes(
                     pman.run(module.operation)
                     mlir_text = str(module)
             except Exception as e:
-                _log.warning("canonicalize/cse failed (continuing with original text): %s", e)
+                raise RuntimeError(f"[pipeline] CRITICAL: canonicalize/cse failed: {e}") from e
         except ImportError as e:
             _log.warning("sf dialect Python bindings not available (canonicalize/cse skipped): %s", e)
 
@@ -255,11 +255,11 @@ def _apply_mlir_passes(
     try:
         mlir_text = fuse_silu_pass(mlir_text)
     except Exception as e:
-        _log.warning("fuse_silu pass failed, continuing: %s", e, exc_info=True)
+        raise RuntimeError(f"[pipeline] CRITICAL: fuse_silu pass failed: {e}") from e
     try:
         mlir_text = fuse_rms_norm_pass(mlir_text)
     except Exception as e:
-        _log.warning("fuse_rms_norm pass failed, continuing: %s", e, exc_info=True)
+        raise RuntimeError(f"[pipeline] CRITICAL: fuse_rms_norm pass failed: {e}") from e
 
     # Phase 3: sf→linalg lowering (optional, after fusion, via C++ DialectConversion)
     lowered_text: str | None = None
@@ -326,14 +326,14 @@ def _post_lowering_canonicalize(mlir_text: str) -> str:
                 pman.run(module.operation)
                 mlir_text = str(module)
         except Exception as e:
-            _log.warning("post-lowering canonicalize failed, continuing: %s", e, exc_info=True)
+            raise RuntimeError(f"[pipeline] CRITICAL: post-lowering canonicalize failed: {e}") from e
 
     # Fix arith.constant ops with scalar value + tensor result type
     try:
         from compiler.mlir_dialect.fixups import _fixup_arith_constant_scalar_tensor
         mlir_text = _fixup_arith_constant_scalar_tensor(mlir_text)
     except Exception as e:
-        _log.warning("arith.constant scalar→tensor fixup failed, continuing: %s", e, exc_info=True)
+        raise RuntimeError(f"[pipeline] CRITICAL: arith.constant scalar→tensor fixup failed: {e}") from e
 
     return mlir_text
 

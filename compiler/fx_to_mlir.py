@@ -114,11 +114,11 @@ def _resolve_op_types(
             s, e = shape_map[resolved]
         elif inp_name in weights:
             t = weights[inp_name]
-            s = tuple(t.shape)
+            s = tuple(t.shape) if len(t.shape) > 0 else (1,)
             e = _fake_to_shape_tuple(t)[1]
         elif inp_name.startswith("%") and inp_name[1:] in weights:
             t = weights[inp_name[1:]]
-            s = tuple(t.shape)
+            s = tuple(t.shape) if len(t.shape) > 0 else (1,)
             e = _fake_to_shape_tuple(t)[1]
         else:
             warnings.warn(
@@ -400,7 +400,7 @@ def _log_split_plan(mlir_ops: list, boundaries: list[int]) -> None:
 def _make_multi_functions(
     mlir_ops: list[MlirOp],
     global_inputs: list[tuple[str, str]],
-    global_outputs: list[tuple[str, str]],
+    global_outputs: list[tuple[str, str, bool]],
     weights: dict[str, torch.Tensor],
     param_names: set[str],
     const_names: set[str],
@@ -532,13 +532,14 @@ def _make_multi_functions(
                             break
 
         # Include global outputs
-        for name, _ in global_outputs:
+        for name, _, _ in global_outputs:
             if name.lstrip("%") in produced_here:
                 exported.add(name.lstrip("%"))
 
-        f_outputs = [(f"%{v}", type_map.get(v, "tensor<f32>")) for v in sorted(exported)]
+        f_outputs = [(f"%{v}", type_map.get(v, "tensor<f32>"), False) for v in sorted(exported)]
         if not f_outputs:
-            f_outputs = [(f"%{list(produced_here)[0]}", type_map.get(list(produced_here)[0], "tensor<f32>"))]
+            p = list(produced_here)[0]
+            f_outputs = [(f"%{p}", type_map.get(p, "tensor<f32>"), True)]
 
         # Compute rank of each function input from its type string
         input_rank_map: dict[str, int] = {}
@@ -607,7 +608,7 @@ def fx_graph_to_mlir(
 
     # ── Phase 3: walk operations ──────────────────────────
     mlir_ops: list[MlirOp] = []
-    func_outputs: list[tuple[str, str]] = []
+    func_outputs: list[tuple[str, str, bool]] = []
     name_counter = 0
     ssa_map: dict[str, str] = {}
     tuple_outputs: dict[str, list[str]] = {}
@@ -705,7 +706,7 @@ def fx_graph_to_mlir(
                         tp = _type_from_fake(arg.meta["val"])
                     else:
                         tp = "tensor<f32>"
-                    func_outputs.append((out_name, tp))
+                    func_outputs.append((out_name, tp, False))
             continue
 
     # Backfill dump_layer for handler-generated ops (getitem, split, chunk)
