@@ -101,6 +101,7 @@ struct SfLowerToLinalgPass
       registerAttentionPatterns(patterns);
       registerNormalizationPatterns(patterns);
       registerGenOpsPatterns(patterns);
+      registerSeqOpsPatterns(patterns);
       registerComparePatterns(patterns);
       registerReducePatterns(patterns);
 
