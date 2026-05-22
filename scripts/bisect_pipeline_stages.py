@@ -17,8 +17,6 @@ import shutil
 import subprocess
 import sys
 
-import numpy as np
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from compiler.mlir_dialect.llvm_backend import (
@@ -36,13 +34,6 @@ EXPECTED_ARGMAX = 1437
 WRONG_ARGMAX = 6
 
 TEST_NAME = "test_forward_matches_python_argmax"
-
-
-def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    a_f = a.ravel().astype(np.float64)
-    b_f = b.ravel().astype(np.float64)
-    denom = np.linalg.norm(a_f) * np.linalg.norm(b_f)
-    return float(np.dot(a_f, b_f) / (denom + 1e-12))
 
 
 def _setup_mlir() -> None:

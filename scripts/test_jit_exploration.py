@@ -9,9 +9,8 @@ ExecutionEngine instead of going through llc + ld → .dylib.
 
 Method:
   1. Test with a tiny matmul module (known to work)
-  2. Test with model.lowered.mlir through the full lowering pipeline
-  3. If JIT works, compare output against ctypes dylib oracle
-  4. Document blockers if any
+  2. Compare JIT output against ctypes dylib oracle for the same op
+  3. Document blockers if any
 
 Usage:
   source .venv/bin/activate
@@ -22,12 +21,13 @@ from __future__ import annotations
 
 import ctypes
 import os
-import sys
 import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from scripts._cos import cosine_similarity
 
 # ── Environment setup ────────────────────────────────────────────────
 HERE = Path(__file__).resolve().parent
@@ -38,21 +38,9 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.pop("CONDA_PREFIX", None)
 
 
-def _setup_mlir_path() -> None:
-    _mlir_pkg = REPO / "mlir_binding" / "mlir_package"
-    if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
-        sys.path.insert(0, str(_mlir_pkg))
-
+from compiler.mlir_dialect.compile_utils import _setup_mlir_path
 
 _setup_mlir_path()
-
-
-def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    a_f = a.ravel().astype(np.float64)
-    b_f = b.ravel().astype(np.float64)
-    return float(
-        np.dot(a_f, b_f) / (np.linalg.norm(a_f) * np.linalg.norm(b_f) + 1e-12)
-    )
 
 
 # ── Memref helpers ──────────────────────────────────────────────────
@@ -203,108 +191,12 @@ def test_tiny_matmul_jit():
     except Exception as e:
         print(f"    ❌ JIT invoke failed: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
 
-# ── Test 2: Load model.lowered.mlir and JIT ─────────────────────────
-
-
-def test_model_lowered_jit():
-    """Try to load model.lowered.mlir through pipeline to ExecutionEngine."""
-    print("\n" + "=" * 70)
-    print("TEST 2: Load model.lowered.mlir → lower → ExecutionEngine")
-    print("=" * 70)
-
-    import mlir.ir as ir
-    from mlir._mlir_libs import _mlirRegisterEverything
-    from mlir.execution_engine import ExecutionEngine
-
-    lowered_path = COMPILED / "model.lowered.mlir"
-    if not lowered_path.exists():
-        print(f"  ❌ {lowered_path} not found")
-        return False
-
-    lowered_text = lowered_path.read_text()
-    n_funcs = lowered_text.count("func.func")
-    n_ops = len(lowered_text)
-    print(f"  Loaded model.lowered.mlir: {n_funcs} functions, {n_ops} chars")
-
-    # Create context
-    ctx = ir.Context()
-    ctx.allow_unregistered_dialects = True
-    reg = ir.DialectRegistry()
-    _mlirRegisterEverything.register_dialects(reg)
-    ctx.append_dialect_registry(reg)
-
-    # Parse the lowered module
-    with ir.Location.unknown(ctx):
-        module = ir.Module.parse(lowered_text, ctx)
-        print(f"  Parsed {len(list(module.body))} blocks")
-
-    # Run the full lower_linalg_to_llvm_ir pipeline
-    print("  Running lower_linalg_to_llvm_ir pipeline...")
-    try:
-        from compiler.mlir_dialect.llvm_backend import lower_linalg_to_llvm_ir
-        t0 = time.time()
-        llvm_text = lower_linalg_to_llvm_ir(module)
-        dt = time.time() - t0
-        print(f"    Pipeline completed in {dt:.1f}s")
-        print(f"    Output LLVM IR: {len(llvm_text)} chars")
-    except Exception as e:
-        print(f"    ❌ Pipeline failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-    # Re-parse the LLVM dialect module
-    llvm_ctx = ir.Context()
-    llvm_ctx.allow_unregistered_dialects = True
-    with ir.Location.unknown(llvm_ctx):
-        llvm_mod = ir.Module.parse(llvm_text, llvm_ctx)
-        add_emit_c_interface(llvm_mod, llvm_ctx)
-
-        # Run func-to-llvm + reconcile-unrealized-casts
-        import mlir.passmanager as pm
-        try:
-            pm.PassManager.parse(
-                "builtin.module(convert-func-to-llvm,reconcile-unrealized-casts)",
-                llvm_ctx,
-            ).run(llvm_mod.operation)
-            print("    ✅ func-to-llvm + casts reconciled")
-        except Exception as e:
-            print(f"    ❌ func-to-llvm failed: {e}")
-            return False
-
-        # Count functions
-        mod_str = str(llvm_mod)
-        n_funcs_llvm = mod_str.count("llvm.func @")
-        n_funcs_total = mod_str.count("func @")
-        print(f"    LLVM functions: {n_funcs_llvm}")
-        print(f"    Total functions: {n_funcs_total}")
-
-        # Try creating ExecutionEngine
-        print("  Creating ExecutionEngine (this may take a while)...")
-        try:
-            t0 = time.time()
-            ExecutionEngine(llvm_mod, opt_level=0)
-            dt = time.time() - t0
-            print(f"    ✅ ExecutionEngine created in {dt:.1f}s")
-            print("    JIT compilation of full model WORKS")
-            print()
-            print("    NOTE: The model's main_0 function has ~215 memref args.")
-            print("    Calling it via JIT requires constructing all those args")
-            print("    as ctypes memref descriptors — extremely complex.")
-            print()
-            print("    But the JIT CAN compile and is available.")
-            print("    Next step would be layer-by-layer JIT testing.")
-            return True
-        except Exception as e:
-            print(f"    ❌ ExecutionEngine creation failed: {e}")
-            return False
-
-
-# ── Test 3: Compare JIT vs dylib for a single matmul op ─────────────
+# ── Test 3 (formerly Test 3): Compare JIT vs dylib for a single matmul ─────
 
 
 def test_single_matmul_jit_vs_dylib():
@@ -334,9 +226,7 @@ def test_single_matmul_jit_vs_dylib():
     import mlir.passmanager as pm
     from mlir._mlir_libs import _mlirRegisterEverything
 
-    from compiler.mlir_dialect.compile_utils import (
-        compile_mlir_to_dylib,
-    )
+    from compiler.mlir_dialect.compile_utils import compile_mlir_to_dylib
 
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
@@ -420,12 +310,14 @@ def test_single_matmul_jit_vs_dylib():
     except Exception as e:
         print(f"    ❌ JIT invoke failed: {e}")
         import traceback
+
         traceback.print_exc()
         return None
 
     # dylib path: compile to .dylib and compare
     print("  --- dylib path ---")
     import tempfile
+
     with tempfile.TemporaryDirectory() as td:
         dylib_out = os.path.join(td, "libmatmul_test.dylib")
         try:
@@ -487,6 +379,7 @@ def test_single_matmul_jit_vs_dylib():
         except Exception as e:
             print(f"    ❌ dylib run failed: {e}")
             import traceback
+
             traceback.print_exc()
             return None
 
@@ -508,14 +401,6 @@ def main():
     # Test 1: Tiny matmul via ExecutionEngine
     r1 = test_tiny_matmul_jit()
     results["tiny_matmul_jit"] = r1
-
-    # Test 2: model.lowered.mlir through pipeline to ExecutionEngine
-    if r1:  # only try if basic JIT works
-        r2 = test_model_lowered_jit()
-        results["model_lowered_jit"] = r2
-    else:
-        print("\n  ⏭️  Skipping Test 2 (Test 1 failed)")
-        results["model_lowered_jit"] = None
 
     # Test 3: JIT vs dylib comparison
     if r1:

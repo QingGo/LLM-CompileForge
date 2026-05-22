@@ -20,10 +20,7 @@ faulthandler.enable()
 DEBUG: bool = False
 
 
-def _setup_mlir_path() -> None:
-    _mlir_pkg = Path(__file__).resolve().parent.parent / "mlir_binding" / "mlir_package"
-    if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
-        sys.path.insert(0, str(_mlir_pkg))
+from compiler.mlir_dialect.compile_utils import _setup_mlir_path
 
 
 def _verify_lowered_ir(lowered_text: str) -> None:
@@ -365,7 +362,7 @@ def main() -> None:
     # matches weight op order from the Python MlirModule (dict insertion order
     # from fx_to_mlir.py Phase 4). Catches order mismatches between the compute
     # graph binary (built before C++ lowering) and the promoted function args.
-    from scripts.verify_dylib_consistency import verify_weight_promotion_order
+    from scripts.verify_weight_consistency import verify_weight_promotion_order
     try:
         weight_errors = verify_weight_promotion_order(module, lowered_text)
     except Exception as e:

@@ -7,658 +7,270 @@ Compares two paths side-by-side:
   3. Rust executor calling .dylib       — cos ≈ 0.869
 
 Expected signal patterns:
-  - If ctypes cos ≈ Python executor cos (0.999) → bug is in Rust runtime's
+  - If ctypes cos ≈ Python executor cos (0.999) -> bug is in Rust runtime's
     ciface calling convention (weight ordering, memref layout, input shape)
-  - If ctypes cos ≈ Rust runtime cos (0.869) → bug is in compiled dylib /
+  - If ctypes cos ≈ Rust runtime cos (0.869) -> bug is in compiled dylib /
     lowering pipeline (bufferization, LLVM codegen, FP accumulation)
+
+Usage:
+    from scripts.ctypes_forward import run_ctypes, run_python_executor, DylibResult
 """
 
 import ctypes
 import faulthandler
 import os
-import struct
 import sys
-import time
 
 import numpy as np
+
+from compiler.sfcf_parser import (
+    make_memref_descriptor,
+    parse_compute_graph,
+    parse_sfcf_blob,
+    parse_sret_outputs,
+)
 
 faulthandler.enable()
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+
 # =====================================================================
 # Helpers
 # =====================================================================
 
-def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    a_f = a.ravel().astype(np.float64)
-    b_f = b.ravel().astype(np.float64)
-    denom = np.linalg.norm(a_f) * np.linalg.norm(b_f)
-    return float(np.dot(a_f, b_f) / (denom + 1e-12))
+
 
 # =====================================================================
-# SFCF v2 binary format parsing
+# Convenience API: DylibResult + run_ctypes / run_python_executor
 # =====================================================================
 
-def _read_u8(data: bytes, pos: int) -> tuple[int, int]:
-    return data[pos], pos + 1
 
-def _read_u32(data: bytes, pos: int) -> tuple[int, int]:
-    return struct.unpack_from('<I', data, pos)[0], pos + 4
+class DylibResult:
+    """Holds per-function outputs and final logits from a forward pass.
 
-def _read_u64(data: bytes, pos: int) -> tuple[int, int]:
-    return struct.unpack_from('<Q', data, pos)[0], pos + 8
+    Supports both indexing patterns used by tests:
+        ``result[batch, pos]`` — per-position logit vector (via final logits)
+        ``result[fi]``         — first output array of function *fi* (via func_outputs)
+    """
 
-def _read_str(data: bytes, pos: int) -> tuple[str, int]:
-    n, pos = _read_u32(data, pos)
-    s = data[pos:pos + n].decode('utf-8')
-    return s, pos + n
+    def __init__(
+        self, func_outputs: list[list[np.ndarray]], logits: np.ndarray
+    ) -> None:
+        self._func_outputs = func_outputs
+        self._logits = logits
 
-def parse_sfcf_blob(blob: bytes):
-    """Parse SFCF v2/v3 blob → (name_mapping, constants_dict, graph_start_pos, version)."""
-    assert blob[:4] == b'SFCF', f"Bad magic: {blob[:4]}"
-    v, pos = _read_u32(blob, 4)
-    assert 2 <= v <= 3, f"Unsupported SFCF version: {v}"
+    @property
+    def logits(self) -> np.ndarray:
+        return self._logits
 
-    # Name mappings  (compiled → hf_key)
-    nm_count, pos = _read_u32(blob, pos)
-    name_mapping: dict[str, str] = {}
-    for _ in range(nm_count):
-        compiled, pos = _read_str(blob, pos)
-        hf_key, pos = _read_str(blob, pos)
-        name_mapping[compiled] = hf_key
+    @property
+    def func_outputs(self) -> list[list[np.ndarray]]:
+        return self._func_outputs
 
-    # Constants (compiler-synthesized tensors)
-    const_count, pos = _read_u32(blob, pos)
-    constants: dict[str, np.ndarray] = {}
-    for _ in range(const_count):
-        name, pos = _read_str(blob, pos)
-        dtype_code = blob[pos]
-        pos += 1
-        ndim = blob[pos]
-        pos += 1
-        shape: list[int] = []
-        for _ in range(ndim):
-            d, pos = _read_u64(blob, pos)
-            shape.append(int(d))
-        data_len, pos = _read_u64(blob, pos)
-        raw = blob[pos:pos + data_len]
-        pos += data_len
-        # dtype codes: 0=F32, 1=F16, 2=BF16, 3=I64, 4=I32, 5=I8, 6=U8
-        dtype_map = {0: np.float32, 1: np.float16, 2: np.float16,
-                     3: np.int64, 4: np.int32, 5: np.int8, 6: np.uint8}
-        np_dtype = dtype_map.get(dtype_code, np.float32)
-        # Handle rank-0 (scalar) constants: shape=[] → reshape to size 1
-        np_shape = shape if len(shape) > 0 else [1]
-        arr = np.frombuffer(raw, dtype=np_dtype).reshape(np_shape)
-        # Convert to f32 (ciface functions expect f32 weights)
-        if arr.dtype != np.float32:
-            arr = arr.astype(np.float32)
-        if len(shape) == 0:
-            arr = arr.squeeze()
-        constants[name] = arr
+    def __getitem__(self, key: int | tuple[int, ...]) -> np.ndarray:
+        if isinstance(key, tuple):
+            return self._logits[key]
+        # Single int -> first output of function *key*
+        return self._func_outputs[key][0]
 
-    return name_mapping, constants, pos, v
+    def __len__(self) -> int:
+        return len(self._func_outputs)
 
 
-def parse_compute_graph(data: bytes, pos: int, version: int = 3):
-    """Parse compute graph → list of func dicts + global I/O indices.
+def run_ctypes(
+    artifact_dir: str = "./compiled/opt_125m_fresh",
+    dylib_path: str | None = None,
+    input_ids: np.ndarray | None = None,
+) -> DylibResult:
+    """Run compiled .dylib via ctypes and return per-function + logit results.
 
     Args:
-        data: Raw SFCF binary data.
-        pos: Start position of compute graph section.
-        version: SFCF format version. v3+ includes a consumed_internally
-            flag byte before each output's rank byte. v2 defaults to False.
-    """
-    num_funcs, pos = _read_u32(data, pos)
-    functions = []
-
-    for _ in range(num_funcs):
-        symbol, pos = _read_str(data, pos)
-        num_inputs, pos = _read_u32(data, pos)
-        num_outputs, pos = _read_u32(data, pos)
-
-        inputs = []
-        for _ in range(num_inputs):
-            bt = data[pos]
-            pos += 1
-            if bt == 0:        # Weight
-                key, pos = _read_str(data, pos)
-                binding = ('weight', key)
-            elif bt == 1:      # Ssa
-                pf, pos = _read_u32(data, pos)
-                oi, pos = _read_u32(data, pos)
-                binding = ('ssa', pf, oi)
-            elif bt == 2:      # GlobalInput
-                binding = ('global_input',)
-            else:
-                raise ValueError(f"Unknown binding type {bt}")
-            rank = data[pos]
-            pos += 1
-            ndims, pos = _read_u32(data, pos)
-            shape = []
-            for _ in range(ndims):
-                d, pos = _read_u64(data, pos)
-                shape.append(int(d))
-            inputs.append({'binding': binding, 'rank': rank, 'shape': shape})
-
-        outputs = []
-        for _ in range(num_outputs):
-            if version >= 3:
-                consumed_internally = bool(data[pos])
-                pos += 1
-            else:
-                consumed_internally = False
-            rank = data[pos]
-            pos += 1
-            ndims, pos = _read_u32(data, pos)
-            shape = []
-            for _ in range(ndims):
-                d, pos = _read_u64(data, pos)
-                shape.append(int(d))
-            outputs.append({
-                'rank': rank,
-                'shape': shape,
-                'consumed_internally': consumed_internally,
-            })
-
-        functions.append({
-            'symbol': symbol,
-            'num_inputs': num_inputs,
-            'num_outputs': num_outputs,
-            'inputs': inputs,
-            'outputs': outputs,
-        })
-
-    gi_func, pos = _read_u32(data, pos)
-    gi_arg, pos = _read_u32(data, pos)
-    go_func, pos = _read_u32(data, pos)
-    go_idx, pos = _read_u32(data, pos)
-
-    return {
-        'functions': functions,
-        'global_input': (gi_func, gi_arg),
-        'global_output': (go_func, go_idx),
-    }
-
-
-# =====================================================================
-# MemRef descriptor construction
-# =====================================================================
-
-def make_memref_descriptor(arr: np.ndarray):
-    """Build a ctypes MemRef descriptor for a numpy array.
-
-    The descriptor is a packed struct:
-        allocated: void* (8)
-        aligned:   void* (8)
-        offset:    int64 (8)
-        sizes:     int64[rank] (8*rank)
-        strides:   int64[rank] (8*rank)
-    Total: 24 + 16*rank bytes.
-    """
-    rank = arr.ndim
-    fields = [
-        ("allocated", ctypes.c_void_p),
-        ("aligned", ctypes.c_void_p),
-        ("offset", ctypes.c_int64),
-        ("sizes", ctypes.c_int64 * rank),
-        ("strides", ctypes.c_int64 * rank),
-    ]
-    desc_type = type(f"MemRefDesc{rank}", (ctypes.Structure,), {"_fields_": fields})
-
-    # Element-wise strides (in number of elements, not bytes)
-    elem_size = arr.itemsize
-    elem_strides = tuple(s // elem_size for s in arr.strides)
-
-    return desc_type(
-        allocated=arr.ctypes.data_as(ctypes.c_void_p),
-        aligned=arr.ctypes.data_as(ctypes.c_void_p),
-        offset=0,
-        sizes=(ctypes.c_int64 * rank)(*arr.shape),
-        strides=(ctypes.c_int64 * rank)(*elem_strides),
-    )
-
-
-def parse_sret_outputs(sret_bytes: bytes, output_defs: list[dict]) -> list[np.ndarray]:
-    """Parse output tensors from the sret buffer written by the ciface kernel.
-
-    Each output descriptor in the sret buffer has layout:
-        offset 0:  allocated (i64)
-        offset 8:  aligned (i64)  ← pointer to actual output data
-        offset 16: offset (i64)
-        offset 24: sizes[i64] * rank
-        after sizes: strides[i64] * rank
-    Total per-descriptor: 24 + 16*rank bytes.
-    """
-    tensors = []
-    offset = 0
-    for od in output_defs:
-        rank = od['rank']
-        desc_size = 24 + 16 * rank
-        desc = sret_bytes[offset:offset + desc_size]
-
-        aligned = struct.unpack_from('<Q', desc, 8)[0]
-
-        # Read runtime sizes from descriptor; fall back to static shape for 0 dims
-        runtime_sizes = []
-        for i in range(rank):
-            s = struct.unpack_from('<q', desc, 24 + 8 * i)[0]
-            # 0 means dynamic; use static shape as hint
-            if s <= 0 or s > 1_000_000_000:
-                s = od['shape'][i] if i < len(od['shape']) and od['shape'][i] > 0 else 1
-            runtime_sizes.append(int(s))
-
-        n = int(np.prod(runtime_sizes))
-        if n > 0 and aligned != 0:
-            buf = (ctypes.c_float * n).from_address(aligned)
-            arr = np.array(buf, dtype=np.float32).reshape(runtime_sizes)
-        else:
-            arr = np.array([], dtype=np.float32)
-
-        tensors.append(arr)
-        offset += desc_size
-
-    return tensors
-
-
-def verify_output_shapes(
-    func_outputs: list[list[np.ndarray]],
-    compute_graph_functions: list[dict],
-) -> list[str]:
-    """Verify parsed sret output tensors match compute graph declarations.
-
-    For each function, checks:
-      1. Output tensor count matches graph declaration
-      2. Tensor rank matches declared rank
-      3. Static shape dimensions match (dynamic dims marked as 0 are skipped)
-      4. Null data pointer detection (aligned==0 in descriptor yields empty array)
-
-    Args:
-        func_outputs: Per-function list of parsed output tensors.
-        compute_graph_functions: List of function dicts with ``outputs`` key,
-            each output having ``rank`` and ``shape`` fields.
+        artifact_dir: Path to compiled artifact directory (default:
+            ``./compiled/opt_125m_fresh``).
+        dylib_path: Path to the .dylib (default: ``<artifact_dir>/libopt_125m.dylib``).
+        input_ids: Input token IDs (default: batch=2, seq=4 sample).
 
     Returns:
-        List of error messages. Empty list = all checks pass.
+        ``DylibResult`` with ``.logits`` (final logits) and ``.func_outputs``
+        (per-function output list).
     """
-    errors: list[str] = []
+    if input_ids is None:
+        input_ids = np.array(
+            [[2, 32826, 85, 4129], [0, 0, 0, 0]], dtype=np.int64
+        )
+    if dylib_path is None:
+        dylib_path = os.path.join(artifact_dir, "libopt_125m.dylib")
 
-    for fi, outputs in enumerate(func_outputs):
-        if fi >= len(compute_graph_functions):
-            errors.append(
-                f"func[{fi}]: no compute graph entry for this function index"
-            )
-            continue
-
-        func_def = compute_graph_functions[fi]
-        expected_outputs = func_def["outputs"]
-        symbol = func_def.get("symbol", f"func_{fi}")
-
-        # Check 1: output count
-        if len(outputs) != len(expected_outputs):
-            errors.append(
-                f"func[{fi}] ({symbol}): "
-                f"expected {len(expected_outputs)} output(s), "
-                f"got {len(outputs)}"
-            )
-            # Cannot do per-output checks if counts differ
-            continue
-
-        for oi, (arr, expected) in enumerate(zip(outputs, expected_outputs, strict=True)):
-            expected_rank = expected["rank"]
-            expected_shape = expected["shape"]
-
-            # Check 2: null data pointer
-            # parse_sret_outputs returns empty array when aligned==0
-            if arr.size == 0 and expected_rank > 0:
-                static_dims = [d for d in expected_shape if d > 0] if expected_shape else []
-                if static_dims:
-                    errors.append(
-                        f"func[{fi}] ({symbol}) output[{oi}]: "
-                        f"null data pointer (aligned==0 in descriptor), "
-                        f"expected shape {expected_shape}"
-                    )
-                    continue
-
-            # Check 3: rank
-            if arr.ndim != expected_rank:
-                errors.append(
-                    f"func[{fi}] ({symbol}) output[{oi}]: "
-                    f"expected rank {expected_rank}, "
-                    f"got rank {arr.ndim} (actual shape={list(arr.shape)}, "
-                    f"expected shape={expected_shape})"
-                )
-                continue
-
-            # Check 4: static shape dimensions
-            # Dynamic dims (0 in compute graph) are skipped
-            for dim_i in range(expected_rank):
-                if dim_i < len(expected_shape):
-                    static_val = expected_shape[dim_i]
-                    if static_val > 0:
-                        if dim_i >= len(arr.shape):
-                            errors.append(
-                                f"func[{fi}] ({symbol}) output[{oi}]: "
-                                f"dim[{dim_i}] expected {static_val}, "
-                                f"but array has only {len(arr.shape)} dims"
-                            )
-                        elif arr.shape[dim_i] != static_val:
-                            errors.append(
-                                f"func[{fi}] ({symbol}) output[{oi}]: "
-                                f"dim[{dim_i}] expected {static_val}, "
-                                f"got {arr.shape[dim_i]} "
-                                f"(actual shape={list(arr.shape)}, "
-                                f"expected shape={expected_shape})"
-                            )
-
-    return errors
-
-
-# =====================================================================
-# Main
-# =====================================================================
-
-def main():
-    artifact_dir = "./compiled/opt_125m_fresh"
-    dylib_path = os.path.join(artifact_dir, "libopt_125m.dylib")
-    input_ids = np.array([[2, 32826, 85, 4129], [0, 0, 0, 0]], dtype=np.int64)
-
-    # ── Step 1: Load Python executor reference weights ──────────────
-    print("=" * 60)
-    print("Step 1/5: Load artifact weights (Python executor path)")
-    print("=" * 60)
+    # Load artifact weights
     from compiler.serialize import load_artifact
-    artifact = load_artifact(artifact_dir)
 
+    artifact = load_artifact(artifact_dir)
     all_weights: dict[str, np.ndarray] = {}
     for func in artifact.functions:
         for wname, wtensor in func.weights.items():
             if wname not in all_weights:
                 all_weights[wname] = np.ascontiguousarray(wtensor.numpy())
-    print(f"  Loaded {len(all_weights)} unique weight tensors from artifact")
+    hf_key_map = artifact.metadata.get("hf_key_map", {})
+    ws = artifact.metadata.get("weight_source", {})
+    tied_weights = (
+        ws.get("tied_weights", {}) or artifact.metadata.get("tied_weights", {})
+    )
 
-    # Check a few weights
-    for key in ['model_decoder_embed_tokens_weight',
-                'model_decoder_embed_positions_weight']:
-        if key in all_weights:
-            print(f"  {key}: shape={all_weights[key].shape}, "
-                  f"dtype={all_weights[key].dtype}, "
-                  f"first={all_weights[key].flat[0]:.6f}")
-
-    # ── Step 2: Load reference Python logits ────────────────────────
-    print()
-    print("=" * 60)
-    print("Step 2/5: Load reference Python executor logits")
-    print("=" * 60)
-    py_logits_path = '/tmp/py_logits_batch2.npy'
-    if os.path.exists(py_logits_path):
-        py_logits = np.load(py_logits_path)
-    else:
-        # Generate them on the fly
-        import torch
-
-        from engine.mlir_executor import MlirExecutor
-        from hal.pytorch_backend import PyTorchBackend
-        backend = PyTorchBackend('cpu')
-        executor = MlirExecutor(artifact, backend)
-        with torch.no_grad():
-            logits = executor.forward(torch.tensor(input_ids))
-        py_logits = logits.numpy()
-        np.save(py_logits_path, py_logits)
-
-    print(f"  Python executor logits: shape={py_logits.shape}, "
-          f"first={py_logits[0, 0, 0]:.6f}, "
-          f"last={py_logits[0, 0, -1]:.6f}")
-    print(f"  Python logits mean={py_logits.mean():.6f}, std={py_logits.std():.6f}")
-
-    # ── Step 3: Load dylib and parse SFCF blob ──────────────────────
-    print()
-    print("=" * 60)
-    print("Step 3/5: Load dylib and parse embedded SFCF blob")
-    print("=" * 60)
+    # Load dylib + parse SFCF blob
     lib = ctypes.CDLL(dylib_path)
-
-    # Read embedded SFCF blob from dylib symbols
     data_ptr = ctypes.cast(
-        ctypes.addressof(ctypes.c_int64.in_dll(lib, 'serveforge_constants_data')),
+        ctypes.addressof(ctypes.c_int64.in_dll(lib, "serveforge_constants_data")),
         ctypes.c_void_p,
     )
     size_ptr = ctypes.cast(
-        ctypes.addressof(ctypes.c_int64.in_dll(lib, 'serveforge_constants_size')),
+        ctypes.addressof(ctypes.c_int64.in_dll(lib, "serveforge_constants_size")),
         ctypes.POINTER(ctypes.c_uint64),
     )
-    blob_size = size_ptr[0]
-    blob_bytes = bytes((ctypes.c_uint8 * blob_size).from_address(data_ptr.value))
-    print(f"  SFCF blob: {blob_size} bytes")
-    print(f"  Magic: {blob_bytes[:4]}")
-
-    name_mapping, sfcf_constants, graph_pos, sfcf_version = parse_sfcf_blob(blob_bytes)
-    print(f"  Name mappings: {len(name_mapping)}")
-    print(f"  SFCF constants: {len(sfcf_constants)}")
-    print(f"  SFCF version: {sfcf_version}")
-    for k in list(sfcf_constants.keys())[:5]:
-        print(f"    constant {k}: shape={sfcf_constants[k].shape}")
-
+    blob_bytes = bytes(
+        (ctypes.c_uint8 * size_ptr[0]).from_address(data_ptr.value)
+    )
+    _, sfcf_constants, graph_pos, sfcf_version = parse_sfcf_blob(blob_bytes)
     graph = parse_compute_graph(blob_bytes, graph_pos, version=sfcf_version)
-    print(f"  Compute graph: {len(graph['functions'])} functions")
-    for fi, f in enumerate(graph['functions']):
-        print(f"    [{fi:2d}] {f['symbol']}: "
-              f"{f['num_inputs']} inputs → {f['num_outputs']} outputs")
-    print(f"  Global output: func={graph['global_output'][0]}, "
-          f"idx={graph['global_output'][1]}")
 
-    # ── Step 4: Run forward via ctypes ──────────────────────────────
-    print()
-    print("=" * 60)
-    print("Step 4/5: Run forward pass via ctypes")
-    print("=" * 60)
-
-    sret_size = 131072  # 128KB should be ample for 211 output descriptors
-    func_outputs: list[list[np.ndarray]] = [[] for _ in range(len(graph['functions']))]
-
-    # Build a combined weight lookup with multi-strategy key resolution.
-    hf_key_map = artifact.metadata.get('hf_key_map', {})
-    # Tied weights: some compiled names share weight data (e.g. lm_head_weight
-    # shares with model_decoder_embed_tokens_weight in OPT).
-    ws = artifact.metadata.get('weight_source', {})
-    tied_weights = ws.get('tied_weights', {}) or artifact.metadata.get('tied_weights', {})
-
-    def get_weight(name: str) -> np.ndarray:
-        # Strategy 1: direct match
+    # Weight lookup with multi-strategy resolution
+    def _get_weight(name: str) -> np.ndarray:
         if name in all_weights:
             return all_weights[name]
-
-        # Strategy 2: translate via hf_key_map (compiled → hf key)
         hf_key = hf_key_map.get(name)
         if hf_key and hf_key in all_weights:
             return all_weights[hf_key]
-
-        # Strategy 3: tied weights — if name is the primary, try the alias
         for alias_name, primary_name in tied_weights.items():
             if primary_name == name:
-                # Alias maps to this name — try the alias's HF key
                 alias_hf = hf_key_map.get(alias_name)
                 if alias_hf and alias_hf in all_weights:
                     return all_weights[alias_hf]
-                # Also try alias directly
                 if alias_name in all_weights:
                     return all_weights[alias_name]
-
-        # Strategy 4: try without function prefix (e.g. "main_0._const_7" → "_const_7")
-        bare_name = name.split('.', 1)[-1] if '.' in name else name
+        bare_name = name.split(".", 1)[-1] if "." in name else name
         if bare_name != name:
             if bare_name in all_weights:
                 return all_weights[bare_name]
             if bare_name in sfcf_constants:
                 return np.ascontiguousarray(sfcf_constants[bare_name])
-
-        # Strategy 5: try with main_0. prefix (for constants in artifact)
         prefixed = f"main_0.{name}"
         if prefixed in all_weights:
             return all_weights[prefixed]
-
-        # Strategy 6: constant from SFCF blob
         if name in sfcf_constants:
             return np.ascontiguousarray(sfcf_constants[name])
-
         raise KeyError(f"Weight '{name}' not found")
 
-    t0 = time.time()
+    # Run forward pass
+    sret_size = 131072
+    func_outputs: list[list[np.ndarray]] = [
+        [] for _ in range(len(graph["functions"]))
+    ]
 
-    for fi, func_def in enumerate(graph['functions']):
-        symbol = func_def['symbol']
+    for fi, func_def in enumerate(graph["functions"]):
+        symbol = func_def["symbol"]
         try:
             kernel = getattr(lib, symbol)
         except AttributeError:
-            print(f"  [{fi:2d}] WARNING: {symbol} not found, skipping")
             continue
 
-        # Build input descriptors
-        input_descs = []
-        input_args = []
-        # CRITICAL: keep references to numpy arrays to prevent GC
-        # from freeing the underlying buffer that descriptors point to.
+        input_descs: list[ctypes.Structure] = []
+        input_args: list[ctypes.pointer] = []
         _keep_arrs: list[np.ndarray] = []
 
-        for inp in func_def['inputs']:
-            binding = inp['binding']
-            io_shape = inp['shape']
+        for inp in func_def["inputs"]:
+            binding = inp["binding"]
+            io_shape = inp["shape"]
 
-            if binding[0] == 'global_input':
+            if binding[0] == "global_input":
                 arr = input_ids
-
-            elif binding[0] == 'weight':
+            elif binding[0] == "weight":
                 key = binding[1]
                 try:
-                    arr = get_weight(key)
+                    arr = _get_weight(key)
                 except KeyError:
                     shape = [int(s) if s > 0 else 1 for s in io_shape] or [1]
                     arr = np.zeros(shape, dtype=np.float32)
-                    print(f"    [{fi:2d}] WARNING: weight '{key}' not found, "
-                          f"using zeros shape={shape}")
-
-            elif binding[0] == 'ssa':
+            elif binding[0] == "ssa":
                 pf, oi = binding[1], binding[2]
                 if pf < len(func_outputs) and oi < len(func_outputs[pf]):
                     arr = func_outputs[pf][oi]
                 else:
                     shape = [int(s) if s > 0 else 1 for s in io_shape] or [1]
                     arr = np.zeros(shape, dtype=np.float32)
-
             else:
                 raise ValueError(f"Unknown binding: {binding}")
 
-            # Ensure contiguous f32 for descriptors
-            if arr.dtype != np.float32:
-                if arr.dtype == np.int64:
-                    pass  # input_ids stays as int64
-                else:
-                    arr = arr.astype(np.float32)
-            if not arr.flags['C_CONTIGUOUS']:
+            if arr.dtype != np.float32 and arr.dtype != np.int64:
+                arr = arr.astype(np.float32)
+            if not arr.flags["C_CONTIGUOUS"]:
                 arr = np.ascontiguousarray(arr)
-
-            # KEEP ALIVE: prevent GC from freeing arr's buffer
             _keep_arrs.append(arr)
-
             desc = make_memref_descriptor(arr)
             input_descs.append(desc)
             input_args.append(ctypes.byref(desc))
 
-        # Allocate sret buffer
         sret = (ctypes.c_uint8 * sret_size)()
-
-        # Build arg list: sret + all input descriptors
         all_args = [ctypes.byref(sret)] + input_args
-
-        # Set up calling convention
-        n_args = len(all_args)
-        kernel.argtypes = [ctypes.c_void_p] * n_args
+        kernel.argtypes = [ctypes.c_void_p] * len(all_args)
         kernel.restype = None
-
-        # Call the ciface function
-        t1 = time.time()
         kernel(*all_args)
-        call_time = time.time() - t1
-
-        # Parse outputs
-        outputs = parse_sret_outputs(bytes(sret), func_def['outputs'])
+        outputs = parse_sret_outputs(bytes(sret), func_def["outputs"])
         func_outputs[fi] = outputs
 
-        # Dump per-function output for layer-by-layer comparison
-        if outputs:
-            if fi > 0:
-                np.save(f'/tmp/dylib_func_{fi}.npy', np.array(outputs[0]))
-            # Also dump key func[0] outputs for debugging
-            if fi == 0:
-                for key_oi in [10, 12, 13]:
-                    if key_oi < len(outputs):
-                        np.save(f'/tmp/dylib_f0_out{key_oi}.npy', np.array(outputs[key_oi]))
+    go_func, go_idx = graph["global_output"]
+    logits = func_outputs[go_func][go_idx]
+    return DylibResult(func_outputs, logits)
 
-        # Log function summary
-        n_out = len(outputs)
-        if fi == 0:
-            print(f"  [{fi:2d}] {symbol}: {call_time:.3f}s, {n_out} outputs")
-        elif n_out > 0:
-            print(f"  [{fi:2d}] {symbol}: {call_time:.3f}s, out[0] shape={outputs[0].shape}")
 
-    total_time = time.time() - t0
+def run_python_executor(
+    artifact_dir: str = "./compiled/opt_125m_fresh",
+    input_ids: np.ndarray | None = None,
+) -> DylibResult:
+    """Run Python MlirExecutor and return per-function + logit results.
 
-    # ── Step 5: Compare results ─────────────────────────────────────
-    print()
-    print("=" * 60)
-    print("Step 5/5: Results — ctypes vs Python executor")
-    print("=" * 60)
+    Per-function outputs are captured via the executor's internal dump
+    mechanism (``dump_dir`` parameter).  The final logits are the output
+    of the last function.
 
-    go_func, go_idx = graph['global_output']
-    ctypes_logits = func_outputs[go_func][go_idx]
-    print(f"  ctypes logits: shape={ctypes_logits.shape}")
-    print(f"    first 8: {ctypes_logits.ravel()[:8].tolist()}")
-    print(f"    last 8:  {ctypes_logits.ravel()[-8:].tolist()}")
-    print(f"    mean={ctypes_logits.mean():.6f}, std={ctypes_logits.std():.6f}")
+    Args:
+        artifact_dir: Path to compiled artifact directory.
+        input_ids: Input token IDs (default: batch=2, seq=4 sample).
 
-    # Compare with Python executor per-token
-    print("\n  Per-token cosine (ctypes vs Python executor):")
-    for b in range(min(ctypes_logits.shape[0], py_logits.shape[0])):
-        for p in range(min(ctypes_logits.shape[1], py_logits.shape[1])):
-            sim = cosine_similarity(ctypes_logits[b, p], py_logits[b, p])
-            print(f"    batch={b}, pos={p}: cos={sim:.10f}")
+    Returns:
+        ``DylibResult`` with ``.logits`` (final logits) and ``.func_outputs``
+        (per-function output list reconstructed from the dump files).
+    """
+    import tempfile
 
-    # Also compare with Rust runtime logits if available
-    cos_ctypes_rust = -1.0
-    rust_csv_path = '/tmp/rust_logits.csv'
-    if os.path.exists(rust_csv_path):
-        rust_csv = np.loadtxt(rust_csv_path, delimiter=',')
-        rust_logits = rust_csv.reshape(ctypes_logits.shape)
-        cos_ctypes_rust = cosine_similarity(ctypes_logits, rust_logits)
-        cos_py_rust = cosine_similarity(py_logits, rust_logits)
-        print(f"\n  ctypes vs Rust dylib: cos={cos_ctypes_rust:.10f}")
-        print(f"  Python vs Rust dylib: cos={cos_py_rust:.10f}")
+    import torch
 
-    # Overall cosine with Python executor
-    cos = cosine_similarity(py_logits, ctypes_logits)
-    print(f"\n  Overall cos(ctypes, Python executor): {cos:.10f}")
-    print(f"  Total forward time: {total_time:.3f}s")
+    from compiler.serialize import load_artifact
+    from engine.mlir_executor import MlirExecutor
+    from hal.pytorch_backend import PyTorchBackend
 
-    # Interpretation
-    print()
-    print("-" * 60)
-    print("DIAGNOSIS")
-    print("-" * 60)
-    if cos > 0.99:
-        print("  ✓ ctypes ≈ Python executor (cos > 0.99)")
-        print("  → Bug is in RUST RUNTIME's ciface calling convention")
-    elif cos_ctypes_rust > 0.99:
-        print(f"  ✓ ctypes ≈ Rust Runtime (cos={cos_ctypes_rust:.6f})")
-        print("  → Bug is in COMPILED DYLIB / LOWERING PIPELINE")
-    elif cos > 0.8:
-        print("  ✗ ctypes differs from Python executor (check dylib pipeline)")
+    if input_ids is None:
+        input_ids_np = np.array(
+            [[2, 32826, 85, 4129], [0, 0, 0, 0]], dtype=np.int64
+        )
     else:
-        print("  ✗ ctypes ≠ Python executor AND ctypes ≠ Rust runtime")
-        print("  → Possible bug in ctypes calling convention")
+        input_ids_np = input_ids
 
-    return cos
+    artifact = load_artifact(artifact_dir)
+    num_funcs = len(artifact.functions)
 
+    with tempfile.TemporaryDirectory(prefix="py_dump_") as dump_dir:
+        backend = PyTorchBackend("cpu")
+        executor = MlirExecutor(artifact, backend, dump_dir=dump_dir)
 
-if __name__ == '__main__':
-    main()
+        with torch.no_grad():
+            logits_tensor = executor.forward(
+                torch.tensor(input_ids_np)
+            )
+        logits = np.ascontiguousarray(logits_tensor.numpy().astype(np.float32))
+
+        func_outputs: list[list[np.ndarray]] = [[] for _ in range(num_funcs)]
+        for fi in range(num_funcs):
+            fpath = os.path.join(dump_dir, f"py_func_{fi}_0.npy")
+            if os.path.exists(fpath):
+                func_outputs[fi] = [np.load(fpath)]
+        return DylibResult(func_outputs, logits)

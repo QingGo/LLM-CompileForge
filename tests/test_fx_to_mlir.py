@@ -15,38 +15,38 @@ import torch
 @pytest.mark.unit
 class TestDtypeToMlir:
     def test_float32(self) -> None:
-        from compiler.fx_to_mlir import _dtype_to_mlir
+        from compiler.fx_to_mlir_utils import _dtype_to_mlir
         assert _dtype_to_mlir("float32") == "f32"
 
     def test_float16(self) -> None:
-        from compiler.fx_to_mlir import _dtype_to_mlir
+        from compiler.fx_to_mlir_utils import _dtype_to_mlir
         assert _dtype_to_mlir("float16") == "f16"
 
     def test_int64(self) -> None:
-        from compiler.fx_to_mlir import _dtype_to_mlir
+        from compiler.fx_to_mlir_utils import _dtype_to_mlir
         assert _dtype_to_mlir("int64") == "i64"
 
     def test_unknown_defaults_to_f32(self) -> None:
-        from compiler.fx_to_mlir import _dtype_to_mlir
+        from compiler.fx_to_mlir_utils import _dtype_to_mlir
         assert _dtype_to_mlir("complex128") == "f32"
 
 
 @pytest.mark.unit
 class TestTensorTypeStr:
     def test_static_shape(self) -> None:
-        from compiler.fx_to_mlir import _tensor_type_str
+        from compiler.fx_to_mlir_utils import _tensor_type_str
         result = _tensor_type_str("float32", (2, 4, 128))
         assert "2x4x128" in result
         assert "f32" in result
 
     def test_dynamic_shape(self) -> None:
-        from compiler.fx_to_mlir import _tensor_type_str
+        from compiler.fx_to_mlir_utils import _tensor_type_str
         result = _tensor_type_str("float16", (2, None, 128))
         assert "2x?x128" in result
         assert "f16" in result
 
     def test_scalar_tensor(self) -> None:
-        from compiler.fx_to_mlir import _tensor_type_str
+        from compiler.fx_to_mlir_utils import _tensor_type_str
         result = _tensor_type_str("float32", ())
         assert "tensor<f32>" == result
 
@@ -54,50 +54,50 @@ class TestTensorTypeStr:
 @pytest.mark.unit
 class TestSymIntToInt:
     def test_regular_int_passthrough(self) -> None:
-        from compiler.fx_to_mlir import _symint_to_int
+        from compiler.fx_to_mlir_utils import _symint_to_int
         assert _symint_to_int(42) == 42
 
     def test_float_returns_int(self) -> None:
-        from compiler.fx_to_mlir import _symint_to_int
+        from compiler.fx_to_mlir_utils import _symint_to_int
         assert _symint_to_int(3.14) == 3
 
     def test_string_returns_none(self) -> None:
-        from compiler.fx_to_mlir import _symint_to_int
+        from compiler.fx_to_mlir_utils import _symint_to_int
         assert _symint_to_int("abc") is None
 
 
 @pytest.mark.unit
 class TestResolveShapeTuple:
     def test_all_static(self) -> None:
-        from compiler.fx_to_mlir import _resolve_shape_tuple
+        from compiler.fx_to_mlir_utils import _resolve_shape_tuple
         assert _resolve_shape_tuple(torch.Size([2, 4, 128])) == (2, 4, 128)
 
 
 @pytest.mark.unit
 class TestSymintForView:
     def test_concrete_returns_value(self) -> None:
-        from compiler.fx_to_mlir import _symint_for_view
+        from compiler.fx_to_mlir_utils import _symint_for_view
         assert _symint_for_view(64) == 64
 
 
 @pytest.mark.unit
 class TestMapAtenOp:
     def test_known_op_returns_hal_name(self) -> None:
-        from compiler.fx_to_mlir import _map_aten_op
+        from compiler.fx_to_mlir_utils import _map_aten_op
         result = _map_aten_op("aten.add.Tensor")
         assert result == "add"
 
     def test_identity_op(self) -> None:
-        from compiler.fx_to_mlir import _map_aten_op
+        from compiler.fx_to_mlir_utils import _map_aten_op
         result = _map_aten_op("aten.contiguous.default")
         assert result == "identity"
 
     def test_unknown_op_returns_none(self) -> None:
-        from compiler.fx_to_mlir import _map_aten_op
+        from compiler.fx_to_mlir_utils import _map_aten_op
         assert _map_aten_op("aten.nonexistent.op") is None
 
     def test_op_overload_fallback(self) -> None:
-        from compiler.fx_to_mlir import _map_aten_op
+        from compiler.fx_to_mlir_utils import _map_aten_op
         result = _map_aten_op("aten.silu")
         assert result == "silu"
 
@@ -106,7 +106,7 @@ class TestMapAtenOp:
 class TestExtractNodeKwargs:
     def test_empty_kwargs(self) -> None:
         # Just verify import works and returns dict
-        from compiler.fx_to_mlir import _extract_node_kwargs
+        from compiler.fx_to_mlir_utils import _extract_node_kwargs
         assert callable(_extract_node_kwargs)
 
 
@@ -117,7 +117,7 @@ class TestResolveOpTypes:
         """ssa_map has both a short name ('reshape') and long name ('reshape_5').
         An input referring to '%reshape_5' should match 'reshape_5' exactly,
         not the shorter prefix 'reshape'."""
-        from compiler.fx_to_mlir import _resolve_op_types
+        from compiler.fx_to_mlir_utils import _resolve_op_types
 
         shapes: dict[str, tuple[tuple[int | None, ...], str]] = {}
         shapes["reshape"] = ((1, 16, 1, 64, 128), "f32")
@@ -140,7 +140,7 @@ class TestResolveOpTypes:
         produce a warning so resolution failures are visible."""
         import warnings
 
-        from compiler.fx_to_mlir import _resolve_op_types
+        from compiler.fx_to_mlir_utils import _resolve_op_types
 
         warnings.simplefilter("always")
         with warnings.catch_warnings(record=True) as w:
@@ -161,10 +161,8 @@ class TestAdjustOpAttributesOnSplit:
     def test_dim_adjustment_for_rank_change(self) -> None:
         """When a function input has rank 2 but the original op had dim=3
         (from rank-5 context), the dim attribute must be clamped to rank-1."""
-        from compiler.fx_to_mlir import (
-            MlirOp,
-            _adjust_op_attributes,
-        )
+        from compiler.fx_to_mlir_split import _adjust_op_attributes
+        from compiler.mlir_artifact import MlirOp
 
         op = MlirOp(
             name="sf.slice", dialect="sf", op_name="slice",
@@ -187,10 +185,8 @@ class TestAdjustOpAttributesOnSplit:
 
     def test_dim_unaffected_when_already_in_bounds(self) -> None:
         """dim=1 on rank-3 should stay 1 (already within 0..2)."""
-        from compiler.fx_to_mlir import (
-            MlirOp,
-            _adjust_op_attributes,
-        )
+        from compiler.fx_to_mlir_split import _adjust_op_attributes
+        from compiler.mlir_artifact import MlirOp
 
         op = MlirOp(
             name="sf.slice", dialect="sf", op_name="slice",
@@ -205,10 +201,8 @@ class TestAdjustOpAttributesOnSplit:
 
     def test_dims_list_attribute_clamped(self) -> None:
         """dims=[2, 3] on rank-2 input gets clamped to rank-1 = 1."""
-        from compiler.fx_to_mlir import (
-            MlirOp,
-            _adjust_op_attributes,
-        )
+        from compiler.fx_to_mlir_split import _adjust_op_attributes
+        from compiler.mlir_artifact import MlirOp
 
         op = MlirOp(
             name="sf.permute", dialect="sf", op_name="permute",

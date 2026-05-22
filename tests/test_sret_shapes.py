@@ -19,7 +19,7 @@ import struct
 import numpy as np
 import pytest
 
-from scripts.ctypes_forward import parse_sret_outputs, verify_output_shapes
+from compiler.sfcf_parser import parse_sret_outputs, verify_output_shapes
 
 # ── Helpers ──────────────────────────────────────────────────────────
 

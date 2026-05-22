@@ -8,18 +8,12 @@ via the MLIR ExecutionEngine JIT.
 from __future__ import annotations
 
 import ctypes
-import sys
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
-
-def _setup_mlir_path() -> None:
-    _mlir_pkg = Path(__file__).resolve().parent.parent / "mlir_binding" / "mlir_package"
-    if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
-        sys.path.insert(0, str(_mlir_pkg))
+from compiler.mlir_dialect.compile_utils import _setup_mlir_path
 
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:

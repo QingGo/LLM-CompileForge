@@ -31,23 +31,8 @@ import numpy as np
 _log = logging.getLogger(__name__)
 
 
-def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    """Compute cosine similarity between two flattened arrays."""
-    a_f = a.flatten().astype(np.float64)
-    b_f = b.flatten().astype(np.float64)
-    dot = np.dot(a_f, b_f)
-    norm_a = np.linalg.norm(a_f)
-    norm_b = np.linalg.norm(b_f)
-    if norm_a == 0.0 and norm_b == 0.0:
-        return 1.0
-    if norm_a == 0.0 or norm_b == 0.0:
-        return 0.0
-    return float(dot / (norm_a * norm_b))
-
-
-def _short_shape(shape: tuple[int, ...]) -> str:
-    return "[" + ", ".join(str(s) for s in shape) + "]"
-
+from compiler.mlir_dialect.compile_utils import _short_shape
+from scripts._cos import cosine_similarity
 
 # ── Python runtime weight loader ──────────────────────────────
 

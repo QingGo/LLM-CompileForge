@@ -248,15 +248,4 @@ rebuild-dylib: $(VENV)
 rebuild-test:
 	cd rust && cargo test test_opt_125m_forward_runs -- --nocapture 2>&1 | tail -5
 
-# Cosine 精度对比 (Rust vs Python vs HF)
-rebuild-cosine: $(VENV)
-	$(PYTHON) scripts/diagnose_issue45.py 2>&1 | grep -E "Cosine|DIAGNOSIS|argmax"
-
-# 快速诊断循环 (使用已编译的 .dylib + 预计算的 logits)
-diagnose-fast:
-	DUMP_LAYERS=/tmp/ld_rs cargo run --manifest-path rust/Cargo.toml --bin forward_check 2>&1 | tail -3
-	$(PYTHON) scripts/diagnose_issue45.py --fast 2>&1 | grep -E "Cosine|argmax|→"
-
-# CI gate for cosine regression
-diagnose-ci:
-	$(PYTHON) scripts/diagnose_issue45.py --fast --ci --threshold 0.99 2>&1 | grep -E "CI|Cosine|argmax"
+# (removed: diagnose_issue45.py was a one-off diagnostic script, deleted)

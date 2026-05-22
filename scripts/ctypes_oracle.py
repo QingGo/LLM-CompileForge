@@ -25,14 +25,14 @@ _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from scripts.ctypes_forward import (  # noqa: E402  # import after sys.path
-    cosine_similarity,
+from compiler.sfcf_parser import (  # noqa: E402
     make_memref_descriptor,
     parse_compute_graph,
     parse_sfcf_blob,
     parse_sret_outputs,
     verify_output_shapes,
 )
+from scripts.ctypes_forward import cosine_similarity  # noqa: E402
 
 
 class CtypesOracle:

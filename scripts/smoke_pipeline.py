@@ -8,9 +8,10 @@ Run before any full model compilation to verify the pipeline is healthy.
 import os
 import sys
 import time
-from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from compiler.mlir_dialect.compile_utils import _setup_mlir_path
 
 MINIMAL_MLIR = r"""
 module {
@@ -21,12 +22,6 @@ module {
   }
 }
 """
-
-
-def _setup_mlir_path():
-    pkg = Path(__file__).resolve().parent.parent / "mlir_binding" / "mlir_package"
-    if pkg.is_dir() and str(pkg) not in sys.path:
-        sys.path.insert(0, str(pkg))
 
 
 def main():

@@ -12,32 +12,13 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Any
 
 # Ensure the project root is on sys.path
 _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
 
 
-def _patch_transformers_torch() -> None:
-    """Patch transformers to recognize the symlinked torch installation."""
-    import torch
-    import transformers.utils.generic as _generic  # type: ignore[import-untyped]
-    import transformers.utils.import_utils as _iu  # type: ignore[import-untyped]
-
-    _iu._torch_available = True  # type: ignore[attr-defined]
-    _iu._torch_version = torch.__version__  # type: ignore[attr-defined]
-
-    _generic._torch_pytree = torch.utils._pytree  # type: ignore[attr-defined]
-
-    def _flatten(output: Any) -> Any:  # type: ignore[no-untyped-def]
-        return list(output.values()), list(output.keys())
-
-    def _unflatten(values: Any, context: Any, output_type: Any = None) -> Any:  # type: ignore[no-untyped-def]
-        return (output_type or type(context[0]))(**dict(zip(context, values, strict=False)))
-
-    _generic._model_output_flatten = _flatten  # type: ignore[attr-defined]
-    _generic._model_output_unflatten = _unflatten  # type: ignore[attr-defined]
+from compiler.mlir_dialect.compile_utils import _patch_transformers_torch
 
 
 def compile_opt125m(output_dir: str, apply_lowering: bool = False) -> None:

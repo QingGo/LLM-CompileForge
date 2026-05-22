@@ -16,7 +16,7 @@ class TestResolveOpTypesScalarFix:
 
     def test_scalar_weight_gets_shape_1(self):
         """Scalar weight with shape () should produce tensor<1xf32>."""
-        from compiler.fx_to_mlir import _resolve_op_types
+        from compiler.fx_to_mlir_utils import _resolve_op_types
 
         weights = {"w": torch.tensor(3.14)}
         ssa_map: dict[str, str] = {}
@@ -31,7 +31,7 @@ class TestResolveOpTypesScalarFix:
 
     def test_1d_weight_unchanged(self):
         """1-D tensor should still produce tensor<Nxf32>."""
-        from compiler.fx_to_mlir import _resolve_op_types
+        from compiler.fx_to_mlir_utils import _resolve_op_types
 
         weights = {"w": torch.randn(64)}
         ssa_map: dict[str, str] = {}
@@ -46,7 +46,7 @@ class TestResolveOpTypesScalarFix:
 
     def test_2d_weight_unchanged(self):
         """2-D tensor should still produce tensor<NxMxf32>."""
-        from compiler.fx_to_mlir import _resolve_op_types
+        from compiler.fx_to_mlir_utils import _resolve_op_types
 
         weights = {"w": torch.randn(64, 128)}
         ssa_map: dict[str, str] = {}
@@ -61,7 +61,7 @@ class TestResolveOpTypesScalarFix:
 
     def test_ssa_map_resolution_still_works(self):
         """%w resolved via ssa_map → w lookup still yields correct shape."""
-        from compiler.fx_to_mlir import _resolve_op_types
+        from compiler.fx_to_mlir_utils import _resolve_op_types
 
         weights = {"w": torch.tensor(3.14)}
         ssa_map = {"w": "%w"}
@@ -76,7 +76,7 @@ class TestResolveOpTypesScalarFix:
 
     def test_shape_map_takes_priority(self):
         """shape_map entries should take priority over weight lookup."""
-        from compiler.fx_to_mlir import _resolve_op_types
+        from compiler.fx_to_mlir_utils import _resolve_op_types
 
         weights = {"w": torch.tensor(3.14)}
         ssa_map = {"w": "%w"}

@@ -18,13 +18,7 @@ _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
 
 
-def _patch_transformers_torch() -> None:
-    import torch
-    import transformers.utils.generic as _generic
-    import transformers.utils.import_utils as _iu
-    _iu._torch_available = True
-    _iu._torch_version = torch.__version__
-    _generic._torch_pytree = torch.utils._pytree
+from compiler.mlir_dialect.compile_utils import _patch_transformers_torch
 
 
 def quantize_llama_1b() -> dict:

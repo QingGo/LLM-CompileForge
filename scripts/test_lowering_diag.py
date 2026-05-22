@@ -4,9 +4,10 @@ import argparse
 import os
 import sys
 import time
-from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from compiler.mlir_dialect.compile_utils import _setup_mlir_path
 
 # Templates use ${var} syntax — replaced via .replace() not .format()
 # to avoid conflicts with MLIR's generic op format syntax { ... }.
@@ -115,12 +116,6 @@ def _apply(template: str, vals: dict[str, str]) -> str:
     for k, v in sorted(vals.items(), key=lambda x: -len(x[0])):
         template = template.replace(f"${k}", v)
     return template
-
-
-def _setup_mlir_path():
-    pkg = Path(__file__).resolve().parent.parent / "mlir_binding" / "mlir_package"
-    if pkg.is_dir() and str(pkg) not in sys.path:
-        sys.path.insert(0, str(pkg))
 
 
 def run_test(name: str, mlir_text: str, timeout_s: int = 5) -> tuple[bool, str]:
