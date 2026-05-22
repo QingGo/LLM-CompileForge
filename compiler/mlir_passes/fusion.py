@@ -13,33 +13,10 @@ When bindings are unavailable, these functions are no-ops (skip gracefully).
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
-
-def _setup_mlir_path() -> None:
-    _mlir_pkg = Path(__file__).resolve().parent.parent.parent / "mlir_binding" / "mlir_package"
-    if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
-        sys.path.insert(0, str(_mlir_pkg))
-    _sf_base = Path(__file__).resolve().parent.parent.parent / "sf-dialect"
-    for _sf_candidate in [_sf_base / "python_packages" / "sf", _sf_base / "build" / "python_packages" / "sf"]:
-        if _sf_candidate.is_dir() and str(_sf_candidate) not in sys.path:
-            sys.path.insert(0, str(_sf_candidate))
-            break
-
-
-def _has_bindings() -> bool:
-    _setup_mlir_path()
-    try:
-        import mlir.ir  # noqa: F401
-        return True
-    except ImportError:
-        return False
-
-
-
+from compiler.mlir_dialect.compile_utils import _setup_mlir_path
 
 
 def _run_pattern(

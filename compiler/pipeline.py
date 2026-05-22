@@ -11,22 +11,15 @@ Python bindings when available).
 from __future__ import annotations
 
 import os
-import sys
 import time
 import warnings
-from pathlib import Path
 from typing import Any
 
 import torch
 
 from compiler.fx_to_mlir import fx_graph_to_mlir
 from compiler.mlir_artifact import MlirModule, mlir_module_to_text, save_mlir_module_artifact
-
-
-def _setup_mlir_path() -> None:
-    _mlir_pkg = Path(__file__).resolve().parent.parent / "mlir_binding" / "mlir_package"
-    if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
-        sys.path.insert(0, str(_mlir_pkg))
+from compiler.mlir_dialect.compile_utils import _setup_mlir_path
 
 
 def compile_mlir(

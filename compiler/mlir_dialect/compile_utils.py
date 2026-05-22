@@ -468,3 +468,22 @@ def _compile_embedded_data(bin_path: str, work_dir: str) -> str:
         )
 
     return o_path
+
+
+def _patch_transformers_torch() -> None:
+    import torch
+    import transformers.utils.generic as _generic
+    import transformers.utils.import_utils as _iu
+    _iu._torch_available = True
+    _iu._torch_version = torch.__version__
+    _generic._torch_pytree = torch.utils._pytree
+    def _flatten(output):
+        return list(output.values()), list(output.keys())
+    def _unflatten(values, context, output_type=None):
+        return (output_type or type(context[0]))(**dict(zip(context, values, strict=False)))
+    _generic._model_output_flatten = _flatten
+    _generic._model_output_unflatten = _unflatten
+
+
+def _short_shape(shape):
+    return "[" + ", ".join(str(s) for s in shape) + "]"
