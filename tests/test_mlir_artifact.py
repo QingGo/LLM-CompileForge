@@ -29,7 +29,7 @@ class TestMlirRoundtrip:
         func = MlirFunction(
             name="main",
             inputs=[("%x", "tensor<4xf32>")],
-            outputs=[("%y", "tensor<4xf32>")],
+            outputs=[("%y", "tensor<4xf32>", False)],
             ops=[MlirOp(name="sf.relu", dialect="sf", op_name="relu",
                         operands=["%x"], results=["%y"])],
         )
@@ -42,7 +42,7 @@ class TestMlirRoundtrip:
         func = MlirFunction(
             name="main",
             inputs=[("%x", "tensor<?x4xf32>")],
-            outputs=[("%y", "tensor<?x8xf32>")],
+            outputs=[("%y", "tensor<?x8xf32>", False)],
             ops=[
                 MlirOp(name="sf.weight", dialect="sf", op_name="weight",
                        operands=["w"], results=["%w"], attributes={"name": "w"}),
@@ -60,7 +60,7 @@ class TestMlirRoundtrip:
         func = MlirFunction(
             name="main",
             inputs=[("%x", "tensor<?x4xf32>")],
-            outputs=[("%y", "tensor<?x4xf32>")],
+            outputs=[("%y", "tensor<?x4xf32>", False)],
             ops=[MlirOp(name="sf.relu", dialect="sf", op_name="relu",
                         operands=["%x"], results=["%y"])],
         )
@@ -72,7 +72,7 @@ class TestMlirRoundtrip:
         func = MlirFunction(
             name="main",
             inputs=[("%x", "tensor<4xf32>")],
-            outputs=[("%y", "tensor<4xf32>")],
+            outputs=[("%y", "tensor<4xf32>", False)],
             ops=[MlirOp(name="sf.softmax", dialect="sf", op_name="softmax",
                         operands=["%x"], results=["%y"],
                         attributes={"dim": -1})],
@@ -85,7 +85,7 @@ class TestMlirRoundtrip:
         func = MlirFunction(
             name="main",
             inputs=[("%x", "tensor<4xf32>")],
-            outputs=[("%z", "tensor<4xf32>")],
+            outputs=[("%z", "tensor<4xf32>", False)],
             ops=[
                 MlirOp(name="sf.relu", dialect="sf", op_name="relu",
                        operands=["%x"], results=["%y"]),
@@ -102,7 +102,7 @@ class TestMlirRoundtrip:
         func = MlirFunction(
             name="main",
             inputs=[("%x", "tensor<4xf32>")],
-            outputs=[("%y", "tensor<2xf32>"), ("%z", "tensor<2xf32>")],
+            outputs=[("%y", "tensor<2xf32>", False), ("%z", "tensor<2xf32>", False)],
             ops=[MlirOp(name="sf.split", dialect="sf", op_name="split",
                         operands=["%x"], results=["%y", "%z"])],
         )
@@ -124,7 +124,7 @@ class TestMlirParsing:
         func = MlirFunction(
             name="main",
             inputs=[("%x", "tensor<4xf32>")],
-            outputs=[("%y", "tensor<8xf32>")],
+            outputs=[("%y", "tensor<8xf32>", False)],
             ops=[
                 MlirOp(name="sf.weight", dialect="sf", op_name="weight",
                        operands=["w"], results=["%w"], attributes={"name": "w"}),
@@ -147,7 +147,7 @@ class TestMlirParsing:
         func = MlirFunction(
             name="main",
             inputs=[("%x", "tensor<4xf32>")],
-            outputs=[("%z", "tensor<4xf32>")],
+            outputs=[("%z", "tensor<4xf32>", False)],
             ops=[
                 MlirOp(name="sf.relu", dialect="sf", op_name="relu",
                        operands=["%x"], results=["%y"]),
@@ -165,7 +165,7 @@ class TestMlirParsing:
         func = MlirFunction(
             name="main",
             inputs=[("%x", "tensor<4xf32>")],
-            outputs=[("%y", "tensor<4xf32>")],
+            outputs=[("%y", "tensor<4xf32>", False)],
             ops=[MlirOp(
                 name="sf.fused_rms_norm_matmul", dialect="sf",
                 op_name="fused_rms_norm_matmul",
@@ -251,7 +251,7 @@ class TestWeightLoadTied:
         f = MlirFunction(
             name="main",
             inputs=[("%x", "tensor<4xf32>")],
-            outputs=[("%o", "tensor<4xf32>")],
+            outputs=[("%o", "tensor<4xf32>", False)],
             ops=[MlirOp(name="sf.linear", dialect="sf", op_name="linear",
                          operands=["%x", "w"], results=["%o"], attributes={})],
             weights={"model_embed_tokens_weight": w},
@@ -345,12 +345,12 @@ class TestMultiFunctionRoundtrip:
 
         mod = MlirModule(functions=[
             MlirFunction(name="f0", inputs=[("%x", "tensor<2x4xf32>")],
-                         outputs=[("%mid", "tensor<2x4xf32>")],
+                         outputs=[("%mid", "tensor<2x4xf32>", False)],
                          ops=[MlirOp(name="sf.add", dialect="sf", op_name="add",
                                      operands=["%x", "%x"], results=["%mid"],
                                      output_types=["tensor<2x4xf32>"], attributes={})]),
             MlirFunction(name="f1", inputs=[("%mid", "tensor<2x4xf32>")],
-                         outputs=[("%out", "tensor<2x4xf32>")],
+                         outputs=[("%out", "tensor<2x4xf32>", False)],
                          ops=[MlirOp(name="sf.mul", dialect="sf", op_name="mul",
                                      operands=["%mid", "%mid"], results=["%out"],
                                      output_types=["tensor<2x4xf32>"], attributes={})]),
@@ -368,7 +368,7 @@ class TestMultiFunctionRoundtrip:
 
         mod = MlirModule(functions=[
             MlirFunction(name="f0", inputs=[("%in", "tensor<1x64xf32>")],
-                         outputs=[("%out", "tensor<1x64xf32>")],
+                         outputs=[("%out", "tensor<1x64xf32>", False)],
                          ops=[MlirOp(name="sf.relu", dialect="sf", op_name="relu",
                                      operands=["%in"], results=["%out"],
                                      output_types=["tensor<1x64xf32>"], attributes={})]),

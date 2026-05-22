@@ -1,4 +1,4 @@
-.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean diagnose-bt test-fixup test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-benchmark test-perf test-vec test-lower test-baseline test-compile-full test-forward-smoke build-rust install-rust
+.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency verify-dylib verify-consistency verify-diag verify-preflight check-op-consistency build-rust install-rust diagnose-fast diagnose-ci
 
 # ---- 环境 ----
 VENV := .venv
@@ -56,10 +56,6 @@ test-lower: $(VENV)
 	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" \
 	$(PYTHON) scripts/test_lowering_diag.py
 
-# ---- L1f: 管线性能回归 (<60s) ----
-test-perf: $(VENV)
-	$(PYTHON) scripts/perf_regression.py --save .perf_baseline.json
-
 # ---- 快速测试 (lint + L1 all, <20s) ----
 test-fast: lint test-unit test-model test-patterns test-pipeline-quick test-forward-smoke
 
@@ -97,18 +93,6 @@ smoke: $(VENV)
 diagnose-bt:
 	lldb -b -o "run" -o "bt all" -o "quit" -- $(PYTHON) scripts/diagnose_lowering.py
 
-# ---- Benchmark (Phase 2.5 Sprint 1) ----
-benchmark: $(VENV)
-	$(PYTHON) scripts/benchmark.py --all --output benchmark_results.json
-
-test-benchmark: $(VENV)
-	$(PYTEST) tests/test_benchmark.py -m benchmark -v --tb=short --timeout=120
-
-# ---- L1h: Pipeline 冒烟测试 (<10s) ----
-test-pipeline: $(VENV)
-	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" \
-	$(PYTHON) scripts/smoke_pipeline.py
-
 # ---- L1i: Pipeline 时序诊断 (每步单独计时+超时, <120s) ----
 test-pipeline-timing: $(VENV)
 	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" \
@@ -123,6 +107,10 @@ test-pipeline-debug: $(VENV)
 test-fixup: $(VENV)
 	$(PYTEST) tests/test_fixup_casts.py -v --tb=short --timeout=10
 
+# ---- L1m: ctypes oracle e2e 测试 (dylib vs Python executor, <30s) ----
+test-ctypes-oracle: $(VENV)
+	$(PYTEST) tests/test_ctypes_oracle.py -v --tb=short --timeout=30
+
 # ---- L1k: Pipeline 冒烟测试 (全流程限时验证, <120s) ----
 test-pipeline-smoke: $(VENV)
 	$(PYTHON) scripts/test_pipeline_smoke.py compiled/opt_125m_fresh --timeout 120
@@ -132,11 +120,15 @@ test-pipeline-validate: $(VENV)
 	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" \
 	$(PYTHON) -m pytest tests/test_pipeline_validation.py -v --tb=short --timeout=60
 
-# ---- L1n: Pipeline 快速验证 (仅 IR 解析 + op 类型检查, <2s) ----
+# ---- L1n: Pipeline 快速验证 (IR 解析 + op 类型检查 + 正确性, <30s) ----
 test-pipeline-quick: $(VENV)
 	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" \
 	$(PYTEST) tests/test_pipeline_validation.py::test_no_arith_ops_after_lowering \
 	         tests/test_pipeline_validation.py::test_tile_sizes_within_bounds \
+	         tests/test_forward_correctness.py::test_tiny_llama_compiles \
+	         tests/test_forward_correctness.py::test_tiny_llama_config \
+	         tests/test_forward_correctness.py::test_opt125m_compile_and_forward_cosine \
+	         tests/test_forward_correctness.py::test_opt125m_forward_smoke \
 	         -v --tb=short --timeout=30
 
 # ---- L1m: Rust 单元测试 (纯逻辑, ~5s) ----
@@ -177,6 +169,29 @@ test-changed: $(VENV)
 		$(MAKE) test-fast; \
 	fi
 
+# ---- L1n: 权重一致性测试 (三路验证: GT/Python/Rust, <30s) ----
+test-weight-consistency: $(VENV)
+	$(PYTEST) tests/test_weight_consistency.py -v --tb=short --timeout=120 -m "not slow"
+
+# ---- L1o: .dylib vs compute graph vs lowered IR 一致性检查 (<5s) ----
+verify-dylib:
+	$(PYTHON) scripts/verify_dylib_consistency.py compiled/opt_125m_fresh
+
+# ---- 编译产物一致性验证 (<5s) ----
+verify-consistency: $(VENV)
+	$(PYTHON) scripts/verify_dylib_consistency.py compiled/opt_125m_fresh
+
+# ---- 诊断工具健康检查 (<10s) ----
+verify-diag:
+	$(PYTHON) -c "import sys, os; sys.path.insert(0, os.getcwd()); from scripts.verify_dylib_consistency import check_diag_tool_health; sys.exit(check_diag_tool_health('compiled/opt_125m_fresh'))"
+
+# ---- 编译前快速验证 (<10s) ----
+verify-preflight: verify-consistency verify-diag
+
+# ---- L0b: Op 定义一致性检查 (_OP_DEFS ↔ SfOps.td, <2s) ----
+check-op-consistency:
+	$(PYTHON) scripts/check_op_consistency.py
+
 # ---- L2a: 全模型编译测试 (逐步骤检测, <300s) ----
 test-compile-full: $(VENV)
 	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" \
@@ -187,10 +202,24 @@ test-compile-full: $(VENV)
 rebuild-sf:
 	bash scripts/build_sf_extension.sh
 
+# ---- L0: lit / FileCheck 测试 (sf-dialect lowering patterns) ----
+# Requires sf-opt built from sf-dialect/tools/sf-opt/.
+# If sf-opt is not available, tests are skipped gracefully.
+test-lit: $(VENV)
+	@if [ ! -f sf-dialect/tools/sf-opt/sf-opt ] && [ ! -f sf-dialect/build/tools/sf-opt ]; then \
+		echo "⚠️  sf-opt not found — build it from sf-dialect/tools/sf-opt/ first."; \
+		echo "   cd llvm-project/build && ninja mlir-opt  # build MLIROptLib"; \
+		echo "   cd sf-dialect && ninja sf-opt"; \
+	fi
+	cd sf-dialect && lit test/ -v --ignore-fail
+
 # ---- 工具 ----
 clean:
 	rm -rf .venv .pytest_cache .mypy_cache .ruff_cache dist *.egg-info compiled/ .profile_baseline.txt
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+clean-logs:
+	rm -rf logs/pipeline/stages/ logs/test/ logs/e2e/ logs/bisect/ logs/rebuild/
 
 # ---- L5: 全量清洁重建 (清空 + 编译 + 推理 + 精度对比) ----
 .PHONY: rebuild rebuild-clean rebuild-mlir rebuild-dylib rebuild-test rebuild-cosine
@@ -207,14 +236,16 @@ rebuild-mlir: $(VENV)
 	$(PYTHON) scripts/compile.py opt-125m --output-dir ./compiled/opt_125m_fresh
 
 # model.mlir → .dylib (C++ lowering + LLVM pipeline + llc + link)
+# IMPORTANT: sf dialect _mlir_libs dir must come BEFORE torch/lib in
+# DYLD_LIBRARY_PATH, or the sf dialect's nanobind symbols are shadowed by
+# PyTorch's copy, causing "symbol not found: nb_func_new" on import.
+SF_MLIR_LIBS := $(PWD)/sf-dialect/build/python_packages/sf/mlir_sf/_mlir_libs
 rebuild-dylib: $(VENV)
-	DYLD_LIBRARY_PATH="$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
+	DYLD_LIBRARY_PATH="$(SF_MLIR_LIBS):$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
 	$(PYTHON) scripts/compile_dylib.py compiled/opt_125m_fresh --model-name opt_125m
 
 # Rust forward 测试
 rebuild-test:
 	cd rust && cargo test test_opt_125m_forward_runs -- --nocapture 2>&1 | tail -5
 
-# Cosine 精度对比 (Rust vs Python vs HF)
-rebuild-cosine: $(VENV)
-	$(PYTHON) scripts/diagnose_issue45.py 2>&1 | grep -E "Cosine|DIAGNOSIS|argmax"
+# (removed: diagnose_issue45.py was a one-off diagnostic script, deleted)

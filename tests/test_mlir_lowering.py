@@ -174,7 +174,9 @@ class TestLoweringReductions:
     def test_mean_lowered(self):
         pass
 
-    @pytest.mark.xfail(reason="sf.sum not in C++ dialect — sum uses reduction; test needs update (tracking: C++-gap-04)")
+    @pytest.mark.xfail(
+        reason="sf.sum not in C++ dialect — sum uses reduction; test needs update (tracking: C++-gap-04)"
+    )
     def test_sum_lowered(self):
         pass
 
@@ -182,7 +184,9 @@ class TestLoweringReductions:
 @pytest.mark.unit
 class TestLoweringShapeOps:
 
-    @pytest.mark.xfail(reason="sf.view with same-rank handled by IdentityLowering, no linalg.copy (tracking: C++-gap-05)")
+    @pytest.mark.xfail(
+        reason="sf.view with same-rank handled by IdentityLowering, no linalg.copy (tracking: C++-gap-05)"
+    )
     def test_view_preserved(self):
         pass
 
@@ -307,29 +311,65 @@ class TestStandalonePassOnModule:
     """P0: verify sf_to_linalg_pass_on_module works standalone (without outer with ctx:)."""
 
     @pytest.mark.timeout(5)
-    @pytest.mark.xfail(reason="C++ pass output differs from Python lowering (no 'arith.addf' in generic body) (tracking: C++-gap-15)")
     def test_standalone_lowers_without_outer_context(self, mlir_context):
-        pass
+        """sf_to_linalg_pass works standalone without outer 'with ctx:'."""
+        from compiler.pipeline import _apply_sf_to_linalg as sf_to_linalg_pass
+        r = sf_to_linalg_pass("""module {
+  func.func @test(%a: tensor<2x64xf32>, %b: tensor<2x64xf32>) -> tensor<2x64xf32> {
+    %0 = \"sf.add\"(%a, %b) : (tensor<2x64xf32>, tensor<2x64xf32>) -> tensor<2x64xf32>
+    return %0 : tensor<2x64xf32>
+  }
+}""")
+        assert "linalg.generic" in r
+        assert "arith.addf" in r
 
 
 @pytest.mark.unit
 class TestSigmoidLowering:
     """P1: verify sf.sigmoid decomposes correctly (math.sigmoid not in 22.1.5)."""
 
-    @pytest.mark.xfail(reason="SfActivationOpLowering outputs generic body without explicit op names (tracking: C++-gap-16)")
     def test_sigmoid_decomposes(self):
-        pass
+        """sf.sigmoid decomposes to negf+exp+addf+divf (no direct math.sigmoid)."""
+        from compiler.pipeline import _apply_sf_to_linalg as sf_to_linalg_pass
+        r = sf_to_linalg_pass("""module {
+  func.func @test(%a: tensor<2x64xf32>) -> tensor<2x64xf32> {
+    %0 = \"sf.sigmoid\"(%a) : (tensor<2x64xf32>) -> tensor<2x64xf32>
+    return %0 : tensor<2x64xf32>
+  }
+}""")
+        assert "arith.negf" in r, "sigmoid should use arith.negf"
+        assert "math.exp" in r, "sigmoid should use math.exp"
+        assert "arith.addf" in r, "sigmoid should use arith.addf"
+        assert "arith.divf" in r, "sigmoid should use arith.divf"
+        assert "sf.sigmoid" not in r, "sf.sigmoid should be lowered away"
 
-    @pytest.mark.xfail(reason="Same as above (tracking: C++-gap-17)")
     def test_sigmoid_distinct_from_silu(self):
-        pass
+        """sf.sigmoid and sf.silu produce distinct decompositions (silu has extra mulf)."""
+        from compiler.pipeline import _apply_sf_to_linalg as sf_to_linalg_pass
+        r_sig = sf_to_linalg_pass("""module {
+  func.func @test(%a: tensor<2x64xf32>) -> tensor<2x64xf32> {
+    %0 = \"sf.sigmoid\"(%a) : (tensor<2x64xf32>) -> tensor<2x64xf32>
+    return %0 : tensor<2x64xf32>
+  }
+}""")
+        r_silu = sf_to_linalg_pass("""module {
+  func.func @test(%a: tensor<2x64xf32>) -> tensor<2x64xf32> {
+    %0 = \"sf.silu\"(%a) : (tensor<2x64xf32>) -> tensor<2x64xf32>
+    return %0 : tensor<2x64xf32>
+  }
+}""")
+        # sigmoid has no arith.mulf (it's just 1/(1+exp(-x)))
+        assert "arith.mulf" not in r_sig or r_sig.count("arith.mulf") < r_silu.count("arith.mulf"), \
+            "sigmoid should have fewer mulf ops than silu"
+        # silu has arith.mulf for x * sigmoid(x)
+        assert "arith.mulf" in r_silu, "silu should use arith.mulf"
 
 
 @pytest.mark.unit
 class TestLoweringErrorReporting:
     """P0: verify error aggregation works — all op failures are reported, not just first 5."""
 
-    @pytest.mark.xfail(reason="Python-only ops (sf.broken_a/b), not in C++ dialect (tracking: C++-gap-18)")
+    @pytest.mark.skip(reason="Python-only op, not in C++ dialect")
     def test_errors_aggregated_by_op_name(self):
         pass
 
@@ -348,36 +388,69 @@ class TestLoweringProducesValidLinalg:
 
         from compiler.pipeline import _apply_sf_to_linalg as sf_to_linalg_pass_on_module
 
+        # _apply_sf_to_linalg expects a string, returns lowered text
+        lowered_text = sf_to_linalg_pass_on_module(mlir_text)
+        # Parse lowered text and run one-shot-bufferize to validate
         ctx = ir.Context()
         ctx.allow_unregistered_dialects = True
         with ctx, ir.Location.unknown(ctx):
-            module = ir.Module.parse(mlir_text, ctx)
-        sf_to_linalg_pass_on_module(module)  # lower in-place
-        # After lowering, run one-shot-bufferize to validate
-        ctx2 = module.operation.context
-        ctx2.allow_unregistered_dialects = True
-        with ir.Location.unknown(ctx2):
+            module = ir.Module.parse(lowered_text, ctx)
             pman = pm.PassManager.parse(
-                "builtin.module(one-shot-bufferize{bufferize-function-boundaries})", ctx2)
+                "builtin.module(one-shot-bufferize{bufferize-function-boundaries})", ctx)
             pman.run(module.operation)
         return True
 
-    @pytest.mark.xfail(reason="sf.unsqueeze with negative dim not fully lowered by C++ pass (tracking: C++-gap-19)")
     def test_unsqueeze_negative_dim(self):
-        pass
+        """sf.unsqueeze with negative dim lowers and bufferizes correctly."""
+        assert self._lower_and_bufferize("""module {
+  func.func @test(%a: tensor<4xf32>) -> tensor<4x1xf32> {
+    %0 = \"sf.unsqueeze\"(%a) {dim = -1 : i64} : (tensor<4xf32>) -> tensor<4x1xf32>
+    return %0 : tensor<4x1xf32>
+  }
+}""")
 
-    @pytest.mark.xfail(reason="sf.slice with dynamic dims not fully lowered by C++ pass (tracking: C++-gap-20)")
     def test_slice_dynamic_shape(self):
-        pass
+        """sf.slice with dynamic dims lowers and bufferizes correctly."""
+        assert self._lower_and_bufferize("""module {
+  func.func @test(%a: tensor<?x100xf32>) -> tensor<?x50xf32> {
+    %0 = \"sf.slice\"(%a) {dim = 1 : i64, start = 0 : i64, end = 50 : i64} : (tensor<?x100xf32>) -> tensor<?x50xf32>
+    return %0 : tensor<?x50xf32>
+  }
+}""")
 
-    @pytest.mark.xfail(reason="broadcast with mixed static/dynamic dims not fully lowered (tracking: C++-gap-21)")
     def test_broadcast_op_does_not_crash_bufferize(self):
-        pass
+        """Broadcast with mixed static/dynamic dims lowers and bufferizes."""
+        # Case 1: dynamic dim + size-1 dim broadcast in sf.add
+        assert self._lower_and_bufferize("""module {
+  func.func @test(%a: tensor<?x1xf32>, %b: tensor<?x64xf32>) -> tensor<?x64xf32> {
+    %0 = \"sf.add\"(%a, %b) : (tensor<?x1xf32>, tensor<?x64xf32>) -> tensor<?x64xf32>
+    return %0 : tensor<?x64xf32>
+  }
+}""")
+        # Case 2: sf.add with dynamic dim broadcasting over static
+        assert self._lower_and_bufferize("""module {
+  func.func @test(%a: tensor<1xf32>, %b: tensor<?xf32>) -> tensor<?xf32> {
+    %0 = \"sf.add\"(%a, %b) : (tensor<1xf32>, tensor<?xf32>) -> tensor<?xf32>
+    return %0 : tensor<?xf32>
+  }
+}""")
 
-    @pytest.mark.xfail(reason="sf.view with dynamic shape not fully lowered (tracking: C++-gap-22)")
     def test_view_dynamic_shape(self):
-        pass
+        """sf.view with dynamic shape lowers and bufferizes correctly."""
+        assert self._lower_and_bufferize("""module {
+  func.func @test(%a: tensor<2x?x4xf32>) -> tensor<?x8xf32> {
+    %0 = \"sf.view\"(%a) {shape = [-1, 8]} : (tensor<2x?x4xf32>) -> tensor<?x8xf32>
+    return %0 : tensor<?x8xf32>
+  }
+}""")
 
-    @pytest.mark.xfail(reason="chain of ops mixing lowered/partially-lowered ops blocks bufferize (tracking: C++-gap-23)")
     def test_chain_of_ops_bufferizes(self):
-        pass
+        """Chain of composed ops (unsqueeze→view→add) bufferizes correctly."""
+        assert self._lower_and_bufferize("""module {
+  func.func @test(%a: tensor<2x4xf32>, %b: tensor<2x4xf32>) -> tensor<2x4xf32> {
+    %0 = \"sf.unsqueeze\"(%a) {dim = -1 : i64} : (tensor<2x4xf32>) -> tensor<2x4x1xf32>
+    %1 = \"sf.view\"(%0) {shape = [2, 4]} : (tensor<2x4x1xf32>) -> tensor<2x4xf32>
+    %2 = \"sf.add\"(%1, %b) : (tensor<2x4xf32>, tensor<2x4xf32>) -> tensor<2x4xf32>
+    return %2 : tensor<2x4xf32>
+  }
+}""")

@@ -19,7 +19,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from server.routes import router
 
@@ -58,6 +58,32 @@ def create_app(engine: LLMEngine | None = None) -> FastAPI:
     )
 
     app.state.engine = engine
+
+    @app.middleware("http")
+    async def log_requests(request: Request, call_next):  # type: ignore[no-untyped-def]
+        import time
+
+        start = time.time()
+        response = await call_next(request)
+        duration_ms = int((time.time() - start) * 1000)
+        logger.info(
+            "request %s %s -> %d (%dms)",
+            request.method,
+            request.url.path,
+            response.status_code,
+            duration_ms,
+            extra={
+                "event_type": "server_request",
+                "event_data": {
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status": response.status_code,
+                    "duration_ms": duration_ms,
+                },
+            },
+        )
+        return response
+
     app.include_router(router)
 
     return app

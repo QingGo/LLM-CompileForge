@@ -13,9 +13,7 @@ remaining, ciface wrappers missing).
 Requires: compiled/opt_125m_fresh/model.mlir (the model artifact).
 """
 
-import json
 import os
-import re
 import subprocess
 import sys
 import time
@@ -23,7 +21,6 @@ from pathlib import Path
 
 import pytest
 
-from compiler.pipeline import _apply_sf_to_linalg
 from tests.test_pipeline_lowering import MLIR_BINDINGS
 
 pytestmark = [
@@ -75,7 +72,7 @@ def _llvm_step(label, script, timeout=STEP_TIMEOUT):
         stderr_last = "\n".join(result.stderr.strip().split("\n")[-3:])
         print(f"  FAIL (exit {result.returncode})\n    {stderr_last}")
         pytest.fail(f"{label} failed: {stderr_last}")
-    print(f"  OK")
+    print("  OK")
     return result.stdout, elapsed
 
 
@@ -107,7 +104,7 @@ sf.register_dialects(ctx._CAPIPtr, load=True)
 ir_mod = mlir_module_to_ir_module(module, ctx=ctx)
 pman = pm.PassManager.parse(
     'builtin.module(sf-promote-weights,canonicalize,cse,sf-lower-to-linalg)', ctx)
-pman.enable_verifier(False)
+pman.enable_verifier(True)
 pman.run(ir_mod.operation)
 asm = ir_mod.operation.get_asm(print_generic_op_form=True)
 open(r'{self.lowered_path}', 'w').write(asm)
@@ -261,7 +258,7 @@ exit(result.returncode)
             ["nm", "-g", str(self.dylib_path)],
             capture_output=True, text=True,
         )
-        text_syms = [l.strip() for l in nm.stdout.split("\n") if " T " in l]
+        text_syms = [line.strip() for line in nm.stdout.split("\n") if " T " in line]
         main_syms = [s for s in text_syms if "main" in s.split()[-1]]
         print(f"  Symbols: {len(text_syms)} total, {len(main_syms)} main functions")
         for s in main_syms:

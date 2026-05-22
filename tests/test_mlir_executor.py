@@ -23,7 +23,7 @@ def _make_mlir_module() -> MlirModule:
             MlirFunction(
                 name="main",
                 inputs=[("%input", "tensor<?xi32>")],
-                outputs=[("%output", "tensor<?xf32>")],
+                outputs=[("%output", "tensor<?xf32>", False)],
                 ops=[
                     MlirOp(
                         name="sf.gelu",
@@ -45,7 +45,7 @@ def _make_linear_module() -> MlirModule:
             MlirFunction(
                 name="main",
                 inputs=[("%x", "tensor<?x4xf32>"), ("%w", "tensor<4x4xf32>")],
-                outputs=[("%z", "tensor<?x4xf32>")],
+                outputs=[("%z", "tensor<?x4xf32>", False)],
                 ops=[
                     MlirOp(
                         name="sf.linear",
@@ -139,7 +139,7 @@ class TestMlirExecutorForward:
                 MlirFunction(
                     name="main",
                     inputs=[("%x", "tensor<?x3xf32>")],
-                    outputs=[("%out", "tensor<?x3xf32>")],
+                    outputs=[("%out", "tensor<?x3xf32>", False)],
                     ops=[
                         MlirOp(
                             name="sf.weight",
@@ -186,7 +186,7 @@ class TestMlirExecutorInputHandling:
                 MlirFunction(
                     name="main",
                     inputs=[("%x", "tensor<?x3xf32>")],
-                    outputs=[("%out", "tensor<?x3xf32>")],
+                    outputs=[("%out", "tensor<?x3xf32>", False)],
                     ops=[
                         MlirOp(
                             name="sf.matmul",
@@ -212,7 +212,7 @@ class TestMlirExecutorInputHandling:
                 MlirFunction(
                     name="main",
                     inputs=[("x", "tensor<?xf32>"), ("y", "tensor<?xf32>")],
-                    outputs=[("%z", "tensor<?xf32>")],
+                    outputs=[("%z", "tensor<?xf32>", False)],
                     ops=[
                         MlirOp(
                             name="sf.add",
@@ -236,7 +236,7 @@ class TestMlirExecutorInputHandling:
                 MlirFunction(
                     name="main",
                     inputs=[("%x", "tensor<?xf32>")],
-                    outputs=[("%out", "tensor<?xf32>")],
+                    outputs=[("%out", "tensor<?xf32>", False)],
                     ops=[
                         MlirOp(
                             name="sf.missing_op",

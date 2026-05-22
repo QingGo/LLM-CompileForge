@@ -5,9 +5,13 @@ with a tiny model, catching hangs and correctness issues within ~10 seconds.
 Run before any full model compilation to verify the pipeline is healthy.
 """
 
-import os, sys, time
-from pathlib import Path
+import os
+import sys
+import time
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from compiler.mlir_dialect.compile_utils import _setup_mlir_path
 
 MINIMAL_MLIR = r"""
 module {
@@ -18,12 +22,6 @@ module {
   }
 }
 """
-
-
-def _setup_mlir_path():
-    pkg = Path(__file__).resolve().parent.parent / "mlir_binding" / "mlir_package"
-    if pkg.is_dir() and str(pkg) not in sys.path:
-        sys.path.insert(0, str(pkg))
 
 
 def main():
@@ -45,7 +43,7 @@ def main():
 
     with ir.Location.unknown(ctx):
         module = ir.Module.parse(MINIMAL_MLIR, ctx)
-        print(f"  [1/4] Parse: OK")
+        print("  [1/4] Parse: OK")
 
         # Step 2: C++ lowering
         t0 = time.time()
@@ -53,7 +51,7 @@ def main():
             "builtin.module("
             "sf-promote-weights,canonicalize,cse,sf-lower-to-linalg"
             ")", ctx)
-        pman.enable_verifier(False)
+        pman.enable_verifier(True)
         pman.run(module.operation)
         t = time.time() - t0
         text = str(module)
@@ -61,6 +59,7 @@ def main():
         print(f"  [2/4] C++ lowering: {t:.2f}s (sf remaining: {sf_rem})")
 
         # Step 3: LLVM lowering (bufferize + convert)
+        from compiler.mlir_dialect.compile_utils import mlir_module_to_llvm_ir
         from compiler.mlir_dialect.llvm_backend import lower_linalg_to_llvm_ir
         t0 = time.time()
         llvm_text = lower_linalg_to_llvm_ir(module)
@@ -79,7 +78,7 @@ def main():
 
     print(f"\n  {'✅ Pipeline smoke test passed' if sf_rem == 0 else '⚠ Some sf ops remain'}")
 
-    print(f"\n  ✅ Pipeline smoke test passed")
+    print("\n  ✅ Pipeline smoke test passed")
     return 0
 
 

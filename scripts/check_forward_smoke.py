@@ -13,6 +13,7 @@ Exits 0 on success, 1 on failure.
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import logging
 import sys
 
@@ -22,6 +23,8 @@ from compiler.serialize import load_artifact
 from engine.mlir_executor import MlirExecutor
 from hal.pytorch_backend import PyTorchBackend
 from utils.logging import init_logging
+
+faulthandler.enable()
 
 _log = None  # set in main
 
@@ -53,7 +56,6 @@ def check_forward(directory: str, seed: int = 42, seq_len: int = 4) -> int:
 
     # ── Check 1: Shape ──
     expected_vocab = 50272  # OPT-125m; will generalize later
-    expected_shape = torch.Size([1, seq_len, expected_vocab])
     if result.shape[-1] != expected_vocab:
         _log.error("  ❌ Expected vocab dim %d, got %d", expected_vocab, result.shape[-1])
         return 1

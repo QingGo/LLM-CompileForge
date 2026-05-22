@@ -29,6 +29,7 @@ LogSession provides structured logging with timestamped directories:
 
 from __future__ import annotations
 
+import json as _json
 import logging
 import os
 import sys
@@ -40,35 +41,62 @@ from typing import Any
 _LOG_LEVEL_STR = os.environ.get("LLM_SERVEFORGE_LOG", "WARNING").upper()
 _LOG_LEVEL = getattr(logging, _LOG_LEVEL_STR, logging.WARNING)
 
-_initialized: bool = False
+
+class JsonFormatter(logging.Formatter):
+    """Log formatter that outputs JSON lines.
+
+    Keys: ``timestamp``, ``level``, ``logger``, ``message``.
+    If the log record has ``event_type`` in its ``extra`` dict, it
+    is included along with ``event_data``.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        log_entry: dict[str, Any] = {
+            "timestamp": self.formatTime(record, self.datefmt or "%H:%M:%S"),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if hasattr(record, "event_type") and record.event_type:
+            log_entry["event_type"] = record.event_type
+            if hasattr(record, "event_data"):
+                log_entry["event_data"] = record.event_data
+        return _json.dumps(log_entry, ensure_ascii=False, default=str)
 
 
 def init_logging() -> None:
-    """Initialize the root logger so all modules respond to ``LLM_SERVEFORGE_LOG``.
+    """Initialize or reconfigure the root logger.
 
-    Call this once at program startup (in `main()`, `scripts/`, or the
+    Call this at program startup (in ``main()``, ``scripts/``, or the
     server entry point).  After this, any module using
     ``logging.getLogger(__name__)`` will output at the configured level.
+
+    The log format is controlled by ``LLM_SERVEFORGE_LOG_FORMAT``:
+    * ``json`` — structured JSON lines via :class:`JsonFormatter`
+    * ``text`` (default) — human-readable ``%(asctime)s [%(levelname)-5s] …``
+
+    This function is **idempotent**: calling it multiple times resets
+    the root logger's handlers without creating duplicates.
     """
-    global _initialized
-    if _initialized:
-        return
+    log_format = os.environ.get("LLM_SERVEFORGE_LOG_FORMAT", "text").lower()
 
     handler = logging.StreamHandler(sys.stderr)
     handler.setLevel(_LOG_LEVEL)
-    handler.setFormatter(logging.Formatter(
-        fmt="%(asctime)s [%(levelname)-5s] %(name)-24s %(message)s",
-        datefmt="%H:%M:%S",
-    ))
+
+    if log_format == "json":
+        handler.setFormatter(JsonFormatter(datefmt="%H:%M:%S"))
+    else:
+        handler.setFormatter(logging.Formatter(
+            fmt="%(asctime)s [%(levelname)-5s] %(name)-24s %(message)s",
+            datefmt="%H:%M:%S",
+        ))
 
     root = logging.getLogger()
     root.setLevel(_LOG_LEVEL)
-    # Remove default handlers to avoid duplicate output
+    # Reset handlers to avoid duplicates on re-initialization
     for h in root.handlers[:]:
         root.removeHandler(h)
     root.addHandler(handler)
-
-    _initialized = True
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -91,6 +119,15 @@ def log_step_begin(
     logger.info(
         "step %d begin | waiting=%d running=%d",
         step_id, waiting, running,
+        extra={
+            "event_type": "engine_step",
+            "event_data": {
+                "step_id": step_id,
+                "phase": "begin",
+                "waiting": waiting,
+                "running": running,
+            },
+        },
     )
 
 
@@ -105,6 +142,17 @@ def log_step_end(
     logger.info(
         "step %d end | %.1fms batch=%d tokens=%d results=%d",
         step_id, duration_ms, batch_size, total_tokens, results,
+        extra={
+            "event_type": "engine_step",
+            "event_data": {
+                "step_id": step_id,
+                "phase": "end",
+                "duration_ms": duration_ms,
+                "batch_size": batch_size,
+                "total_tokens": total_tokens,
+                "results": results,
+            },
+        },
     )
 
 
@@ -117,7 +165,17 @@ def log_request_lifecycle(
     parts = f"req={request_id} {event}"
     if extra:
         parts += " | " + " ".join(f"{k}={v}" for k, v in extra.items())
-    logger.debug(parts)
+    logger.debug(
+        parts,
+        extra={
+            "event_type": "request_lifecycle",
+            "event_data": {
+                "request_id": request_id,
+                "event": event,
+                **extra,
+            },
+        },
+    )
 
 
 class StepTimer:

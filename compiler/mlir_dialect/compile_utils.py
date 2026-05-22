@@ -32,6 +32,14 @@ def _setup_mlir_path() -> None:
     if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
         sys.path.insert(0, str(_mlir_pkg))
 
+    # Add sf-dialect Python bindings for C++ passes
+    # Check both in-source build and build/ subdirectory build
+    _sf_base = Path(__file__).resolve().parent.parent.parent / "sf-dialect"
+    for _sf_candidate in [_sf_base / "python_packages" / "sf", _sf_base / "build" / "python_packages" / "sf"]:
+        if _sf_candidate.is_dir() and str(_sf_candidate) not in sys.path:
+            sys.path.insert(0, str(_sf_candidate))
+            break
+
 
 def _has_bindings() -> bool:
     _setup_mlir_path()
@@ -46,10 +54,20 @@ def _find_mlir_tool(name: str) -> str:
     """Locate an LLVM/MLIR binary (llc, mlir-translate, etc.).
 
     Checks (in order):
-      1. {name} on PATH
-      2. Common Homebrew paths
+      1. Our build in llvm-project/build/bin/
+      2. {name} on PATH
       3. SERVE_FORGE_LLVM_BIN environment variable as directory prefix
+      4. Common Homebrew paths
     """
+    # 1. Our build (preferred) — compiled from source with all translation interfaces
+    our_build = (
+        Path(__file__).resolve().parent.parent.parent
+        / "llvm-project" / "build" / "bin" / name
+    )
+    if our_build.is_file() and os.access(str(our_build), os.X_OK):
+        return str(our_build)
+
+    # 2. On PATH
     path = shutil.which(name)
     if path:
         return path
@@ -133,7 +151,7 @@ def mlir_module_to_llvm_ir(ir_module: Any) -> str:
             f.write(mlir_text)
 
         result = subprocess.run(
-            [mlir_translate, "--mlir-to-llvmir", mlir_path],
+            [mlir_translate, "--allow-unregistered-dialect", "--mlir-to-llvmir", mlir_path],
             capture_output=True, text=True,
             timeout=90,
         )
@@ -144,7 +162,7 @@ def mlir_module_to_llvm_ir(ir_module: Any) -> str:
                 with open(mlir_path, "w") as f:
                     f.write(fixed)
                 result = subprocess.run(
-                    [mlir_translate, "--mlir-to-llvmir", mlir_path],
+                    [mlir_translate, "--allow-unregistered-dialect", "--mlir-to-llvmir", mlir_path],
                     capture_output=True, text=True,
                     timeout=90,
                 )
@@ -450,3 +468,22 @@ def _compile_embedded_data(bin_path: str, work_dir: str) -> str:
         )
 
     return o_path
+
+
+def _patch_transformers_torch() -> None:
+    import torch
+    import transformers.utils.generic as _generic
+    import transformers.utils.import_utils as _iu
+    _iu._torch_available = True
+    _iu._torch_version = torch.__version__
+    _generic._torch_pytree = torch.utils._pytree
+    def _flatten(output):
+        return list(output.values()), list(output.keys())
+    def _unflatten(values, context, output_type=None):
+        return (output_type or type(context[0]))(**dict(zip(context, values, strict=False)))
+    _generic._model_output_flatten = _flatten
+    _generic._model_output_unflatten = _unflatten
+
+
+def _short_shape(shape):
+    return "[" + ", ".join(str(s) for s in shape) + "]"

@@ -4,7 +4,9 @@ Usage: python scripts/compile_dylib.py <compiled_dir> [--model-name <name>]
 Example: python scripts/compile_dylib.py compiled/tiny_llama --model-name tiny_llama
 """
 
+import faulthandler
 import json
+import logging
 import os
 import re
 import shutil
@@ -13,13 +15,12 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+faulthandler.enable()
+
 DEBUG: bool = False
 
 
-def _setup_mlir_path() -> None:
-    _mlir_pkg = Path(__file__).resolve().parent.parent / "mlir_binding" / "mlir_package"
-    if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
-        sys.path.insert(0, str(_mlir_pkg))
+from compiler.mlir_dialect.compile_utils import _setup_mlir_path
 
 
 def _verify_lowered_ir(lowered_text: str) -> None:
@@ -52,6 +53,19 @@ def _verify_lowered_ir(lowered_text: str) -> None:
     # 3. Must contain at least one linalg op (sanity check)
     if "linalg." not in lowered_text and "scf." not in lowered_text:
         errors.append("No linalg or scf ops found — lowering may have produced nothing")
+
+    # 4. Warn about 0D tensors (tensor<f32>, tensor<i64>, etc. — no dimensions)
+    zero_dim_tensors = re.findall(
+        r'tensor<(f32|f64|i1|i8|i16|i32|i64)>',
+        lowered_text,
+    )
+    if zero_dim_tensors:
+        logging.warning(
+            "Lowered IR contains %d zero-dimensional tensor(s) — "
+            "types: %s",
+            len(zero_dim_tensors),
+            sorted(set(zero_dim_tensors)),
+        )
 
     if errors:
         raise ValueError(
@@ -283,12 +297,17 @@ def main() -> None:
     try:
         from mlir_sf._mlir_libs._sfDialectsNanobind import sf
         sf.register_dialects(ctx_lower._CAPIPtr, load=True)
-    except ImportError:
-        print("   WARNING: sf dialect not available, falling back to Python lowering")
+    except ImportError as e:
+        print("   ERROR: sf dialect Python bindings not available.")
+        print("   The C++ lowering pipeline (sf-promote-weights, sf-lower-to-linalg)")
+        print("   requires the sf dialect bindings. Install/build the sf-dialect")
+        print("   Python package first.")
+        print(f"   ImportError: {e}")
+        sys.exit(1)
 
     ir_mod = mlir_module_to_ir_module(module, ctx=ctx_lower)
 
-    # Direct C++ pipeline
+    # Direct C++ pipeline (separate passes to allow fixup between them)
     print("   Running C++ lowering...")
     _pass_pipelines = [
         ("sf-promote-weights", "builtin.module(sf-promote-weights)"),
@@ -296,36 +315,64 @@ def main() -> None:
         ("cse", "builtin.module(cse)"),
         ("sf-lower-to-linalg", "builtin.module(sf-lower-to-linalg)"),
     ]
-    if DEBUG:
-        for _pass_name, _pipeline_str in _pass_pipelines:
-            print(f"  [debug] Running C++ pass: {_pass_name}")
-            try:
-                _pman = pm.PassManager.parse(_pipeline_str, ctx_lower)
-                _pman.enable_verifier(False)
-                _pman.run(ir_mod.operation)
-            except Exception:
-                _save_failure_context("4", _pass_name, compiled_path,
-                                      copy_source=str(mlir_path))
-                raise
+    _no_verify = "--no-verify" in sys.argv
+    if _no_verify:
+        sys.argv.remove("--no-verify")
+
+    for _pass_name, _pipeline_str in _pass_pipelines:
+        if _pass_name in ("canonicalize", "cse"):
+            # canonicalize/cse runs between promote-weights and lowering.
+            # Serialize to text, run _fixup_arith_constant_scalar_tensor,
+            # then re-parse before continuing. This ensures proper types.
+            _pass_text = ir_mod.operation.get_asm(print_generic_op_form=True)
+            from compiler.mlir_dialect.fixups import _fixup_arith_constant_scalar_tensor
+            _fixed = _fixup_arith_constant_scalar_tensor(_pass_text)
+            if _fixed != _pass_text:
+                _pass_ctx = ir.Context()
+                _pass_ctx.allow_unregistered_dialects = True
+                # Register sf dialect so subsequent lowering passes can match typed ops
+                try:
+                    from mlir_sf._mlir_libs._sfDialectsNanobind import sf as _sf
+                    _sf.register_dialects(_pass_ctx._CAPIPtr, load=True)
+                except ImportError:
+                    pass  # sf dialect may not be available in all environments
+                with ir.Location.unknown(_pass_ctx):
+                    ir_mod = ir.Module.parse(_fixed, _pass_ctx)
+                ctx_lower = _pass_ctx
+        try:
+            _pman = pm.PassManager.parse(_pipeline_str, ctx_lower)
+            if not _no_verify:
+                _pman.enable_verifier(True)
+            _pman.run(ir_mod.operation)
+        except Exception:
+            _save_failure_context("4", _pass_name, compiled_path,
+                                  copy_source=str(mlir_path))
+            raise
+        if DEBUG:
             _snapshot_text = ir_mod.operation.get_asm(print_generic_op_form=True)
             _snapshot_path = Path(snapshot_dir) / f"snapshot_{_pass_name}.mlir"
             _snapshot_path.parent.mkdir(parents=True, exist_ok=True)
             _snapshot_path.write_text(_snapshot_text)
             print(f"  [debug] Saved snapshot: {_snapshot_path}")
-    else:
-        try:
-            _pman = pm.PassManager.parse(
-                "builtin.module(sf-promote-weights,canonicalize,cse,sf-lower-to-linalg)",
-                ctx_lower)
-            _pman.enable_verifier(False)
-            _pman.run(ir_mod.operation)
-        except Exception:
-            _save_failure_context("4", "C++ lowering", compiled_path,
-                                  copy_source=str(mlir_path))
-            raise
     # Serialize with generic op format (required for mlir-opt without sf dialect)
     lowered_text = ir_mod.operation.get_asm(print_generic_op_form=True)
-    print("   C++ lowering succeeded (verifier disabled)")
+    print(f"   C++ lowering succeeded (verifier {'disabled' if _no_verify else 'enabled'})")
+
+    # Verify weight promotion ordering: check that sf.weight_names in lowered IR
+    # matches weight op order from the Python MlirModule (dict insertion order
+    # from fx_to_mlir.py Phase 4). Catches order mismatches between the compute
+    # graph binary (built before C++ lowering) and the promoted function args.
+    from scripts.verify_weight_consistency import verify_weight_promotion_order
+    try:
+        weight_errors = verify_weight_promotion_order(module, lowered_text)
+    except Exception as e:
+        print(f"   ⚠ Weight promotion check crashed: {e}")
+        weight_errors = None
+    if weight_errors:
+        _err_msg = "Weight promotion order mismatch:\n  " + "\n  ".join(weight_errors)
+        print(f"\n❌ {_err_msg}")
+        raise RuntimeError(_err_msg)
+    print("   ✔ Weight promotion order verified")
 
     lowered_path = compiled_path / "model.lowered.mlir"
     lowered_path.write_text(lowered_text)
@@ -411,12 +458,14 @@ def main() -> None:
     if DEBUG:
         print("  [debug] Step [5/5] starting: lower to LLVM and compile .dylib")
     print("[5/5] Lowering linalg → LLVM + compiling to .dylib ...")
+    if _no_verify:
+        print("   [no-verify] Skipping BUILTIN_STAGES stage 1 canonicalize,cse")
     ctx_llvm = ir.Context()
     ctx_llvm.allow_unregistered_dialects = True
     with ctx_llvm:
         ir_mod = ir.Module.parse(lowered_text, ctx_llvm)
         try:
-            lower_linalg_to_llvm_ir(ir_mod)
+            lower_linalg_to_llvm_ir(ir_mod, skip_first_canonicalize=_no_verify)
         except Exception:
             _save_failure_context("5", "LLVM lowering", compiled_path,
                                   copy_source=str(lowered_path))

@@ -9,6 +9,8 @@ import os
 import sys
 from typing import Any
 
+from scripts._cos import cosine_similarity  # noqa: F401 — re-exported for general use
+
 # ── MLIR bindings detection ──────────────────────────────────
 
 
@@ -134,14 +136,6 @@ def assert_cosine_above(
     cos = torch.nn.functional.cosine_similarity(a_f.unsqueeze(0), b_f.unsqueeze(0)).item()
     assert cos >= threshold, f"{msg} cosine {cos:.6f} < {threshold}"
 
-
-def cosine_similarity(a: Any, b: Any) -> float:
-    """Compute cosine similarity between two tensors."""
-    import torch
-    a_f = a.float().flatten()
-    b_f = b.float().flatten()
-    cos = torch.nn.functional.cosine_similarity(a_f.unsqueeze(0), b_f.unsqueeze(0)).item()
-    return float(cos)
 
 
 def assert_max_diff_below(

@@ -31,7 +31,7 @@ class MlirFunction:
 
     name: str
     inputs: list[tuple[str, str]]  # (ssa_name, mlir_type_string)
-    outputs: list[tuple[str, str]]  # (ssa_name, mlir_type_string)
+    outputs: list[tuple[str, str, bool]]  # (ssa_name, mlir_type_string, is_consumed_internally)
     ops: list[MlirOp] = field(default_factory=list)
     weights: dict[str, Any] = field(default_factory=dict)
     param_weight_names: set[str] = field(default_factory=set)

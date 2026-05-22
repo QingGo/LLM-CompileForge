@@ -11,22 +11,15 @@ Python bindings when available).
 from __future__ import annotations
 
 import os
-import sys
 import time
 import warnings
-from pathlib import Path
 from typing import Any
 
 import torch
 
 from compiler.fx_to_mlir import fx_graph_to_mlir
 from compiler.mlir_artifact import MlirModule, mlir_module_to_text, save_mlir_module_artifact
-
-
-def _setup_mlir_path() -> None:
-    _mlir_pkg = Path(__file__).resolve().parent.parent / "mlir_binding" / "mlir_package"
-    if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
-        sys.path.insert(0, str(_mlir_pkg))
+from compiler.mlir_dialect.compile_utils import _setup_mlir_path
 
 
 def compile_mlir(
@@ -116,8 +109,15 @@ def compile_mlir(
                    _lowered_path, len(lowered_text.splitlines()))
 
     # Step 5: re-parse to get optimized MlirModule
+    # NOTE: _parse_mlir_text is a lightweight text parser that may not handle
+    # output from the canonicalize pass (which uses a different text format).
+    # Fall back to the original MlirModule if re-parse fails.
     from compiler.mlir_artifact import _parse_mlir_text
-    mlir_mod = _parse_mlir_text(mlir_text)
+    try:
+        mlir_mod = _parse_mlir_text(mlir_text)
+    except (ValueError, IndexError, KeyError) as e:
+        _log.warning("re-parse of optimized MLIR text failed, using original module: %s", e)
+        mlir_mod = orig_mlir_mod
     # Preserve weights through the MLIR text roundtrip
     mlir_mod.metadata["source"] = "torch.export"
     mlir_mod.metadata["artifact_format"] = "mlir"
@@ -220,24 +220,39 @@ def _apply_mlir_passes(
             ctx = ir.Context()
             sf.register_dialects(ctx._CAPIPtr, load=True)
 
-            # Phase 1: canonicalize + CSE (DCE/CSE/constant folding enabled by sf op traits)
-            with ctx:
-                module = ir.Module.parse(mlir_text, ctx)
-                pman = pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx)
-                pman.run(module.operation)
-                mlir_text = str(module)
-        except Exception as e:
-            _log.warning("canonicalize pass failed, continuing with unoptimized IR: %s", e, exc_info=True)
+            # Phase 1: canonicalize + CSE
+            # NOTE: This is best-effort.  If anything fails (unusual attrs in
+            # the custom text format, op verification, etc.), fall through and
+            # continue with the original text — the fusion passes that follow
+            # are also text-based and may still succeed.
+            try:
+                with ctx:
+                    if orig_mlir_mod is not None:
+                        from compiler.mlir_artifact import mlir_module_to_ir_module
+                        module = mlir_module_to_ir_module(orig_mlir_mod, ctx=ctx)
+                    else:
+                        module = ir.Module.parse(mlir_text, ctx)
+                    from compiler.mlir_dialect.fixups import _fixup_arith_constant_scalar_tensor
+                    mlir_text = str(module)
+                    mlir_text = _fixup_arith_constant_scalar_tensor(mlir_text)
+                    module = ir.Module.parse(mlir_text, ctx)
+                    pman = pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx)
+                    pman.run(module.operation)
+                    mlir_text = str(module)
+            except Exception as e:
+                raise RuntimeError(f"[pipeline] CRITICAL: canonicalize/cse failed: {e}") from e
+        except ImportError as e:
+            _log.warning("sf dialect Python bindings not available (canonicalize/cse skipped): %s", e)
 
     # Phase 2: fusion
     try:
         mlir_text = fuse_silu_pass(mlir_text)
     except Exception as e:
-        _log.warning("fuse_silu pass failed, continuing: %s", e, exc_info=True)
+        raise RuntimeError(f"[pipeline] CRITICAL: fuse_silu pass failed: {e}") from e
     try:
         mlir_text = fuse_rms_norm_pass(mlir_text)
     except Exception as e:
-        _log.warning("fuse_rms_norm pass failed, continuing: %s", e, exc_info=True)
+        raise RuntimeError(f"[pipeline] CRITICAL: fuse_rms_norm pass failed: {e}") from e
 
     # Phase 3: sf→linalg lowering (optional, after fusion, via C++ DialectConversion)
     lowered_text: str | None = None
@@ -251,12 +266,20 @@ def _apply_sf_to_linalg(mlir_text: str, orig_mlir_mod: Any = None) -> str:
     """Apply sf→linalg lowering pass using C++ passes only.
 
     Uses C++ passes: sf-promote-weights → canonicalize/cse → sf-lower-to-linalg.
-    Raises RuntimeError if C++ bindings are unavailable or pass fails.
+    Raises RuntimeError with clear message if C++ bindings are unavailable.
     """
     _setup_mlir_path()
     import mlir.ir as ir
     import mlir.passmanager as pm
-    from mlir_sf._mlir_libs._sfDialectsNanobind import sf
+    try:
+        from mlir_sf._mlir_libs._sfDialectsNanobind import sf
+    except ImportError as e:
+        raise RuntimeError(
+            "sf dialect Python bindings not available. "
+            "The C++ lowering pipeline (sf-promote-weights, sf-lower-to-linalg) "
+            "requires the sf dialect bindings. "
+            "Build: cd sf-dialect && mkdir -p build && cd build && cmake .. && make"
+        ) from e
 
     ctx = ir.Context()
     sf.register_dialects(ctx._CAPIPtr, load=True)
@@ -269,7 +292,7 @@ def _apply_sf_to_linalg(mlir_text: str, orig_mlir_mod: Any = None) -> str:
         pman = pm.PassManager.parse(
             "builtin.module(sf-promote-weights,canonicalize,cse,sf-lower-to-linalg)",
             ctx)
-        pman.enable_verifier(False)
+        pman.enable_verifier(True)
         pman.enable_timing()
         pman.run(ir_mod.operation)
         mlir_text = ir_mod.operation.get_asm(print_generic_op_form=True)
@@ -296,14 +319,14 @@ def _post_lowering_canonicalize(mlir_text: str) -> str:
                 pman.run(module.operation)
                 mlir_text = str(module)
         except Exception as e:
-            _log.warning("post-lowering canonicalize failed, continuing: %s", e, exc_info=True)
+            raise RuntimeError(f"[pipeline] CRITICAL: post-lowering canonicalize failed: {e}") from e
 
     # Fix arith.constant ops with scalar value + tensor result type
     try:
         from compiler.mlir_dialect.fixups import _fixup_arith_constant_scalar_tensor
         mlir_text = _fixup_arith_constant_scalar_tensor(mlir_text)
     except Exception as e:
-        _log.warning("arith.constant scalar→tensor fixup failed, continuing: %s", e, exc_info=True)
+        raise RuntimeError(f"[pipeline] CRITICAL: arith.constant scalar→tensor fixup failed: {e}") from e
 
     return mlir_text
 

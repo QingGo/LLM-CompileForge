@@ -17,6 +17,8 @@ from pathlib import Path
 import pytest
 import torch
 
+from scripts._cos import cosine_similarity
+
 _log = logging.getLogger(__name__)
 
 # ── Paths ─────────────────────────────────────────────────────────────
@@ -71,19 +73,12 @@ def _run_python_executor(model_name: str, input_ids: torch.Tensor) -> torch.Tens
     return result
 
 
-def cosine_similarity(a: torch.Tensor, b: torch.Tensor) -> float:
-    """Compute cosine similarity between two tensors on the last dim."""
-    a = a.float().flatten()
-    b = b.float().flatten()
-    return torch.nn.functional.cosine_similarity(a.unsqueeze(0), b.unsqueeze(0)).item()
-
-
 def _run_rust_forward(model_name: str) -> torch.Tensor | None:
     """Run Rust executor forward by invoking cargo test.
 
     Returns the output Tensor or None if not available.
     """
-    dylib_path = next(MODEL_DIRS[model_name].glob("*.dylib"))
+    next(MODEL_DIRS[model_name].glob("*.dylib"))
     result = subprocess.run(
         [
             "cargo", "test", "--manifest-path",

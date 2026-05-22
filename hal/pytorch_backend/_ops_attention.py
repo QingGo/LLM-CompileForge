@@ -24,6 +24,24 @@ class _AttentionOps:
         dropout_p = kwargs.get("dropout_p", 0.0)
         is_causal = kwargs.get("is_causal", False)
         scale = kwargs.get("scale", None)
+
+        # Handle positional mask: convert to causal additive mask when is_causal=False.
+        # The MLIR op's attn_mask contains POSITION VALUES (0, 1, 2, ...) not booleans.
+        # The C++ lowering converts: additive[i,j] = (pos[i] >= pos[j]) ? 0.0 : -inf
+        # PyTorch's SDPA with is_causal=True handles masking internally — don't pass mask.
+        # With is_causal=False, convert positional values to additive causal mask.
+        if attn_mask is not None and attn_mask.dtype.is_floating_point:
+            if is_causal:
+                attn_mask = None  # PyTorch handles causal internally
+            else:
+                # Convert positional mask [batch, 1, seq, 1] to additive [batch, 1, seq, seq]
+                if attn_mask.shape[-1] == 1 and attn_mask.shape[-2] > 1:
+                    attn_mask = attn_mask.expand(-1, -1, -1, attn_mask.shape[-2])
+                if attn_mask.shape[-2] == attn_mask.shape[-1]:
+                    mask_T = attn_mask.transpose(-1, -2)
+                    attn_mask = (attn_mask >= mask_T).to(query.dtype)
+                    attn_mask = torch.where(attn_mask > 0.5, 0.0, float('-inf'))
+
         return F.scaled_dot_product_attention(
             query, key, value, attn_mask=attn_mask, dropout_p=dropout_p,
             is_causal=is_causal, scale=scale,

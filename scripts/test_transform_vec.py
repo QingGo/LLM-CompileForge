@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Validate transform dialect vectorize syntax for dynamic-shape matmul ops.
 
 Tests three scenarios matching our model's patterns:
@@ -50,7 +51,7 @@ def _has_vector_ops(text: str) -> list[str]:
 
 def test_matmul_dynamic() -> None:
     """matmul with dynamic M dim: tensor<?x768> @ tensor<768x3072>.
-    
+
     Vector_sizes=[1, 32, 32]: M stays scalar, N=32, K=32.
     """
     payload = '''func.func @test(%a: tensor<?x768xf32>, %b: tensor<768x3072xf32>) -> tensor<?x3072xf32> {
@@ -90,7 +91,7 @@ def test_matmul_dynamic() -> None:
 
 def test_batch_matmul_dynamic() -> None:
     """batch_matmul with dynamic [b,m] dims: <?x?x768> @ <?x768x768>.
-    
+
     vector_sizes=[0,0,32,32]: batch/m stay scalar, n=32, k=32.
     Uses 0 for 'infer/don't vectorize' on dynamic dims.
     """
@@ -162,13 +163,13 @@ def test_full_lowered_module() -> None:
     print(f"  vector.contract count: {n_contract}")
     print(f"  vector.transfer_read count: {n_transfer}")
     print(f"  batch_matmul remaining (not vectorized): {n_bmm_remaining}")
-    assert n_contract > 0, f"Expected vector.contract, none found"
+    assert n_contract > 0, "Expected vector.contract, none found"
     print("  ✓ full module transform succeeded")
 
 
 def test_lm_head_batch_matmul() -> None:
     """LM head: <?x?x768> x <?x768x50272> — very wide N dim.
-    
+
     Vectorize K dim by 32, keep batch/M scalar. N dim is 50272.
     """
     payload = '''func.func @test(%a: tensor<?x?x768xf32>, %b: tensor<?x768x50272xf32>) -> tensor<?x?x50272xf32> {
@@ -240,20 +241,20 @@ def test_tile_and_vectorize() -> None:
 
 if __name__ == "__main__":
     print("\n=== Transform Dialect Vectorize Syntax Verification ===\n")
-    
+
     print("1. matmul with dynamic M dim...")
     test_matmul_dynamic()
-    
+
     print("2. batch_matmul with dynamic [b,m] dims...")
     test_batch_matmul_dynamic()
-    
+
     print("3. LM head batch_matmul (wide N)...")
     test_lm_head_batch_matmul()
-    
+
     print("4. tile+vectorize combined (all dynamic inner)...")
     test_tile_and_vectorize()
-    
+
     print("5. Full model lowered module...")
     test_full_lowered_module()
-    
+
     print("\n=== All tests passed! ===")

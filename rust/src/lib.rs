@@ -14,6 +14,11 @@ pub mod types;
 #[cfg(test)]
 mod integration_tests;
 
+// Include compute_graph module for testing (normally only in main.rs bin).
+#[cfg(test)]
+#[path = "compute_graph.rs"]
+mod compute_graph_test;
+
 #[cfg(feature = "python-bindings")]
 mod py_bindings {
     use crate::block_manager::BlockManager;

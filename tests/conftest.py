@@ -17,7 +17,6 @@ from typing import Any
 
 import pytest
 
-from tests.helpers import has_mlir_bindings
 from tests.helpers import patch_transformers_torch
 
 # ── Force offline HF loading: local cache only, no HTTP revision checks ──

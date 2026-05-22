@@ -23,7 +23,7 @@ class TestCorrectnessMlirExecutor:
             functions=[MlirFunction(
                 name="main",
                 inputs=[("%x", "tensor<?x4xf32>")],
-                outputs=[("%y", "tensor<?x8xf32>")],
+                outputs=[("%y", "tensor<?x8xf32>", False)],
                 ops=[MlirOp(
                     name="sf.matmul", dialect="sf", op_name="matmul",
                     operands=["%x", "w_tensor"], results=["%y"],
@@ -42,7 +42,7 @@ class TestCorrectnessMlirExecutor:
             functions=[MlirFunction(
                 name="main",
                 inputs=[("%x", "tensor<?x8xf32>")],
-                outputs=[("%y", "tensor<?x8xf32>")],
+                outputs=[("%y", "tensor<?x8xf32>", False)],
                 ops=[MlirOp(
                     name="sf.gelu", dialect="sf", op_name="gelu",
                     operands=["%x"], results=["%y"],
@@ -61,7 +61,7 @@ class TestCorrectnessMlirExecutor:
             functions=[MlirFunction(
                 name="main",
                 inputs=[("%x", "tensor<?x8xf32>")],
-                outputs=[("%y", "tensor<?x8xf32>")],
+                outputs=[("%y", "tensor<?x8xf32>", False)],
                 ops=[MlirOp(
                     name="sf.rms_norm", dialect="sf", op_name="rms_norm",
                     operands=["%x", "w"], results=["%y"],
@@ -83,7 +83,7 @@ class TestCorrectnessMlirExecutor:
             functions=[MlirFunction(
                 name="main",
                 inputs=[("%x", "tensor<?x10xf32>")],
-                outputs=[("%y", "tensor<?x10xf32>")],
+                outputs=[("%y", "tensor<?x10xf32>", False)],
                 ops=[MlirOp(
                     name="sf.softmax", dialect="sf", op_name="softmax",
                     operands=["%x"], results=["%y"],

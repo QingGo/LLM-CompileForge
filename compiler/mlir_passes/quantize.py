@@ -36,7 +36,11 @@ def insert_quantize_dequantize(
 
     For each weight marked as w8a8 or w4a16, inserts a dequantize op
     after the weight declaration and replaces all SSA references with
-    the dequantized SSA name.
+    the dequantized result.
+
+    Uses the MLIR Python API for correct SSA value renaming, avoiding
+    substring collisions (e.g., ``%1`` vs ``%10``) that would occur with
+    ``str.replace()``.
 
     Args:
         mlir_text: Valid MLIR module text.
@@ -45,50 +49,50 @@ def insert_quantize_dequantize(
     Returns:
         MLIR text with Q/DQ nodes inserted.
     """
+    import mlir.ir as ir
+    from mlir.ir import InsertionPoint, Location, StringAttr
+
     if config is None:
         config = MixedPrecisionConfig()
 
-    lines = mlir_text.split("\n")
+    ctx = ir.Context()
+    ctx.allow_unregistered_dialects = True
 
-    quant_weights: dict[str, tuple[str, str, str]] = {}
-    for _i, line in enumerate(lines):
-        m = _WEIGHT_RE.search(line)
-        if m:
-            ssa_name = m.group(1)
-            weight_name = m.group(2)
-            precision = config.get_precision(weight_name)
-            if precision in ("w8a8", "w4a16", "int8"):
-                dq_ssa = f"%dq_{len(quant_weights)}"
-                quant_weights[ssa_name] = (dq_ssa, precision, weight_name)
+    with ctx, Location.unknown(ctx):
+        module = ir.Module.parse(mlir_text, ctx)
 
-    output: list[str] = []
-    for line in lines:
-        output.append(line)
+        for top_op in module.body.operations:
+            for region in top_op.regions:
+                for block in region.blocks:
+                    ops = list(block.operations)
+                    for i, op in enumerate(ops):
+                        if str(op.name) == "sf.weight":
+                            weight_name = op.attributes["name"].value
+                            precision = config.get_precision(weight_name)
+                            if precision in ("w8a8", "w4a16", "int8"):
+                                weight_result = op.results[0]
 
-        m = _WEIGHT_RE.search(line)
-        if m:
-            ssa_name = m.group(1)
-            if ssa_name in quant_weights:
-                dq_ssa, precision, wname = quant_weights[ssa_name]
-                dq_line = (
-                    f'    {dq_ssa} = "sf.dequantize"({ssa_name}) '
-                    f'{{precision = "{precision}", weight = "{wname}"}}'
-                    f' : () -> tensor<*xf32>'
-                )
-                output.append(dq_line)
+                                if i + 1 < len(ops):
+                                    ip = InsertionPoint(ops[i + 1])
+                                else:
+                                    ip = InsertionPoint.at_block_terminator(block)
 
-    result_text = "\n".join(output)
+                                dq_op = ir.Operation.create(
+                                    "sf.dequantize",
+                                    operands=[weight_result],
+                                    results=[weight_result.type],
+                                    attributes={
+                                        "precision": StringAttr.get(precision),
+                                        "weight": StringAttr.get(weight_name),
+                                    },
+                                )
+                                ip.insert(dq_op)
 
-    for old_ssa, (new_ssa, _prec, _wname) in quant_weights.items():
-        result_text = result_text.replace(f"( {old_ssa} ", f"( {new_ssa} ")
-        result_text = result_text.replace(f"({old_ssa} ", f"({new_ssa} ")
-        result_text = result_text.replace(f" {old_ssa} ", f" {new_ssa} ")
-        result_text = result_text.replace(f" {old_ssa})", f" {new_ssa})")
-        if result_text.rstrip().endswith(f" {old_ssa}"):
-            idx = result_text.rfind(f" {old_ssa}")
-            result_text = result_text[:idx] + f" {new_ssa}" + result_text[idx + len(old_ssa) + 1:]
+                                weight_result.replace_all_uses_except(
+                                    dq_op.results[0], dq_op
+                                )
 
-    return result_text
+        return str(module)
 
 
 def count_dq_ops(mlir_text: str) -> int:

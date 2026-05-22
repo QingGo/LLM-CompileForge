@@ -289,7 +289,7 @@ class TestLLMEngineRustIntegration:
                 MlirFunction(
                     name="main",
                     inputs=[("%input_ids", "tensor<?xf32>")],
-                    outputs=[("%logits", "tensor<?xf32>")],
+                    outputs=[("%logits", "tensor<?xf32>", False)],
                     ops=[
                         MlirOp(
                             name="sf.identity",

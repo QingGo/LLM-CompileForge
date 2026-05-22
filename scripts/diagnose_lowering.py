@@ -1,11 +1,12 @@
 """Diagnostic script: run C++ lowering and capture backtrace via lldb.
 Usage: lldb -b -o "run" -o "bt all" -o "quit" -- python3 scripts/diagnose_lowering.py
 """
-import mlir.passmanager as pm
 import mlir.ir as ir
+import mlir.passmanager as pm
 from mlir_sf._mlir_libs._sfDialectsNanobind import sf
-from compiler.serialize import load_artifact
+
 from compiler.mlir_artifact import mlir_module_to_ir_module
+from compiler.serialize import load_artifact
 
 ctx = ir.Context()
 sf.register_dialects(ctx._CAPIPtr, load=True)

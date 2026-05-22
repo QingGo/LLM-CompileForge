@@ -1,0 +1,12 @@
+# CMake in-source build artifacts
+CMakeCache.txt
+CMakeFiles/
+build.ninja
+cmake_install.cmake
+*.a
+*.inc
+*.inc.d
+.ninja_*
+python_packages/
+python/dialects/
+tools/

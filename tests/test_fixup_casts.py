@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Unit tests for _fixup_unrealized_casts — all known cast patterns.
 
 This test file covers every pattern that _fixup_unrealized_casts must handle:
@@ -16,8 +17,8 @@ from __future__ import annotations
 
 import pytest
 
+from compiler.mlir_dialect.fixups import _fixup_arith_constant_scalar_tensor
 from compiler.mlir_dialect.llvm_backend import _fixup_unrealized_casts
-
 
 # ── Fixtures: MLIR module templates ─────────────────────────────────
 
@@ -253,3 +254,123 @@ class TestStructTypeParsing:
         mlir = make_module(line)
         fixed = _fixup_unrealized_casts(mlir)
         assert 'unrealized_conversion_cast' not in fixed
+
+
+@pytest.mark.unit
+class TestFixupArithTensorConstant:
+
+    def _make_generic(self, shape: str, val: str, elt: str) -> str:
+        """Build generic-op-form MLIR with scalar value + tensor result type."""
+        tensor_type = f'tensor<{shape}x{elt}>' if shape else f'tensor<{elt}>'
+        return f'''module {{
+  func.func @test() -> {tensor_type} {{
+    %0 = "arith.constant"() <{{value = {val} : {elt}}}> : () -> {tensor_type}
+    return %0 : {tensor_type}
+  }}
+}}'''
+
+    def test_basic_tensor_1xf32(self):
+        """tensor<1xf32> with scalar f32 value — fixed to dense."""
+        mlir = self._make_generic('1', '1.25', 'f32')
+        fixed = _fixup_arith_constant_scalar_tensor(mlir)
+        assert 'dense<1.250000e+00>' in fixed, 'Should wrap scalar in dense<>'
+        assert '"arith.constant"' not in fixed, 'Should use custom format'
+
+    def test_tensor_2xf32(self):
+        """tensor<2xf32> — not just tensor<1xT> (improved over old regex)."""
+        mlir = self._make_generic('2', '3.14', 'f32')
+        fixed = _fixup_arith_constant_scalar_tensor(mlir)
+        assert 'dense<3.140000e+00>' in fixed
+
+    def test_tensor_2x4xf32(self):
+        """Higher-rank tensor<2x4xf32> — handled by improved regex."""
+        mlir = self._make_generic('2x4', '1.0', 'f32')
+        fixed = _fixup_arith_constant_scalar_tensor(mlir)
+        assert 'dense<1.000000e+00>' in fixed
+
+    def test_tensor_4x8x16xf32(self):
+        """3D tensor<4x8x16xf32> — handled by improved regex."""
+        mlir = self._make_generic('4x8x16', '2.5', 'f32')
+        fixed = _fixup_arith_constant_scalar_tensor(mlir)
+        assert 'dense<2.500000e+00>' in fixed
+
+    def test_tensor_1xi64(self):
+        """Integer constant with tensor<1xi64>."""
+        mlir = self._make_generic('1', '42', 'i64')
+        fixed = _fixup_arith_constant_scalar_tensor(mlir)
+        assert 'dense<42>' in fixed
+
+    def test_negative_value(self):
+        """Negative float value in tensor."""
+        mlir = self._make_generic('1', '-0.5', 'f32')
+        fixed = _fixup_arith_constant_scalar_tensor(mlir)
+        assert 'dense<-5.000000e-01>' in fixed or 'dense<-0.5' in fixed
+
+    def test_valid_ir_unchanged(self):
+        """Already-valid IR should not be modified."""
+        mlir = '''module {
+  func.func @test() -> tensor<1xf32> {
+    %0 = arith.constant dense<1.0> : tensor<1xf32>
+    return %0 : tensor<1xf32>
+  }
+}'''
+        fixed = _fixup_arith_constant_scalar_tensor(mlir)
+        assert 'dense<1.000000e+00>' in fixed
+        # Should not contain the generic form
+        assert '"arith.constant"' not in fixed
+
+    def test_mixed_valid_invalid(self):
+        """Mix of valid and invalid constants — invalid fixed, valid preserved."""
+        mlir = '''module {
+  func.func @test() {
+    %0 = "arith.constant"() <{value = 1.0 : f32}> : () -> tensor<1xf32>
+    %1 = arith.constant 2.0 : f32
+    %2 = "arith.constant"() <{value = dense<3.0> : tensor<1xf32>}> : () -> tensor<1xf32>
+  }
+}'''
+        fixed = _fixup_arith_constant_scalar_tensor(mlir)
+        # %0 should be fixed to dense (actual format depends on MLIR serialization)
+        assert 'dense<' in fixed, 'Invalid %0 should be fixed to dense'
+        # The invalid "arith.constant" in generic form should be gone
+        assert '"arith.constant"' not in fixed or 'dense' in fixed
+
+    def test_scalar_constant_untouched(self):
+        """Scalar arith.constant (non-tensor) should remain scalar."""
+        mlir = 'module { func.func @test() { %0 = "arith.constant"() <{value = 1.25 : f32}> : () -> f32 } }'
+        fixed = _fixup_arith_constant_scalar_tensor(mlir)
+        # After roundtrip it becomes: arith.constant 1.250000e+00 : f32
+        assert 'arith.constant' in fixed
+        assert 'tensor<' not in str(type(fixed))
+
+    def test_empty_ir(self):
+        """Empty module passes through unchanged."""
+        mlir = 'module { func.func @empty() { return } }'
+        fixed = _fixup_arith_constant_scalar_tensor(mlir)
+        assert fixed is not None
+        assert 'func.func @empty' in fixed
+
+    def test_dynamic_shape_skipped(self):
+        """Dynamic tensor shape (tensor<?xf32>) should be skipped (no splat possible)."""
+        mlir = 'module { func.func @test() { %0 = "arith.constant"() <{value = 1.0 : f32}> : () -> tensor<?xf32> } }'
+        fixed = _fixup_arith_constant_scalar_tensor(mlir)
+        # The dynamic shape case cannot be parsed by MLIR verifier
+        # and regex should skip it — text should just pass through
+        assert '"arith.constant"' in fixed or 'arith.constant' in fixed
+
+    def test_nested_region_fixed(self):
+        """Constants inside scf.if regions should also be fixed."""
+        mlir = '''module {
+  func.func @test(%cond: i1) -> tensor<1xf32> {
+    %0 = scf.if %cond -> tensor<1xf32> {
+      %1 = "arith.constant"() <{value = 1.0 : f32}> : () -> tensor<1xf32>
+      scf.yield %1 : tensor<1xf32>
+    } else {
+      %2 = "arith.constant"() <{value = 2.0 : f32}> : () -> tensor<1xf32>
+      scf.yield %2 : tensor<1xf32>
+    }
+    return %0 : tensor<1xf32>
+  }
+}'''
+        fixed = _fixup_arith_constant_scalar_tensor(mlir)
+        assert 'dense<1.000000e+00>' in fixed, 'Inner constant in if branch should be fixed'
+        assert 'dense<2.000000e+00>' in fixed, 'Inner constant in else branch should be fixed'

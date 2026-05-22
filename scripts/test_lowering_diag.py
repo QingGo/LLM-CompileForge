@@ -1,7 +1,13 @@
+# ruff: noqa: E501
 """Lowering diagnostic: test each sf op type individually."""
-import argparse, os, sys, time
-from pathlib import Path
+import argparse
+import os
+import sys
+import time
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from compiler.mlir_dialect.compile_utils import _setup_mlir_path
 
 # Templates use ${var} syntax — replaced via .replace() not .format()
 # to avoid conflicts with MLIR's generic op format syntax { ... }.
@@ -112,12 +118,6 @@ def _apply(template: str, vals: dict[str, str]) -> str:
     return template
 
 
-def _setup_mlir_path():
-    pkg = Path(__file__).resolve().parent.parent / "mlir_binding" / "mlir_package"
-    if pkg.is_dir() and str(pkg) not in sys.path:
-        sys.path.insert(0, str(pkg))
-
-
 def run_test(name: str, mlir_text: str, timeout_s: int = 5) -> tuple[bool, str]:
     import mlir.ir as ir
     import mlir.passmanager as pm
@@ -144,7 +144,7 @@ def run_test(name: str, mlir_text: str, timeout_s: int = 5) -> tuple[bool, str]:
                 "builtin.module("
                 "sf-promote-weights,canonicalize,cse,sf-lower-to-linalg"
                 ")", ctx)
-            pman.enable_verifier(False)
+            pman.enable_verifier(True)
             t0 = time.time()
             pman.run(module.operation)
             elapsed = time.time() - t0

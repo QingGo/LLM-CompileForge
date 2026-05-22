@@ -50,7 +50,7 @@ def _make_deterministic_module() -> MlirModule:
     func = MlirFunction(
         name="main",
         inputs=[("%input_ids", "tensor<?xi64>")],
-        outputs=[("%logits", f"tensor<?x{VOCAB_SIZE}xf32>")],
+        outputs=[("%logits", f"tensor<?x{VOCAB_SIZE}xf32>", False)],
         ops=[
             MlirOp(name="sf.constant", dialect="sf", op_name="constant",
                    operands=["embed"], results=["%1"]),

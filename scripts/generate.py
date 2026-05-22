@@ -18,22 +18,7 @@ _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
 
 
-def _patch_transformers_torch() -> None:
-    import torch
-    import transformers.utils.generic as _generic  # type: ignore[import-untyped]
-    import transformers.utils.import_utils as _iu  # type: ignore[import-untyped]
-    _iu._torch_available = True  # type: ignore[attr-defined]
-    _iu._torch_version = torch.__version__  # type: ignore[attr-defined]
-    _generic._torch_pytree = torch.utils._pytree  # type: ignore[attr-defined]
-
-    from typing import Any as _Any
-    def _flatten(output: _Any) -> _Any:  # type: ignore[no-untyped-def]
-        return list(output.values()), list(output.keys())
-    def _unflatten(values: _Any, context: _Any, output_type: _Any = None) -> _Any:  # type: ignore[no-untyped-def]
-        return (output_type or type(context[0]))(**dict(zip(context, values)))
-    _generic._model_output_flatten = _flatten  # type: ignore[attr-defined]
-    _generic._model_output_unflatten = _unflatten  # type: ignore[attr-defined]
-
+from compiler.mlir_dialect.compile_utils import _patch_transformers_torch
 
 MODEL_PRESETS = {
     "llama_1b": {

@@ -12,32 +12,13 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Any
 
 # Ensure the project root is on sys.path
 _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
 
 
-def _patch_transformers_torch() -> None:
-    """Patch transformers to recognize the symlinked torch installation."""
-    import torch
-    import transformers.utils.generic as _generic  # type: ignore[import-untyped]
-    import transformers.utils.import_utils as _iu  # type: ignore[import-untyped]
-
-    _iu._torch_available = True  # type: ignore[attr-defined]
-    _iu._torch_version = torch.__version__  # type: ignore[attr-defined]
-
-    _generic._torch_pytree = torch.utils._pytree  # type: ignore[attr-defined]
-
-    def _flatten(output: Any) -> Any:  # type: ignore[no-untyped-def]
-        return list(output.values()), list(output.keys())
-
-    def _unflatten(values: Any, context: Any, output_type: Any = None) -> Any:  # type: ignore[no-untyped-def]
-        return (output_type or type(context[0]))(**dict(zip(context, values)))
-
-    _generic._model_output_flatten = _flatten  # type: ignore[attr-defined]
-    _generic._model_output_unflatten = _unflatten  # type: ignore[attr-defined]
+from compiler.mlir_dialect.compile_utils import _patch_transformers_torch
 
 
 def compile_opt125m(output_dir: str, apply_lowering: bool = False) -> None:
@@ -155,7 +136,8 @@ def compile_qwen(output_dir: str, apply_lowering: bool = False) -> None:
     from compiler.cache_policy import CachePolicy
     from compiler.pipeline import compile_mlir
 
-    model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models", "Qwen", "Qwen3.5-0.8B")
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    model_dir = os.path.join(_root, "models", "Qwen", "Qwen3.5-0.8B")
     model_dir = os.path.abspath(model_dir)
 
     if not os.path.isdir(model_dir):
@@ -167,7 +149,9 @@ def compile_qwen(output_dir: str, apply_lowering: bool = False) -> None:
     tc = config.text_config if hasattr(config, "text_config") else config
     tc.use_cache = False
     config.use_cache = False
-    model = AutoModelForCausalLM.from_pretrained(model_dir, config=config, trust_remote_code=True, torch_dtype=torch.bfloat16)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_dir, config=config, trust_remote_code=True, torch_dtype=torch.bfloat16
+    )
     if hasattr(model, "lm_head") and hasattr(model.model, "embed_tokens"):
         if getattr(config, "tie_word_embeddings", False):
             model.lm_head.weight = model.model.embed_tokens.weight

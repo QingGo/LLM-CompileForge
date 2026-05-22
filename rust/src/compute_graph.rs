@@ -22,12 +22,18 @@ pub enum InputBinding {
 pub struct IOTensorDef {
     pub rank: u8,
     pub shape: Vec<u64>,
+    pub consumed_internally: bool,
 }
 
 impl IOTensorDef {
     #[allow(dead_code)]
     pub fn numel(&self) -> usize {
         self.shape.iter().filter(|&&d| d > 0).product::<u64>() as usize
+    }
+
+    /// Create an IOTensorDef with consumed_internally (used for outputs).
+    pub fn new(rank: u8, shape: Vec<u64>, consumed_internally: bool) -> Self {
+        Self { rank, shape, consumed_internally }
     }
 }
 
@@ -63,7 +69,7 @@ pub struct ComputeGraph {
 }
 
 impl ComputeGraph {
-    pub fn parse(data: &[u8], pos: &mut usize) -> Result<Self, anyhow::Error> {
+    pub fn parse(data: &[u8], pos: &mut usize, sfcf_version: u32) -> Result<Self, anyhow::Error> {
         let num_funcs = sfcf::read_u32(data, pos)? as usize;
         let mut functions = Vec::with_capacity(num_funcs);
 
@@ -102,18 +108,23 @@ impl ComputeGraph {
                 for _ in 0..num_dims {
                     shape.push(sfcf::read_u64(data, pos)?);
                 }
-                inputs.push((binding, IOTensorDef { rank, shape }));
+                inputs.push((binding, IOTensorDef { rank, shape, consumed_internally: false }));
             }
 
             let mut outputs = Vec::with_capacity(num_outputs);
             for _ in 0..num_outputs {
+                let consumed_internally = if sfcf_version >= 3 {
+                    sfcf::read_u8(data, pos)? != 0
+                } else {
+                    false
+                };
                 let rank = sfcf::read_u8(data, pos)?;
                 let num_dims = sfcf::read_u32(data, pos)? as usize;
                 let mut shape = Vec::with_capacity(num_dims);
                 for _ in 0..num_dims {
                     shape.push(sfcf::read_u64(data, pos)?);
                 }
-                outputs.push(IOTensorDef { rank, shape });
+                outputs.push(IOTensorDef { rank, shape, consumed_internally });
             }
 
             functions.push(FuncDef {
@@ -183,7 +194,8 @@ mod tests {
             buf.extend_from_slice(&4096u64.to_le_bytes());
             buf.extend_from_slice(&4096u64.to_le_bytes());
 
-            // Output 0: rank 2, shape [1, 0]
+            // Output 0: consumed_internally=0, rank 2, shape [1, 0]
+            buf.push(0u8); // consumed_internally
             buf.push(2u8); // rank
             buf.extend_from_slice(&2u32.to_le_bytes());
             buf.extend_from_slice(&1u64.to_le_bytes());
@@ -207,7 +219,8 @@ mod tests {
             buf.extend_from_slice(&1u64.to_le_bytes());
             buf.extend_from_slice(&0u64.to_le_bytes());
 
-            // Output 0: rank 3, shape [1, 0, 152064]
+            // Output 0: consumed_internally=0, rank 3, shape [1, 0, 152064]
+            buf.push(0u8); // consumed_internally
             buf.push(3u8); // rank
             buf.extend_from_slice(&3u32.to_le_bytes());
             buf.extend_from_slice(&1u64.to_le_bytes());
@@ -224,13 +237,122 @@ mod tests {
         buf
     }
 
+    fn make_test_data_v2() -> Vec<u8> {
+        // Build test binary in SFCF v2 format (no consumed_internally bytes per output).
+        let mut buf = Vec::new();
+        // SFCF header
+        buf.extend_from_slice(b"SFCF");
+        buf.extend_from_slice(&2u32.to_le_bytes()); // version 2
+        // Name mapping (0 entries)
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        // Constants (0 entries)
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        // Compute graph section: 2 functions
+        buf.extend_from_slice(&2u32.to_le_bytes());
+
+        // Function 0: _mlir_ciface_main_0, 2 inputs, 1 output
+        {
+            let s = b"_mlir_ciface_main_0";
+            buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            buf.extend_from_slice(s);
+            buf.extend_from_slice(&2u32.to_le_bytes()); // num_inputs
+            buf.extend_from_slice(&1u32.to_le_bytes()); // num_outputs
+
+            // Input 0: global_input, rank 2, shape [1, 0]
+            buf.push(2u8); // global_input
+            buf.push(2u8); // rank
+            buf.extend_from_slice(&2u32.to_le_bytes());
+            buf.extend_from_slice(&1u64.to_le_bytes());
+            buf.extend_from_slice(&0u64.to_le_bytes());
+
+            // Input 1: weight "w", rank 2, shape [4096, 4096]
+            buf.push(0u8); // weight
+            let key = b"w";
+            buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
+            buf.extend_from_slice(key);
+            buf.push(2u8); // rank
+            buf.extend_from_slice(&2u32.to_le_bytes());
+            buf.extend_from_slice(&4096u64.to_le_bytes());
+            buf.extend_from_slice(&4096u64.to_le_bytes());
+
+            // Output 0: rank 2, shape [1, 0]  (v2 — no consumed_internally byte)
+            buf.push(2u8); // rank
+            buf.extend_from_slice(&2u32.to_le_bytes());
+            buf.extend_from_slice(&1u64.to_le_bytes());
+            buf.extend_from_slice(&0u64.to_le_bytes());
+        }
+
+        // Function 1: _mlir_ciface_main_1, 1 input, 1 output
+        {
+            let s = b"_mlir_ciface_main_1";
+            buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            buf.extend_from_slice(s);
+            buf.extend_from_slice(&1u32.to_le_bytes()); // num_inputs
+            buf.extend_from_slice(&1u32.to_le_bytes()); // num_outputs
+
+            // Input 0: ssa from func 0 output 0, rank 2, shape [1, 0]
+            buf.push(1u8); // ssa
+            buf.extend_from_slice(&0u32.to_le_bytes());
+            buf.extend_from_slice(&0u32.to_le_bytes());
+            buf.push(2u8); // rank
+            buf.extend_from_slice(&2u32.to_le_bytes());
+            buf.extend_from_slice(&1u64.to_le_bytes());
+            buf.extend_from_slice(&0u64.to_le_bytes());
+
+            // Output 0: rank 3, shape [1, 0, 152064] (v2 — no consumed_internally byte)
+            buf.push(3u8); // rank
+            buf.extend_from_slice(&3u32.to_le_bytes());
+            buf.extend_from_slice(&1u64.to_le_bytes());
+            buf.extend_from_slice(&0u64.to_le_bytes());
+            buf.extend_from_slice(&152064u64.to_le_bytes());
+        }
+
+        // Global I/O
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+
+        buf
+    }
+
+    #[test]
+    fn test_parse_compute_graph_v2_backward_compat() {
+        let data = make_test_data_v2();
+        let mut pos = 8 + 4 + 4;
+
+        let graph = ComputeGraph::parse(&data, &mut pos, 2).unwrap();
+        assert_eq!(graph.functions.len(), 2);
+
+        // All outputs in v2 should default to consumed_internally = false
+        for fi in 0..graph.functions.len() {
+            for oi in 0..graph.functions[fi].num_outputs {
+                let output = &graph.functions[fi].outputs[oi];
+                assert!(
+                    !output.consumed_internally,
+                    "func[{}] output[{}]: expected consumed_internally=false for v2",
+                    fi, oi
+                );
+            }
+        }
+
+        // Verify shapes still parse correctly
+        assert_eq!(graph.functions[0].outputs[0].rank, 2);
+        assert_eq!(graph.functions[0].outputs[0].shape, vec![1, 0]);
+        assert_eq!(graph.functions[1].outputs[0].rank, 3);
+        assert_eq!(graph.functions[1].outputs[0].shape, vec![1, 0, 152064]);
+
+        assert_eq!(graph.global_input, (0, 0));
+        assert_eq!(graph.global_output, (1, 0));
+    }
+
     #[test]
     fn test_parse_compute_graph() {
         let data = make_test_data();
         // Skip SFCF header + name_mapping (0 entries) + constants (0 entries)
         let mut pos = 8 + 4 + 4; // magic(4) + version(4) + nm_count(4) + const_count(4)
 
-        let graph = ComputeGraph::parse(&data, &mut pos).unwrap();
+        let graph = ComputeGraph::parse(&data, &mut pos, 3).unwrap();
         assert_eq!(graph.functions.len(), 2);
 
         assert_eq!(graph.functions[0].symbol, "_mlir_ciface_main_0");

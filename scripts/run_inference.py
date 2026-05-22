@@ -6,9 +6,7 @@ Usage: python scripts/run_inference.py compiled/opt_125m_v8 [--model-name opt_12
 import argparse
 import ctypes
 import json
-import os
 import struct
-import sys
 from pathlib import Path
 
 
@@ -22,14 +20,14 @@ def load_sfcf_blob(dylib_path: str) -> bytes:
     for line in result.stdout.split("\n"):
         if "__serveforge_constants_data" in line:
             parts = line.strip().split()
-            addr = int(parts[0], 16) if parts[0].startswith("0") else int(parts[0], 16)
+            int(parts[0], 16) if parts[0].startswith("0") else int(parts[0], 16)
             break
     else:
         raise RuntimeError("serveforge_constants_data symbol not found")
 
     # Read the dylib binary
     with open(dylib_path, "rb") as f:
-        dylib_data = f.read()
+        f.read()
 
     # Find the __TEXT,__const section via otool
     result = subprocess.run(
@@ -84,9 +82,9 @@ def load_sfcf_blob(dylib_path: str) -> bytes:
 def run_inference(model_dir: str, model_name: str, prompt: str, max_tokens: int = 10):
     model_path = Path(model_dir)
     dylib_path = model_path / f"lib{model_name}.dylib"
-    metadata_path = model_path / "metadata.json"
+    model_path / "metadata.json"
     constants_path = model_path / "constants.bin"
-    
+
     # Read constants
     constants_data = constants_path.read_bytes()
     pos = 0
@@ -94,7 +92,7 @@ def run_inference(model_dir: str, model_name: str, prompt: str, max_tokens: int 
     version = struct.unpack("<I", constants_data[4:8])[0]
     assert version == 2
     pos = 8
-    
+
     # Parse name mapping
     nm_count = struct.unpack("<I", constants_data[pos:pos+4])[0]
     pos += 4
@@ -109,15 +107,15 @@ def run_inference(model_dir: str, model_name: str, prompt: str, max_tokens: int 
         hf_key = constants_data[pos:pos+klen].decode()
         pos += klen
         name_mapping[compiled] = hf_key
-    
+
     print(f"Loaded {len(name_mapping)} weight mappings")
-    
+
     # Load safetensors
     safetensors_path = model_path / "weights.safetensors"
     if not safetensors_path.exists():
         # Try the opt_125m subdirectory
         safetensors_path = model_path / model_name / "weights.safetensors"
-    
+
     if not safetensors_path.exists():
         print("WARNING: No safetensors found, using random weights")
         raw_weights = {}
@@ -129,23 +127,21 @@ def run_inference(model_dir: str, model_name: str, prompt: str, max_tokens: int 
             for key, meta in header.items():
                 f.seek(8 + header_len + meta["data_offsets"][0])
                 raw_weights[key] = f.read(meta["data_offsets"][1] - meta["data_offsets"][0])
-    
+
     print(f"Loaded {len(raw_weights)} raw weights")
-    
+
     # Load .dylib
-    lib = ctypes.CDLL(str(dylib_path))
-    
+    ctypes.CDLL(str(dylib_path))
+
     # Get function symbols
-    main_0 = getattr(lib, "_mlir_ciface_main_0")
-    main_1 = getattr(lib, "_mlir_ciface_main_1")
-    
+
     # The function takes: out_ptr, weight0_ptr, weight1_ptr, ..., input_ptr
     # We need to build memref descriptors for each weight and the input
-    
+
     # For now, show module loaded successfully
     print(f"\nModel loaded from: {dylib_path}")
     print("Module ready for inference (weight integration in progress)")
-    
+
     return "Inference not yet implemented (weight argument packing needed)"
 
 
@@ -156,7 +152,7 @@ def main():
     parser.add_argument("--prompt", default="Hello", help="Input prompt")
     parser.add_argument("--max-tokens", type=int, default=10)
     args = parser.parse_args()
-    
+
     result = run_inference(args.model_dir, args.model_name, args.prompt, args.max_tokens)
     print(result)
 
