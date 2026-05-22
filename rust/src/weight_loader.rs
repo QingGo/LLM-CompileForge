@@ -40,9 +40,9 @@ impl ConstantTensor {
     }
 }
 
-// ── Binary format parsing (SFCF v2) ────────────────────────────────
+// ── Binary format parsing (SFCF v2/v3) ─────────────────────────────
 
-pub fn parse_embedded(data: &[u8]) -> Result<(WeightRegistry, usize), anyhow::Error> {
+pub fn parse_embedded(data: &[u8]) -> Result<(WeightRegistry, usize, u32), anyhow::Error> {
     if data.len() < 8 {
         return Err(ExecutorError::SfcfParse(format!(
             "embedded data too short: {} bytes", data.len(),
@@ -54,9 +54,9 @@ pub fn parse_embedded(data: &[u8]) -> Result<(WeightRegistry, usize), anyhow::Er
         )).into());
     }
     let version = u32::from_le_bytes(data[4..8].try_into()?);
-    if version != 2 {
+    if version < 2 || version > 3 {
         return Err(ExecutorError::SfcfParse(format!(
-            "unsupported binary version: {} (expected 2)", version,
+            "unsupported binary version: {} (expected 2 or 3)", version,
         )).into());
     }
 
@@ -114,6 +114,7 @@ pub fn parse_embedded(data: &[u8]) -> Result<(WeightRegistry, usize), anyhow::Er
             constants,
         },
         pos,
+        version,
     ))
 }
 
@@ -122,7 +123,7 @@ pub fn parse_embedded(data: &[u8]) -> Result<(WeightRegistry, usize), anyhow::Er
 #[allow(dead_code)]
 pub fn load_registry_from_dylib(
     lib: &libloading::Library,
-) -> Result<(WeightRegistry, usize), anyhow::Error> {
+) -> Result<(WeightRegistry, usize, u32), anyhow::Error> {
     // SAFETY: `serveforge_constants_data` is a `const uint8_t[]` symbol
     // embedded in the .dylib at compile time. It points to static data
     // in the dylib's read-only data section, valid for the Library lifetime.
@@ -317,10 +318,11 @@ mod tests {
     #[test]
     fn test_parse_empty() {
         let data = sfcf_v2_empty();
-        let (reg, pos) = parse_embedded(&data).expect("parse");
+        let (reg, pos, ver) = parse_embedded(&data).expect("parse");
         assert!(reg.name_mapping.is_empty());
         assert!(reg.constants.is_empty());
         assert!(pos > 0);
+        assert_eq!(ver, 2);
     }
 
     #[test]
@@ -353,11 +355,22 @@ mod tests {
         }
         buf.extend_from_slice(&0u32.to_le_bytes()); // 0 constants
 
-        let (reg, _pos) = parse_embedded(&buf).expect("parse");
+        let (reg, _pos, _ver) = parse_embedded(&buf).expect("parse");
         assert_eq!(reg.name_mapping.len(), 2);
         assert_eq!(
             reg.name_mapping.get("a").map(|s| s.as_str()),
             Some("model.a.weight")
         );
+    }
+
+    #[test]
+    fn test_parse_v3_supported() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"SFCF");
+        buf.extend_from_slice(&3u32.to_le_bytes()); // v3
+        buf.extend_from_slice(&0u32.to_le_bytes()); // 0 name mappings
+        buf.extend_from_slice(&0u32.to_le_bytes()); // 0 constants
+        let (_, _, ver) = parse_embedded(&buf).expect("v3 should be supported");
+        assert_eq!(ver, 3);
     }
 }

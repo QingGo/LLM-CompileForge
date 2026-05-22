@@ -63,13 +63,13 @@ impl ModelExecutor {
         let data: &[u8] =
             unsafe { std::slice::from_raw_parts(data_ptr, size_val as usize) };
 
-        let (registry, graph_pos) = crate::weight_loader::parse_embedded(data)?;
+        let (registry, graph_pos, sfcf_version) = crate::weight_loader::parse_embedded(data)?;
         let st_path = safetensors_path.map(std::path::Path::new);
         let weight_provider = WeightProvider::new(registry, st_path)?;
 
         let mut pos = graph_pos;
         let compute_graph = if pos < data.len() {
-            ComputeGraph::parse(data, &mut pos)?
+            ComputeGraph::parse(data, &mut pos, sfcf_version)?
         } else {
             return Err(ExecutorError::MissingComputeGraph.into());
         };

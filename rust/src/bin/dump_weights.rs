@@ -278,7 +278,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let lib = unsafe { libloading::Library::new(&dylib_path) }
         .map_err(|e| format!("Failed to load dylib '{}': {}", dylib_path.display(), e))?;
-    let (registry, _graph_pos) = weight_loader::load_registry_from_dylib(&lib)?;
+    let (registry, _graph_pos, _sfcf_version) = weight_loader::load_registry_from_dylib(&lib)?;
     println!(
         "[dump_weights] name_mapping: {} entries, constants: {} entries",
         registry.name_mapping.len(),
