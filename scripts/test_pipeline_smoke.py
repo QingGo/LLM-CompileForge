@@ -54,7 +54,6 @@ def main():
     t0 = time.time()
     warnings.filterwarnings("ignore")
     import mlir.ir as ir
-    import mlir.passmanager as pm
     from mlir._mlir_libs import _mlirRegisterEverything
 
     ctx = ir.Context()
@@ -66,31 +65,12 @@ def main():
     mod = ir.Module.parse(open(lowered_path).read(), ctx)
     print(f"  [setup     ] {time.time()-t0:.1f}s")
 
-    # Step 1: canonicalize + cse
-    t1 = time.time()
-    pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx).run(mod.operation)
-    print(f"  [canonical ] {time.time()-t1:.1f}s")
-
-    # Step 2: fuse elementwise (optional)
-    try:
-        pm.PassManager.parse("builtin.module(linalg-fuse-elementwise-ops,canonicalize,cse)", ctx).run(mod.operation)
-    except Exception as e:
-        import warnings
-        warnings.warn(f"Fusion pass skipped: {e}")
-
-    # Step 3: tile matmul K dim by 64
-    from compiler.mlir_dialect.llvm_backend import _tile_matmuls_per_func
-    t2 = time.time()
-    _tile_matmuls_per_func(mod, tile_k=64)
-    pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx).run(mod.operation)
-    print(f"  [tile      ] {time.time()-t2:.1f}s")
-
-    # Step 4: emit_c_interface
-    for op in list(mod.operation.regions[0].blocks[0]):
-        if str(op.operation.name) == "func.func":
-            op.operation.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get(context=ctx)
-
-    # Step 5: full LLVM lowering pipeline
+    # Step 1: full LLVM lowering pipeline (handles emit_c_interface, strip-sf-attrs,
+    # bufferize, and all LLVM dialect conversions internally).
+    # No manual canonicalize/fuse/tile — these are skipped by lower_linalg_to_llvm_ir
+    # (skip_first_canonicalize=True, fuse/tile stages filtered out) because the
+    # canonicalize pass's InferStaticShapeOfOperands pattern corrupts linalg.generic
+    # output types when broadcast maps are present.
     from compiler.mlir_dialect.llvm_backend import lower_linalg_to_llvm_ir
     t5 = time.time()
     lower_linalg_to_llvm_ir(mod)

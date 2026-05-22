@@ -30,6 +30,7 @@ from compiler.mlir_dialect.pipeline_stages_utils import (
     Stage,
     StageResult,
     _count_module_ops,
+    _DeadStageTracker,
     _save_ir_snapshot,
     _verify_function_signatures,
 )
@@ -136,6 +137,66 @@ def _emit_c_interface_action(module: Any) -> None:
             op.operation.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get(context=ctx)
 
 
+def _strip_sf_attrs_action(module: Any) -> None:
+    """Remove ``sf.*`` attributes from func.func ops.
+
+    These attributes (e.g. ``sf.weight_names``) are used by the Python
+    executor for weight binding but block the canonicalizer (which
+    cannot handle unregistered dialect attributes at the function level).
+    Stripping them before ``canonicalize,cse`` + ``bufferize`` allows
+    the canonicalizer's ``InferStaticShapeOfOperands`` pattern to fix
+    kDynamic dims in linalg.generic output types.
+    """
+    main_mod = module.operation.regions[0].blocks[0]
+    keys_to_strip: list[str] = []
+    for op in list(main_mod):
+        if str(op.operation.name) != "func.func":
+            continue
+        keys_to_strip.clear()
+        for attr_name in op.operation.attributes:
+            if attr_name.startswith("sf."):
+                keys_to_strip.append(attr_name)
+        for k in keys_to_strip:
+            del op.operation.attributes[k]
+
+
+def _strip_sf_attrs_canon_action(module: Any) -> None:
+    """Strip ``sf.*`` and ``llvm.emit_c_interface`` attrs, then canonicalize.
+
+    The ``sf.*`` function attributes (e.g. ``sf.weight_names``) block the
+    canonicalizer which cannot handle unregistered dialect attributes.
+    After stripping, ``canonicalize`` triggers MLIR's
+    ``InferStaticShapeOfOperands`` pattern which resolves kDynamic dims in
+    linalg.generic output types from operand shapes and indexing maps.
+    This is required because C++ lowering (via ``memref.reshape``
+    introduced by bufferization) can change operand shapes without
+    updating the generic's output type — canonicalize reconciles them.
+
+    ``llvm.emit_c_interface`` is stripped because it is only needed at
+    the LLVM level (after ``convert-func-to-llvm``).
+    """
+    import mlir.passmanager as pm
+
+    main_mod = module.operation.regions[0].blocks[0]
+    ctx = module.operation.context
+    stripped_count = 0
+    for op in list(main_mod):
+        if str(op.operation.name) != "func.func":
+            continue
+        keys = [k for k in op.operation.attributes if k.startswith("sf.") or k == "llvm.emit_c_interface"]
+        if keys:
+            for k in keys:
+                del op.operation.attributes[k]
+            stripped_count += len(keys)
+    if stripped_count:
+        _log.info("  Stripped %d sf.*/llvm.emit_c_interface attrs, running canonicalize", stripped_count)
+    try:
+        pman = pm.PassManager.parse("builtin.module(func.func(canonicalize,cse))", ctx)
+        pman.run(module.operation)
+    except Exception as e:
+        _log.warning("  canonicalize failed (non-fatal): %s", str(e).split("\\n")[0] if "\\n" in str(e) else str(e))
+
+
 # The flattened equivalent of the LLVM lowering stages below is
 # available as LINALG_TO_LLVM_PIPELINE in compile_utils.py.
 # Keep the two definitions in sync.
@@ -145,6 +206,11 @@ BUILTIN_STAGES: list[Stage] = [
     _make_tile_stage(),
     Stage("emit_c_interface", action=_emit_c_interface_action, timeout=5.0, warn_only=False),
     Stage("ensure-filled-outputs", action=ensure_filled_matmul_outputs_action, timeout=30.0, warn_only=False),
+    # Strip sf.weight_names before bufferize: unregistered dialect attributes
+    # on func.func block downstream canonicalize/bufferize passes.  After
+    # stripping, canonicalize reconciles linalg.generic output types with
+    # their operands (which may have been reshaped by the lowering).
+    Stage("strip-sf-attrs+canon", action=_strip_sf_attrs_canon_action, timeout=30.0, warn_only=False),
     Stage("bufferize", (
         "one-shot-bufferize{bufferize-function-boundaries allow-unknown-ops},"
         "canonicalize,cse,convert-bufferization-to-memref"
@@ -162,9 +228,14 @@ BUILTIN_STAGES: list[Stage] = [
     Stage("vector→llvm", "convert-vector-to-llvm", timeout=120.0),
     Stage("arith→llvm", "convert-arith-to-llvm"),
     Stage("func→llvm", "convert-func-to-llvm"),
-    Stage("reconcile-casts", "reconcile-unrealized-casts"),
+    # Reconcile twice: internal casts (after finalize-memref-to-llvm) and
+    # boundary casts (after convert-func-to-llvm).  Single reconcile is
+    # insufficient because convert-func-to-llvm changes function signatures
+    # (memref → LLVM struct) after the internal casts were already inserted.
+    Stage("reconcile-casts-1", "reconcile-unrealized-casts"),
+    Stage("reconcile-casts-2", "reconcile-unrealized-casts"),
     _make_fma_stage(),
-    Stage("strip-gep-nuw", "sf-strip-gep-nuw", timeout=10.0, warn_only=True),
+    Stage("strip-gep-nuw", "sf-strip-gep-nuw", timeout=10.0, warn_only=False),
     _make_verify_stage(),
 ]
 
@@ -254,15 +325,18 @@ def run_stages(
             for d in sorted(all_dialects)
         }
 
-        # ── Dead stage detection ──
-        if pre_counts and post_counts and pre_counts == post_counts and not stage.warn_only:
-            _log.warning(
-                "  ⚠️ Stage '%s' produced no dialect change (possible dead stage) — "
-                "pre=%s post=%s",
-                stage.name,
-                dict(sorted(pre_counts.items())),
-                dict(sorted(post_counts.items())),
-            )
+        # ── Dead stage detection (persistent across runs) ──
+        if pre_counts and post_counts:
+            no_change = pre_counts == post_counts
+            is_dead = _DeadStageTracker.record(stage.name, dialect_changed=not no_change)
+            if no_change and is_dead:
+                _log.warning(
+                    "  ⚠️ Stage '%s' marked DEAD after %d consecutive runs with "
+                    "no dialect change — pre=%s post=%s",
+                    stage.name, _DeadStageTracker.CONSECUTIVE_THRESHOLD,
+                    dict(sorted(pre_counts.items())),
+                    dict(sorted(post_counts.items())),
+                )
 
         # DEBUG: save per-stage snapshot
         if _is_debug:
@@ -315,6 +389,18 @@ def run_stages(
     _log.info("  Initial IR: %d lines → Final: %d lines (%+.1f%%)",
               initial_line_count, final_line_count,
               ((final_line_count - initial_line_count) / max(initial_line_count, 1)) * 100)
+
+    # ── Warn-only failure report ──
+    warn_failures = []
+    for stage, result in zip(stages, results, strict=True):
+        if stage.warn_only and not result.success:
+            warn_failures.append(stage.name)
+    if warn_failures:
+        _log.warning(
+            "  ⚠️ %d warn_only stage(s) failed: %s — outputs may be degraded",
+            len(warn_failures), warn_failures,
+        )
+
     _log.info("=" * 60)
 
     # ── Post-pipeline: function signature verification ──

@@ -35,6 +35,164 @@ def _strided_to_struct(memref_type: str) -> str:
             if rank else '!llvm.struct<(ptr, ptr, i64)>')
 
 
+def _llvm_struct_rank(struct_type: str) -> int:
+    """Extract the memref rank from an ``!llvm.struct<...>`` type string."""
+    m = re.search(r'array<(\d+)\s*x\s*i64>', struct_type)
+    return int(m.group(1)) if m else 0
+
+
+def _fixup_unrealized_casts_pass(module: ir.Module) -> None:
+    """Replace ``unrealized_conversion_cast`` with proper LLVM ops.
+
+    Operates on the MLIR module in-place using official MLIR Python bindings.
+    Targets the same three patterns as the text-based ``_fixup_unrealized_casts``:
+
+    1. Entry cast:  ``!llvm.ptr, !llvm.ptr, i64, ... → memref<strided>``
+    2. Exit cast:   ``memref<strided> → !llvm.struct<...>``
+    3. Direct cast: ``!llvm.ptr, !llvm.ptr, i64, ... → !llvm.struct<...>``
+
+    Each is replaced with ``llvm.mlir.undef`` + ``llvm.insertvalue`` chain.
+    """
+    import mlir.ir as ir
+
+    # Phase 1: classify all unrealized_conversion_cast ops in the module.
+    # Use walk() to find casts nested inside llvm.func bodies (after
+    # convert-func-to-llvm, casts are no longer at the top-level block).
+    # Group by parent block to handle SSA-name reuse across functions.
+    entry_casts: list[tuple[ir.Operation, ir.Block, ir.OpView]] = []
+    exit_casts: list[tuple[ir.Operation, ir.Block, ir.OpView]] = []
+    direct_casts: list[tuple[ir.Operation, ir.Block, ir.OpView]] = []
+    all_casts: list[ir.Operation] = []
+
+    def _classify_cast(op: ir.Operation) -> ir.WalkResult:
+        if op.operation.name != "builtin.unrealized_conversion_cast":
+            return ir.WalkResult.ADVANCE
+        all_casts.append(op)
+        operands = list(op.operands)
+        result_type = str(op.result.type)
+
+        # Entry: result is a memref type
+        if result_type.startswith("memref<"):
+            entry_casts.append((op, op.operation.parent, None))
+        # Exit: single operand, source is memref, result is llvm struct
+        elif (len(operands) == 1
+              and str(operands[0].type).startswith("memref<")
+              and result_type.startswith("!llvm.struct<")):
+            exit_casts.append((op, op.operation.parent, None))
+        # Direct: result is llvm struct
+        elif result_type.startswith("!llvm.struct<"):
+            direct_casts.append((op, op.operation.parent, None))
+        return ir.WalkResult.ADVANCE
+
+    module.operation.walk(_classify_cast)
+
+    if not entry_casts and not exit_casts and not direct_casts:
+        return
+
+    _log = logging.getLogger("compiler.fixups")
+
+    def _build_struct_chain(
+        result_name: str,
+        struct_type: ir.Type,
+        operands: list[ir.Value],
+        rank: int,
+        block: ir.Block,
+        ip: ir.InsertPoint,
+    ) -> ir.Value:
+        """Build ``undef`` + ``insertvalue`` chain in *block* at *ip*.
+
+        Returns the final ``!llvm.struct<…>`` value.
+        """
+        # 1. undef
+        with ir.InsertPoint(ip):
+            undef = ir.Operation.create(
+                "llvm.mlir.undef",
+                results=[struct_type],
+                operands=[],
+            )
+        curr = undef.result
+
+        # 2. insertvalue for each operand
+        n_args = len(operands)
+        for vi in range(n_args):
+            if vi < 3:
+                pos_attr = ir.ArrayAttr.get([ir.IntegerAttr.get(ir.IntegerType.get_signless(64), vi)])
+            else:
+                arr_idx = vi - 3
+                if arr_idx < rank:
+                    pos_attr = ir.ArrayAttr.get([
+                        ir.IntegerAttr.get(ir.IntegerType.get_signless(64), 3),
+                        ir.IntegerAttr.get(ir.IntegerType.get_signless(64), arr_idx),
+                    ])
+                else:
+                    pos_attr = ir.ArrayAttr.get([
+                        ir.IntegerAttr.get(ir.IntegerType.get_signless(64), 4),
+                        ir.IntegerAttr.get(ir.IntegerType.get_signless(64), arr_idx - rank),
+                    ])
+            with ir.InsertPoint(ip):
+                inserted = ir.Operation.create(
+                    "llvm.insertvalue",
+                    results=[struct_type],
+                    operands=[operands[vi], curr],
+                    attributes={"position": pos_attr},
+                )
+            curr = inserted.result
+        return curr
+
+    changes = 0
+
+    # Phase 2: handle direct struct casts (simple case — no memref type involved)
+    for cast_op, block, _ in direct_casts:
+        operands = list(cast_op.operands)
+        struct_type = cast_op.result.type
+        rank = _struct_rank_from_type(struct_type)
+        ip = ir.InsertPoint(cast_op)
+        curr = _build_struct_chain(
+            f"fixup_{cast_op.result}",
+            struct_type, operands, rank, block, ip,
+        )
+        cast_op.result.replace_all_uses_with(curr)
+        cast_op.operation.erase()
+        changes += 1
+
+    # Phase 3: handle entry casts (build struct from bare ptr/size values)
+    for cast_op, block, _ in entry_casts:
+        operands = list(cast_op.operands)
+        memref_type_str = str(cast_op.result.type)
+        struct_type_str = _strided_to_struct(memref_type_str)
+        struct_type = ir.Type.parse(struct_type_str, cast_op.operation.context)
+        rank = _llvm_struct_rank(struct_type_str)
+        ip = ir.InsertPoint(cast_op)
+        curr = _build_struct_chain(
+            f"fixup_{cast_op.result}",
+            struct_type, operands, rank, block, ip,
+        )
+        cast_op.result.replace_all_uses_with(curr)
+        cast_op.operation.erase()
+        changes += 1
+
+    # Phase 4: handle exit casts (memref → struct — find matching entry)
+    # An exit cast takes a memref-typed value (from an entry cast we just fixed)
+    # and converts it to an llvm struct.  Since the entry cast now produces
+    # an llvm struct, the exit cast is redundant — just forward uses.
+    for cast_op, _block, _ in exit_casts:
+        src = cast_op.operands[0]
+        cast_op.result.replace_all_uses_with(src)
+        cast_op.operation.erase()
+        changes += 1
+
+    total = len(entry_casts) + len(direct_casts) + len(exit_casts)
+    _log.warning("MLIR pass removed %d / %d unrealized_conversion_cast ops",
+                 changes, total)
+
+
+def _struct_rank_from_type(struct_type: ir.Type) -> int:
+    """Extract memref rank from an ``!llvm.struct<...>`` type by parsing
+    its string representation."""
+    s = str(struct_type)
+    return _llvm_struct_rank(s)
+
+
 def _fixup_unrealized_casts(mlir_text: str) -> str:
     """Replace ``unrealized_conversion_cast`` with equivalent LLVM dialect ops.
 
