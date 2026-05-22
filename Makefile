@@ -1,4 +1,4 @@
-.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency verify-dylib verify-consistency verify-diag verify-preflight check-op-consistency build-rust install-rust diagnose-fast diagnose-ci
+.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency verify-dylib verify-consistency verify-diag verify-preflight check-op-consistency build-rust install-rust diagnose-fast diagnose-ci build-so test-dylib-cos
 
 # ---- 环境 ----
 VENV := .venv
@@ -212,6 +212,23 @@ test-lit: $(VENV)
 		echo "   cd sf-dialect && ninja sf-opt"; \
 	fi
 	cd sf-dialect && lit test/ -v --ignore-fail
+
+# ---- Dylib 构建 + Cos 测试 ----
+# sf-dialect 静态库目标，用于 build-so 的依赖追踪
+sf-dialect/build/lib/Sf/libSfDialect.a:
+	@echo "==> Building SfDialect static library..."
+	cmake --build sf-dialect/build --target SfDialect
+
+.PHONY: build-so
+build-so: sf-dialect/build/lib/Sf/libSfDialect.a
+	scripts/build_so.sh
+
+.PHONY: test-dylib-cos
+test-dylib-cos: build-so
+	rm -f compiled/opt_125m_fresh/model.lowered.mlir
+	DYLD_LIBRARY_PATH="$(SF_MLIR_LIBS):$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
+	$(PYTHON) scripts/compile_dylib.py compiled/opt_125m_fresh --model-name opt_125m
+	$(PYTHON) tests/test_dylib_cosine.py -v
 
 # ---- 工具 ----
 clean:
