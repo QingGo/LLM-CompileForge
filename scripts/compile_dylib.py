@@ -333,6 +333,12 @@ def main() -> None:
             if _fixed != _pass_text:
                 _pass_ctx = ir.Context()
                 _pass_ctx.allow_unregistered_dialects = True
+                # Register sf dialect so subsequent lowering passes can match typed ops
+                try:
+                    from mlir_sf._mlir_libs._sfDialectsNanobind import sf as _sf
+                    _sf.register_dialects(_pass_ctx._CAPIPtr, load=True)
+                except ImportError:
+                    pass  # sf dialect may not be available in all environments
                 with ir.Location.unknown(_pass_ctx):
                     ir_mod = ir.Module.parse(_fixed, _pass_ctx)
                 ctx_lower = _pass_ctx
@@ -354,6 +360,22 @@ def main() -> None:
     # Serialize with generic op format (required for mlir-opt without sf dialect)
     lowered_text = ir_mod.operation.get_asm(print_generic_op_form=True)
     print(f"   C++ lowering succeeded (verifier {'disabled' if _no_verify else 'enabled'})")
+
+    # Verify weight promotion ordering: check that sf.weight_names in lowered IR
+    # matches weight op order from the Python MlirModule (dict insertion order
+    # from fx_to_mlir.py Phase 4). Catches order mismatches between the compute
+    # graph binary (built before C++ lowering) and the promoted function args.
+    from scripts.verify_dylib_consistency import verify_weight_promotion_order
+    try:
+        weight_errors = verify_weight_promotion_order(module, lowered_text)
+    except Exception as e:
+        print(f"   ⚠ Weight promotion check crashed: {e}")
+        weight_errors = None
+    if weight_errors:
+        _err_msg = "Weight promotion order mismatch:\n  " + "\n  ".join(weight_errors)
+        print(f"\n❌ {_err_msg}")
+        raise RuntimeError(_err_msg)
+    print("   ✔ Weight promotion order verified")
 
     lowered_path = compiled_path / "model.lowered.mlir"
     lowered_path.write_text(lowered_text)

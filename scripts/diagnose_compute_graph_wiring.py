@@ -25,7 +25,7 @@ def diagnose(compiled_dir: str) -> int:
     # Build producer map same as _emit_compute_graph_section
     producer: dict[str, tuple[int, int]] = {}
     for fi, func in enumerate(mod.functions):
-        for oi, (out_name, _out_type) in enumerate(func.outputs):
+        for oi, (out_name, _out_type, _consumed_internally) in enumerate(func.outputs):
             clean = out_name.lstrip("%")
             producer[clean] = (fi, oi)
 
@@ -41,7 +41,7 @@ def diagnose(compiled_dir: str) -> int:
             if clean not in producer:
                 fallbacks.append((fi, func.name, in_idx, in_name, in_type_str))
                 print(f"  func[{fi}] {func.name} input[{in_idx}] {in_name} type={in_type_str}")
-                print(f"    -> FALLBACK to func[0].out[0]")
+                print("    -> FALLBACK to func[0].out[0]")
 
     print(f"\n{'='*60}")
     if fallbacks:

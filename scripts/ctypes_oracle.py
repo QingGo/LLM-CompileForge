@@ -31,6 +31,7 @@ from scripts.ctypes_forward import (  # noqa: E402  # import after sys.path
     parse_compute_graph,
     parse_sfcf_blob,
     parse_sret_outputs,
+    verify_output_shapes,
 )
 
 
@@ -102,10 +103,10 @@ class CtypesOracle:
                 f"Failed to read SFCF blob from {orig_dylib}: {exc}"
             ) from exc
 
-        self._name_mapping, self._sfcf_constants, graph_pos = parse_sfcf_blob(
+        self._name_mapping, self._sfcf_constants, graph_pos, sfcf_version = parse_sfcf_blob(
             blob_bytes
         )
-        self._graph = parse_compute_graph(blob_bytes, graph_pos)
+        self._graph = parse_compute_graph(blob_bytes, graph_pos, version=sfcf_version)
         _log.info(
             "Parsed SFCF blob: %d functions, %d constants, %d name mappings",
             len(self._graph["functions"]),
@@ -397,6 +398,13 @@ class CtypesOracle:
 
             outputs = parse_sret_outputs(bytes(sret), func_def["outputs"])
             func_outputs[fi] = outputs
+
+        # ── Structural sret shape verification ────────────────────────
+        shape_errors = verify_output_shapes(
+            func_outputs, self._graph["functions"]
+        )
+        for err in shape_errors:
+            _log.warning("sret shape mismatch: %s", err)
 
         go_func, go_idx = self._graph["global_output"]
         ctypes_logits = func_outputs[go_func][go_idx]

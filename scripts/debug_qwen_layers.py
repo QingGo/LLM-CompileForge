@@ -282,7 +282,7 @@ def main() -> None:
 
     # ── Also check final output ──────────────────────────────
     print("\n=== Final output comparison ===")
-    output_names = [n for n, _ in ir_func.outputs]
+    output_names = [n for n, _, _ in ir_func.outputs]
     if output_names and output_names[0] in ssa_values:
         ir_logits = ssa_values[output_names[0]]
     else:

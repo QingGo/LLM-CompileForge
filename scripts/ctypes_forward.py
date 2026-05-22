@@ -55,10 +55,10 @@ def _read_str(data: bytes, pos: int) -> tuple[str, int]:
     return s, pos + n
 
 def parse_sfcf_blob(blob: bytes):
-    """Parse SFCF v2 blob → (name_mapping, constants_dict, graph_start_pos)."""
+    """Parse SFCF v2/v3 blob → (name_mapping, constants_dict, graph_start_pos, version)."""
     assert blob[:4] == b'SFCF', f"Bad magic: {blob[:4]}"
     v, pos = _read_u32(blob, 4)
-    assert v == 2, f"Unsupported SFCF version: {v}"
+    assert 2 <= v <= 3, f"Unsupported SFCF version: {v}"
 
     # Name mappings  (compiled → hf_key)
     nm_count, pos = _read_u32(blob, pos)
@@ -98,11 +98,18 @@ def parse_sfcf_blob(blob: bytes):
             arr = arr.squeeze()
         constants[name] = arr
 
-    return name_mapping, constants, pos
+    return name_mapping, constants, pos, v
 
 
-def parse_compute_graph(data: bytes, pos: int):
-    """Parse compute graph → list of func dicts + global I/O indices."""
+def parse_compute_graph(data: bytes, pos: int, version: int = 3):
+    """Parse compute graph → list of func dicts + global I/O indices.
+
+    Args:
+        data: Raw SFCF binary data.
+        pos: Start position of compute graph section.
+        version: SFCF format version. v3+ includes a consumed_internally
+            flag byte before each output's rank byte. v2 defaults to False.
+    """
     num_funcs, pos = _read_u32(data, pos)
     functions = []
 
@@ -137,6 +144,11 @@ def parse_compute_graph(data: bytes, pos: int):
 
         outputs = []
         for _ in range(num_outputs):
+            if version >= 3:
+                consumed_internally = bool(data[pos])
+                pos += 1
+            else:
+                consumed_internally = False
             rank = data[pos]
             pos += 1
             ndims, pos = _read_u32(data, pos)
@@ -144,7 +156,11 @@ def parse_compute_graph(data: bytes, pos: int):
             for _ in range(ndims):
                 d, pos = _read_u64(data, pos)
                 shape.append(int(d))
-            outputs.append({'rank': rank, 'shape': shape})
+            outputs.append({
+                'rank': rank,
+                'shape': shape,
+                'consumed_internally': consumed_internally,
+            })
 
         functions.append({
             'symbol': symbol,
@@ -246,6 +262,99 @@ def parse_sret_outputs(sret_bytes: bytes, output_defs: list[dict]) -> list[np.nd
     return tensors
 
 
+def verify_output_shapes(
+    func_outputs: list[list[np.ndarray]],
+    compute_graph_functions: list[dict],
+) -> list[str]:
+    """Verify parsed sret output tensors match compute graph declarations.
+
+    For each function, checks:
+      1. Output tensor count matches graph declaration
+      2. Tensor rank matches declared rank
+      3. Static shape dimensions match (dynamic dims marked as 0 are skipped)
+      4. Null data pointer detection (aligned==0 in descriptor yields empty array)
+
+    Args:
+        func_outputs: Per-function list of parsed output tensors.
+        compute_graph_functions: List of function dicts with ``outputs`` key,
+            each output having ``rank`` and ``shape`` fields.
+
+    Returns:
+        List of error messages. Empty list = all checks pass.
+    """
+    errors: list[str] = []
+
+    for fi, outputs in enumerate(func_outputs):
+        if fi >= len(compute_graph_functions):
+            errors.append(
+                f"func[{fi}]: no compute graph entry for this function index"
+            )
+            continue
+
+        func_def = compute_graph_functions[fi]
+        expected_outputs = func_def["outputs"]
+        symbol = func_def.get("symbol", f"func_{fi}")
+
+        # Check 1: output count
+        if len(outputs) != len(expected_outputs):
+            errors.append(
+                f"func[{fi}] ({symbol}): "
+                f"expected {len(expected_outputs)} output(s), "
+                f"got {len(outputs)}"
+            )
+            # Cannot do per-output checks if counts differ
+            continue
+
+        for oi, (arr, expected) in enumerate(zip(outputs, expected_outputs, strict=True)):
+            expected_rank = expected["rank"]
+            expected_shape = expected["shape"]
+
+            # Check 2: null data pointer
+            # parse_sret_outputs returns empty array when aligned==0
+            if arr.size == 0 and expected_rank > 0:
+                static_dims = [d for d in expected_shape if d > 0] if expected_shape else []
+                if static_dims:
+                    errors.append(
+                        f"func[{fi}] ({symbol}) output[{oi}]: "
+                        f"null data pointer (aligned==0 in descriptor), "
+                        f"expected shape {expected_shape}"
+                    )
+                    continue
+
+            # Check 3: rank
+            if arr.ndim != expected_rank:
+                errors.append(
+                    f"func[{fi}] ({symbol}) output[{oi}]: "
+                    f"expected rank {expected_rank}, "
+                    f"got rank {arr.ndim} (actual shape={list(arr.shape)}, "
+                    f"expected shape={expected_shape})"
+                )
+                continue
+
+            # Check 4: static shape dimensions
+            # Dynamic dims (0 in compute graph) are skipped
+            for dim_i in range(expected_rank):
+                if dim_i < len(expected_shape):
+                    static_val = expected_shape[dim_i]
+                    if static_val > 0:
+                        if dim_i >= len(arr.shape):
+                            errors.append(
+                                f"func[{fi}] ({symbol}) output[{oi}]: "
+                                f"dim[{dim_i}] expected {static_val}, "
+                                f"but array has only {len(arr.shape)} dims"
+                            )
+                        elif arr.shape[dim_i] != static_val:
+                            errors.append(
+                                f"func[{fi}] ({symbol}) output[{oi}]: "
+                                f"dim[{dim_i}] expected {static_val}, "
+                                f"got {arr.shape[dim_i]} "
+                                f"(actual shape={list(arr.shape)}, "
+                                f"expected shape={expected_shape})"
+                            )
+
+    return errors
+
+
 # =====================================================================
 # Main
 # =====================================================================
@@ -324,13 +433,14 @@ def main():
     print(f"  SFCF blob: {blob_size} bytes")
     print(f"  Magic: {blob_bytes[:4]}")
 
-    name_mapping, sfcf_constants, graph_pos = parse_sfcf_blob(blob_bytes)
+    name_mapping, sfcf_constants, graph_pos, sfcf_version = parse_sfcf_blob(blob_bytes)
     print(f"  Name mappings: {len(name_mapping)}")
     print(f"  SFCF constants: {len(sfcf_constants)}")
+    print(f"  SFCF version: {sfcf_version}")
     for k in list(sfcf_constants.keys())[:5]:
         print(f"    constant {k}: shape={sfcf_constants[k].shape}")
 
-    graph = parse_compute_graph(blob_bytes, graph_pos)
+    graph = parse_compute_graph(blob_bytes, graph_pos, version=sfcf_version)
     print(f"  Compute graph: {len(graph['functions'])} functions")
     for fi, f in enumerate(graph['functions']):
         print(f"    [{fi:2d}] {f['symbol']}: "

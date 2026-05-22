@@ -493,7 +493,7 @@ def main() -> None:
 
     # ── Compute final output cosine ──────────────────────────
     if ep_final_output is not None and ssa_values:
-        ir_output_names = [name for name, _ in ir_func.outputs]
+        ir_output_names = [name for name, _, _ in ir_func.outputs]
         if ir_output_names and ir_output_names[0] in ssa_values:
             ir_final = ssa_values[ir_output_names[0]]
             if isinstance(ir_final, torch.Tensor):

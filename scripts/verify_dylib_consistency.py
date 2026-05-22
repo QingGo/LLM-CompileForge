@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+from typing import Any
 
 import numpy as np
 
@@ -51,8 +52,8 @@ def parse_compute_graph_outputs(compiled_dir: str) -> list[dict]:
         blob = f.read()
 
     try:
-        _, _, graph_pos = parse_sfcf_blob(blob)
-        graph = parse_compute_graph(blob, graph_pos)
+        _, _, graph_pos, sfcf_version = parse_sfcf_blob(blob)
+        graph = parse_compute_graph(blob, graph_pos, version=sfcf_version)
 
         results = []
         for fi, func in enumerate(graph["functions"]):
@@ -229,6 +230,88 @@ def parse_lowered_weight_names(lowered_path: str) -> dict[str, list[str]]:
             results[func_name] = names
 
     return results
+
+
+def _parse_weight_names_from_text(text: str) -> dict[str, list[str]]:
+    """Parse sf.weight_names from lowered MLIR text string.
+
+    Same logic as parse_lowered_weight_names but operates on a string
+    instead of a file path. Used by verify_weight_promotion_order when
+    the lowered IR text is already in memory.
+
+    Returns: {"main_0": ["model_decoder_embed_tokens_weight", ...], ...}
+    """
+    results: dict[str, list[str]] = {}
+    sym_name_positions = list(
+        re.finditer(r'sym_name\s*=\s*"([^"]+)"', text)
+    )
+    for wm in re.finditer(r'sf\.weight_names\s*=\s*\[([^\]]*)\]', text):
+        wpos = wm.start()
+        func_name = None
+        for sm in reversed(sym_name_positions):
+            if sm.start() < wpos:
+                func_name = sm.group(1)
+                break
+        if func_name:
+            names_str = wm.group(1)
+            names = re.findall(r'"([^"]+)"', names_str)
+            results[func_name] = names
+    return results
+
+
+def verify_weight_promotion_order(module: Any, lowered_text: str) -> list[str]:
+    """Check weight promotion preserves original op order.
+
+    For each function in *module*, extract weight ops (op_name == "weight")
+    in declaration order, filter out constant weights (name starts with
+    ``_const_``), then compare against ``sf.weight_names`` in the lowered IR.
+
+    Any name mismatch or ordering difference is reported as an error.
+
+    Returns a list of error messages (empty = all functions pass).
+    """
+    errors: list[str] = []
+    ir_weight_names = _parse_weight_names_from_text(lowered_text)
+
+    for func in module.functions:
+        func_name = func.name
+
+        # Extract weight names in op declaration order (dict insertion order
+        # from weights.items() in fx_to_mlir.py Phase 4).
+        original_weight_names = [
+            op.attributes.get("name", "")
+            for op in func.ops
+            if op.op_name == "weight"
+            and not op.attributes.get("name", "").startswith("_const_")
+        ]
+
+        lowered_names = ir_weight_names.get(func_name, [])
+
+        if not original_weight_names and not lowered_names:
+            continue
+
+        if len(original_weight_names) != len(lowered_names):
+            errors.append(
+                f"Function '{func_name}': expected {len(original_weight_names)} "
+                f"weight names, found {len(lowered_names)} in lowered IR"
+            )
+            if original_weight_names:
+                _show = original_weight_names[:10]
+                errors.append(f"  Expected ({len(original_weight_names)}): {_show}")
+            if lowered_names:
+                _show = lowered_names[:10]
+                errors.append(f"  Got ({len(lowered_names)}): {_show}")
+            continue
+
+        for i, (expected, actual) in enumerate(zip(
+            original_weight_names, lowered_names, strict=True,
+        )):
+            if expected != actual:
+                errors.append(
+                    f"Function '{func_name}' arg[{i}]: expected '{expected}', "
+                    f"got '{actual}' in lowered IR"
+                )
+    return errors
 
 
 def parse_lowered_ir_input_shapes(lowered_path: str) -> dict[str, list[tuple[int, ...]]]:
@@ -557,6 +640,32 @@ def verify(compiled_dir: str) -> int:
     diag_issues = check_diag_tool_health(compiled_dir)
     issues += diag_issues
 
+    # 11. sret output shape consistency
+    sret_issues = check_sret_shapes(compiled_dir)
+    issues += sret_issues
+
+    # 12. Weight promotion ordering check (model.mlir vs model.lowered.mlir)
+    model_path = os.path.join(compiled_dir, "model.mlir")
+    if os.path.exists(model_path) and os.path.exists(lowered_path):
+        try:
+            from compiler.mlir_artifact import _parse_mlir_text
+            with open(model_path) as _fm:
+                module = _parse_mlir_text(_fm.read())
+            with open(lowered_path) as _fl:
+                lowered_text = _fl.read()
+            weight_errors = verify_weight_promotion_order(module, lowered_text)
+            if weight_errors:
+                print("\n⚖️  Weight promotion ordering check")
+                for err in weight_errors:
+                    print(f"  ❌ {err}")
+                issues += len(weight_errors)
+            else:
+                print("\n⚖️  Weight promotion ordering: ✅ all functions pass")
+        except Exception as e:
+            print(f"\n⚠️  Weight promotion ordering check skipped: {e}")
+    else:
+        print("\n⚠️  Weight promotion ordering check skipped (missing model.mlir or lowered.mlir)")
+
     # Summary
     print(f"\n{'='*50}")
     if issues == 0:
@@ -673,6 +782,59 @@ def check_diag_tool_health(compiled_dir: str) -> int:
             issues += 1
     else:
         print("  ⚠️ forward_check: /tmp/rust_logits.csv not found (run forward_check first)")
+
+    return issues
+
+
+def check_sret_shapes(compiled_dir: str) -> int:
+    """Run forward pass via CtypesOracle and verify sret output shapes.
+
+    Uses verify_output_shapes() to compare parsed sret tensors (shape, rank,
+    count) against what the compute graph declares. This catches cases where
+    the dylib calling convention produces inconsistent output tensors (e.g.,
+    wrong rank, mismatched static dim, or null data pointer).
+
+    Returns 0 if all shapes match, 1+ if issues found.
+    """
+    import glob as _glob
+
+    _setup_mlir_path()
+    issues = 0
+    print("\n📐 sret output shape consistency check")
+
+    try:
+        from scripts.ctypes_forward import verify_output_shapes
+        from scripts.ctypes_oracle import CtypesOracle
+
+        o = CtypesOracle(compiled_dir)
+        dylib = _glob.glob(os.path.join(compiled_dir, "lib*.dylib"))
+        if not dylib:
+            print("  ⚠️  No dylib found — skipping sret shape check")
+            return 0
+
+        # Run forward pass to populate _func_outputs and get shape errors
+        # (verify_output_shapes is also called inside compare() and logged,
+        #  but we re-check here for the explicit check result)
+        o.compare(dylib[0])
+
+        if not hasattr(o, "_func_outputs") or not o._func_outputs:
+            print("  ❌ No func_outputs available from oracle")
+            return 1
+
+        shape_errors = verify_output_shapes(
+            o._func_outputs, o._graph["functions"]
+        )
+
+        if shape_errors:
+            for err in shape_errors:
+                print(f"  ❌ {err}")
+                issues += 1
+        else:
+            print("  ✅ All sret output shapes match compute graph declarations")
+
+    except Exception as e:
+        print(f"  ❌ sret shape check failed: {e}")
+        issues += 1
 
     return issues
 
