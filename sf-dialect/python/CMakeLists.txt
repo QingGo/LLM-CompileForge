@@ -35,6 +35,7 @@ set(SF_EXTRA_SOURCES
   ../lib/Sf/SfDialect.cpp
   ../lib/Sf/SfOps.cpp
   ../lib/Sf/SfLowerToLinalg.cpp
+  ../lib/Sf/SfStripGEPNuw.cpp
 )
 declare_mlir_python_extension(SfPythonExtensions.nanobind
   MODULE_NAME _sfDialectsNanobind

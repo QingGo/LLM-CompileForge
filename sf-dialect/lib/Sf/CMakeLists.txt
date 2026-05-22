@@ -2,6 +2,7 @@ add_mlir_dialect_library(SfDialect
   SfDialect.cpp
   SfOps.cpp
   SfLowerToLinalg.cpp
+  SfStripGEPNuw.cpp
 
   ADDITIONAL_HEADER_DIRS
     ${PROJECT_SOURCE_DIR}/include/Sf
@@ -27,4 +28,5 @@ add_mlir_dialect_library(SfDialect
     MLIRArithUtils
     MLIRAffineDialect
     MLIRSCFDialect
+    MLIRLLVMDialect
 )

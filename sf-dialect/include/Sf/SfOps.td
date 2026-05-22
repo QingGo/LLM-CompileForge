@@ -34,6 +34,7 @@ class Sf_ShapeOp<string mnemonic, list<Trait> traits = []> :
 def Sf_AddOp : Sf_BinaryFloatOp<"add", [Commutative]>;
 def Sf_MulOp : Sf_BinaryFloatOp<"mul", [Commutative]>;
 def Sf_SubOp : Sf_BinaryFloatOp<"sub">;
+def Sf_PowOp : Sf_BinaryFloatOp<"pow">;
 def Sf_DivOp : Sf_BinaryFloatOp<"div">;
 def Sf_MaxOp : Sf_BinaryFloatOp<"max", [Commutative]>;
 
@@ -200,6 +201,59 @@ def Sf_CumsumOp : Sf_ShapeOp<"cumsum"> {
 
 def Sf_NewOnesOp : Sf_ShapeOp<"new_ones"> {
   let arguments = (ins AnyTensor:$input);
+  let results = (outs AnyTensor:$result);
+}
+
+//===----------------------------------------------------------------------===//
+// Activation ops missing from first pass
+//===----------------------------------------------------------------------===//
+
+def Sf_SoftplusOp : Sf_ActivationOp<"softplus">;
+def Sf_SqrtOp : Sf_ActivationOp<"sqrt">;
+def Sf_CosOp : Sf_ActivationOp<"cos">;
+def Sf_SinOp : Sf_ActivationOp<"sin">;
+def Sf_RsqrtOp : Sf_ActivationOp<"rsqrt">;
+
+//===----------------------------------------------------------------------===//
+// Comparison ops (missing from first pass, output is bool/integer tensor)
+//===----------------------------------------------------------------------===//
+
+def Sf_GtOp : Sf_Op<"gt", [Pure]> {
+  let arguments = (ins Sf_FloatTensor:$lhs, Sf_FloatTensor:$rhs);
+  let results = (outs AnyTensor:$result);
+}
+
+def Sf_LtOp : Sf_Op<"lt", [Pure]> {
+  let arguments = (ins Sf_FloatTensor:$lhs, Sf_FloatTensor:$rhs);
+  let results = (outs AnyTensor:$result);
+}
+
+def Sf_EqOp : Sf_Op<"eq", [Pure]> {
+  let arguments = (ins Sf_FloatTensor:$lhs, Sf_FloatTensor:$rhs);
+  let results = (outs AnyTensor:$result);
+}
+
+def Sf_NeOp : Sf_Op<"ne", [Pure]> {
+  let arguments = (ins Sf_FloatTensor:$lhs, Sf_FloatTensor:$rhs);
+  let results = (outs AnyTensor:$result);
+}
+
+//===----------------------------------------------------------------------===//
+// Shape / transform ops missing from first pass
+//===----------------------------------------------------------------------===//
+
+def Sf_PermuteOp : Sf_ShapeOp<"permute"> {
+  let arguments = (ins AnyTensor:$input, I64ArrayAttr:$dims);
+  let results = (outs AnyTensor:$result);
+}
+
+def Sf_SelectOp : Sf_ShapeOp<"select"> {
+  let arguments = (ins AnyTensor:$input, I64Attr:$dim, I64Attr:$index);
+  let results = (outs AnyTensor:$result);
+}
+
+def Sf_CatOp : Sf_ShapeOp<"cat"> {
+  let arguments = (ins Variadic<AnyTensor>:$inputs, I64Attr:$dim);
   let results = (outs AnyTensor:$result);
 }
 

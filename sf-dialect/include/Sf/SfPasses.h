@@ -9,6 +9,7 @@ namespace sf {
 
 std::unique_ptr<mlir::Pass> createSfPromoteWeights();
 std::unique_ptr<mlir::Pass> createSfLowerToLinalg();
+std::unique_ptr<mlir::Pass> createSfStripGEPNuw();
 
 } // namespace sf
 } // namespace mlir

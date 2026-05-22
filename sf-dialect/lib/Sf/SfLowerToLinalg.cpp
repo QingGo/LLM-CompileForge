@@ -683,6 +683,34 @@ struct SfLinearOpLowering : public OpRewritePattern<sf::LinearOp> {
     mo->setAttr("operandSegmentSizes", rewriter.getDenseI32ArrayAttr({2, 1}));
     result = mo.getResult(0);
   }
+  // Add bias after matmul
+  if (Value bias = op.getBias()) {
+    Value emptyOut = makeEmpty(rewriter, loc, resultType, {result, bias});
+    if (emptyOut) {
+      auto rt = cast<RankedTensorType>(resultType);
+      int64_t rank = rt.getRank();
+      auto biasRt = cast<RankedTensorType>(bias.getType());
+      int64_t biasRank = biasRt.getRank();
+      SmallVector<AffineExpr> rhsExprs;
+      for (int64_t i = 0; i < rank; ++i) {
+        int64_t rhsI = i - (rank - biasRank);
+        rhsExprs.push_back(rhsI >= 0
+            ? getAffineDimExpr(i, rewriter.getContext())
+            : getAffineConstantExpr(0, rewriter.getContext()));
+      }
+      auto idMap = AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext());
+      auto biasMap = AffineMap::get(rank, 0, rhsExprs, rewriter.getContext());
+      SmallVector<utils::IteratorType> iter(rank, utils::IteratorType::parallel);
+      auto gen = linalg::GenericOp::create(rewriter, loc, resultType,
+          ValueRange{result, bias}, emptyOut,
+          {idMap, biasMap, idMap}, iter);
+      populateBody(gen, rewriter, [&](OpBuilder &b, Location loc2, ValueRange args) {
+        Value _v = arith::AddFOp::create(b, loc2, args[0], args[1]);
+        linalg::YieldOp::create(b, loc2, ValueRange{_v});
+      });
+      result = gen.getResult(0);
+    }
+  }
   rewriter.replaceOp(op, result);
   return success();
   }
@@ -2618,7 +2646,8 @@ struct SfLowerToLinalgPass
       RewritePatternSet patterns(&getContext());
       patterns.add<SfBinaryLowering<sf::AddOp, arith::AddFOp>,
                    SfBinaryLowering<sf::MulOp, arith::MulFOp>,
-                   SfBinaryLowering<sf::SubOp, arith::SubFOp>,
+                    SfBinaryLowering<sf::SubOp, arith::SubFOp>,
+                    SfBinaryLowering<sf::PowOp, math::PowFOp>,
                    SfBinaryLowering<sf::DivOp, arith::DivFOp>,
                    SfBinaryLowering<sf::MaxOp, arith::MaxNumFOp>,
                    ReluLowering, IdentityLowering,

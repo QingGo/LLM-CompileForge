@@ -33,4 +33,20 @@ def SfLowerToLinalg : Pass<"sf-lower-to-linalg", "mlir::ModuleOp"> {
   ];
 }
 
+def SfStripGEPNuw : Pass<"sf-strip-gep-nuw", "mlir::ModuleOp"> {
+  let summary = "Strip nuw flag from llvm.getelementptr operations";
+  let description = [{
+    LLVM 22's MLIR LLVM dialect may emit a `nuw` (no unsigned wrap) flag on
+    `llvm.getelementptr` operations. Older LLVM versions (e.g. LLVM 20 used
+    by mlir-translate in this project) cannot parse this flag. This pass
+    strips the `nuw` flag while preserving all other no-wrap flags.
+
+    This replaces a regex-based fixup in `_fixup_mlir_for_translate` that
+    operated on the MLIR text after lowering.
+  }];
+  let dependentDialects = [
+    "mlir::LLVM::LLVMDialect",
+  ];
+}
+
 #endif // SF_PASSES
