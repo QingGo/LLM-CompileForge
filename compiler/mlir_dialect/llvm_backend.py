@@ -35,10 +35,6 @@ from compiler.mlir_dialect.compile_utils import (
     llc_compile,
     mlir_module_to_llvm_ir,
 )
-from compiler.mlir_dialect.fixups import (
-    _fixup_mlir_for_translate,
-    _fixup_unrealized_casts,
-)
 from compiler.mlir_dialect.pipeline_stages import (
     BUILTIN_STAGES,
     BUILTIN_STAGES_NO_FMA,
@@ -80,7 +76,7 @@ def _register_sf_passes() -> None:
         _log.debug(
             "sf-dialect Python bindings not available — "
             "sf-strip-gep-nuw pass will not be registered. "
-            "The regex-based fixup in _fixup_mlir_for_translate is the fallback."
+            "IR must not contain nuw flags on GEP ops."
         )
 
 

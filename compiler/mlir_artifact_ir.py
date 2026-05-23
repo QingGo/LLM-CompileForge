@@ -192,10 +192,14 @@ def _emit_weight_op(op: MlirOp, ctx: Any, ssa_map: dict[str, ir.Value], body_blk
         w_result_types = [_ir.UnrankedTensorType.get(_ir.F32Type.get(ctx))]
 
     with _ir.InsertionPoint(body_blk):
+        loc = _ir.Location.unknown(ctx)
+        if "dump_layer" in op.attributes:
+            loc = _ir.Location.name(str(op.attributes["dump_layer"]), loc)
         ir_op = _ir.Operation.create(
             op.name,
             results=w_result_types,
             attributes=w_attrs if w_attrs else {},
+            loc=loc,
         )
     for i, rname in enumerate(op.results):
         if i < len(ir_op.operation.results):
@@ -265,6 +269,9 @@ def _emit_compute_op(op: MlirOp, operands: list[ir.Value], body_blk: Any, ctx: A
 
     mlir_attrs = _build_mlir_attrs(op)
     result_types = _infer_result_types(op, operands, ctx)
+    loc = _ir.Location.unknown(ctx)
+    if "dump_layer" in op.attributes:
+        loc = _ir.Location.name(str(op.attributes["dump_layer"]), loc)
 
     try:
         with _ir.InsertionPoint(body_blk):
@@ -273,6 +280,7 @@ def _emit_compute_op(op: MlirOp, operands: list[ir.Value], body_blk: Any, ctx: A
                 operands=operands,
                 results=result_types,
                 attributes=mlir_attrs if mlir_attrs else {},
+                loc=loc,
             )
     except Exception as e:
         _log.warning("Failed to build op '%s': %s", op.name, e, exc_info=True)

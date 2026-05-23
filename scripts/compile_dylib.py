@@ -321,24 +321,8 @@ def main() -> None:
 
     for _pass_name, _pipeline_str in _pass_pipelines:
         if _pass_name in ("canonicalize", "cse"):
-            # canonicalize/cse runs between promote-weights and lowering.
-            # Serialize to text, run _fixup_arith_constant_scalar_tensor,
-            # then re-parse before continuing. This ensures proper types.
-            _pass_text = ir_mod.operation.get_asm(print_generic_op_form=True)
-            from compiler.mlir_dialect.fixups import _fixup_arith_constant_scalar_tensor
-            _fixed = _fixup_arith_constant_scalar_tensor(_pass_text)
-            if _fixed != _pass_text:
-                _pass_ctx = ir.Context()
-                _pass_ctx.allow_unregistered_dialects = True
-                # Register sf dialect so subsequent lowering passes can match typed ops
-                try:
-                    from mlir_sf._mlir_libs._sfDialectsNanobind import sf as _sf
-                    _sf.register_dialects(_pass_ctx._CAPIPtr, load=True)
-                except ImportError:
-                    pass  # sf dialect may not be available in all environments
-                with ir.Location.unknown(_pass_ctx):
-                    ir_mod = ir.Module.parse(_fixed, _pass_ctx)
-                ctx_lower = _pass_ctx
+            from compiler.mlir_dialect.fixups import _walk_and_fix_tensor_constants
+            _walk_and_fix_tensor_constants(ir_mod)
         try:
             _pman = pm.PassManager.parse(_pipeline_str, ctx_lower)
             if not _no_verify:
@@ -434,9 +418,9 @@ def main() -> None:
         print(f"   Fixed {_changes} tensor.empty ops with dynamic sizes")
 
     # Fix arith.constant ops: scalar value + tensor result → dense attr
-    from compiler.mlir_dialect.fixups import _fixup_arith_constant_scalar_tensor
+    from compiler.mlir_dialect.fixups import _fixup_arith_tensor_constants_mlir
     _before = lowered_text
-    lowered_text = _fixup_arith_constant_scalar_tensor(lowered_text)
+    lowered_text = _fixup_arith_tensor_constants_mlir(lowered_text)
     if lowered_text != _before:
         lowered_path.write_text(lowered_text)
 

@@ -38,7 +38,7 @@ def test_embedding_dylib() -> float:
     import mlir.ir as ir
     from mlir_sf._mlir_libs._sfDialectsNanobind import sf
 
-    from compiler.mlir_dialect.fixups import _fixup_unrealized_casts
+    from compiler.mlir_dialect.fixups import _fixup_unrealized_casts_pass
     from compiler.mlir_dialect.llvm_backend import lower_linalg_to_llvm_ir
     from compiler.pipeline import _apply_sf_to_linalg
 
@@ -69,7 +69,8 @@ def test_embedding_dylib() -> float:
         lower_linalg_to_llvm_ir(module)
     llvm_mlir = str(module)
     print("  [3/7] Fix residual unrealized_conversion_cast ...")
-    fixed = _fixup_unrealized_casts(llvm_mlir)
+    _fixup_unrealized_casts_pass(module)
+    fixed = str(module)
 
     with tempfile.TemporaryDirectory() as td:
         mlir_path = os.path.join(td, "fixed.mlir")

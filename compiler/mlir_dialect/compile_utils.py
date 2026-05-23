@@ -26,7 +26,6 @@ from compiler.exceptions import (
     ToolNotFoundError,
 )
 from compiler.mlir_dialect.fixups import (
-    _fixup_mlir_for_translate,
     _fixup_unrealized_casts_pass,
 )
 
@@ -161,13 +160,8 @@ def mlir_module_to_llvm_ir(ir_module: Any) -> str:
     # + convert-func-to-llvm even with multiple reconcile-unrealized-casts passes.
     # The MLIR-bindings-based pass replaces each with llvm.mlir.undef +
     # llvm.insertvalue chain directly on the ir.Module before translation.
-    try:
-        _fixup_unrealized_casts_pass(ir_module)
-        mlir_text = str(ir_module)
-    except Exception:
-        _log.warning("MLIR-based cast fixup failed, falling back to text-based fixup")
-        from compiler.mlir_dialect.fixups import _fixup_unrealized_casts as _text_fixup
-        mlir_text = _text_fixup(mlir_text)
+    _fixup_unrealized_casts_pass(ir_module)
+    mlir_text = str(ir_module)
 
     with tempfile.TemporaryDirectory() as td:
         mlir_path = os.path.join(td, "module.mlir")
@@ -179,17 +173,6 @@ def mlir_module_to_llvm_ir(ir_module: Any) -> str:
             capture_output=True, text=True,
             timeout=90,
         )
-
-        if result.returncode != 0:
-            fixed = _fixup_mlir_for_translate(mlir_text)
-            if fixed != mlir_text:
-                with open(mlir_path, "w") as f:
-                    f.write(fixed)
-                result = subprocess.run(
-                    [mlir_translate, "--allow-unregistered-dialect", "--mlir-to-llvmir", mlir_path],
-                    capture_output=True, text=True,
-                    timeout=90,
-                )
 
         if result.returncode != 0:
             raise MLIRTranslateError(result.returncode, result.stderr)

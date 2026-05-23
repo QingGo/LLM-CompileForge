@@ -80,7 +80,7 @@ def main():
     check("Lowering completed under timeout", elapsed_llvm < timeout,
           f"Took {elapsed_llvm:.1f}s (limit {timeout}s)")
 
-    # Step 6: mlir-translate (which also applies _fixup_unrealized_casts)
+    # Step 6: mlir-translate (fixup pass runs in mlir_module_to_llvm_ir)
     from compiler.mlir_dialect.llvm_backend import mlir_module_to_llvm_ir
     t6 = time.time()
     llvm_ir = mlir_module_to_llvm_ir(mod)

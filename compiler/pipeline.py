@@ -233,10 +233,8 @@ def _apply_mlir_passes(
                         module = mlir_module_to_ir_module(orig_mlir_mod, ctx=ctx)
                     else:
                         module = ir.Module.parse(mlir_text, ctx)
-                    from compiler.mlir_dialect.fixups import _fixup_arith_constant_scalar_tensor
-                    mlir_text = str(module)
-                    mlir_text = _fixup_arith_constant_scalar_tensor(mlir_text)
-                    module = ir.Module.parse(mlir_text, ctx)
+                    from compiler.mlir_dialect.fixups import _walk_and_fix_tensor_constants
+                    _walk_and_fix_tensor_constants(module)
                     pman = pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx)
                     pman.run(module.operation)
                     mlir_text = str(module)
@@ -296,8 +294,26 @@ def _apply_sf_to_linalg(mlir_text: str, orig_mlir_mod: Any = None) -> str:
         pman.enable_verifier(True)
         pman.enable_timing()
         pman.run(ir_mod.operation)
+        _annotate_debug_weight_names(ir_mod)
         mlir_text = ir_mod.operation.get_asm(print_generic_op_form=True)
     return _post_lowering_canonicalize(mlir_text)
+
+
+def _annotate_debug_weight_names(ir_mod: Any) -> None:
+    """Add debug_weight_names on func.func ops so weight tracking survives stripping.
+
+    sf.weight_names (set by sf-promote-weights) is stripped before bufferize
+    because unregistered dialect attributes block canonicalize.  debug_weight_names
+    uses the debug_ prefix and is not stripped — it survives the full pipeline.
+    """
+    import mlir.ir as ir
+
+    for op in ir_mod.operation.regions[0].blocks[0]:
+        if str(op.operation.name) != "func.func":
+            continue
+        weight_names = op.operation.attributes.get("sf.weight_names")
+        if weight_names is not None:
+            op.operation.attributes["debug_weight_names"] = weight_names
 
 
 def _post_lowering_canonicalize(mlir_text: str) -> str:
@@ -321,8 +337,8 @@ def _post_lowering_canonicalize(mlir_text: str) -> str:
 
     # Fix arith.constant ops with scalar value + tensor result type
     try:
-        from compiler.mlir_dialect.fixups import _fixup_arith_constant_scalar_tensor
-        mlir_text = _fixup_arith_constant_scalar_tensor(mlir_text)
+        from compiler.mlir_dialect.fixups import _fixup_arith_tensor_constants_mlir
+        mlir_text = _fixup_arith_tensor_constants_mlir(mlir_text)
     except Exception as e:
         raise RuntimeError(f"[pipeline] CRITICAL: arith.constant scalar→tensor fixup failed: {e}") from e
 
