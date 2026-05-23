@@ -465,7 +465,9 @@ def main() -> None:
     with ctx_llvm:
         ir_mod = ir.Module.parse(lowered_text, ctx_llvm)
         try:
-            lower_linalg_to_llvm_ir(ir_mod, skip_first_canonicalize=_no_verify)
+            # Always skip stage 0 (canonicalize,cse) — it cannot handle
+            # shape-specialized IR from index_op dim mappings.
+            lower_linalg_to_llvm_ir(ir_mod, skip_first_canonicalize=True)
         except Exception:
             _save_failure_context("5", "LLVM lowering", compiled_path,
                                   copy_source=str(lowered_path))

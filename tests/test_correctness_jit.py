@@ -14,14 +14,7 @@ import numpy as np
 import pytest
 
 from compiler.mlir_dialect.compile_utils import _setup_mlir_path
-
-
-def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    a_f = a.ravel().astype(np.float64)
-    b_f = b.ravel().astype(np.float64)
-    return float(
-        np.dot(a_f, b_f) / (np.linalg.norm(a_f) * np.linalg.norm(b_f) + 1e-12)
-    )
+from scripts._cos import cosine_similarity as _cosine_similarity
 
 
 def _lower_to_llvm(module: Any) -> Any:

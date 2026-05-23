@@ -9,6 +9,7 @@ explicit timeout to prevent hung processes.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -24,7 +25,12 @@ from compiler.exceptions import (
     MLIRTranslateError,
     ToolNotFoundError,
 )
-from compiler.mlir_dialect.fixups import _fixup_mlir_for_translate, _fixup_unrealized_casts
+from compiler.mlir_dialect.fixups import (
+    _fixup_mlir_for_translate,
+    _fixup_unrealized_casts_pass,
+)
+
+_log = logging.getLogger(__name__)
 
 
 def _setup_mlir_path() -> None:
@@ -54,10 +60,10 @@ def _find_mlir_tool(name: str) -> str:
     """Locate an LLVM/MLIR binary (llc, mlir-translate, etc.).
 
     Checks (in order):
-      1. Our build in llvm-project/build/bin/
-      2. {name} on PATH
-      3. SERVE_FORGE_LLVM_BIN environment variable as directory prefix
-      4. Common Homebrew paths
+      1. Our build in llvm-project/build/bin/ (preferred — compiled from source)
+      2. SERVE_FORGE_LLVM_BIN environment variable
+      3. {name} on PATH (may pick up Homebrew version — logs warning)
+      4. Common Homebrew paths (fallback)
     """
     # 1. Our build (preferred) — compiled from source with all translation interfaces
     our_build = (
@@ -65,18 +71,25 @@ def _find_mlir_tool(name: str) -> str:
         / "llvm-project" / "build" / "bin" / name
     )
     if our_build.is_file() and os.access(str(our_build), os.X_OK):
-        return str(our_build)
-
-    # 2. On PATH
-    path = shutil.which(name)
-    if path:
-        return path
+        tool_path = str(our_build)
+        _log.info("Using %s: %s (LLVM build dir)", name, tool_path)
+        return tool_path
 
     llvm_bin_dir = os.environ.get("SERVE_FORGE_LLVM_BIN", "")
     if llvm_bin_dir:
         candidate = os.path.join(llvm_bin_dir, name)
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            _log.info("Using %s: %s (SERVE_FORGE_LLVM_BIN)", name, candidate)
             return candidate
+
+    path = shutil.which(name)
+    if path:
+        _log.warning(
+            "Using %s from PATH (%s). This may pick up Homebrew version instead "
+            "of compiled LLVM build. Prefer: %s",
+            name, path, our_build,
+        )
+        return path
 
     for prefix in [
         "/usr/local/opt/llvm/bin",
@@ -87,6 +100,7 @@ def _find_mlir_tool(name: str) -> str:
     ]:
         candidate = os.path.join(prefix, name)
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            _log.info("Using %s: %s (Homebrew fallback)", name, candidate)
             return candidate
 
     raise ToolNotFoundError(
@@ -141,9 +155,19 @@ def mlir_module_to_llvm_ir(ir_module: Any) -> str:
     mlir_translate = _find_mlir_translate()
     mlir_text = str(ir_module)
 
-    # Fix up unrealized_conversion_cast (bare ptr → struct) that the LLVM
-    # translator cannot handle
-    mlir_text = _fixup_unrealized_casts(mlir_text)
+    # Fix up unrealized_conversion_cast ops that cannot be reconciled by
+    # MLIR passes alone.  These casts are structurally irreconcilable
+    # (5 bare ptr/size values → struct) and remain after finalize-memref-to-llvm
+    # + convert-func-to-llvm even with multiple reconcile-unrealized-casts passes.
+    # The MLIR-bindings-based pass replaces each with llvm.mlir.undef +
+    # llvm.insertvalue chain directly on the ir.Module before translation.
+    try:
+        _fixup_unrealized_casts_pass(ir_module)
+        mlir_text = str(ir_module)
+    except Exception:
+        _log.warning("MLIR-based cast fixup failed, falling back to text-based fixup")
+        from compiler.mlir_dialect.fixups import _fixup_unrealized_casts as _text_fixup
+        mlir_text = _text_fixup(mlir_text)
 
     with tempfile.TemporaryDirectory() as td:
         mlir_path = os.path.join(td, "module.mlir")

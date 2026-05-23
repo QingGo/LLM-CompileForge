@@ -1,0 +1,11 @@
+3.612041e-04 activation.mlir
+3.859997e-04 binary.mlir
+8.254170e-02 bufferize_kdynamic.mlir
+4.391670e-04 creation.mlir
+2.096891e-03 cumsum.mlir
+1.872063e-03 linear.mlir
+3.850460e-04 matmul.mlir
+3.521442e-04 norm.mlir
+3.421307e-04 sum.mlir
+3.812790e-02 shape_inference.mlir
+4.090450e-01 broadcast_lowering.mlir

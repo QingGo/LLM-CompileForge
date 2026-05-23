@@ -10,8 +10,9 @@ import os
 import sys
 from typing import Any
 
-import numpy as np
 import pytest
+
+from scripts._cos import cosine_similarity
 
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _project_root)
@@ -78,10 +79,7 @@ def test_per_position_cosine(
         for pos in range(4):
             dylib_out = dylib[batch, pos]
             python_out = python[batch, pos]
-            dot = np.dot(dylib_out.flatten(), python_out.flatten())
-            norm_d = np.linalg.norm(dylib_out)
-            norm_p = np.linalg.norm(python_out)
-            cos = dot / (norm_d * norm_p + 1e-12)
+            cos = cosine_similarity(dylib_out, python_out)
             assert cos > 0.99, f"batch={batch}, pos={pos}: cos={cos}"
 
 
@@ -101,10 +99,7 @@ def test_per_layer_cosine(
     for fi in range(1, len(dylib)):
         dylib_layer = dylib[fi]
         python_layer = python[fi]
-        dot = np.dot(dylib_layer.flatten(), python_layer.flatten())
-        norm_d = np.linalg.norm(dylib_layer)
-        norm_p = np.linalg.norm(python_layer)
-        cos = dot / (norm_d * norm_p + 1e-12)
+        cos = cosine_similarity(dylib_layer, python_layer)
         assert cos > 0.99, f"func[{fi}]: cos={cos}"
 
 

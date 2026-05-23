@@ -32,7 +32,7 @@ from compiler.sfcf_parser import (  # noqa: E402
     parse_sret_outputs,
     verify_output_shapes,
 )
-from scripts.ctypes_forward import cosine_similarity  # noqa: E402
+from scripts._cos import cosine_similarity  # noqa: E402
 
 
 class CtypesOracle:

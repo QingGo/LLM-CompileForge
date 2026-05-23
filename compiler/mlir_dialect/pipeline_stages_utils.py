@@ -9,6 +9,7 @@ functions (stats, snapshots, verification).  Split from
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time as _time
@@ -21,6 +22,69 @@ from pathlib import Path
 from typing import Any
 
 _log = logging.getLogger(__name__)
+
+
+class _DeadStageTracker:
+    """Persistent dead stage detection across pipeline runs.
+
+    Records consecutive zero-dialect-change runs for each stage in a JSON
+    file (``logs/pipeline/dead_stages.json``).  When a stage reaches 3
+    consecutive such runs it is marked as "dead" and a warning is emitted.
+    """
+
+    CONSECUTIVE_THRESHOLD = 3
+    STATE_FILE = Path("logs") / "pipeline" / "dead_stages.json"
+
+    @classmethod
+    def _load_state(cls) -> dict[str, int]:
+        if cls.STATE_FILE.exists():
+            try:
+                return json.loads(cls.STATE_FILE.read_text())
+            except (json.JSONDecodeError, OSError):
+                return {}
+        return {}
+
+    @classmethod
+    def _save_state(cls, state: dict[str, int]) -> None:
+        cls.STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        cls.STATE_FILE.write_text(json.dumps(state, indent=2) + "\n")
+
+    @classmethod
+    def record(cls, stage_name: str, dialect_changed: bool) -> bool:
+        """Record a pipeline run for *stage_name* and return True if dead.
+
+        Returns True when *CONSECUTIVE_THRESHOLD* consecutive runs produce
+        zero dialect change (the stage is considered dead).
+        """
+        state = cls._load_state()
+        current = state.get(stage_name, 0)
+        if dialect_changed:
+            # Reset counter on any dialect change
+            if current > 0:
+                state.pop(stage_name, None)
+                cls._save_state(state)
+            return False
+
+        # No dialect change — increment
+        current += 1
+        state[stage_name] = current
+        cls._save_state(state)
+        return current >= cls.CONSECUTIVE_THRESHOLD
+
+    @classmethod
+    def known_dead_stages(cls) -> list[str]:
+        state = cls._load_state()
+        return [name for name, count in state.items()
+                if count >= cls.CONSECUTIVE_THRESHOLD]
+
+    @classmethod
+    def reset(cls, stage_name: str | None = None) -> None:
+        state = cls._load_state()
+        if stage_name:
+            state.pop(stage_name, None)
+        else:
+            state.clear()
+        cls._save_state(state)
 
 
 # ── IR utility functions ──────────────────────────────────────────────

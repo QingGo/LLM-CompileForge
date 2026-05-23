@@ -207,7 +207,8 @@ def _apply_mlir_passes(
     if kwargs:
         raise TypeError(f"Unexpected keyword arguments in _apply_mlir_passes: {kwargs}")
 
-    from compiler.mlir_passes.fusion import _has_bindings, fuse_rms_norm_pass, fuse_silu_pass
+    from compiler.mlir_dialect.compile_utils import _has_bindings
+    from compiler.mlir_passes.fusion import fuse_rms_norm_pass, fuse_silu_pass
 
     # Phase 0: register sf dialect (must happen before parsing MLIR text)
     if _has_bindings():
@@ -301,10 +302,8 @@ def _apply_sf_to_linalg(mlir_text: str, orig_mlir_mod: Any = None) -> str:
 
 def _post_lowering_canonicalize(mlir_text: str) -> str:
     """Run canonicalize pass on lowered MLIR text."""
-    import logging
-    _log = logging.getLogger("compiler.pipeline")
+    from compiler.mlir_dialect.compile_utils import _has_bindings, _setup_mlir_path
 
-    from compiler.mlir_passes.fusion import _has_bindings
     if _has_bindings():
         _setup_mlir_path()
         try:
@@ -312,7 +311,6 @@ def _post_lowering_canonicalize(mlir_text: str) -> str:
             import mlir.passmanager as pm
 
             ctx = ir.Context()
-            # linalg/arith/math 等标准方言已注册，不需要 allow_unregistered
             with ctx:
                 module = ir.Module.parse(mlir_text, ctx)
                 pman = pm.PassManager.parse("builtin.module(canonicalize)", ctx)

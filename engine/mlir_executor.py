@@ -62,6 +62,12 @@ class MlirExecutor(_KVCacheMixin):
                 if name not in self._weights:
                     self._weights[name] = tensor
 
+        # Cast all floating-point weights to float32 (dylib uses f32, but
+        # checkpoint may store f16 — mismatch causes ~6% error per dot product).
+        for name, tensor in self._weights.items():
+            if tensor.is_floating_point() and tensor.dtype != torch.float32:
+                self._weights[name] = tensor.float()
+
         # Build compiled-name → tensor mapping via hf_key_map.
         hfk = module.metadata.get("hf_key_map", {})
         for compiled_name, hf_key in hfk.items():

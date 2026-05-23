@@ -89,7 +89,7 @@ if [ -z "$_PY_LIB" ]; then
 fi
 
 OUTPUT_SO="$LOCAL_MLIR_LIBS_DIR/_sfDialectsNanobind.cpython-310-darwin.so"
-echo "       Linking with -undefined dynamic_lookup..."
+echo "       Linking with -undefined dynamic_lookup (Python extension needs runtime symbol resolution)..."
 clang++ -std=c++17 -fPIC -shared -O2 \
     -o "$OUTPUT_SO" \
     -DMLIR_BINDINGS_PYTHON_DOMAIN=mlir_sf \
@@ -115,10 +115,16 @@ echo "       ✓ $OUTPUT_SO ($SO_SIZE bytes)"
 # ── [4/4] Install .so to Python package path ──────────────────
 echo -e "${CYAN}==> [4/4] Installing .so to Python package path...${NC}"
 
-# Copy to source tree for version control compatibility
+# Symlink into source tree (replaces old cp — avoids stale copies)
 mkdir -p "$SF_DIR/python/mlir_sf/_mlir_libs"
-cp "$OUTPUT_SO" "$SF_DIR/python/mlir_sf/_mlir_libs/"
-echo "       → $SF_DIR/python/mlir_sf/_mlir_libs/"
+ln -sf "$OUTPUT_SO" "$SF_DIR/python/mlir_sf/_mlir_libs/_sfDialectsNanobind.cpython-310-darwin.so"
+echo "       → $SF_DIR/python/mlir_sf/_mlir_libs/ (symlink)"
+
+# Symlink into build tree's python_packages so .pth discovery gets the fresh .so
+BUILD_SO_DIR="$BUILD_DIR/python_packages/sf/mlir_sf/_mlir_libs"
+mkdir -p "$BUILD_SO_DIR"
+ln -sf "$OUTPUT_SO" "$BUILD_SO_DIR/_sfDialectsNanobind.cpython-310-darwin.so"
+echo "       → $BUILD_SO_DIR/ (symlink)"
 
 # Update .pth files so .venv can find mlir_sf and local MLIR build
 SITE_PKG="$PROJECT_ROOT/.venv/lib/python3.10/site-packages"
@@ -128,9 +134,9 @@ echo "$LLVM_BUILD/tools/mlir/python_packages/mlir_core" >> "$SITE_PKG/sf_dialect
 echo "       ✓ .pth files updated"
 
 # Quick verification
-echo -e "       Verifying import..."
-$VENV_PYTHON -c "
-import sys
+echo -e "       Verifying import and .so path..."
+"$VENV_PYTHON" -c "
+import sys, os
 sys.path.insert(0, '$LLVM_BUILD/tools/mlir/python_packages/mlir_core')
 import mlir.ir as ir
 import mlir.passmanager as pm
@@ -142,6 +148,16 @@ with ir.Location.unknown(ctx):
     p = pm.PassManager.parse('builtin.module(canonicalize)', ctx)
     p.run(m.operation)
 print('       ✓ Import & PassManager OK')
+# Verify the loaded .so resolves to the build output
+import mlir_sf._mlir_libs._sfDialectsNanobind as nb_mod
+loaded = os.path.realpath(nb_mod.__file__)
+expected = os.path.realpath('$OUTPUT_SO')
+if loaded != expected:
+    print(f'       ❌ .so path mismatch: loaded={loaded}')
+    print(f'          expected={expected}')
+    sys.exit(10)
+else:
+    print(f'       ✓ .so path verified: {loaded}')
 " 2>&1
 
 echo -e "${GREEN}==> Build complete. _sfDialectsNanobind.so is ready.${NC}"

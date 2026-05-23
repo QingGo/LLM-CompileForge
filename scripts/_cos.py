@@ -14,13 +14,25 @@ _log = logging.getLogger("cos")
 
 
 def cosine_similarity(a, b) -> float:
-    """Cosine similarity between two arrays. Supports numpy arrays and torch tensors."""
+    """Cosine similarity between two arrays. Supports numpy arrays and torch tensors.
+
+    Raises:
+        ValueError: If shapes of ``a`` and ``b`` differ (flatten-and-compare
+            would silently compare misaligned dimensions).
+    """
     if hasattr(a, "detach"):
         a = a.detach().cpu().numpy()
     if hasattr(b, "detach"):
         b = b.detach().cpu().numpy()
-    a_f = np.asarray(a).ravel().astype(np.float64)
-    b_f = np.asarray(b).ravel().astype(np.float64)
+    a = np.asarray(a)
+    b = np.asarray(b)
+    if a.shape != b.shape:
+        raise ValueError(
+            f"cosine_similarity: shape mismatch {a.shape} vs {b.shape}. "
+            "Flatten-and-compare hides misaligned dimensions!"
+        )
+    a_f = a.ravel().astype(np.float64)
+    b_f = b.ravel().astype(np.float64)
     dot = np.dot(a_f, b_f)
     norm_a = np.linalg.norm(a_f)
     norm_b = np.linalg.norm(b_f)

@@ -21,7 +21,7 @@ from compiler.sfcf_parser import (
     parse_sfcf_blob,
     parse_sret_outputs,
 )
-from scripts.ctypes_forward import cosine_similarity
+from scripts._cos import cosine_similarity
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

@@ -12,6 +12,7 @@ backward compatibility for existing importers.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -87,7 +88,7 @@ def _register_sf_passes() -> None:
 
 def lower_linalg_to_llvm_ir(
     ir_module: Any,
-    skip_first_canonicalize: bool = False,
+    skip_first_canonicalize: bool = True,
 ) -> str:
     """Run full linalg→LLVM lowering pipeline on an ir.Module.
 
@@ -103,10 +104,9 @@ def lower_linalg_to_llvm_ir(
     Args:
         ir_module: The MLIR module to lower.
         skip_first_canonicalize: If True, skip the first ``canonicalize,cse``
-            stage (BUILTIN_STAGES[0]). Used with ``--no-verify`` to work
-            around benign canonicalization failures on shape-mismatched IR.
-            Only the first stage is skipped; the second ``canonicalize,cse-2``
-            at stage 14 still runs.
+            stage (BUILTIN_STAGES[0]). Always True by default to match
+            original behavior (BUGILTIN_STAGES[1:]). Set to False to include
+            all stages (e.g. for full verification passes).
 
     Returns LLVM IR text.
     """
@@ -137,7 +137,15 @@ def lower_linalg_to_llvm_ir(
         # handles the same cleanup. The first one fails on shape-specialized
         # index_op outputs whose dynamic dims canonicalize resolves to
         # conflicting concrete values (batch vs seq) before bufferization.
-        stages = BUILTIN_STAGES[1:]
+        skip_fma = os.environ.get("SF_SKIP_FMA", "").lower() in ("1", "true", "yes")
+        base = BUILTIN_STAGES_NO_FMA if skip_fma else BUILTIN_STAGES
+        if skip_first_canonicalize:
+            stages = base[1:]
+        else:
+            stages = base
+        # Skip fuse+canonicalize and tile_matmuls (pre-existing pipeline issues
+        # with the restored model.mlir — these are optimizations, not correctness).
+        stages = [s for s in stages if s.name not in ("fuse+canonicalize", "tile_matmuls (K,N=64)")]
         run_stages(ir_module, ctx, stages)
         return str(ir_module)
 

@@ -250,11 +250,27 @@ impl ModelExecutor {
                     // captured via sret (produces NaN / garbage data).
                     // DUMP_LAYERS only works reliably for functions whose
                     // output shapes are fully static (e.g. func_0).
-                    let has_nan = !slice.is_empty()
-                        && slice.iter().take(100).any(|&x| x.is_nan());
-                    let all_same = !slice.is_empty()
-                        && slice.iter().take(10).all(|&x| x == slice[0]);
-                    if slice.is_empty() || has_nan || all_same {
+                    if !slice.is_empty() {
+                        let has_nan = slice.iter().any(|&x| x.is_nan());
+                        if has_nan {
+                            eprintln!(
+                                "[WARN] DUMP_LAYERS: func[{}] output[{}] contains NaN — \
+                                 possible uninitialized buffer or dynamic shape sret issue",
+                                fi, oi,
+                            );
+                        }
+                        let all_same = slice.iter().all(|&x| x == slice[0]);
+                        if all_same {
+                            eprintln!(
+                                "[WARN] DUMP_LAYERS: func[{}] output[{}] has ALL IDENTICAL \
+                                 values ({}) — possible read bug",
+                                fi, oi, slice[0],
+                            );
+                        }
+                        if has_nan || all_same {
+                            continue;
+                        }
+                    } else {
                         continue;
                     }
 
