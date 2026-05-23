@@ -97,14 +97,14 @@ def _fixup_unrealized_casts_pass(module: ir.Module) -> None:
         operands: list[ir.Value],
         rank: int,
         block: ir.Block,
-        ip: ir.InsertPoint,
+        ip: ir.InsertionPoint,
     ) -> ir.Value:
         """Build ``undef`` + ``insertvalue`` chain in *block* at *ip*.
 
         Returns the final ``!llvm.struct<…>`` value.
         """
         # 1. undef
-        with ir.InsertPoint(ip):
+        with ir.InsertionPoint(ip):
             undef = ir.Operation.create(
                 "llvm.mlir.undef",
                 results=[struct_type],
@@ -129,7 +129,7 @@ def _fixup_unrealized_casts_pass(module: ir.Module) -> None:
                         ir.IntegerAttr.get(ir.IntegerType.get_signless(64), 4),
                         ir.IntegerAttr.get(ir.IntegerType.get_signless(64), arr_idx - rank),
                     ])
-            with ir.InsertPoint(ip):
+            with ir.InsertionPoint(ip):
                 inserted = ir.Operation.create(
                     "llvm.insertvalue",
                     results=[struct_type],
@@ -146,7 +146,7 @@ def _fixup_unrealized_casts_pass(module: ir.Module) -> None:
         operands = list(cast_op.operands)
         struct_type = cast_op.result.type
         rank = _struct_rank_from_type(struct_type)
-        ip = ir.InsertPoint(cast_op)
+        ip = ir.InsertionPoint(cast_op)
         curr = _build_struct_chain(
             f"fixup_{cast_op.result}",
             struct_type, operands, rank, block, ip,
@@ -162,7 +162,7 @@ def _fixup_unrealized_casts_pass(module: ir.Module) -> None:
         struct_type_str = _strided_to_struct(memref_type_str)
         struct_type = ir.Type.parse(struct_type_str, cast_op.operation.context)
         rank = _llvm_struct_rank(struct_type_str)
-        ip = ir.InsertPoint(cast_op)
+        ip = ir.InsertionPoint(cast_op)
         curr = _build_struct_chain(
             f"fixup_{cast_op.result}",
             struct_type, operands, rank, block, ip,
