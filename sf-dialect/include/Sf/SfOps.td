@@ -15,6 +15,8 @@ class Sf_BinaryFloatOp<string mnemonic, list<Trait> traits = []> :
   let results = (outs Sf_FloatTensor:$result);
   let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
   let hasVerifier = 1;
+  let hasCanonicalizer = 1;
+  let hasFolder = 1;
 }
 
 class Sf_ActivationOp<string mnemonic, list<Trait> traits = []> :
@@ -23,10 +25,15 @@ class Sf_ActivationOp<string mnemonic, list<Trait> traits = []> :
   let arguments = (ins Sf_FloatTensor:$input);
   let results = (outs Sf_FloatTensor:$result);
   let assemblyFormat = "$input attr-dict `:` type($result)";
+  let hasCanonicalizer = 1;
+  let hasFolder = 1;
 }
 
 class Sf_ShapeOp<string mnemonic, list<Trait> traits = []> :
-    Sf_Op<mnemonic, !listconcat([Pure], traits)> {}
+    Sf_Op<mnemonic, !listconcat([Pure], traits)> {
+  let hasCanonicalizer = 1;
+  let hasFolder = 1;
+}
 
 //===----------------------------------------------------------------------===//
 // Binary arithmetic ops
@@ -184,12 +191,16 @@ def Sf_LogicalAndOp : Sf_Op<"logical_and", [Pure]> {
   let arguments = (ins AnyTensor:$lhs, AnyTensor:$rhs);
   let results = (outs AnyTensor:$result);
   let hasVerifier = 1;
+  let hasCanonicalizer = 1;
+  let hasFolder = 1;
 }
 
 def Sf_LeOp : Sf_Op<"le", [Pure]> {
   let arguments = (ins Sf_FloatTensor:$lhs, Sf_FloatTensor:$rhs);
   let results = (outs AnyTensor:$result);
   let hasVerifier = 1;
+  let hasCanonicalizer = 1;
+  let hasFolder = 1;
 }
 
 def Sf_OnesLikeOp : Sf_ShapeOp<"ones_like"> {
@@ -246,24 +257,32 @@ def Sf_GtOp : Sf_Op<"gt", [Pure]> {
   let arguments = (ins Sf_FloatTensor:$lhs, Sf_FloatTensor:$rhs);
   let results = (outs AnyTensor:$result);
   let hasVerifier = 1;
+  let hasCanonicalizer = 1;
+  let hasFolder = 1;
 }
 
 def Sf_LtOp : Sf_Op<"lt", [Pure]> {
   let arguments = (ins Sf_FloatTensor:$lhs, Sf_FloatTensor:$rhs);
   let results = (outs AnyTensor:$result);
   let hasVerifier = 1;
+  let hasCanonicalizer = 1;
+  let hasFolder = 1;
 }
 
 def Sf_EqOp : Sf_Op<"eq", [Pure]> {
   let arguments = (ins Sf_FloatTensor:$lhs, Sf_FloatTensor:$rhs);
   let results = (outs AnyTensor:$result);
   let hasVerifier = 1;
+  let hasCanonicalizer = 1;
+  let hasFolder = 1;
 }
 
 def Sf_NeOp : Sf_Op<"ne", [Pure]> {
   let arguments = (ins Sf_FloatTensor:$lhs, Sf_FloatTensor:$rhs);
   let results = (outs AnyTensor:$result);
   let hasVerifier = 1;
+  let hasCanonicalizer = 1;
+  let hasFolder = 1;
 }
 
 //===----------------------------------------------------------------------===//
