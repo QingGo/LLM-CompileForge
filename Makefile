@@ -1,4 +1,4 @@
-.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency verify-dylib verify-consistency verify-diag verify-preflight check-op-consistency build-rust install-rust diagnose-fast diagnose-ci build-so test-dylib-cos
+.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency verify-dylib verify-consistency verify-diag verify-preflight check-op-consistency build-rust install-rust diagnose-fast diagnose-ci build-so test-dylib-cos test-dylib-quick debug-cos diagnose
 
 # ---- 环境 ----
 VENV := .venv
@@ -57,7 +57,7 @@ test-lower: $(VENV)
 	$(PYTHON) scripts/test_lowering_diag.py
 
 # ---- 快速测试 (lint + L1 all, <20s) ----
-test-fast: lint test-unit test-model test-patterns test-pipeline-quick test-forward-smoke
+test-fast: lint test-unit test-model test-patterns test-pipeline-quick test-forward-smoke test-dylib-quick
 
 # ---- L1.5: 快速正确性检查 (<5s) ----
 test-forward-smoke: $(VENV)
@@ -202,6 +202,44 @@ test-compile-full: $(VENV)
 rebuild-sf:
 	bash scripts/build_sf_extension.sh
 
+# ---- LLVM 构建配置 (复用 ccache + clang + lld) ----
+.PHONY: configure-llvm
+configure-llvm:
+	cd llvm-project/build && cmake -G Ninja ../llvm \
+		-DLLVM_ENABLE_PROJECTS=mlir \
+		-DLLVM_TARGETS_TO_BUILD="Native;NVPTX;AMDGPU" \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DLLVM_ENABLE_ASSERTIONS=ON \
+		-DCMAKE_C_COMPILER=/usr/local/opt/llvm/bin/clang \
+		-DCMAKE_CXX_COMPILER=/usr/local/opt/llvm/bin/clang++ \
+		-DLLVM_USE_LINKER=lld \
+		-DLLVM_CCACHE_BUILD=ON \
+		-DPython3_EXECUTABLE=$(PWD)/$(VENV)/bin/python3 \
+		-DPython3_ROOT_DIR=$(PWD)/$(VENV)
+
+.PHONY: build-mlir-opt
+build-mlir-opt:
+	cd llvm-project/build && ninja mlir-opt
+
+# ---- sf-dialect 构建配置（ABI 对齐 LLVM 构建） ----
+.PHONY: configure-sf-dialect
+configure-sf-dialect:
+	@LLVM_ABI=$$(grep LLVM_ABI_BREAKING_CHECKS llvm-project/build/CMakeCache.txt | cut -d= -f2); \
+	if [ -z "$$LLVM_ABI" ]; then LLVM_ABI=WITH_ASSERTS; fi; \
+	echo "  LLVM_ABI_BREAKING_CHECKS=$$LLVM_ABI"; \
+	mkdir -p sf-dialect/build && \
+	cmake -G Ninja -S sf-dialect -B sf-dialect/build \
+		-DPython3_EXECUTABLE=$(PWD)/$(VENV)/bin/python3 \
+		-DMLIR_DIR=$(PWD)/llvm-project/build/lib/cmake/mlir \
+		-DLLVM_DIR=$(PWD)/llvm-project/build/lib/cmake/llvm \
+		-DLLVM_ENABLE_ASSERTIONS=ON \
+		-DLLVM_ABI_BREAKING_CHECKS=$$LLVM_ABI \
+		-DCMAKE_BUILD_TYPE=Release
+
+.PHONY: build-sf-opt
+build-sf-opt: configure-sf-dialect build-mlir-opt
+	cd sf-dialect/build && cmake --build . --target sf-opt
+
 # ---- L0: lit / FileCheck 测试 (sf-dialect lowering patterns) ----
 # Requires sf-opt built from sf-dialect/tools/sf-opt/.
 # If sf-opt is not available, tests are skipped gracefully.
@@ -215,7 +253,7 @@ test-lit: $(VENV)
 
 # ---- Dylib 构建 + Cos 测试 ----
 # sf-dialect 静态库目标，用于 build-so 的依赖追踪
-sf-dialect/build/lib/Sf/libSfDialect.a:
+sf-dialect/build/lib/Sf/libSfDialect.a: configure-sf-dialect
 	@echo "==> Building SfDialect static library..."
 	cmake --build sf-dialect/build --target SfDialect
 
@@ -229,6 +267,39 @@ test-dylib-cos: build-so
 	DYLD_LIBRARY_PATH="$(SF_MLIR_LIBS):$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
 	$(PYTHON) scripts/compile_dylib.py compiled/opt_125m_fresh --model-name opt_125m
 	$(PYTHON) tests/test_dylib_cosine.py -v
+
+.PHONY: test-dylib-quick
+test-dylib-quick: build-so
+	rm -f compiled/tiny_llama/model.lowered.mlir
+	DYLD_LIBRARY_PATH="$(SF_MLIR_LIBS):$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
+	$(PYTHON) scripts/compile_dylib.py compiled/tiny_llama --model-name tiny_llama
+	$(PYTHON) tests/test_forward_correctness.py -v --timeout=30
+
+.PHONY: debug-cos
+debug-cos: build-so
+	rm -f compiled/opt_125m_fresh/model.lowered.mlir
+	DYLD_LIBRARY_PATH="$(SF_MLIR_LIBS):$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
+	$(PYTHON) scripts/compile_dylib.py compiled/opt_125m_fresh --model-name opt_125m
+	$(PYTHON) scripts/diagnose_cos.py --layer 12
+
+.PHONY: diagnose
+diagnose:
+	@echo "=== MECE Diagnosis Template ==="
+	@echo "A: Data — 权重复制/加载错误"
+	@echo "  A1: 权重值一致性 → make verify-consistency"
+	@echo "  A2: 权重绑定顺序 → verify_bindings()"
+	@echo "B: Compute — FP 精度/融合差异"
+	@echo "  B1: FX Export diff → python scripts/check_weights.py"
+	@echo "  B2: C++ lowering → make test-fixup"
+	@echo "C: Runtime — 调用约定/签名"
+	@echo "  C1: 权重加载 → make verify-consistency"
+	@echo "  C2: sret 读取 → diagnose_pe_function()"
+	@echo "D: Type/Shape — MLIR 类型/形状推断错误 [NEW]"
+	@echo "  D1: 检查 lowered IR 中 tensor<f32> (0D 张量泄漏)"
+	@echo "  D2: 验证每个 sf op 的输出类型与语义一致"
+	@echo "  D3: 检查动态维度 ? 在不应出现的位置"
+	@echo "=== Usage ==="
+	@echo "  Run each check above in order. Stop at first failure."
 
 # ---- 工具 ----
 clean:
