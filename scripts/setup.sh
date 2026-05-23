@@ -100,6 +100,11 @@ build_sf_dialect() {
     VENV_PYTHON="$PROJECT_ROOT/.venv/bin/python3"
 
     mkdir -p "$BUILD_DIR"
+    # Read LLVM_ABI_BREAKING_CHECKS from the LLVM build to ensure ABI alignment.
+    # Without this, macOS flat namespace symbol resolution may fail.
+    _LLVM_ABI=$(grep LLVM_ABI_BREAKING_CHECKS "$LLVM_BUILD/CMakeCache.txt" | cut -d= -f2)
+    if [ -z "$_LLVM_ABI" ]; then _LLVM_ABI=WITH_ASSERTS; fi
+    echo "  LLVM_ABI_BREAKING_CHECKS=$_LLVM_ABI"
     cmake -G Ninja \
         -S "$SF_DIR" \
         -B "$BUILD_DIR" \
@@ -107,6 +112,7 @@ build_sf_dialect() {
         -DMLIR_DIR="$LLVM_BUILD/lib/cmake/mlir" \
         -DLLVM_DIR="$LLVM_BUILD/lib/cmake/llvm" \
         -DLLVM_ENABLE_ASSERTIONS=ON \
+        -DLLVM_ABI_BREAKING_CHECKS="$_LLVM_ABI" \
         -DCMAKE_BUILD_TYPE=Release
 
     # Build the static library and Python package structure (sources, tablegen).
