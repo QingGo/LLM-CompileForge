@@ -32,7 +32,28 @@ class Sf_ShapeOp<string mnemonic, list<Trait> traits = []> :
 // Binary arithmetic ops
 //===----------------------------------------------------------------------===//
 
-def Sf_AddOp : Sf_BinaryFloatOp<"add", [Commutative]>;
+def Sf_AddOp : Sf_BinaryFloatOp<"add", [
+    Commutative,
+    DeclareOpInterfaceMethods<InferTypeOpInterface, ["isCompatibleReturnTypes"]>,
+]> {
+  let extraClassDeclaration = [{
+    static bool isCompatibleReturnTypes(::mlir::TypeRange inferred,
+                                        ::mlir::TypeRange actual);
+  }];
+  let extraClassDefinition = [{
+    bool Sf_AddOp::isCompatibleReturnTypes(::mlir::TypeRange inferred,
+                                           ::mlir::TypeRange actual) {
+      if (inferred.size() != actual.size() || inferred.size() != 1)
+        return false;
+      auto inf = ::llvm::dyn_cast<::mlir::RankedTensorType>(inferred[0]);
+      auto act = ::llvm::dyn_cast<::mlir::RankedTensorType>(actual[0]);
+      if (!inf || !act) return false;
+      return inf.getElementType() == act.getElementType() &&
+             ::mlir::succeeded(::mlir::verifyCompatibleShape(
+                 inf.getShape(), act.getShape()));
+    }
+  }];
+}
 def Sf_MulOp : Sf_BinaryFloatOp<"mul", [Commutative]>;
 def Sf_SubOp : Sf_BinaryFloatOp<"sub">;
 def Sf_PowOp : Sf_BinaryFloatOp<"pow">;

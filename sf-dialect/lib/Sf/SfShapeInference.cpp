@@ -8,7 +8,9 @@
 
 #include "Sf/SfOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -28,8 +30,8 @@ constexpr int64_t kMaxBinaryRank = 4;
 //===----------------------------------------------------------------------===//
 
 LogicalResult mlir::sf::computeBroadcastShape(RankedTensorType lhsType,
-                                              RankedTensorType rhsType,
-                                              SmallVectorImpl<int64_t> &outShape) {
+                                               RankedTensorType rhsType,
+                                               SmallVectorImpl<int64_t> &outShape) {
   int64_t lhsRank = lhsType.getRank();
   int64_t rhsRank = rhsType.getRank();
   int64_t outRank = std::max(lhsRank, rhsRank);
@@ -37,25 +39,42 @@ LogicalResult mlir::sf::computeBroadcastShape(RankedTensorType lhsType,
   outShape.resize(outRank);
 
   for (int64_t i = 1; i <= outRank; ++i) {
-    int64_t lhsDim =
-        (i <= lhsRank) ? lhsType.getDimSize(lhsRank - i) : 1;
-    int64_t rhsDim =
-        (i <= rhsRank) ? rhsType.getDimSize(rhsRank - i) : 1;
+    bool lhsHas = (i <= lhsRank);
+    bool rhsHas = (i <= rhsRank);
+    int64_t lhsDim = lhsHas ? lhsType.getDimSize(lhsRank - i)
+                            : ShapedType::kDynamic;
+    int64_t rhsDim = rhsHas ? rhsType.getDimSize(rhsRank - i)
+                            : ShapedType::kDynamic;
 
     int64_t &resultDim = outShape[outRank - i];
 
-    if (ShapedType::isDynamic(lhsDim) && ShapedType::isDynamic(rhsDim)) {
+    // Missing dim: like size-1 broadcast, output = the only present dim.
+    if (!lhsHas) {
+      resultDim = rhsDim;
+    } else if (!rhsHas) {
+      resultDim = lhsDim;
+    }
+    // Both static
+    else if (!ShapedType::isDynamic(lhsDim) && !ShapedType::isDynamic(rhsDim)) {
+      if (lhsDim == rhsDim || lhsDim == 1) {
+        resultDim = rhsDim;
+      } else if (rhsDim == 1) {
+        resultDim = lhsDim;
+      } else {
+        return failure();
+      }
+    }
+    // Both dynamic
+    else if (ShapedType::isDynamic(lhsDim) && ShapedType::isDynamic(rhsDim)) {
       resultDim = ShapedType::kDynamic;
-    } else if (ShapedType::isDynamic(lhsDim)) {
-      resultDim = rhsDim;
-    } else if (ShapedType::isDynamic(rhsDim)) {
-      resultDim = lhsDim;
-    } else if (lhsDim == rhsDim || lhsDim == 1) {
-      resultDim = rhsDim;
-    } else if (rhsDim == 1) {
-      resultDim = lhsDim;
-    } else {
-      return failure();
+    }
+    // lhs dynamic, rhs static — rhs=1 broadcasts, no concrete info
+    else if (ShapedType::isDynamic(lhsDim)) {
+      resultDim = (rhsDim == 1) ? ShapedType::kDynamic : rhsDim;
+    }
+    // rhs dynamic, lhs static — lhs=1 broadcasts, no concrete info
+    else {
+      resultDim = (lhsDim == 1) ? ShapedType::kDynamic : lhsDim;
     }
   }
 
@@ -102,22 +121,57 @@ IMPL_BINARY_FLOAT_VERIFY(DivOp)
 IMPL_BINARY_FLOAT_VERIFY(PowOp)
 IMPL_BINARY_FLOAT_VERIFY(MaxOp)
 
-// Stub: tablegen may still reference InferTypeOpInterface for these ops
-// from cached .inc files.  Return success() without modifying the result
-// type — the ops already have explicit types from the Python frontend.
-#define STUB_INFER_RETURN_TYPES(OpName)                                   \
-  LogicalResult OpName::inferReturnTypes(                                 \
-      ::mlir::MLIRContext *, ::std::optional<::mlir::Location>,           \
-      ::mlir::ValueRange, ::mlir::DictionaryAttr,                         \
-      ::mlir::OpaqueProperties, ::mlir::RegionRange,                      \
-      ::llvm::SmallVectorImpl<::mlir::Type> &) { return success(); }
+// Real inferReturnTypes for ALL binary/comparison ops.
+// LLVM 22.1 instantiates InferTypeOpInterface trait models for ALL registered
+// ops (via RegisteredOperationName::Model<T>), so every op needs an impl.
+// Binary ops compute broadcast shape; comparison ops do the same (both
+// operands are Sf_FloatTensor).  Element type: f32 for binary/comparison,
+// AnyTensor element type for logical_and (use lhs element type).
+#define SF_BINARY_INFER(OpName)                                               \
+  LogicalResult OpName::inferReturnTypes(                                     \
+      ::mlir::MLIRContext *context, ::std::optional<::mlir::Location>,        \
+      ::mlir::ValueRange operands, ::mlir::DictionaryAttr,                    \
+      ::mlir::OpaqueProperties, ::mlir::RegionRange,                          \
+      ::llvm::SmallVectorImpl<::mlir::Type> &inferredReturnTypes) {           \
+    auto lhs = dyn_cast<RankedTensorType>(operands[0].getType());             \
+    auto rhs = dyn_cast<RankedTensorType>(operands[1].getType());             \
+    if (!lhs || !rhs) return failure();                                       \
+    SmallVector<int64_t> shape;                                               \
+    if (failed(computeBroadcastShape(lhs, rhs, shape))) return failure();     \
+    inferredReturnTypes.push_back(                                            \
+        RankedTensorType::get(shape, Builder(context).getF32Type()));         \
+    return success();                                                         \
+  }
 
-STUB_INFER_RETURN_TYPES(AddOp)
-STUB_INFER_RETURN_TYPES(MulOp)
-STUB_INFER_RETURN_TYPES(SubOp)
-STUB_INFER_RETURN_TYPES(DivOp)
-STUB_INFER_RETURN_TYPES(PowOp)
-STUB_INFER_RETURN_TYPES(MaxOp)
+SF_BINARY_INFER(AddOp)
+SF_BINARY_INFER(MulOp)
+SF_BINARY_INFER(SubOp)
+SF_BINARY_INFER(DivOp)
+SF_BINARY_INFER(PowOp)
+SF_BINARY_INFER(MaxOp)
+
+SF_BINARY_INFER(LeOp)
+SF_BINARY_INFER(GtOp)
+SF_BINARY_INFER(LtOp)
+SF_BINARY_INFER(EqOp)
+SF_BINARY_INFER(NeOp)
+
+// logical_and: uses element type from lhs (AnyTensor operands)
+LogicalResult LogicalAndOp::inferReturnTypes(
+    ::mlir::MLIRContext *context, ::std::optional<::mlir::Location>,
+    ::mlir::ValueRange operands, ::mlir::DictionaryAttr,
+    ::mlir::OpaqueProperties, ::mlir::RegionRange,
+    ::llvm::SmallVectorImpl<::mlir::Type> &inferredReturnTypes) {
+  auto lhs = dyn_cast<RankedTensorType>(operands[0].getType());
+  auto rhs = dyn_cast<RankedTensorType>(operands[1].getType());
+  if (!lhs || !rhs) return failure();
+  SmallVector<int64_t> shape;
+  if (failed(computeBroadcastShape(lhs, rhs, shape))) return failure();
+  inferredReturnTypes.push_back(
+      RankedTensorType::get(shape, lhs.getElementType()));
+  return success();
+}
+#undef SF_BINARY_INFER
 
 #define IMPL_COMPARE_VERIFY(OpName)                                     \
   LogicalResult OpName::verify() {                                      \
@@ -130,14 +184,6 @@ IMPL_COMPARE_VERIFY(LtOp)
 IMPL_COMPARE_VERIFY(EqOp)
 IMPL_COMPARE_VERIFY(NeOp)
 
-STUB_INFER_RETURN_TYPES(LeOp)
-STUB_INFER_RETURN_TYPES(GtOp)
-STUB_INFER_RETURN_TYPES(LtOp)
-STUB_INFER_RETURN_TYPES(EqOp)
-STUB_INFER_RETURN_TYPES(NeOp)
-
 LogicalResult LogicalAndOp::verify() {
   return verifyBinaryOpShapes(getOperation());
 }
-
-STUB_INFER_RETURN_TYPES(LogicalAndOp)
