@@ -207,7 +207,12 @@ def _shape_to_mlir_type(shape: tuple, elt: str) -> str:
         if d is None:
             return "?"
         try:
-            return str(int(d)) if int(d) > 0 else "?"
+            val = int(d)
+            # Safety: convert PyTorch sentinel (sys.maxsize) to dynamic dim,
+            # and any non-positive integer (-1, 0) to dynamic dim.
+            if val >= 9223372036854775807 or val <= 0:
+                return "?"
+            return str(val)
         except (TypeError, ValueError):
             return "?"
     dims = "x".join(_dim_str(d) for d in shape)

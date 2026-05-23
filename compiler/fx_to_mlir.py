@@ -449,9 +449,12 @@ def _collect_input_args(
                         input_names.append(ssa_name)
                         resolved_shape.append(ssa_name)
                     else:
-                        # Static value (int, -1, etc.): store in shape attr only,
-                        # NOT as operand — C++ lowering reads from shape attr.
-                        resolved_shape.append(item)
+                        # Static value: convert sentinel (sys.maxsize) to -1
+                        # for shape inference in C++ lowering.
+                        val = _symint_to_int(item) if isinstance(item, torch.SymInt) else item
+                        if isinstance(val, int) and val == 9223372036854775807:
+                            val = -1
+                        resolved_shape.append(val)
                 if resolved_shape:
                     extra_kwargs.setdefault("shape", tuple(resolved_shape))
             elif list_arg_attr not in extra_kwargs:
