@@ -212,7 +212,8 @@ BUILTIN_STAGES: list[Stage] = [
     # their operands (which may have been reshaped by the lowering).
     Stage("strip-sf-attrs+canon", action=_strip_sf_attrs_canon_action, timeout=30.0, warn_only=False),
     Stage("bufferize", (
-        "one-shot-bufferize{bufferize-function-boundaries allow-unknown-ops},"
+        "one-shot-bufferize{bufferize-function-boundaries allow-unknown-ops"
+        " function-boundary-type-conversion=identity-layout-map},"
         "canonicalize,cse,convert-bufferization-to-memref"
     ), timeout=60.0),
     Stage("linalg→loops", "convert-linalg-to-loops"),
@@ -228,10 +229,11 @@ BUILTIN_STAGES: list[Stage] = [
     Stage("vector→llvm", "convert-vector-to-llvm", timeout=120.0),
     Stage("arith→llvm", "convert-arith-to-llvm"),
     Stage("func→llvm", "convert-func-to-llvm"),
-    # Reconcile twice: internal casts (after finalize-memref-to-llvm) and
-    # boundary casts (after convert-func-to-llvm).  Single reconcile is
-    # insufficient because convert-func-to-llvm changes function signatures
-    # (memref → LLVM struct) after the internal casts were already inserted.
+    # convert-bufferization-to-memref may introduce new memref ops after
+    # func→llvm changes function signatures.  Second finalize-memref-to-llvm
+    # catches these residuals (torch-mlir pattern — avoids unrealized casts).
+    Stage("bufferization→memref", "convert-bufferization-to-memref"),
+    Stage("finalize-memref-2", "finalize-memref-to-llvm{use-generic-functions=false}", timeout=60.0),
     Stage("reconcile-casts-1", "reconcile-unrealized-casts"),
     Stage("reconcile-casts-2", "reconcile-unrealized-casts"),
     _make_fma_stage(),

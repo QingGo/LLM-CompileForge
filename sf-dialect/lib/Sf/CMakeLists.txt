@@ -12,6 +12,7 @@ add_mlir_dialect_library(SfDialect
   SfLowerToLinalg.cpp
   SfOps.cpp
   SfPromoteWeights.cpp
+  SfShapeInference.cpp
   SfStripGEPNuw.cpp
 
   ADDITIONAL_HEADER_DIRS

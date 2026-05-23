@@ -193,8 +193,6 @@ inline void populateBody(linalg::GenericOp op, PatternRewriter &rewriter,
 inline Value makeBinaryOp(OpBuilder &builder, Location loc, Value lhs, Value rhs,
                            Type outType, PatternRewriter &rewriter,
                            function_ref<Value(OpBuilder &, Location, Value, Value)> fn) {
-  Value empty = makeEmpty(builder, loc, outType, {lhs, rhs});
-  if (!empty) return Value();
   auto outRank = cast<ShapedType>(outType).getRank();
   auto lhsType = cast<RankedTensorType>(lhs.getType());
   auto rhsType = cast<RankedTensorType>(rhs.getType());
@@ -222,8 +220,62 @@ inline Value makeBinaryOp(OpBuilder &builder, Location loc, Value lhs, Value rhs
   auto rhsMap = AffineMap::get(outRank, 0, rhsExprs, builder.getContext());
   auto outMap = AffineMap::getMultiDimIdentityMap(outRank, builder.getContext());
 
+  // Refine output shape using broadcast rules AND compute dynamic-dim SSA
+  // values for a tensor::EmptyOp init tensor whose type exactly matches the
+  // refined result type — eliminating spurious kDynamic leaks that confuse
+  // one-shot-bufferize.
+  auto shapedOut = cast<RankedTensorType>(outType);
+  SmallVector<AffineMap> binMaps = {lhsMap, rhsMap};
+  SmallVector<RankedTensorType> binOpTypes = {lhsType, rhsType};
+  SmallVector<Value> operands = {lhs, rhs};
+  SmallVector<int64_t> refinedShape(shapedOut.getShape().begin(), shapedOut.getShape().end());
+  SmallVector<Value> dynSizes;
+
+  for (int64_t i = 0; i < outRank; ++i) {
+    if (!ShapedType::isDynamic(refinedShape[i])) continue;
+    bool anyNonBroadcast = false;
+    bool anyDynamicNonBroadcast = false;
+    int64_t bestStatic = ShapedType::kDynamic;
+    Value dynValue = nullptr;
+    for (int64_t m = 0; m < 2; ++m) {
+      if (i >= (int64_t)binMaps[m].getNumResults()) continue;
+      if (isa<AffineConstantExpr>(binMaps[m].getResult(i))) continue; // broadcast
+      anyNonBroadcast = true;
+      int64_t mRank = binOpTypes[m].getRank();
+      int64_t opDim = i - (outRank - mRank);
+      if (opDim < 0 || opDim >= mRank) continue;
+      int64_t dSize = binOpTypes[m].getDimSize(opDim);
+      if (ShapedType::isDynamic(dSize)) {
+        anyDynamicNonBroadcast = true;
+        // Capture the runtime SSA value from the first dynamic non-broadcast
+        // operand — all such operands must agree by broadcast semantics.
+        if (!dynValue) {
+          Value dimIdx = arith::ConstantIndexOp::create(builder, loc, opDim);
+          dynValue = tensor::DimOp::create(builder, loc, operands[m], dimIdx);
+        }
+      } else {
+        bestStatic = std::max(bestStatic, dSize);
+      }
+    }
+    if (!anyNonBroadcast) {
+      refinedShape[i] = 1;
+    } else if (!anyDynamicNonBroadcast && bestStatic != ShapedType::kDynamic) {
+      refinedShape[i] = bestStatic;
+    } else {
+      // Dim remains kDynamic; use the runtime SSA value for tensor::EmptyOp.
+      if (dynValue)
+        dynSizes.push_back(dynValue);
+    }
+  }
+
+  // Create tensor.empty with the refined type — its result type now exactly
+  // matches what linalg.generic will produce.
+  auto refinedType = RankedTensorType::get(refinedShape, shapedOut.getElementType());
+  Value empty = tensor::EmptyOp::create(builder, loc, refinedType, dynSizes);
+  if (!empty) return Value();
+
   SmallVector<utils::IteratorType> iters(outRank, utils::IteratorType::parallel);
-  auto g = linalg::GenericOp::create(rewriter, loc, outType,
+  auto g = linalg::GenericOp::create(rewriter, loc, refinedType,
       ValueRange{lhs, rhs}, empty, {lhsMap, rhsMap, outMap}, iters);
   populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
     Value v = fn(b, loc, args[0], args[1]);
