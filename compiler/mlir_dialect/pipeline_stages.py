@@ -161,40 +161,31 @@ def _strip_sf_attrs_action(module: Any) -> None:
 
 
 def _strip_sf_attrs_canon_action(module: Any) -> None:
-    """Strip ``sf.*`` and ``llvm.emit_c_interface`` attrs, then canonicalize.
+    """Strip ``sf.*`` and ``llvm.emit_c_interface`` attrs from func.func ops.
 
     The ``sf.*`` function attributes (e.g. ``sf.weight_names``) block the
     canonicalizer which cannot handle unregistered dialect attributes.
-    After stripping, ``canonicalize`` triggers MLIR's
-    ``InferStaticShapeOfOperands`` pattern which resolves kDynamic dims in
-    linalg.generic output types from operand shapes and indexing maps.
-    This is required because C++ lowering (via ``memref.reshape``
-    introduced by bufferization) can change operand shapes without
-    updating the generic's output type — canonicalize reconciles them.
 
-    ``llvm.emit_c_interface`` is stripped because it is only needed at
-    the LLVM level (after ``convert-func-to-llvm``).
+    DOES NOT run canonicalize — with explicit linalg.broadcast + identity-map
+    linalg.generic (S5 rewrite), canonicalize's InferStaticShapeOfOperands
+    can fold broadcasts into generics incorrectly, creating shape mismatches
+    that break bufferize.  (torch-mlir also skips canonicalize before bufferize.)
+
+    ``llvm.emit_c_interface`` is stripped because it is only needed at the
+    LLVM level (after ``convert-func-to-llvm``).
     """
-    import mlir.passmanager as pm
-
     main_mod = module.operation.regions[0].blocks[0]
-    ctx = module.operation.context
     stripped_count = 0
     for op in list(main_mod):
         if str(op.operation.name) != "func.func":
             continue
-        keys = [k for k in op.operation.attributes if k.startswith("sf.") or k == "llvm.emit_c_interface"]
+        keys = [k for k in op.operation.attributes if k.startswith("sf.")]
         if keys:
             for k in keys:
                 del op.operation.attributes[k]
             stripped_count += len(keys)
     if stripped_count:
-        _log.info("  Stripped %d sf.*/llvm.emit_c_interface attrs, running canonicalize", stripped_count)
-    try:
-        pman = pm.PassManager.parse("builtin.module(func.func(canonicalize,cse))", ctx)
-        pman.run(module.operation)
-    except Exception as e:
-        _log.warning("  canonicalize failed (non-fatal): %s", str(e).split("\\n")[0] if "\\n" in str(e) else str(e))
+        _log.info("  Stripped %d sf.*/llvm.emit_c_interface attrs", stripped_count)
 
 
 # The flattened equivalent of the LLVM lowering stages below is

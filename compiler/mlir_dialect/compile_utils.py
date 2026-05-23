@@ -397,59 +397,6 @@ def _compile_mlir_to_dylib_with_constants(
         link_dylib(obj_files, dylib_path)
 
 
-def _generate_ciface_wrappers(llvm_ir: str) -> str:
-    """Generate C source file with ``_mlir_ciface_*`` wrapper functions.
-
-    Each ``@func_name(%desc: !llvm.struct<...>, ...)`` in the LLVM IR gets
-    a companion ``@_mlir_ciface_func_name`` that unpacks bare-pointer arguments
-    into the struct-based descriptors expected by the real implementation.
-
-    Returns the C source text.
-    """
-    import re
-
-    lines = []
-
-    # Parse function signatures from LLVM IR
-    func_pattern = re.compile(
-        r'define\s+(?:void|struct[^)]*\))\s*@(\w+)\s*'
-        r'\(([^)]*)\)\s*(?:#\d+)?\s*\{',
-        llvm_ir
-    )
-
-    for m in func_pattern.finditer(llvm_ir):
-        func_name = m.group(1)
-
-        if func_name.startswith('_mlir_ciface_'):
-            continue
-
-        lines.append(f"// Auto-generated wrapper for {func_name}")
-        lines.append("")
-        # ...
-
-    return "\n".join(lines)
-
-
-def compile_ciface_wrappers(llvm_ir: str, work_dir: str) -> str:
-    """Generate and compile ciface wrapper C code into a .o file."""
-    c_source = _generate_ciface_wrappers(llvm_ir)
-    c_path = os.path.join(work_dir, "ciface_wrappers.c")
-    o_path = os.path.join(work_dir, "ciface_wrappers.o")
-    with open(c_path, "w") as f:
-        f.write(c_source)
-    cc_bin = _find_cc()
-    result = subprocess.run(
-        [cc_bin, "-c", c_path, "-o", o_path, "-O2"],
-        capture_output=True, text=True,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Failed to compile ciface wrappers (exit {result.returncode}):\n{result.stderr[:2000]}"
-        )
-    return o_path
-
-
 def _compile_embedded_data(bin_path: str, work_dir: str) -> str:
     """Create a .o file with embedded binary data from a file.
 
