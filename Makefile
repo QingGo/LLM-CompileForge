@@ -255,7 +255,7 @@ test-lit: $(VENV)
 # sf-dialect 静态库目标，用于 build-so 的依赖追踪
 sf-dialect/build/lib/Sf/libSfDialect.a: configure-sf-dialect
 	@echo "==> Building SfDialect static library..."
-	cmake --build sf-dialect/build --target SfDialect
+	cmake --build sf-dialect/build --target SfDialect SfCAPI
 
 .PHONY: build-so
 build-so: sf-dialect/build/lib/Sf/libSfDialect.a
