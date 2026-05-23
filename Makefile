@@ -223,14 +223,18 @@ configure-sf-dialect:
 	@LLVM_ABI=$$(grep LLVM_ABI_BREAKING_CHECKS llvm-project/build/CMakeCache.txt | cut -d= -f2); \
 	if [ -z "$$LLVM_ABI" ]; then LLVM_ABI=WITH_ASSERTS; fi; \
 	echo "  LLVM_ABI_BREAKING_CHECKS=$$LLVM_ABI"; \
-	mkdir -p sf-dialect/build && \
+	rm -rf sf-dialect/build && mkdir -p sf-dialect/build && \
 	cmake -G Ninja -S sf-dialect -B sf-dialect/build \
 		-DPython3_EXECUTABLE=$(PWD)/$(VENV)/bin/python3 \
 		-DMLIR_DIR=$(PWD)/llvm-project/build/lib/cmake/mlir \
 		-DLLVM_DIR=$(PWD)/llvm-project/build/lib/cmake/llvm \
 		-DLLVM_ENABLE_ASSERTIONS=ON \
 		-DLLVM_ABI_BREAKING_CHECKS=$$LLVM_ABI \
-		-DCMAKE_BUILD_TYPE=Release
+		-DCMAKE_BUILD_TYPE=Release && \
+	mkdir -p sf-dialect/build/python_packages/sf/mlir_sf/_mlir_libs && \
+	ln -sf $(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs/_sfDialectsNanobind.cpython-310-darwin.so \
+		sf-dialect/build/python_packages/sf/mlir_sf/_mlir_libs/_sfDialectsNanobind.cpython-310-darwin.so && \
+	echo "$(PWD)/sf-dialect/build/python_packages/sf" > $(PWD)/$(VENV)/lib/python3.10/site-packages/sf_dialect.pth
 
 .PHONY: build-sf-opt
 build-sf-opt: configure-sf-dialect build-mlir-opt

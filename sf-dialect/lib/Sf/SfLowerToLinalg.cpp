@@ -20,6 +20,10 @@
 using namespace mlir;
 using namespace mlir::sf;
 
+namespace {
+#include "Sf/SfLoweringPatterns.inc"
+} // namespace
+
 //===----------------------------------------------------------------------===//
 // SfLowerToLinalgPass — lower all remaining sf ops via conversion
 //===----------------------------------------------------------------------===//
@@ -104,6 +108,7 @@ struct SfLowerToLinalgPass
       registerSeqOpsPatterns(patterns);
       registerComparePatterns(patterns);
       registerReducePatterns(patterns);
+      populateWithGenerated(patterns);
 
       int64_t sfBefore = 0;
       func.walk([&](Operation *op) {

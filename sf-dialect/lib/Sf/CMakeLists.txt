@@ -20,6 +20,7 @@ add_mlir_dialect_library(SfDialect
 
   DEPENDS
     SfOpsIncGen
+    SfLoweringPatternsIncGen
     SfPassesIncGen
 
   LINK_LIBS PUBLIC
