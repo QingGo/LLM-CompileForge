@@ -1,4 +1,4 @@
-.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs diagnose-bt test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency verify-dylib verify-consistency verify-diag verify-preflight check-op-consistency build-rust install-rust diagnose-fast diagnose-ci build-so test-dylib-cos test-dylib-quick debug-cos diagnose
+.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency verify-dylib verify-consistency verify-diag verify-preflight check-op-consistency build-rust install-rust build-so test-dylib-cos test-dylib-cos-full test-dylib-quick debug-cos diagnose
 
 # ---- 环境 ----
 VENV := .venv
@@ -198,10 +198,6 @@ test-compile-full: $(VENV)
 	$(PYTHON) -m pytest tests/test_compile_full.py -v --tb=short --timeout=300
 
 # ---- SF dialect extension rebuild ----
-.PHONY: rebuild-sf
-rebuild-sf:
-	bash scripts/build_sf_extension.sh
-
 # ---- LLVM 构建配置 (复用 ccache + clang + lld) ----
 .PHONY: configure-llvm
 configure-llvm:
@@ -267,6 +263,11 @@ test-dylib-cos: build-so
 	DYLD_LIBRARY_PATH="$(SF_MLIR_LIBS):$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
 	$(PYTHON) scripts/compile_dylib.py compiled/opt_125m_fresh --model-name opt_125m
 	$(PYTHON) tests/test_dylib_cosine.py -v
+
+.PHONY: test-dylib-cos-full
+test-dylib-cos-full: build-so
+	$(PYTHON) scripts/compile.py opt-125m --output-dir compiled/opt_125m_fresh
+	$(MAKE) test-dylib-cos
 
 .PHONY: test-dylib-quick
 test-dylib-quick: build-so
