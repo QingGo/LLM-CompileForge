@@ -168,9 +168,18 @@ def run_ctypes(
 
     for fi, func_def in enumerate(graph["functions"]):
         symbol = func_def["symbol"]
+        kernel = None
         try:
             kernel = getattr(lib, symbol)
         except AttributeError:
+            # _mlir_ciface_* wrappers may not be generated; try bare symbol
+            bare = symbol.replace("_mlir_ciface_", "")
+            if bare != symbol:
+                try:
+                    kernel = getattr(lib, bare)
+                except AttributeError:
+                    pass
+        if kernel is None:
             continue
 
         input_descs: list[ctypes.Structure] = []
