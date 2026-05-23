@@ -171,6 +171,8 @@ def run_ctypes(
         try:
             kernel = getattr(lib, symbol)
         except AttributeError:
+            import logging
+            logging.warning("ctypes_forward: symbol '%s' not found in dylib, skipping function %d", symbol, fi)
             continue
 
         input_descs: list[ctypes.Structure] = []
