@@ -20,7 +20,6 @@ struct SfMatmulOpLowering : public OpRewritePattern<sf::MatmulOp> {
     auto rhsType = cast<RankedTensorType>(rhs.getType());
     int64_t lhsRank = lhsType.getRank(), rhsRank = rhsType.getRank();
 
-    auto eltType = lhsType.getElementType();
 
     // Standard 2D matmul: use linalg.matmul
     if (lhsRank == 2 && rhsRank == 2) {

@@ -32,8 +32,7 @@ inline Value makeEmpty(OpBuilder &b, Location loc, Type t, ValueRange inputs) {
   auto shaped = dyn_cast<ShapedType>(t);
   if (!shaped) return Value();
   SmallVector<Value> dynSizes;
-  SmallVector<bool> filled(shaped.getRank(), false);
-  auto idxType = b.getIndexType();
+    SmallVector<bool> filled(shaped.getRank(), false);
   for (auto input : inputs) {
     if (auto inType = dyn_cast<RankedTensorType>(input.getType())) {
       int64_t rankDiff = (int64_t)shaped.getRank() - (int64_t)inType.getRank();

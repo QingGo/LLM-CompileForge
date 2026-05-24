@@ -126,7 +126,7 @@ struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
     auto eltType = getElementTypeOrSelf(rt);
     // Override non-float output to f32 — arange is used for positional
     // encodings which expect float tensor values.
-    bool outputWasPromoted = false;
+    [[maybe_unused]] bool outputWasPromoted = false;
     if (!isa<FloatType>(eltType)) {
       eltType = rewriter.getF32Type();
       outType = RankedTensorType::get(outType.getShape(), eltType);
@@ -173,13 +173,12 @@ struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
       zeroInit = arith::ConstantOp::create(rewriter, loc, eltType,
           rewriter.getIntegerAttr(eltType, 0));
     }
-    auto fillOp = rewriter.create<linalg::FillOp>(loc, ValueRange{zeroInit}, ValueRange{rawEmpty});
+    auto fillOp = linalg::FillOp::create(rewriter, loc, ValueRange{zeroInit}, ValueRange{rawEmpty});
     Value empty = fillOp.getResult(0);
 
     // scf.for %i = 0 to N
     Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
-    Value zeroI64 = arith::ConstantIntOp::create(rewriter, loc, 0, 64);
     auto forOp = scf::ForOp::create(rewriter, loc, c0, nIdx, c1, empty);
     Value iv = forOp.getInductionVar();
 

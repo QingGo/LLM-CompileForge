@@ -18,7 +18,7 @@ struct SfSymSizeOpLowering : public OpRewritePattern<sf::SymSizeOp> {
   LogicalResult matchAndRewrite(sf::SymSizeOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     Value input = op.getInput();
-    Type rt = op.getResult().getType();
+    [[maybe_unused]] Type rt = op.getResult().getType();
     auto inputType = ::mlir::dyn_cast<::mlir::RankedTensorType>(input.getType());
     if (!inputType) return failure();
 
@@ -49,7 +49,7 @@ struct SfCumsumOpLowering : public OpRewritePattern<sf::CumsumOp> {
   LogicalResult matchAndRewrite(sf::CumsumOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     Value input = op.getInput();
-    Type rt = op.getResult().getType();
+    [[maybe_unused]] Type rt = op.getResult().getType();
     auto outType = ::mlir::dyn_cast<::mlir::RankedTensorType>(rt);
     auto inType = ::mlir::dyn_cast<::mlir::RankedTensorType>(input.getType());
     if (!inType || !outType) return failure();
@@ -60,7 +60,7 @@ struct SfCumsumOpLowering : public OpRewritePattern<sf::CumsumOp> {
     if (dim < 0 || dim >= inType.getRank())
       return failure();
 
-    auto eltType = inType.getElementType();
+    [[maybe_unused]] auto eltType = inType.getElementType();
     int64_t rank = inType.getRank();
 
     // Copy input to output first.
@@ -177,13 +177,13 @@ struct SfEmbeddingOpLowering : public OpRewritePattern<sf::EmbeddingOp> {
     auto loc = op.getLoc();
     Value weight = op.getWeight();
     Value indices = op.getIndices();
-    Type rt = op.getResult().getType();
+    [[maybe_unused]] Type rt = op.getResult().getType();
     auto wType = ::mlir::dyn_cast<::mlir::RankedTensorType>(weight.getType());
     auto idxType = ::mlir::dyn_cast<::mlir::RankedTensorType>(indices.getType());
     if (!wType || !idxType) return failure();
     if (wType.getRank() != 2) return failure();
 
-    auto eltType = wType.getElementType();
+    [[maybe_unused]] auto eltType = wType.getElementType();
     int64_t idxRank = idxType.getRank();
 
     // Use the sf op's result type directly (Python fixup ensures correct shape).
@@ -252,12 +252,12 @@ struct SfIndexOpLowering : public OpRewritePattern<sf::IndexOp> {
     for (size_t i = 1; i < operands.size(); ++i)
       indexTensors.push_back(operands[i]);
 
-    Type rt = op.getResult().getType();
+    [[maybe_unused]] Type rt = op.getResult().getType();
     auto outType = ::mlir::dyn_cast<::mlir::RankedTensorType>(rt);
     auto dataType = ::mlir::dyn_cast<::mlir::RankedTensorType>(data.getType());
     if (!outType || !dataType) return failure();
 
-    auto eltType = dataType.getElementType();
+    [[maybe_unused]] auto eltType = dataType.getElementType();
 
     // Output shape determines the iteration space
     int64_t outNumel = 1;
