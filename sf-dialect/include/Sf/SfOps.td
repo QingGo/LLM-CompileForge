@@ -145,6 +145,12 @@ def Sf_SoftmaxOp : Sf_Op<"softmax", [Pure]> {
 def Sf_ConstantOp : Sf_Op<"constant"> {
   let arguments = (ins ElementsAttr:$value);
   let results = (outs AnyTensor:$result);
+  let hasFolder = 1;
+  let extraClassDefinition = [{
+    ::mlir::OpFoldResult Sf_ConstantOp::fold(FoldAdaptor adaptor) {
+      return getValue();
+    }
+  }];
 }
 
 def Sf_WeightOp : Sf_Op<"weight"> {
