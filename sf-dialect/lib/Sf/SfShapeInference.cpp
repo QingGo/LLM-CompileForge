@@ -187,32 +187,3 @@ IMPL_COMPARE_VERIFY(NeOp)
 LogicalResult LogicalAndOp::verify() {
   return verifyBinaryOpShapes(getOperation());
 }
-
-//===----------------------------------------------------------------------===//
-// Activation op shape inference — SameOperandsAndResultType
-//===----------------------------------------------------------------------===//
-
-#define SF_ACTIVATION_INFER(OpName)                                            \
-  ::mlir::LogicalResult OpName::inferReturnTypes(                              \
-      ::mlir::MLIRContext *, ::std::optional<::mlir::Location>,                \
-      ::mlir::ValueRange operands, ::mlir::DictionaryAttr,                     \
-      ::mlir::OpaqueProperties, ::mlir::RegionRange,                           \
-      ::llvm::SmallVectorImpl<::mlir::Type> &inferredReturnTypes) {            \
-    inferredReturnTypes.push_back(operands[0].getType());                      \
-    return ::mlir::success();                                                  \
-  }
-
-SF_ACTIVATION_INFER(ReluOp)
-SF_ACTIVATION_INFER(GeluOp)
-SF_ACTIVATION_INFER(SiluOp)
-SF_ACTIVATION_INFER(SigmoidOp)
-SF_ACTIVATION_INFER(TanhOp)
-SF_ACTIVATION_INFER(ExpOp)
-SF_ACTIVATION_INFER(NegOp)
-SF_ACTIVATION_INFER(SoftplusOp)
-SF_ACTIVATION_INFER(SqrtOp)
-SF_ACTIVATION_INFER(CosOp)
-SF_ACTIVATION_INFER(SinOp)
-SF_ACTIVATION_INFER(RsqrtOp)
-
-#undef SF_ACTIVATION_INFER
