@@ -10,7 +10,8 @@ include "mlir/Interfaces/InferTypeOpInterface.td"
 //===----------------------------------------------------------------------===//
 
 class Sf_BinaryFloatOp<string mnemonic, list<Trait> traits = []> :
-    Sf_Op<mnemonic, !listconcat([Pure], traits)> {
+    Sf_Op<mnemonic, !listconcat([Pure,
+      DeclareOpInterfaceMethods<InferTypeOpInterface, ["inferReturnTypes"]>], traits)> {
   let arguments = (ins Sf_FloatTensor:$lhs, Sf_FloatTensor:$rhs);
   let results = (outs Sf_FloatTensor:$result);
   let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
@@ -21,7 +22,7 @@ class Sf_BinaryFloatOp<string mnemonic, list<Trait> traits = []> :
 
 class Sf_ActivationOp<string mnemonic, list<Trait> traits = []> :
     Sf_Op<mnemonic, !listconcat([Pure, SameOperandsAndResultType, Elementwise,
-           ], traits)> {
+      DeclareOpInterfaceMethods<InferTypeOpInterface, ["inferReturnTypes"]>], traits)> {
   let arguments = (ins Sf_FloatTensor:$input);
   let results = (outs Sf_FloatTensor:$result);
   let assemblyFormat = "$input attr-dict `:` type($result)";
