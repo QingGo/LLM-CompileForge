@@ -21,9 +21,6 @@ from pathlib import Path
 from typing import Any
 
 # ── Sub-module imports ────────────────────────────────────────────────
-from compiler.mlir_dialect.pipeline_actions import (
-    tile_matmuls_action,
-)
 from compiler.mlir_dialect.pipeline_stages_utils import (
     Stage,
     StageResult,
@@ -37,30 +34,6 @@ _log = logging.getLogger(__name__)
 
 
 # ── Standard pipeline stages ──────────────────────────────────────────
-
-
-def _make_tile_stage() -> Stage:
-    """Build a Stage for K=64,N=64 tiling with post-canonicalize."""
-    def _tile_action(m: Any) -> None:
-        import mlir.passmanager as pm
-        tile_matmuls_action(m, tile_k=64)
-        ctx = m.operation.context
-        pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx).run(m.operation)
-
-        # ── Verify tiling actually happened ──
-        txt = str(m)
-        scf_count = txt.count("scf.for")
-        if scf_count == 0:
-            _log.error("  ⚠️ TILING VERIFICATION FAILED: zero scf.for produced after tile_matmuls_action")
-            _log.error("  ⚠️ Check transform-interpreter setup — matmuls remain untiled")
-        else:
-            _log.info("  ✓ Tiling verification: %d scf.for loops produced", scf_count)
-    return Stage(
-        name="tile_matmuls (K,N=64)",
-        action=_tile_action,
-        timeout=60.0,
-        warn_only=False,
-    )
 
 
 def _make_verify_stage() -> Stage:
@@ -170,37 +143,39 @@ def _strip_sf_attrs_canon_action(module: Any) -> None:
 # available as LINALG_TO_LLVM_PIPELINE in compile_utils.py.
 # Keep the two definitions in sync.
 BUILTIN_STAGES: list[Stage] = [
-    Stage("canonicalize,cse", "canonicalize,cse"),
-    Stage("fuse+canonicalize", "linalg-fuse-elementwise-ops,canonicalize,cse", warn_only=False),
-    _make_tile_stage(),
-    Stage("emit_c_interface", action=_emit_c_interface_action, timeout=5.0, warn_only=False),
-    Stage("strip-sf-attrs+canon", action=_strip_sf_attrs_canon_action, timeout=30.0, warn_only=False),
-    Stage("bufferize", (
+    # ── Phase A: sf-level cleanup ──
+    Stage("A1-canonicalize,cse", "canonicalize,cse"),
+    Stage("A2-eliminate-empty-tensors", "eliminate-empty-tensors"),
+    Stage("A3-empty-tensor-to-alloc", "empty-tensor-to-alloc-tensor"),
+
+    # ── Phase B: broadcast decomposition (optional, skip) ──
+
+    # ── Phase C: bufferization ──
+    Stage("C1-interface", action=_emit_c_interface_action, timeout=5.0),
+    Stage("C2-strip-sf-attrs", action=_strip_sf_attrs_canon_action, timeout=30.0),
+    Stage("C3-bufferize", (
         "one-shot-bufferize{bufferize-function-boundaries allow-unknown-ops"
         " function-boundary-type-conversion=identity-layout-map},"
         "canonicalize,cse,convert-bufferization-to-memref"
     ), timeout=60.0),
-    Stage("linalg→loops", "convert-linalg-to-loops"),
-    Stage("lower-affine", "lower-affine"),
-    Stage("scf→cf", "convert-scf-to-cf"),
-    Stage("expand-strided", "expand-strided-metadata"),
-    Stage("lower-affine-2", "lower-affine"),
-    Stage("lower-vec-mask", "func.func(lower-vector-mask)"),
-    Stage("canonicalize,cse-2", "canonicalize,cse"),
-    Stage("convert-cf→llvm", "convert-cf-to-llvm"),
-    Stage("finalize-memref", "finalize-memref-to-llvm{use-generic-functions=false}"),
-    Stage("math→llvm", "convert-math-to-llvm"),
-    Stage("vector→llvm", "convert-vector-to-llvm", timeout=120.0),
-    Stage("arith→llvm", "convert-arith-to-llvm"),
-    Stage("func→llvm", "convert-func-to-llvm"),
-    # convert-bufferization-to-memref may introduce new memref ops after
-    # func→llvm changes function signatures.  Second finalize-memref-to-llvm
-    # catches these residuals (torch-mlir pattern — avoids unrealized casts).
-    Stage("bufferization→memref", "convert-bufferization-to-memref"),
-    Stage("finalize-memref-2", "finalize-memref-to-llvm{use-generic-functions=false}", timeout=60.0),
-    Stage("reconcile-casts-1", "reconcile-unrealized-casts"),
-    Stage("reconcile-casts-2", "reconcile-unrealized-casts"),
-    Stage("strip-gep-nuw", "sf-strip-gep-nuw", timeout=10.0, warn_only=False),
+
+    # ── Phase D: loops → control flow ──
+    Stage("D1-linalg→loops", "convert-linalg-to-loops"),
+    Stage("D2-lower-affine", "lower-affine"),
+    Stage("D3-scf→cf", "convert-scf-to-cf"),
+    Stage("D4-expand-strided", "expand-strided-metadata"),
+
+    # ── Phase E: LLVM conversion ──
+    Stage("E1-finalize-memref", "finalize-memref-to-llvm{use-generic-functions=false}"),
+    Stage("E2-math→llvm", "convert-math-to-llvm"),
+    Stage("E3-vector→llvm", "convert-vector-to-llvm", timeout=120.0),
+    Stage("E4-arith→llvm", "convert-arith-to-llvm"),
+    Stage("E5-func→llvm", "convert-func-to-llvm"),
+    Stage("E6-cf→llvm", "convert-cf-to-llvm"),
+    Stage("E7-bufferization→memref", "convert-bufferization-to-memref"),
+    Stage("E8-finalize-memref-2", "finalize-memref-to-llvm{use-generic-functions=false}", timeout=60.0),
+    Stage("E9-reconcile-casts", "reconcile-unrealized-casts"),
+    Stage("E10-strip-gep-nuw", "sf-strip-gep-nuw", timeout=10.0, warn_only=False),
     _make_verify_stage(),
 ]
 

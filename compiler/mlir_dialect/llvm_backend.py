@@ -41,10 +41,7 @@ from compiler.mlir_dialect.pipeline_stages import (
     StageResult,
     _save_ir_snapshot,
     run_stages,
-    tile_matmuls_action,
 )
-
-_tile_matmuls_per_func = tile_matmuls_action
 
 _log = logging.getLogger(__name__)
 
@@ -125,7 +122,6 @@ def lower_linalg_to_llvm_ir(
             stages = BUILTIN_STAGES[1:]
         else:
             stages = BUILTIN_STAGES
-        stages = [s for s in stages if s.name not in ("fuse+canonicalize", "tile_matmuls (K,N=64)")]
         run_stages(ir_module, ctx, stages)
         return str(ir_module)
 
