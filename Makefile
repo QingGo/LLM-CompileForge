@@ -11,8 +11,8 @@ $(VENV):
 	uv venv --python 3.10 && uv sync
 
 # ---- DYLD library paths ----
-MLIR_LIBS_PATH := $(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs
-TORCH_LIB_PATH := $(PWD)/$(VENV)/lib/python3.10/site-packages/torch/lib
+MLIR_LIBS_PATH := $(PROJECT_ROOT)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs
+TORCH_LIB_PATH := $(PROJECT_ROOT)/$(VENV)/lib/python3.10/site-packages/torch/lib
 
 # ---- L0: 静态检查 (<2s) ----
 lint: lint-ruff lint-mypy
@@ -210,55 +210,62 @@ configure-llvm:
 		-DCMAKE_CXX_COMPILER=/usr/local/opt/llvm/bin/clang++ \
 		-DLLVM_USE_LINKER=lld \
 		-DLLVM_CCACHE_BUILD=ON \
-		-DPython3_EXECUTABLE=$(PWD)/$(VENV)/bin/python3 \
-		-DPython3_ROOT_DIR=$(PWD)/$(VENV)
+		-DPython3_EXECUTABLE=$(PROJECT_ROOT)/$(VENV)/bin/python3 \
+		-DPython3_ROOT_DIR=$(PROJECT_ROOT)/$(VENV)
 
 .PHONY: build-mlir-opt
 build-mlir-opt:
 	cd llvm-project/build && ninja mlir-opt
 
 # ---- sf-dialect 构建配置（ABI 对齐 LLVM 构建） ----
-.PHONY: configure-sf-dialect
+PROJECT_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+
+.PHONY: doctor configure-sf-dialect build-sf build-so
+
+doctor:
+	@echo "=== Environment Check ==="
+	@echo "PROJECT_ROOT: $(PROJECT_ROOT)"
+	@echo -n "  MLIR_DIR: "; \
+	if [ -f "$(PROJECT_ROOT)/llvm-project/build/lib/cmake/mlir/MLIRConfig.cmake" ]; then \
+		echo "$(PROJECT_ROOT)/llvm-project/build/lib/cmake/mlir (compiled) ✓"; \
+	else echo "MISSING — run: bash scripts/setup.sh"; fi
+	@echo -n "  LLVM_DIR: "; \
+	if [ -f "$(PROJECT_ROOT)/llvm-project/build/lib/cmake/llvm/LLVMConfig.cmake" ]; then \
+		echo "$(PROJECT_ROOT)/llvm-project/build/lib/cmake/llvm (compiled) ✓"; \
+	else echo "MISSING"; fi
+	@echo -n "  mlir-tblgen: "; \
+	if [ -x "$(PROJECT_ROOT)/llvm-project/build/bin/mlir-tblgen" ]; then \
+		echo "compiled ✓"; else echo "MISSING"; fi
+	@echo -n "  sf-dialect .a: "; \
+	if [ -f "$(PROJECT_ROOT)/sf-dialect/build/lib/Sf/libSfDialect.a" ]; then \
+		ls -lh "$(PROJECT_ROOT)/sf-dialect/build/lib/Sf/libSfDialect.a" | awk '{print $$5}'; \
+	else echo "not built — run: make build-sf"; fi
+
 configure-sf-dialect:
-	@LLVM_ABI=$$(grep LLVM_ABI_BREAKING_CHECKS llvm-project/build/CMakeCache.txt | cut -d= -f2); \
+	@LLVM_ABI=$$(grep LLVM_ABI_BREAKING_CHECKS $(PROJECT_ROOT)/llvm-project/build/CMakeCache.txt | cut -d= -f2); \
 	if [ -z "$$LLVM_ABI" ]; then LLVM_ABI=WITH_ASSERTS; fi; \
 	echo "  LLVM_ABI_BREAKING_CHECKS=$$LLVM_ABI"; \
 	rm -rf sf-dialect/build && mkdir -p sf-dialect/build && \
 	cmake -G Ninja -S sf-dialect -B sf-dialect/build \
-		-DPython3_EXECUTABLE=$(PWD)/$(VENV)/bin/python3 \
-		-DMLIR_DIR=$(PWD)/llvm-project/build/lib/cmake/mlir \
-		-DLLVM_DIR=$(PWD)/llvm-project/build/lib/cmake/llvm \
+		-DPython3_EXECUTABLE=$(PROJECT_ROOT)/$(VENV)/bin/python3 \
+		-DMLIR_DIR=$(PROJECT_ROOT)/llvm-project/build/lib/cmake/mlir \
+		-DLLVM_DIR=$(PROJECT_ROOT)/llvm-project/build/lib/cmake/llvm \
 		-DLLVM_ENABLE_ASSERTIONS=ON \
 		-DLLVM_ABI_BREAKING_CHECKS=$$LLVM_ABI \
-		-DCMAKE_BUILD_TYPE=Release && \
-	mkdir -p sf-dialect/build/python_packages/sf/mlir_sf/_mlir_libs && \
-	ln -sf $(PWD)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs/_sfDialectsNanobind.cpython-310-darwin.so \
-		sf-dialect/build/python_packages/sf/mlir_sf/_mlir_libs/_sfDialectsNanobind.cpython-310-darwin.so && \
-	echo "$(PWD)/sf-dialect/build/python_packages/sf" > $(PWD)/$(VENV)/lib/python3.10/site-packages/sf_dialect.pth
+		-DCMAKE_BUILD_TYPE=Release
 
-.PHONY: build-sf-opt
-build-sf-opt: configure-sf-dialect build-mlir-opt
-	cd sf-dialect/build && cmake --build . --target sf-opt
-
-# ---- L0: lit / FileCheck 测试 (sf-dialect lowering patterns) ----
-# Requires sf-opt built from sf-dialect/tools/sf-opt/.
-# If sf-opt is not available, tests are skipped gracefully.
-test-lit: $(VENV)
-	@if [ ! -f sf-dialect/tools/sf-opt/sf-opt ] && [ ! -f sf-dialect/build/tools/sf-opt ]; then \
-		echo "⚠️  sf-opt not found — build it from sf-dialect/tools/sf-opt/ first."; \
-		echo "   cd llvm-project/build && ninja mlir-opt  # build MLIROptLib"; \
-		echo "   cd sf-dialect && ninja sf-opt"; \
-	fi
-	cd sf-dialect && lit test/ -v --ignore-fail
-
-# ---- Dylib 构建 + Cos 测试 ----
-# sf-dialect 静态库目标，用于 build-so 的依赖追踪
 sf-dialect/build/lib/Sf/libSfDialect.a: configure-sf-dialect
 	@echo "==> Building SfDialect static library..."
 	cmake --build sf-dialect/build --target SfDialect SfCAPI
 
-.PHONY: build-so
-build-so: sf-dialect/build/lib/Sf/libSfDialect.a
+.PHONY: build-sf
+build-sf: sf-dialect/build/lib/Sf/libSfDialect.a
+
+build-so: build-sf
+	@mkdir -p sf-dialect/build/python_packages/sf/mlir_sf/_mlir_libs && \
+	ln -sf $(PROJECT_ROOT)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs/_sfDialectsNanobind.cpython-310-darwin.so \
+		sf-dialect/build/python_packages/sf/mlir_sf/_mlir_libs/_sfDialectsNanobind.cpython-310-darwin.so && \
+	echo "$(PROJECT_ROOT)/sf-dialect/build/python_packages/sf" > $(PROJECT_ROOT)/$(VENV)/lib/python3.10/site-packages/sf_dialect.pth && \
 	scripts/build_so.sh
 
 .PHONY: test-dylib-cos
@@ -332,7 +339,7 @@ rebuild-mlir: $(VENV)
 # IMPORTANT: sf dialect _mlir_libs dir must come BEFORE torch/lib in
 # DYLD_LIBRARY_PATH, or the sf dialect's nanobind symbols are shadowed by
 # PyTorch's copy, causing "symbol not found: nb_func_new" on import.
-SF_MLIR_LIBS := $(PWD)/sf-dialect/build/python_packages/sf/mlir_sf/_mlir_libs
+SF_MLIR_LIBS := $(PROJECT_ROOT)/sf-dialect/build/python_packages/sf/mlir_sf/_mlir_libs
 rebuild-dylib: $(VENV)
 	DYLD_LIBRARY_PATH="$(SF_MLIR_LIBS):$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
 	$(PYTHON) scripts/compile_dylib.py compiled/opt_125m_fresh --model-name opt_125m
