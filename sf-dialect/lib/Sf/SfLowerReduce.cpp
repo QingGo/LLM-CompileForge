@@ -59,10 +59,17 @@ struct SfSumOpLowering : public OpRewritePattern<sf::SumOp> {
     if (!isa<ShapedType>(rt)) return failure();
     Value empty = makeZeroedEmpty(rewriter, loc, rt, {op.getInput()});
     if (!empty) return failure();
-    auto rank = cast<ShapedType>(rt).getRank();
-    SmallVector<utils::IteratorType> iterTypes(rank, utils::IteratorType::reduction);
+    // Use input rank for maps and iterator types — output is scalar (rank 0)
+    auto inType = dyn_cast<RankedTensorType>(op.getInput().getType());
+    if (!inType) return failure();
+    auto inRank = inType.getRank();
+    SmallVector<utils::IteratorType> iterTypes(inRank, utils::IteratorType::reduction);
+    // Input map: identity over all input dimensions
+    auto inMap = AffineMap::getMultiDimIdentityMap(inRank, rewriter.getContext());
+    // Output map: projects nothing (scalar result — no dims)
+    auto outMap = AffineMap::get(inRank, 0, {}, rewriter.getContext());
     auto g = linalg::GenericOp::create(rewriter, loc, rt, op.getInput(), empty,
-        identityMaps(rank, 2, rewriter.getContext()), iterTypes);
+        {inMap, outMap}, iterTypes);
     populateBody(g, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
       Value add = arith::AddFOp::create(b, loc, args[0], args[1]);
       linalg::YieldOp::create(b, loc, add);

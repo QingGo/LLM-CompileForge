@@ -55,6 +55,9 @@ def _read_memref_output(inner_ptr: Any, arr_dummy: np.ndarray) -> np.ndarray:
         ctypes.cast(inner_ptr, ctypes.c_void_p).value,
         ctypes.sizeof(clone),
     )
+    if arr_dummy.ndim == 0:
+        # Scalar (rank-0) memref: aligned pointer holds the scalar value directly
+        return np.array(clone.aligned[0], dtype=np.float32).reshape(())
     return np.ctypeslib.as_array(clone.aligned, shape=tuple(clone.shape)).copy()
 
 
@@ -62,6 +65,8 @@ def _read_memref_output(inner_ptr: Any, arr_dummy: np.ndarray) -> np.ndarray:
 
 
 def _shape_to_mlir_type(shape: tuple[int, ...]) -> str:
+    if not shape:
+        return "tensor<f32>"
     dims = "x".join(str(d) for d in shape)
     return f"tensor<{dims}xf32>"
 
@@ -240,14 +245,18 @@ def _detect_output_shape(module: Any) -> tuple[int, ...]:
             ft = str(op.operation.attributes.get("function_type", ""))
             import re
 
-            m = re.search(r"(tensor|memref)<([\dx]+)xf32>", ft)
-            if m:
+            # Find the LAST tensor/memref type (the return type in function signature)
+            matches = list(re.finditer(r"(tensor|memref)<([\dx]*)xf32>", ft))
+            if matches:
+                m = matches[-1]
                 dims = m.group(2)
-                output_shape = tuple(int(d) if d.isdigit() else 0 for d in dims.split("x"))
+                output_shape = tuple(int(d) if d.isdigit() else 0 for d in dims.split("x") if d)
+                if not output_shape:
+                    output_shape = ()
         return ir.WalkResult.ADVANCE
 
     module.operation.walk(_find_func)
-    if output_shape:
+    if output_shape is not None:
         return output_shape
 
     return (4, 768)
@@ -316,7 +325,10 @@ class Runner:
         mlir_text = generate_mlir(case)
 
         # Step 2-6: Lower and JIT compile
-        engine, output_shape = lower_and_jit(mlir_text)
+        engine, _ = lower_and_jit(mlir_text)
+
+        # Use known output shape from test case (detection from LLVM IR is fragile)
+        output_shape = (case.output_shapes or [case.input_shapes[0]])[0]
 
         # Step 7: Generate shared input data (same for JIT and torch)
         rng = np.random.RandomState(42)

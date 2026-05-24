@@ -105,6 +105,9 @@ OP_TABLE: list[OpCase] = [
     OpCase("sf.slice", lambda x: x[0:2, :], [(4, 768)], 1e-5, "slice",
            kwargs={"dim": 0, "start": 0, "end": 2},
            output_shapes=[(2, 768)]),
+    # ── Reduction — lowering confirmed for sum ──────────────────────────
+    OpCase("sf.sum", lambda x: torch.sum(x), [(2, 4)], 1e-5, "sum",
+           kwargs={}, output_shapes=[()]),
     # Rank-1 ops deferred: LLVM lowering sometimes adds a dimension
     # (tensor<768xf32> → memref<768x1xf32>). Revisit after bufferization fix.
 ]
@@ -118,8 +121,6 @@ OP_TABLE: list[OpCase] = [
 #   sf.lt     — SfLtOp defined, no lowering pattern
 #   sf.eq     — SfEqOp defined, no lowering pattern
 #   sf.permute — SfPermuteOp defined, no lowering pattern
-#   sf.sum    — SfSumOp defined, lowering broken (identityMaps with reduction
-#               doesn't handle different input/output shapes; needs linalg.reduce)
 #
 # Once lowering patterns are added (in sf-dialect/lib/Sf/), add entries:
 #   OpCase("sf.sqrt", torch.sqrt, [(4, 768)], 1e-5, "sqrt"),
