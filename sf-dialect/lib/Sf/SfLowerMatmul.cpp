@@ -7,7 +7,7 @@
 
 using namespace mlir;
 
-namespace {
+namespace mlir::sf {
 
 // Matmul/Linear lowering
 struct SfMatmulOpLowering : public OpRewritePattern<sf::MatmulOp> {

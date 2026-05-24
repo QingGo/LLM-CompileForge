@@ -7,7 +7,7 @@
 
 using namespace mlir;
 
-namespace {
+namespace mlir::sf {
 
 // Identity → passthrough; handle type mismatches by inserting proper cast
 struct IdentityLowering : public OpRewritePattern<sf::IdentityOp> {
@@ -31,7 +31,7 @@ struct IdentityLowering : public OpRewritePattern<sf::IdentityOp> {
     if (!empty) return failure();
     auto inType2 = cast<RankedTensorType>(input.getType());
     auto inRank = inType2.getRank();
-    int64_t squeezeCount = (inRank > rank) ? (inRank - rank) : 0;
+    [[maybe_unused]] int64_t squeezeCount = (inRank > rank) ? (inRank - rank) : 0;
     auto inMap = broadcastMap(rank, inRank, rewriter.getContext(), inType2.getShape());
     auto outMap = AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext());
     SmallVector<utils::IteratorType> iterTypes(rank, utils::IteratorType::parallel);

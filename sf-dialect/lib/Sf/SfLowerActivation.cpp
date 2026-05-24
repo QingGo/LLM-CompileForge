@@ -7,7 +7,7 @@
 
 using namespace mlir;
 
-namespace {
+namespace mlir::sf {
 
 // Relu lowering
 struct ReluLowering : public OpRewritePattern<sf::ReluOp> {

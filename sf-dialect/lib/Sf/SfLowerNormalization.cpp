@@ -7,7 +7,7 @@
 
 using namespace mlir;
 
-namespace {
+namespace mlir::sf {
 
 struct SfLayerNormOpLowering : public OpRewritePattern<sf::LayerNormOp> {
   using OpRewritePattern<sf::LayerNormOp>::OpRewritePattern;

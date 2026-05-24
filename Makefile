@@ -35,6 +35,20 @@ test-model: $(VENV)
 test-patterns: $(VENV)
 	$(PYTHON) -m pytest tests/test_lowering_patterns.py -v --tb=short --timeout=2
 
+# ---- L1c2: DRR pattern 语法验证 (<2s) ----
+.PHONY: test-ddr
+test-ddr:
+	@echo "=== Verifying DRR patterns ==="; \
+	TBLGEN=$(PROJECT_ROOT)/llvm-project/build/bin/mlir-tblgen; \
+	INCLUDES="-I$(PROJECT_ROOT)/sf-dialect/include/Sf -I$(PROJECT_ROOT)/llvm-project/mlir/include \
+	          -I$(PROJECT_ROOT)/llvm-project/build/tools/mlir/include -I$(PROJECT_ROOT)/llvm-project/llvm/include \
+	          -I$(PROJECT_ROOT)/llvm-project/build/include -I$(PROJECT_ROOT)/sf-dialect/include"; \
+	if $$TBLGEN $$INCLUDES -gen-rewriters $(PROJECT_ROOT)/sf-dialect/include/Sf/SfLoweringPatterns.td > /dev/null 2>&1; then \
+		echo "  ✅ DRR patterns compile"; \
+	else \
+		echo "  ❌ DRR patterns failed"; exit 1; \
+	fi
+
 # ---- L1d: 组合快速验证 (lint + 全部 L1, <20s) ----
 test-smoke: lint test-unit test-model test-patterns
 

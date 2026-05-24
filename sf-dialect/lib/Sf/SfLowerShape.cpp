@@ -7,7 +7,7 @@
 
 using namespace mlir;
 
-namespace {
+namespace mlir::sf {
 
 // View → tensor reshape or expand/collapse
 struct SfViewOpLowering : public OpRewritePattern<sf::ViewOp> {

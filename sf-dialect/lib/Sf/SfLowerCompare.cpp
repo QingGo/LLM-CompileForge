@@ -7,7 +7,7 @@
 
 using namespace mlir;
 
-namespace {
+namespace mlir::sf {
 
 // Le comparison -> arith.cmpf in generic with explicit linalg.broadcast
 // Computes lhs <= rhs element-wise. Output is f32 (0.0/1.0) to avoid

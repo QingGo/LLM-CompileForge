@@ -7,7 +7,7 @@
 
 using namespace mlir;
 
-namespace {
+namespace mlir::sf {
 
 // OnesLike → linalg.fill(1.0)
 // When dyn_shape operands are present (e.g., from aten.ones with symbolic

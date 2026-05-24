@@ -7,7 +7,7 @@
 
 using namespace mlir;
 
-namespace {
+namespace mlir::sf {
 
 //===----------------------------------------------------------------------===//
 // Scaled Dot-Product Attention lowering:
