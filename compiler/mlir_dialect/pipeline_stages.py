@@ -22,8 +22,6 @@ from typing import Any
 
 # ── Sub-module imports ────────────────────────────────────────────────
 from compiler.mlir_dialect.pipeline_actions import (
-    ensure_filled_matmul_outputs_action,
-    fuse_fma_action,
     tile_matmuls_action,
 )
 from compiler.mlir_dialect.pipeline_stages_utils import (
@@ -63,26 +61,6 @@ def _make_tile_stage() -> Stage:
         timeout=60.0,
         warn_only=False,
     )
-
-
-def _make_fma_stage() -> Stage:
-    """Build a Stage for FMA fusion."""
-    def _fma_action(m: Any) -> None:
-        n = fuse_fma_action(m)
-        _log.info("    %d / %d fmuladd fusions",
-                  n, _count_potential_fma(m))
-    return Stage(
-        name="fma-fusion",
-        action=_fma_action,
-        timeout=30.0,
-        warn_only=False,
-    )
-
-
-def _count_potential_fma(module: Any) -> int:
-    """Count approximate number of FMA opportunities for logging."""
-    txt = str(module)
-    return txt.count("llvm.fmul")
 
 
 def _make_verify_stage() -> Stage:
@@ -196,11 +174,6 @@ BUILTIN_STAGES: list[Stage] = [
     Stage("fuse+canonicalize", "linalg-fuse-elementwise-ops,canonicalize,cse", warn_only=False),
     _make_tile_stage(),
     Stage("emit_c_interface", action=_emit_c_interface_action, timeout=5.0, warn_only=False),
-    Stage("ensure-filled-outputs", action=ensure_filled_matmul_outputs_action, timeout=30.0, warn_only=False),
-    # Strip sf.weight_names before bufferize: unregistered dialect attributes
-    # on func.func block downstream canonicalize/bufferize passes.  After
-    # stripping, canonicalize reconciles linalg.generic output types with
-    # their operands (which may have been reshaped by the lowering).
     Stage("strip-sf-attrs+canon", action=_strip_sf_attrs_canon_action, timeout=30.0, warn_only=False),
     Stage("bufferize", (
         "one-shot-bufferize{bufferize-function-boundaries allow-unknown-ops"
@@ -227,26 +200,9 @@ BUILTIN_STAGES: list[Stage] = [
     Stage("finalize-memref-2", "finalize-memref-to-llvm{use-generic-functions=false}", timeout=60.0),
     Stage("reconcile-casts-1", "reconcile-unrealized-casts"),
     Stage("reconcile-casts-2", "reconcile-unrealized-casts"),
-    _make_fma_stage(),
     Stage("strip-gep-nuw", "sf-strip-gep-nuw", timeout=10.0, warn_only=False),
     _make_verify_stage(),
 ]
-
-
-BUILTIN_STAGES_NO_FMA: list[Stage] = [s for s in BUILTIN_STAGES if s.name != "fma-fusion"]
-"""BUILTIN_STAGES without FMA fusion stage — for testing if FMA causes cos degradation."""
-
-
-def get_stages(enable_fma: bool = True) -> list[Stage]:
-    """Return BUILTIN_STAGES, optionally without FMA fusion.
-
-    Args:
-        enable_fma: If True (default), returns BUILTIN_STAGES as-is.
-                    If False, returns BUILTIN_STAGES with the "fma-fusion" stage removed.
-    """
-    if enable_fma:
-        return BUILTIN_STAGES
-    return [s for s in BUILTIN_STAGES if s.name != "fma-fusion"]
 
 
 def get_pipeline_specs() -> list[tuple[str, str, float, bool]]:

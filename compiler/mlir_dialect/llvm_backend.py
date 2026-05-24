@@ -37,19 +37,13 @@ from compiler.mlir_dialect.compile_utils import (
 )
 from compiler.mlir_dialect.pipeline_stages import (
     BUILTIN_STAGES,
-    BUILTIN_STAGES_NO_FMA,
     Stage,
     StageResult,
     _save_ir_snapshot,
-    ensure_filled_matmul_outputs_action,
-    fuse_fma_action,
-    get_stages,
     run_stages,
     tile_matmuls_action,
 )
 
-_ensure_filled_matmul_outputs = ensure_filled_matmul_outputs_action
-_fuse_fma_in_module = fuse_fma_action
 _tile_matmuls_per_func = tile_matmuls_action
 
 _log = logging.getLogger(__name__)
@@ -127,18 +121,10 @@ def lower_linalg_to_llvm_ir(
         )
 
     with ir.Location.unknown(ctx):
-        # Always skip the first canonicalize,cse. The second one at stage 14
-        # handles the same cleanup. The first one fails on shape-specialized
-        # index_op outputs whose dynamic dims canonicalize resolves to
-        # conflicting concrete values (batch vs seq) before bufferization.
-        skip_fma = os.environ.get("SF_SKIP_FMA", "").lower() in ("1", "true", "yes")
-        base = BUILTIN_STAGES_NO_FMA if skip_fma else BUILTIN_STAGES
         if skip_first_canonicalize:
-            stages = base[1:]
+            stages = BUILTIN_STAGES[1:]
         else:
-            stages = base
-        # Skip fuse+canonicalize and tile_matmuls (pre-existing pipeline issues
-        # with the restored model.mlir — these are optimizations, not correctness).
+            stages = BUILTIN_STAGES
         stages = [s for s in stages if s.name not in ("fuse+canonicalize", "tile_matmuls (K,N=64)")]
         run_stages(ir_module, ctx, stages)
         return str(ir_module)
