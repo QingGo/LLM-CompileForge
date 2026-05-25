@@ -185,7 +185,8 @@ struct SfExpandOpLowering : public OpRewritePattern<sf::ExpandOp> {
       int64_t outDimSize = outType.getDimSize(i);
       int64_t inDimSize = inType.getDimSize(inIdx);
       bool needsBroadcast = false;
-      if ((inDimSize == 1 || (inDimSize == ShapedType::kDynamic && inIdx == 0)) &&
+      if ((inDimSize == 1 || (inDimSize == ShapedType::kDynamic &&
+           outDimSize != ShapedType::kDynamic && outDimSize > 1)) &&
           (outDimSize == ShapedType::kDynamic || outDimSize > 1)) {
         needsBroadcast = true;
       }
