@@ -341,6 +341,24 @@ struct SfIndexOpLowering : public OpRewritePattern<sf::IndexOp> {
       }
     }
 
+#ifndef NDEBUG
+    // Verify: broadcast dims (i < broadcastRank && numIndices > 0) must come
+    // from an index tensor, not the data tensor. This guards against
+    // regression of Bug 2 where dim2 was sourced from tensor.dim data, 0 (batch).
+    for (int64_t i = 0; i < outType.getRank(); ++i) {
+      if (i >= broadcastRank || numIndices == 0) continue;
+      if (!outType.isDynamicDim(i)) continue;
+      auto dimDefOp = outDims[i].getDefiningOp<tensor::DimOp>();
+      if (dimDefOp) {
+        auto dimSource = dimDefOp.getSource();
+        bool fromDataTensor = (dimSource == data);
+        (void)fromDataTensor;
+        assert(!fromDataTensor &&
+               "Bug 2 regression: broadcast dim sourced from data tensor instead of index tensor");
+      }
+    }
+#endif
+
     // Create empty tensor with correct dynamic sizes.
     SmallVector<Value> dynSizes;
     for (int64_t i = 0; i < outType.getRank(); ++i)

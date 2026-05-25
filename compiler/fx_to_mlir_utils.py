@@ -135,6 +135,24 @@ def _dtype_arange(
 
 
 
+def _symint_to_name(val: Any) -> str | None:
+    """Extract symbolic variable name from a torch.SymInt, if available.
+
+    SymInt objects in ``node.meta["val"]`` carry symbolic names accessible
+    via ``str(val.node)`` (e.g. ``"s0"``, ``"s1"``).  These names identify
+    which broadcast dimension carries which symbolic identity.
+
+    Returns the symbolic name (e.g. ``"s0"``) or ``None`` if the value is
+    not a symbolic integer.
+    """
+    if isinstance(val, torch.SymInt):
+        if hasattr(val, "node") and val.node is not None:
+            name = str(val.node)
+            if isinstance(name, str) and name.startswith("s"):
+                return name
+    return None
+
+
 def _symint_to_int(val: Any) -> int | None:
     if isinstance(val, torch.SymInt):
         if hasattr(val, "node") and val.node is not None:

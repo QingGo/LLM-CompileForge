@@ -30,6 +30,7 @@ from compiler.fx_to_mlir_utils import (
     _shape_to_mlir_type,
     _symint_for_view,
     _symint_to_int,
+    _symint_to_name,
     _type_from_fake,
 )
 from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp
@@ -174,6 +175,19 @@ def fx_graph_to_mlir(
             if output_types:
                 shape_map[node.name] = _parse_mlir_type_to_shape(output_types[0])
 
+            # Preserve symbolic dimension names for sf.index ops.
+            # These names (e.g. "s0", "s1") flow into sf.dim_names attribute
+            # and are used by the C++ lowering as a debug guardrail against
+            # sourcing broadcast dims from the data tensor (Bug 2 regression).
+            if hal_op == "index" and "val" in node.meta:
+                fake_val = node.meta["val"]
+                dim_names: list[str] = []
+                if hasattr(fake_val, "shape"):
+                    for d in fake_val.shape:
+                        sym_name = _symint_to_name(d)
+                        dim_names.append(sym_name if sym_name else "")
+                if dim_names:
+                    kwargs["dim_names"] = dim_names
 
             mlir_ops.append(MlirOp(
                 name=f"sf.{hal_op}", dialect="sf", op_name=hal_op,
