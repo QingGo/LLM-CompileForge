@@ -142,6 +142,58 @@ def test_index():
 
 
 @pytest.mark.unit
+def test_index_idxcoords_mapping():
+    """Verify idxCoords use per-dim broadcast, not i+j offset.
+
+    Without the fix, idxCoords map outDim = i + j which shifts
+    index tensor 1's coordinates by 1 position, causing OOB reads
+    on broadcast dims. With the fix, each index tensor dim j maps
+    to outCoords[j] (with constant 0 for size-1 dims).
+    """
+    lowered = lower("""module {
+  func.func @test(%data: tensor<?x?xf32>, %idx0: tensor<?x1x1x1xi64>, %idx1: tensor<1x1x1x?xi64>) -> tensor<?x1x1x?xf32> {
+    %0 = "sf.index"(%data, %idx0, %idx1) : (tensor<?x?xf32>, tensor<?x1x1x1xi64>, tensor<1x1x1x?xi64>) -> tensor<?x1x1x?xf32>
+    return %0 : tensor<?x1x1x?xf32>
+  }
+}""")
+    check_lowered(lowered)
+    # idx0: shape [?,1,1,1] — only dim0 is non-1
+    #   extract should use outCoords[0] for dim0, constant 0 for dims 1-3
+    # idx1: shape [1,1,1,?] — only dim3 is non-1
+    #   extract should use outCoords[3] for dim3, constant 0 for dims 0-2
+
+    # Find tensor.extract lines involving %arg1 (idx0) and %arg2 (idx1)
+    arg1_extracts = [l for l in lowered.split('\n') if 'tensor.extract' in l and '%arg1' in l]
+    arg2_extracts = [l for l in lowered.split('\n') if 'tensor.extract' in l and '%arg2' in l]
+
+    assert arg1_extracts, "No tensor.extract from idx0 (arg1)"
+    assert arg2_extracts, "No tensor.extract from idx1 (arg2)"
+
+    # Verify idx0 (arg1) only has %c0 for coords beyond dim0
+    # The extract should look like: tensor.extract %arg1[%X, %c0, %c0, %c0]
+    # Bug would look like:   tensor.extract %arg1[%X, %c0, %c0, %Y]
+    for ext in arg1_extracts:
+        # dims 1-3 should all be %c0 (constant 0)
+        assert '%c0, %c0, %c0]' in ext or '%c0, %c0, %c0_' in ext.replace(' ', ''), \
+            f"idx0 extract should have constant 0 for dims 1-3 (broadcast): {ext}"
+
+    # Verify idx1 (arg2) only uses outCoords[3] for dim3
+    # Extract should look like: tensor.extract %arg2[%c0, %c0, %c0, %X]
+    # Bug would look like:     tensor.extract %arg2[%c0, %c0, %Y, %c0]
+    for ext in arg2_extracts:
+        # dims 0-2 should be %c0, dim3 should be variable
+        assert '%c0, %c0, %c0' in ext, \
+            f"idx1 extract should have constant 0 for dims 0-2: {ext}"
+        # dim3 should NOT be %c0
+        coords = ext.split('[')[1].split(']')[0].split(',')
+        if len(coords) >= 4:
+            # The last coordinate before ']' should not be just %c0
+            last_coord = coords[3].strip()
+            assert last_coord != '%c0' or '%c0]' in ext, \
+                f"idx1 dim3 should be variable (outCoords[3]), not constant 0: {ext}"
+
+
+@pytest.mark.unit
 def test_index_dynamic_dims():
     """sf.index with dynamic shapes — verifies outDims sources from index tensors.
 

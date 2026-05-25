@@ -403,11 +403,14 @@ struct SfIndexOpLowering : public OpRewritePattern<sf::IndexOp> {
       // from the correct output dimension (e.g. row vs col for 2D gather).
       SmallVector<Value> idxCoords;
       for (int64_t j = 0; j < idxTensorType.getRank(); ++j) {
-        int64_t outDim = (int64_t)i + j;
-        if (outDim < (int64_t)outCoords.size())
-          idxCoords.push_back(outCoords[outDim]);
-        else
+        // Per-dim broadcast: if index tensor dim j is size 1, use constant 0.
+        // Otherwise use outCoords[j] directly (broadcast alignment).
+        // This matches aten.index.Tensor semantics where index tensors are
+        // broadcast together by position before indexing the data tensor.
+        if (idxTensorType.getDimSize(j) == 1)
           idxCoords.push_back(arith::ConstantIndexOp::create(rewriter, loc, 0));
+        else
+          idxCoords.push_back(outCoords[j]);
       }
       Value rawIdx = tensor::ExtractOp::create(rewriter, loc,
           idxTensorType.getElementType(), indexTensors[i], idxCoords);
