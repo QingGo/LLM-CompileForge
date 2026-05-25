@@ -64,105 +64,40 @@ struct SfLeOpLowering : public OpRewritePattern<sf::LeOp> {
     auto outTensorType = RankedTensorType::get(outShape, f32Type);
     Value genericInit = tensor::EmptyOp::create(rewriter, loc, outTensorType, dynSizes);
 
-    // 2. Helper: broadcast an operand to the output shape using
-    //    linalg.broadcast (never broadcast affine maps).
-    auto broadcastOperand = [&](Value operand, RankedTensorType operandType,
-                                 int64_t operandRank) -> Value {
-      if (operandRank < outRank) {
-        // Lower-rank operand: use linalg.broadcast with leading added dims.
-        SmallVector<int64_t> addedDims;
-        for (int64_t i = 0; i < outRank - operandRank; ++i)
-          addedDims.push_back(i);
-        auto bcInitType = RankedTensorType::get(outShape, operandType.getElementType());
-        Value bcInit = tensor::EmptyOp::create(rewriter, loc, bcInitType, dynSizes);
-        return linalg::BroadcastOp::create(rewriter, loc, operand, bcInit, addedDims)->getResult(0);
+    // 2. Build per-operand broadcast affine maps.
+    auto buildBroadcastMap = [&](RankedTensorType opType, int64_t opRank)
+        -> AffineMap {
+      SmallVector<AffineExpr> exprs;
+      for (int64_t i = 0; i < outRank; ++i) {
+        int64_t opIdx = i - (outRank - opRank);
+        if (opIdx < 0) continue;
+        int64_t opSize = opType.getDimSize(opIdx);
+        bool needsBroadcast = (opSize == 1) &&
+            (ShapedType::isDynamic(outShape[i]) || outShape[i] > 1);
+        exprs.push_back(needsBroadcast
+            ? getAffineConstantExpr(0, ctx)
+            : getAffineDimExpr(i, ctx));
       }
-
-      if (operandRank == outRank) {
-        // Same-rank: check if any dim needs broadcasting (size-1 -> larger).
-        SmallVector<int64_t> broadcastDims;
-        for (int64_t i = 0; i < outRank; ++i) {
-          int64_t opSize = operandType.getDimSize(i);
-          if (opSize == 1 && !ShapedType::isDynamic(outShape[i]) && outShape[i] > 1)
-            broadcastDims.push_back(i);
-        }
-
-        if (broadcastDims.empty())
-          return operand;
-
-        // For each broadcast dim: collapse it with a neighbor using
-        // tensor.collapse_shape, then linalg.broadcast to add it back.
-        Value current = operand;
-        int64_t curRank = outRank;
-
-        // Process right-to-left to keep indices stable.
-        for (auto k : llvm::reverse(broadcastDims)) {
-          // Merge dims (k-1, k) or (0, 1) if k == 0.
-          int64_t mergeStart = (k == 0) ? 0 : k - 1;
-          int64_t mergeEnd = (k == 0) ? 1 : k;
-
-          // Build reassociation: merge mergeStart..mergeEnd into one.
-          SmallVector<ReassociationIndices> reassociation;
-          for (int64_t d = 0; d < curRank; ++d) {
-            if (d == mergeStart) {
-              ReassociationIndices group;
-              for (int64_t j = mergeStart; j <= mergeEnd; ++j)
-                group.push_back(j);
-              reassociation.push_back(group);
-              d = mergeEnd;
-            } else {
-              reassociation.push_back({d});
-            }
-          }
-
-          // Collapse.
-          current = tensor::CollapseShapeOp::create(rewriter, loc, current, reassociation);
-
-          // Compute intermediate init shape:
-          // - All dims >= k: output size (current broadcast dim + already processed)
-          // - Other broadcast dims < k: operand size (still unprocessed, keep 1)
-          // - Non-broadcast dims: output size
-          SmallVector<int64_t> interShape(outRank);
-          for (int64_t d = 0; d < outRank; ++d) {
-            if (llvm::is_contained(broadcastDims, d) && d < k) {
-              interShape[d] = operandType.getDimSize(d);
-            } else {
-              interShape[d] = outShape[d];
-            }
-          }
-          auto interType = RankedTensorType::get(interShape, operandType.getElementType());
-          SmallVector<int64_t> bcDims = {k};
-          Value bcInit = tensor::EmptyOp::create(rewriter, loc, interType, /*dynSizes=*/{});
-          current = linalg::BroadcastOp::create(rewriter, loc, current, bcInit, bcDims)->getResult(0);
-          curRank = cast<RankedTensorType>(current.getType()).getRank();
-        }
-        return current;
-      }
-
-      llvm_unreachable("operand rank > output rank in sf.le");
-      return operand;
+      return AffineMap::get(outRank, 0, exprs, ctx);
     };
+    auto lhsMap = buildBroadcastMap(lhsType, lhsRank);
+    auto rhsMap = buildBroadcastMap(rhsType, rhsRank);
+    auto outMap = AffineMap::getMultiDimIdentityMap(outRank, ctx);
 
-    Value broadcastLhs = broadcastOperand(op.getLhs(), lhsType, lhsRank);
-    Value broadcastRhs = broadcastOperand(op.getRhs(), rhsType, rhsRank);
-
-    // 3. Create linalg.generic with identity affine maps only.
-    auto identityMap = AffineMap::getMultiDimIdentityMap(outRank, ctx);
-    SmallVector<AffineMap> genericMaps = {identityMap, identityMap, identityMap};
+    // 3. linalg.generic with broadcast maps
+    SmallVector<AffineMap> genericMaps = {lhsMap, rhsMap, outMap};
     SmallVector<utils::IteratorType> iterTypes(outRank, utils::IteratorType::parallel);
 
     auto g = linalg::GenericOp::create(rewriter, loc, outTensorType,
-        ValueRange{broadcastLhs, broadcastRhs}, genericInit,
+        ValueRange{op.getLhs(), op.getRhs()}, genericInit,
         genericMaps, iterTypes,
         [&](OpBuilder &b, Location bodyLoc, ValueRange args) {
       Value cmp;
       if (isa<IntegerType>(args[0].getType()) || isa<IntegerType>(args[1].getType())) {
-        // Integer comparison: use CmpIOp
         auto lhsInt = arith::IndexCastOp::create(b, loc, b.getIndexType(), args[0]);
         auto rhsInt = arith::IndexCastOp::create(b, loc, b.getIndexType(), args[1]);
         cmp = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sle, lhsInt, rhsInt);
       } else {
-        // Float comparison
         cmp = arith::CmpFOp::create(b, loc, arith::CmpFPredicate::OLE, args[0], args[1]);
       }
       Value result = arith::UIToFPOp::create(b, loc, rewriter.getF32Type(), cmp);
@@ -230,86 +165,34 @@ struct SfLogicalAndOpLowering : public OpRewritePattern<sf::LogicalAndOp> {
     auto outTensorType = RankedTensorType::get(outShape, f32Type);
     Value genericInit = tensor::EmptyOp::create(rewriter, loc, outTensorType, dynSizes);
 
-    // 2. Broadcast helper (same pattern as SfLeOpLowering)
-    auto broadcastOperand = [&](Value operand, RankedTensorType operandType,
-                                 int64_t operandRank) -> Value {
-      if (operandRank < outRank) {
-        SmallVector<int64_t> addedDims;
-        for (int64_t i = 0; i < outRank - operandRank; ++i)
-          addedDims.push_back(i);
-        auto bcInitType = RankedTensorType::get(outShape, operandType.getElementType());
-        Value bcInit = tensor::EmptyOp::create(rewriter, loc, bcInitType, dynSizes);
-        return linalg::BroadcastOp::create(rewriter, loc, operand, bcInit, addedDims)->getResult(0);
+    // 2. Build per-operand broadcast affine maps.
+    // Maps each operand's dims to output dims, using affine constant 0
+    // for size-1 dims that need broadcast (static >1 or dynamic output).
+    auto buildBroadcastMap = [&](RankedTensorType opType, int64_t opRank)
+        -> AffineMap {
+      SmallVector<AffineExpr> exprs;
+      for (int64_t i = 0; i < outRank; ++i) {
+        int64_t opIdx = i - (outRank - opRank);
+        if (opIdx < 0) continue;  // leading output dims not in operand
+        int64_t opSize = opType.getDimSize(opIdx);
+        bool needsBroadcast = (opSize == 1) &&
+            (ShapedType::isDynamic(outShape[i]) || outShape[i] > 1);
+        exprs.push_back(needsBroadcast
+            ? getAffineConstantExpr(0, ctx)
+            : getAffineDimExpr(i, ctx));
       }
-
-      if (operandRank == outRank) {
-        SmallVector<int64_t> broadcastDims;
-        for (int64_t i = 0; i < outRank; ++i) {
-          int64_t opSize = operandType.getDimSize(i);
-          if (opSize == 1 && !ShapedType::isDynamic(outShape[i]) && outShape[i] > 1)
-            broadcastDims.push_back(i);
-        }
-
-        if (broadcastDims.empty())
-          return operand;
-
-        Value current = operand;
-        int64_t curRank = outRank;
-
-        for (auto k : llvm::reverse(broadcastDims)) {
-          int64_t mergeStart = (k == 0) ? 0 : k - 1;
-          int64_t mergeEnd = (k == 0) ? 1 : k;
-
-          SmallVector<ReassociationIndices> reassociation;
-          for (int64_t d = 0; d < curRank; ++d) {
-            if (d == mergeStart) {
-              ReassociationIndices group;
-              for (int64_t j = mergeStart; j <= mergeEnd; ++j)
-                group.push_back(j);
-              reassociation.push_back(group);
-              d = mergeEnd;
-            } else {
-              reassociation.push_back({d});
-            }
-          }
-
-          current = tensor::CollapseShapeOp::create(rewriter, loc, current, reassociation);
-
-          // Compute intermediate init shape:
-          // - All dims >= k: output size (current broadcast dim + already processed)
-          // - Other broadcast dims < k: operand size (still unprocessed, keep 1)
-          // - Non-broadcast dims: output size
-          SmallVector<int64_t> interShape(outRank);
-          for (int64_t d = 0; d < outRank; ++d) {
-            if (llvm::is_contained(broadcastDims, d) && d < k) {
-              interShape[d] = operandType.getDimSize(d);
-            } else {
-              interShape[d] = outShape[d];
-            }
-          }
-          auto interType = RankedTensorType::get(interShape, operandType.getElementType());
-          SmallVector<int64_t> bcDims = {k};
-          Value bcInit = tensor::EmptyOp::create(rewriter, loc, interType, /*dynSizes=*/{});
-          current = linalg::BroadcastOp::create(rewriter, loc, current, bcInit, bcDims)->getResult(0);
-          curRank = cast<RankedTensorType>(current.getType()).getRank();
-        }
-        return current;
-      }
-
-      llvm_unreachable("operand rank > output rank in sf.logical_and");
-      return operand;
+      return AffineMap::get(outRank, 0, exprs, ctx);
     };
+    auto lhsMap = buildBroadcastMap(lhsType, lhsRank);
+    auto rhsMap = buildBroadcastMap(rhsType, rhsRank);
+    auto outMap = AffineMap::getMultiDimIdentityMap(outRank, ctx);
 
-    Value broadcastLhs = broadcastOperand(op.getLhs(), lhsType, lhsRank);
-    Value broadcastRhs = broadcastOperand(op.getRhs(), rhsType, rhsRank);
-
-    // 3. Identity-map linalg.generic
-    auto identityMap = AffineMap::getMultiDimIdentityMap(outRank, ctx);
-    SmallVector<AffineMap> genericMaps = {identityMap, identityMap, identityMap};
+    // 3. linalg.generic with broadcast maps
+    SmallVector<AffineMap> genericMaps = {lhsMap, rhsMap, outMap};
     SmallVector<utils::IteratorType> iterTypes(outRank, utils::IteratorType::parallel);
 
     auto g = linalg::GenericOp::create(rewriter, loc, outTensorType,
-        ValueRange{broadcastLhs, broadcastRhs}, genericInit,
+        ValueRange{op.getLhs(), op.getRhs()}, genericInit,
         genericMaps, iterTypes,
         [&](OpBuilder &b, Location bodyLoc, ValueRange args) {
       // Both args are 0.0 (false) or 1.0 (true). Multiply gives AND.

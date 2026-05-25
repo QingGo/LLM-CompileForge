@@ -24,6 +24,17 @@ def _infer_elementwise_pure(
     return [(b, elts[0])]
 
 
+def _infer_arange_pure(
+    shapes: list[tuple[int | None, ...]],
+    elts: list[str],
+    **kwargs: Any,
+) -> list[tuple[tuple[int | None, ...], str]]:
+    """sf.arange: output size depends on input VALUE (runtime), not input shape.
+    The input is a scalar (shape=[1]) whose VALUE gives the output length.
+    Return dynamic shape (None,) so downstream ops see the tensor as dynamic-sized."""
+    return [((None,), "i64")]
+
+
 def _infer_new_ones_pure(
     shapes: list[tuple[int | None, ...]],
     elts: list[str],
@@ -356,7 +367,7 @@ _PURE_TABLE: dict[str, Any] = {
     "logical_and": _infer_compare_pure,
     "cumsum": _infer_elementwise_pure,
     "masked_fill": _infer_elementwise_pure,
-    "arange": _infer_elementwise_pure,
+    "arange": _infer_arange_pure,
     "ones_like": _infer_ones_like_pure,
     "full_like": _infer_ones_like_pure,
     "zeros": _infer_elementwise_pure,

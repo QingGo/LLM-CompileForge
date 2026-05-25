@@ -281,12 +281,24 @@ def link_dylib(
         RuntimeError: If the linker fails.
     """
     cc_bin = _find_cc()
+
+    # Locate MLIR runner_utils library for memrefCopy and other runtime helpers
+    # needed by bufferized dynamic-shaped memref ops.
+    build_lib = (
+        Path(__file__).resolve().parent.parent.parent
+        / "llvm-project" / "build" / "lib"
+    )
+    runner_lib = build_lib / "libmlir_c_runner_utils.dylib"
+
     cmd = [
         cc_bin,
         "-shared",
         "-o", output,
         *obj_files,
     ]
+    if runner_lib.is_file():
+        cmd.extend(["-L", str(build_lib), "-lmlir_c_runner_utils"])
+        cmd.append(f"-Wl,-rpath,{build_lib}")
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if result.returncode != 0:
         raise LinkError(result.returncode, result.stderr)

@@ -159,7 +159,8 @@ def fx_graph_to_mlir(
             kwargs.update(extra_kwargs)
             _apply_post_kwargs(hal_op, node, input_names, kwargs)
 
-            output_name = f"%{node.name}" if node.name else f"%_out_{name_counter}"
+            # Generate semantic SSA name based on op type
+            output_name = _semantic_ssa_name(hal_op, node, name_counter, kwargs, ssa_map)
             name_counter += 1
             ssa_map[node.name] = output_name
             kwargs["source_node"] = node.name
@@ -379,6 +380,41 @@ def _do_chunk(
         offset += size
     tuple_outputs[node.name] = outputs
     ssa_map[node.name] = outputs[0] if outputs else ssa_map.get(node.name, node.name)
+
+
+def _semantic_ssa_name(
+    hal_op: str,
+    node: torch.fx.Node,
+    name_counter: int,
+    kwargs: dict[str, Any],
+    ssa_map: dict[str, str],
+) -> str:
+    """Generate a descriptive SSA name based on op type and context."""
+    if hal_op == "sym_size":
+        dim = kwargs.get("dim", "?")
+        # Use the source tensor's SSA name (e.g., input_ids_dim_0)
+        src_name = "tensor"
+        if node.args and isinstance(node.args[0], torch.fx.Node):
+            src_name = ssa_map.get(node.args[0].name, node.args[0].name).lstrip("%")
+        return f"%{src_name}_dim_{dim}"
+    if hal_op == "arange":
+        # Use the input's SSA name for context (e.g., input_ids_dim_1 → arange_dim1_0)
+        if node.args and isinstance(node.args[0], torch.fx.Node):
+            inp_ssa = ssa_map.get(node.args[0].name, node.args[0].name)
+            ctx = inp_ssa.lstrip("%").replace("%", "")
+        else:
+            ctx = str(name_counter)
+        return f"%arange_{ctx}_{name_counter}"
+    if hal_op == "le":
+        return f"%causal_mask"
+    if hal_op == "expand":
+        return f"%attn_mask"
+    if hal_op == "logical_and":
+        return f"%mask_and_{name_counter}"
+    if hal_op == "view":
+        return f"%reshape_{name_counter}"
+    # Default: keep original FX node name
+    return f"%{node.name}" if node.name else f"%_out_{name_counter}"
 
 
 def _collect_input_args(

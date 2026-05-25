@@ -272,7 +272,15 @@ def run_python_executor(
 
         func_outputs: list[list[np.ndarray]] = [[] for _ in range(num_funcs)]
         for fi in range(num_funcs):
-            fpath = os.path.join(dump_dir, f"py_func_{fi}_0.npy")
-            if os.path.exists(fpath):
-                func_outputs[fi] = [np.load(fpath)]
+            # Match new dump naming: py_func_{fi}_out0_*.npy (first output)
+            import glob as _glob
+            pattern = os.path.join(dump_dir, f"py_func_{fi}_out0_*.npy")
+            matches = _glob.glob(pattern)
+            if not matches:
+                # Fall back to old naming
+                fpath = os.path.join(dump_dir, f"py_func_{fi}_0.npy")
+                if os.path.exists(fpath):
+                    matches = [fpath]
+            if matches:
+                func_outputs[fi] = [np.load(matches[0])]
         return DylibResult(func_outputs, logits)

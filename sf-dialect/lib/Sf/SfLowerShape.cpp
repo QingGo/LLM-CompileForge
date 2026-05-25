@@ -174,13 +174,22 @@ struct SfExpandOpLowering : public OpRewritePattern<sf::ExpandOp> {
     // linalg.generic with broadcast: input maps to trailing output dims.
     // Size-1 input dims must use affine constant 0, not the loop dim,
     // to be compatible with linalg-to-loops conversion.
+    // When both input and output dims are kDynamic, we cannot tell at compile
+    // time whether broadcast is needed (e.g. expand [1,?,?,?]→[N,?,?,?] where
+    // N is passed via dyn_shape).  In that case, check if the output has a
+    // dyn_shape operand that makes it larger — if so, broadcast.
     SmallVector<AffineExpr> inExprs;
     for (int64_t i = 0; i < outRank; ++i) {
       int64_t inIdx = i - (outRank - inRank);
       if (inIdx < 0) continue;
       int64_t outDimSize = outType.getDimSize(i);
       int64_t inDimSize = inType.getDimSize(inIdx);
-      if (inDimSize == 1 && (outDimSize == ShapedType::kDynamic || outDimSize > 1))
+      bool needsBroadcast = false;
+      if ((inDimSize == 1 || (inDimSize == ShapedType::kDynamic && inIdx == 0)) &&
+          (outDimSize == ShapedType::kDynamic || outDimSize > 1)) {
+        needsBroadcast = true;
+      }
+      if (needsBroadcast)
         inExprs.push_back(getAffineConstantExpr(0, rewriter.getContext()));
       else
         inExprs.push_back(getAffineDimExpr(i, rewriter.getContext()));
@@ -216,23 +225,33 @@ struct SfUnsqueezeOpLowering : public OpRewritePattern<sf::UnsqueezeOp> {
     if (unsqueezeDim < 0) {
       unsqueezeDim += inType.getRank() + 1;  // +1 because unsqueeze adds a dimension
     }
+    // Build loc prefixes for readable lowered IR
+    auto dimLoc = [&](int64_t srcDim) -> Location {
+      return NameLoc::get(StringAttr::get(rewriter.getContext(),
+          ("dim" + std::to_string(srcDim)).c_str()), loc);
+    };
+    auto namedLoc = [&](const char *suffix) -> Location {
+      return NameLoc::get(StringAttr::get(rewriter.getContext(), suffix), loc);
+    };
+
     SmallVector<Value> shapeVals;
     for (int64_t i = 0; i < outType.getRank(); ++i) {
       if (outType.isDynamicDim(i)) {
         if (i < unsqueezeDim)
-          shapeVals.push_back(tensor::DimOp::create(rewriter, loc, input, i));
+          shapeVals.push_back(tensor::DimOp::create(rewriter, dimLoc(i), input, i));
         else if (i == unsqueezeDim)
-          shapeVals.push_back(arith::ConstantIndexOp::create(rewriter, loc, 1));
+          shapeVals.push_back(arith::ConstantIndexOp::create(rewriter, namedLoc("const_1"), 1));
         else
-          shapeVals.push_back(tensor::DimOp::create(rewriter, loc, input, i - 1));
+          shapeVals.push_back(tensor::DimOp::create(rewriter, dimLoc(i - 1), input, i - 1));
       } else {
-        shapeVals.push_back(arith::ConstantIndexOp::create(rewriter, loc, outType.getDimSize(i)));
+        shapeVals.push_back(arith::ConstantIndexOp::create(rewriter, namedLoc(("c" + std::to_string(outType.getDimSize(i))).c_str()), outType.getDimSize(i)));
       }
     }
     auto shapeTensorType = RankedTensorType::get({(int64_t)shapeVals.size()},
                                                   rewriter.getIndexType());
-    auto shapeTensor = tensor::FromElementsOp::create(rewriter, loc, shapeTensorType, shapeVals);
-    rewriter.replaceOpWithNewOp<tensor::ReshapeOp>(op, outType, input, shapeTensor);
+    auto shapeTensor = tensor::FromElementsOp::create(rewriter, namedLoc("shape"), shapeTensorType, shapeVals);
+    auto reshaped = tensor::ReshapeOp::create(rewriter, namedLoc("reshape"), outType, input, shapeTensor);
+    rewriter.replaceOp(op, reshaped.getResult());
     return success();
   }
 };

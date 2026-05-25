@@ -351,8 +351,17 @@ def main() -> None:
             _snapshot_path.parent.mkdir(parents=True, exist_ok=True)
             _snapshot_path.write_text(_snapshot_text)
             print(f"  [debug] Saved snapshot: {_snapshot_path}")
-    # Serialize with generic op format (required for mlir-opt without sf dialect)
+    # Serialize with generic op format (required for mlir-opt and regex post-processing)
     lowered_text = ir_mod.operation.get_asm(print_generic_op_form=True)
+
+    # Also save a human-readable copy with custom format + debug info
+    readable_text = ir_mod.operation.get_asm(
+        enable_debug_info=True,
+        pretty_debug_info=True,
+        use_local_scope=True,
+        use_name_loc_as_prefix=True,
+        print_generic_op_form=False,
+    )
     print(f"   C++ lowering succeeded (verifier {'disabled' if _no_verify else 'enabled'})")
 
     # Verify weight promotion ordering: check that sf.weight_names in lowered IR
@@ -374,6 +383,10 @@ def main() -> None:
     lowered_path = compiled_path / "model.lowered.mlir"
     lowered_path.write_text(lowered_text)
     print(f"   Saved lowered MLIR to {lowered_path}")
+
+    readable_path = compiled_path / "model.lowered.readable.mlir"
+    readable_path.write_text(readable_text)
+    print(f"   Saved readable lowered MLIR to {readable_path}")
 
     import re as _re
     _lines = lowered_text.split('\n')

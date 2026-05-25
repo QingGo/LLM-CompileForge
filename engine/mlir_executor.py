@@ -192,20 +192,20 @@ class MlirExecutor(_KVCacheMixin):
                 if result is not None and op.results:
                     ssa_values[op.results[0]] = result
 
-            # ── Dump function output (per-layer diagnosis) ──
+            # ── Dump function outputs (all, not just first) ──
             if self._dump_dir:
                 import numpy as np
 
                 os.makedirs(self._dump_dir, exist_ok=True)
                 call_idx = self._dump_call_counter.get(fi, 0)
-                for out_name, _, _ in func.outputs:
+                for i, (out_name, _, _) in enumerate(func.outputs):
                     clean = out_name.replace("%", "")
                     if clean in ssa_values:
                         fpath = os.path.join(
-                            self._dump_dir, f"py_func_{fi}_{call_idx}.npy"
+                            self._dump_dir,
+                            f"py_func_{fi}_out{i}_{clean}.npy"
                         )
                         np.save(fpath, ssa_values[clean].detach().cpu().numpy())
-                        break
                 self._dump_call_counter[fi] = call_idx + 1
 
             # ── Store outputs for next function ──────────────

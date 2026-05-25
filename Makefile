@@ -283,6 +283,26 @@ build-so: build-sf
 	echo "$(PROJECT_ROOT)/sf-dialect/build/python_packages/sf" > $(PROJECT_ROOT)/$(VENV)/lib/python3.10/site-packages/sf_dialect.pth && \
 	scripts/build_so.sh
 
+# Dialect plugin for mlir-opt: loads sf dialect directly without Python.
+# MLIR symbols resolved at runtime from the mlir-opt host process
+# via -undefined dynamic_lookup.
+.PHONY: build-plugin
+build-plugin: build-sf
+	clang++ -std=c++17 -fPIC -shared -O2 \
+		-o sf-dialect/build/lib/libSfDialectPlugin.dylib \
+		-I sf-dialect \
+		-I sf-dialect/include \
+		-I $(PROJECT_ROOT)/llvm-project/build/include \
+		-I $(PROJECT_ROOT)/llvm-project/build/tools/mlir/include \
+		-I $(PROJECT_ROOT)/llvm-project/llvm/include \
+		-I $(PROJECT_ROOT)/llvm-project/mlir/include \
+		-I sf-dialect/build/include \
+		sf-dialect/tools/DialectPlugin.cpp \
+		-Wl,-force_load,sf-dialect/build/lib/Sf/libSfDialect.a \
+		-Wl,-force_load,sf-dialect/build/lib/CAPI/libSfCAPI.a \
+		-undefined dynamic_lookup
+	@echo "✓ Plugin built: sf-dialect/build/lib/libSfDialectPlugin.dylib"
+
 .PHONY: test-dylib-cos
 test-dylib-cos: build-so
 	rm -f compiled/opt_125m_fresh/model.lowered.mlir

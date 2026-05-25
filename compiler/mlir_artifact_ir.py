@@ -272,6 +272,10 @@ def _emit_compute_op(op: MlirOp, operands: list[ir.Value], body_blk: Any, ctx: A
     loc = _ir.Location.unknown(ctx)
     if "dump_layer" in op.attributes:
         loc = _ir.Location.name(str(op.attributes["dump_layer"]), loc)
+    # Attach result name as NameLoc so lowering preserves op identity
+    if op.results and op.results[0]:
+        result_name = op.results[0].lstrip("%")
+        loc = _ir.Location.name(result_name, loc)
 
     try:
         with _ir.InsertionPoint(body_blk):
@@ -319,12 +323,19 @@ def _resolve_output_values(func: MlirFunction, ssa_map: dict[str, ir.Value]) -> 
     return output_values
 
 
-def _build_return_op(output_values: list[ir.Value], body_blk: Any) -> None:
-    """Emit a func.return op."""
+def _build_return_op(output_values: list[ir.Value], outputs: list[tuple[str, str, bool]], body_blk: Any) -> None:
+    """Emit a func.return op with output names as NameLoc."""
     import mlir.ir as _ir
 
+    # Build a NameLoc describing each output index and name
+    output_descs = []
+    for i, (name, _tp, _) in enumerate(outputs):
+        clean = name.lstrip("%")
+        output_descs.append(f"out{i}:{clean}")
+    loc = _ir.Location.name(", ".join(output_descs)) if output_descs else _ir.Location.unknown()
+
     with _ir.InsertionPoint(body_blk):
-        _ir.Operation.create("func.return", operands=output_values)
+        _ir.Operation.create("func.return", operands=output_values, loc=loc)
 
 
 def _update_function_type(func_op: Any, arg_values: list[ir.Value], output_values: list[ir.Value]) -> None:
@@ -373,7 +384,7 @@ def mlir_module_to_ir_module(module: MlirModule, ctx: Any = None) -> Any:
 
             # Resolve outputs and finalize function
             output_values = _resolve_output_values(func, ssa_map)
-            _build_return_op(output_values, body_blk)
+            _build_return_op(output_values, func.outputs, body_blk)
             _update_function_type(func_op, arg_values, output_values)
 
         return ir_mod
