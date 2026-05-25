@@ -24,6 +24,29 @@ def _infer_elementwise_pure(
     return [(b, elts[0])]
 
 
+def _infer_index_pure(
+    shapes: list[tuple[int | None, ...]],
+    elts: list[str],
+    **kwargs: Any,
+) -> list[tuple[tuple[int | None, ...], str]]:
+    """sf.index: output = broadcast(index_shapes) + data_trailing_dims."""
+    if len(shapes) < 2:
+        return [(shapes[0] if shapes else (1,), elts[0] if elts else "f32")]
+    data_shape = shapes[0]
+    index_shapes = shapes[1:]
+    num_indices = len(index_shapes)
+    # If all index tensors are 1-D (scalar indices per dim),
+    # each contributes its size as a separate output dimension.
+    # Otherwise broadcast all index shapes together.
+    if all(len(s) == 1 for s in index_shapes):
+        index_out = tuple(s[0] for s in index_shapes)
+    else:
+        index_out = _broadcast_shapes(*index_shapes)
+    # Append trailing data dims beyond num_indices
+    trailing = data_shape[num_indices:] if num_indices < len(data_shape) else ()
+    return [(index_out + trailing, elts[0])]
+
+
 def _infer_arange_pure(
     shapes: list[tuple[int | None, ...]],
     elts: list[str],
@@ -341,7 +364,7 @@ _PURE_TABLE: dict[str, Any] = {
     "zeros_like": _infer_elementwise_pure,
     "new_ones": _infer_new_ones_pure,
     "diff": _infer_elementwise_pure,
-    "index": _infer_elementwise_pure,
+    "index": _infer_index_pure,
     "scaled_dot_product_attention": _infer_elementwise_pure,
     "fused_silu_mul": _infer_elementwise_pure,
     "fused_attention_output": _infer_elementwise_pure,
