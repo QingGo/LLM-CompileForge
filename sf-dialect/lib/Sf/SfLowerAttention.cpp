@@ -284,7 +284,7 @@ struct SfScaledDotProductAttentionOpLowering
         { attnMaps.push_back(getAffineDimExpr(i, ctx)); vMaps.push_back(getAffineDimExpr(i, ctx)); outMaps.push_back(getAffineDimExpr(i, ctx)); }
       attnMaps.push_back(getAffineDimExpr(rank - 2, ctx)); // M dim
       attnMaps.push_back(getAffineDimExpr(redDim, ctx));   // S dim (contraction)
-      vMaps.push_back(getAffineDimExpr(rank - 2, ctx));    // S dim (contraction, at rank-1 in V but dim rank-2 in attn)
+      vMaps.push_back(getAffineDimExpr(redDim, ctx));      // S dim (contraction, same loop dim as attn's S)
       vMaps.push_back(getAffineDimExpr(loopRank - 1, ctx)); // D dim (last in loop)
       outMaps.push_back(getAffineDimExpr(rank - 2, ctx));  // M dim
       outMaps.push_back(getAffineDimExpr(loopRank - 1, ctx)); // D dim
