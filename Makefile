@@ -10,7 +10,8 @@ PYTEST := $(VENV)/bin/pytest
 $(VENV):
 	uv venv --python 3.10 && uv sync
 
-# ---- DYLD library paths ----
+# ---- Tool paths ----
+LLVM_BUILD_BIN := $(PROJECT_ROOT)/llvm-project/build/bin
 MLIR_LIBS_PATH := $(PROJECT_ROOT)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs
 TORCH_LIB_PATH := $(PROJECT_ROOT)/$(VENV)/lib/python3.10/site-packages/torch/lib
 
@@ -285,8 +286,9 @@ build-so: build-sf
 .PHONY: test-dylib-cos
 test-dylib-cos: build-so
 	rm -f compiled/opt_125m_fresh/model.lowered.mlir
-	DYLD_LIBRARY_PATH="$(SF_MLIR_LIBS):$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
-	$(PYTHON) scripts/compile_dylib.py compiled/opt_125m_fresh --model-name opt_125m
+	PATH="$(LLVM_BUILD_BIN):$(PATH)" \
+	  DYLD_LIBRARY_PATH="$(SF_MLIR_LIBS):$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
+	  $(PYTHON) scripts/compile_dylib.py compiled/opt_125m_fresh --model-name opt_125m
 	$(PYTHON) tests/test_dylib_cosine.py -v
 
 .PHONY: test-dylib-cos-full
@@ -297,15 +299,17 @@ test-dylib-cos-full: build-so
 .PHONY: test-dylib-quick
 test-dylib-quick: build-so
 	rm -f compiled/tiny_llama/model.lowered.mlir
-	DYLD_LIBRARY_PATH="$(SF_MLIR_LIBS):$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
-	$(PYTHON) scripts/compile_dylib.py compiled/tiny_llama --model-name tiny_llama
+	PATH="$(LLVM_BUILD_BIN):$(PATH)" \
+	  DYLD_LIBRARY_PATH="$(SF_MLIR_LIBS):$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
+	  $(PYTHON) scripts/compile_dylib.py compiled/tiny_llama --model-name tiny_llama
 	$(PYTHON) tests/test_forward_correctness.py -v --timeout=30
 
 .PHONY: debug-cos
 debug-cos: build-so
 	rm -f compiled/opt_125m_fresh/model.lowered.mlir
-	DYLD_LIBRARY_PATH="$(SF_MLIR_LIBS):$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
-	$(PYTHON) scripts/compile_dylib.py compiled/opt_125m_fresh --model-name opt_125m
+	PATH="$(LLVM_BUILD_BIN):$(PATH)" \
+	  DYLD_LIBRARY_PATH="$(SF_MLIR_LIBS):$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
+	  $(PYTHON) scripts/compile_dylib.py compiled/opt_125m_fresh --model-name opt_125m
 	$(PYTHON) scripts/diagnose_cos.py --layer 12
 
 .PHONY: diagnose

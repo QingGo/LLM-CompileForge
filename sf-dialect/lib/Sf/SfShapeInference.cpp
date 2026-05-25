@@ -92,6 +92,13 @@ static LogicalResult verifyBinaryOpShapes(Operation *op) {
   if (!lhsType || !rhsType)
     return op->emitOpError("operands must be ranked tensors");
 
+  // Check element type compatibility
+  if (lhsType.getElementType() != rhsType.getElementType()) {
+    return op->emitOpError("lhs element type (")
+           << lhsType.getElementType() << ") does not match rhs ("
+           << rhsType.getElementType() << ")";
+  }
+
   if (lhsType.getRank() > kMaxBinaryRank)
     return op->emitOpError("lhs rank ")
            << lhsType.getRank() << " exceeds max supported "
@@ -121,13 +128,9 @@ IMPL_BINARY_FLOAT_VERIFY(DivOp)
 IMPL_BINARY_FLOAT_VERIFY(PowOp)
 IMPL_BINARY_FLOAT_VERIFY(MaxOp)
 
-// Real inferReturnTypes for ALL binary/comparison ops.
-// LLVM 22.1 instantiates InferTypeOpInterface trait models for ALL registered
-// ops (via RegisteredOperationName::Model<T>), so every op needs an impl.
-// Binary ops compute broadcast shape; comparison ops do the same (both
-// operands are Sf_FloatTensor).  Element type: f32 for binary/comparison,
-// AnyTensor element type for logical_and (use lhs element type).
-#define SF_BINARY_INFER(OpName)                                               \
+// Infer return types for binary arithmetic ops (SameOperandsAndResultElementType).
+// Compute broadcast shape and use lhs element type.
+#define SF_BINARY_ARITH_INFER(OpName)                                         \
   LogicalResult OpName::inferReturnTypes(                                     \
       ::mlir::MLIRContext *context, ::std::optional<::mlir::Location>,        \
       ::mlir::ValueRange operands, ::mlir::DictionaryAttr,                    \
@@ -139,24 +142,19 @@ IMPL_BINARY_FLOAT_VERIFY(MaxOp)
     SmallVector<int64_t> shape;                                               \
     if (failed(computeBroadcastShape(lhs, rhs, shape))) return failure();     \
     inferredReturnTypes.push_back(                                            \
-        RankedTensorType::get(shape, Builder(context).getF32Type()));         \
+        RankedTensorType::get(shape, lhs.getElementType()));                  \
     return success();                                                         \
   }
 
-SF_BINARY_INFER(AddOp)
-SF_BINARY_INFER(MulOp)
-SF_BINARY_INFER(SubOp)
-SF_BINARY_INFER(DivOp)
-SF_BINARY_INFER(PowOp)
-SF_BINARY_INFER(MaxOp)
+SF_BINARY_ARITH_INFER(AddOp)
+SF_BINARY_ARITH_INFER(MulOp)
+SF_BINARY_ARITH_INFER(SubOp)
+SF_BINARY_ARITH_INFER(DivOp)
+SF_BINARY_ARITH_INFER(PowOp)
+SF_BINARY_ARITH_INFER(MaxOp)
 
-SF_BINARY_INFER(LeOp)
-SF_BINARY_INFER(GtOp)
-SF_BINARY_INFER(LtOp)
-SF_BINARY_INFER(EqOp)
-SF_BINARY_INFER(NeOp)
-
-// logical_and: uses element type from lhs (AnyTensor operands)
+// logical_and: output is always f32 to match the lowering which
+// converts both operands to bool, andi's them, then uitofp → f32.
 LogicalResult LogicalAndOp::inferReturnTypes(
     ::mlir::MLIRContext *context, ::std::optional<::mlir::Location>,
     ::mlir::ValueRange operands, ::mlir::DictionaryAttr,
@@ -167,11 +165,10 @@ LogicalResult LogicalAndOp::inferReturnTypes(
   if (!lhs || !rhs) return failure();
   SmallVector<int64_t> shape;
   if (failed(computeBroadcastShape(lhs, rhs, shape))) return failure();
-  inferredReturnTypes.push_back(
-      RankedTensorType::get(shape, lhs.getElementType()));
+  auto f32 = Float32Type::get(context);
+  inferredReturnTypes.push_back(RankedTensorType::get(shape, f32));
   return success();
 }
-#undef SF_BINARY_INFER
 
 #define IMPL_COMPARE_VERIFY(OpName)                                     \
   LogicalResult OpName::verify() {                                      \
@@ -185,5 +182,43 @@ IMPL_COMPARE_VERIFY(EqOp)
 IMPL_COMPARE_VERIFY(NeOp)
 
 LogicalResult LogicalAndOp::verify() {
-  return verifyBinaryOpShapes(getOperation());
+  // Relaxed verifier: logical_and accepts mixed numeric types
+  // (integer and float) since the lowering handles promotion.
+  auto lhsType = dyn_cast<RankedTensorType>(getOperation()->getOperand(0).getType());
+  auto rhsType = dyn_cast<RankedTensorType>(getOperation()->getOperand(1).getType());
+
+  if (!lhsType || !rhsType)
+    return emitOpError("operands must be ranked tensors");
+
+  // Both must be numeric (integer or float), but don't require exact match
+  auto lhsElt = lhsType.getElementType();
+  auto rhsElt = rhsType.getElementType();
+  if (!lhsElt.isIntOrFloat() || !rhsElt.isIntOrFloat())
+    return emitOpError("operands must have numeric element types, got ")
+           << lhsElt << " and " << rhsElt;
+
+  SmallVector<int64_t> shape;
+  if (failed(mlir::sf::computeBroadcastShape(lhsType, rhsType, shape)))
+    return emitOpError("incompatible shapes for broadcasting: ")
+           << lhsType << " and " << rhsType;
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// IndexOp verifier: check index operands have integer or float element type
+// (float is converted via FPToUIOp in the lowering with a WARNING)
+//===----------------------------------------------------------------------===//
+
+LogicalResult IndexOp::verify() {
+  for (auto idx : getDynIndex()) {
+    auto idxType = dyn_cast<RankedTensorType>(idx.getType());
+    if (!idxType ||
+        !(isa<IntegerType>(idxType.getElementType()) ||
+          isa<FloatType>(idxType.getElementType()))) {
+      return emitOpError("index tensor must have integer or float element type, got ")
+             << idx.getType();
+    }
+  }
+  return success();
 }

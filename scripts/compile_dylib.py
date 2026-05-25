@@ -325,12 +325,25 @@ def main() -> None:
             _walk_and_fix_tensor_constants(ir_mod)
         try:
             _pman = pm.PassManager.parse(_pipeline_str, ctx_lower)
-            if not _no_verify:
+            if _no_verify:
+                _pman.enable_verifier(False)
+            else:
                 _pman.enable_verifier(True)
             _pman.run(ir_mod.operation)
         except Exception:
+            # Save debug IR before failure (use original source as fallback)
+            _debug_path = Path(compiled_path) / f"debug_{_pass_name}_before.mlir"
+            try:
+                _debug_text = ir_mod.operation.get_asm(
+                    print_generic_op_form=True, assume_verified=False)
+                _debug_path.write_text(_debug_text)
+            except Exception:
+                # Fall back to source MLIR copy
+                import shutil
+                shutil.copy(str(mlir_path), _debug_path)
+            print(f"   Saved debug IR: {_debug_path}")
             _save_failure_context("4", _pass_name, compiled_path,
-                                  copy_source=str(mlir_path))
+                                  copy_source=_debug_path)
             raise
         if DEBUG:
             _snapshot_text = ir_mod.operation.get_asm(print_generic_op_form=True)

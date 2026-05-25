@@ -44,11 +44,13 @@ struct SfOnesLikeOpLowering : public OpRewritePattern<sf::OnesLikeOp> {
         Value extracted;
         auto operandTy = dyn_cast<RankedTensorType>(operand.getType());
         if (operandTy && operandTy.getRank() == 0) {
-          extracted = tensor::ExtractOp::create(rewriter, loc, operand, ValueRange{});
+          extracted = tensor::ExtractOp::create(rewriter, loc,
+              operandTy.getElementType(), operand, ValueRange{});
         } else if (operandTy && operandTy.getRank() > 0) {
           SmallVector<Value> indices(operandTy.getRank(),
               arith::ConstantIndexOp::create(rewriter, loc, 0));
-          extracted = tensor::ExtractOp::create(rewriter, loc, operand, indices);
+          extracted = tensor::ExtractOp::create(rewriter, loc,
+              operandTy.getElementType(), operand, indices);
         } else {
           return failure();
         }
@@ -92,9 +94,15 @@ struct SfNewOnesOpLowering : public OpRewritePattern<sf::NewOnesOp> {
     Value empty = makeEmpty(rewriter, loc, rt, {op.getInput()});
     if (!empty) return failure();
     auto elt = getElementTypeOrSelf(rt);
-    if (!isa<FloatType>(elt)) return failure();
-    Value oneVal = arith::ConstantOp::create(rewriter, loc, elt,
-        rewriter.getFloatAttr(elt, 1.0));
+    Value oneVal;
+    if (isa<FloatType>(elt))
+      oneVal = arith::ConstantOp::create(rewriter, loc, elt,
+          rewriter.getFloatAttr(elt, 1.0));
+    else if (auto iTy = dyn_cast<IntegerType>(elt))
+      oneVal = arith::ConstantOp::create(rewriter, loc, elt,
+          rewriter.getIntegerAttr(elt, 1));
+    else
+      return failure();
     rewriter.replaceOpWithNewOp<linalg::FillOp>(op, ValueRange{oneVal}, ValueRange{empty});
     return success();
   }
@@ -124,21 +132,14 @@ struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
     }
     if (outType.getRank() != 1) return failure();
     auto eltType = getElementTypeOrSelf(rt);
-    // Override non-float output to f32 — arange is used for positional
-    // encodings which expect float tensor values.
-    [[maybe_unused]] bool outputWasPromoted = false;
-    if (!isa<FloatType>(eltType)) {
-      eltType = rewriter.getF32Type();
-      outType = RankedTensorType::get(outType.getShape(), eltType);
-      outputWasPromoted = true;
-    }
 
     // Extract first element from input and cast to index type
     auto inType = ::mlir::dyn_cast<::mlir::RankedTensorType>(input.getType());
     SmallVector<Value> zeroIdx;
     if (inType) for (int64_t _i = 0; _i < inType.getRank(); ++_i)
       zeroIdx.push_back(arith::ConstantIndexOp::create(rewriter, loc, 0));
-    Value scalarVal = tensor::ExtractOp::create(rewriter, loc, input, zeroIdx);
+    Value scalarVal = tensor::ExtractOp::create(rewriter, loc,
+        getElementTypeOrSelf(input.getType()), input, zeroIdx);
     auto scalarType = scalarVal.getType();
     Value nIdx;
     if (scalarType.isInteger(64)) {

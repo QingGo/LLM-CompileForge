@@ -29,12 +29,17 @@ struct SfSymSizeOpLowering : public OpRewritePattern<sf::SymSizeOp> {
 
     Value dimVal = tensor::DimOp::create(rewriter, loc, input, dim);
     Value dimI64 = arith::IndexCastOp::create(rewriter, loc, rewriter.getI64Type(), dimVal);
-    auto f32Type = rewriter.getF32Type();
-    Value dimF32 = arith::UIToFPOp::create(rewriter, loc, f32Type, dimI64);
-    RankedTensorType outTensorType = RankedTensorType::get({1}, f32Type);
+    auto outType = cast<RankedTensorType>(op.getResult().getType());
+    auto eltType = outType.getElementType();
+    RankedTensorType outTensorType = RankedTensorType::get({1}, eltType);
     Value empty = tensor::EmptyOp::create(rewriter, loc, outTensorType, ValueRange{});
     Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    Value result = tensor::InsertOp::create(rewriter, loc, dimF32, empty, ValueRange{c0});
+    Value scalarVal;
+    if (isa<FloatType>(eltType))
+      scalarVal = arith::UIToFPOp::create(rewriter, loc, eltType, dimI64);
+    else
+      scalarVal = dimI64;  // integer type → passthrough
+    Value result = tensor::InsertOp::create(rewriter, loc, scalarVal, empty, ValueRange{c0});
     rewriter.replaceOp(op, result);
     return success();
   }
@@ -152,9 +157,20 @@ struct SfCumsumOpLowering : public OpRewritePattern<sf::CumsumOp> {
     SmallVector<Value> prevCoords = coords;
     Value oneIdx = arith::ConstantIndexOp::create(rewriter, loc, 1);
     prevCoords[dim] = arith::SubIOp::create(rewriter, loc, coords[dim], oneIdx);
-    Value prev = tensor::ExtractOp::create(rewriter, loc, curOut, prevCoords);
-    Value cur = tensor::ExtractOp::create(rewriter, loc, input, coords);
-    Value sum = arith::AddFOp::create(rewriter, loc, prev, cur);
+    auto curOutEltTy = cast<RankedTensorType>(curOut.getType()).getElementType();
+    auto inputEltTy = cast<RankedTensorType>(input.getType()).getElementType();
+    Value prevOp = tensor::ExtractOp::create(rewriter, loc, curOutEltTy, curOut, prevCoords);
+    prevOp.getDefiningOp()->getResult(0).setType(curOutEltTy);
+    Value prev = prevOp;
+    Value curOp = tensor::ExtractOp::create(rewriter, loc, inputEltTy, input, coords);
+    curOp.getDefiningOp()->getResult(0).setType(inputEltTy);
+    Value cur = curOp;
+    // Use integer or float add based on element type
+    Value sum;
+    if (isa<FloatType>(curOutEltTy))
+      sum = arith::AddFOp::create(rewriter, loc, prev, cur);
+    else
+      sum = arith::AddIOp::create(rewriter, loc, prev, cur);
     Value newOutVal = tensor::InsertOp::create(rewriter, loc, outType, sum, curOut, coords);
     scf::YieldOp::create(rewriter, loc, newOutVal);
 
@@ -225,7 +241,8 @@ struct SfEmbeddingOpLowering : public OpRewritePattern<sf::EmbeddingOp> {
           }
           // Extract embedding row: weight[embedIdx, embed_dim]
           Value embedDim = linalg::IndexOp::create(b, bodyLoc, embedRank - 1);
-          Value wVal = tensor::ExtractOp::create(b, bodyLoc, weight,
+          auto weightEltTy = cast<RankedTensorType>(weight.getType()).getElementType();
+          Value wVal = tensor::ExtractOp::create(b, bodyLoc, weightEltTy, weight,
                                                        ValueRange{embedIdx, embedDim});
           linalg::YieldOp::create(b, bodyLoc, wVal);
         });
@@ -332,18 +349,29 @@ struct SfIndexOpLowering : public OpRewritePattern<sf::IndexOp> {
         else
           idxCoords.push_back(arith::ConstantIndexOp::create(rewriter, loc, 0));
       }
-      Value rawIdx = tensor::ExtractOp::create(rewriter, loc, indexTensors[i], idxCoords);
+      Value rawIdx = tensor::ExtractOp::create(rewriter, loc,
+          idxTensorType.getElementType(), indexTensors[i], idxCoords);
       if (isa<IntegerType>(rawIdx.getType()))
         dataCoords[i] = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), rawIdx);
-      else
-        dataCoords[i] = arith::ConstantIndexOp::create(rewriter, loc, 0);
+      else if (isa<FloatType>(rawIdx.getType())) {
+        llvm::errs() << "[sf-dialect] WARNING: auto-converting f32 index to i64 via fptou at "
+                     << op->getLoc() << "\n";
+        Value i64Idx = arith::FPToUIOp::create(rewriter, loc, rewriter.getI64Type(), rawIdx);
+        dataCoords[i] = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), i64Idx);
+      } else
+        return op.emitOpError("index tensor element type must be integer, got ")
+               << rawIdx.getType();
     }
+    // Fill remaining dataCoords from outCoords for dims not covered by index tensors.
+    for (int64_t i = (int64_t)indexTensors.size(); i < dataType.getRank(); ++i)
+      dataCoords[i] = outCoords[i + dynOffset];
 
     Value val;
+    auto dataEltTy = dataType.getElementType();
     if (dataType.getRank() == 0) {
-      val = tensor::ExtractOp::create(rewriter, loc, data, ValueRange{});
+      val = tensor::ExtractOp::create(rewriter, loc, dataEltTy, data, ValueRange{});
     } else {
-      val = tensor::ExtractOp::create(rewriter, loc, data, dataCoords);
+      val = tensor::ExtractOp::create(rewriter, loc, dataEltTy, data, dataCoords);
     }
     Value newOut = tensor::InsertOp::create(rewriter, loc, outType, val, curOut, outCoords);
     scf::YieldOp::create(rewriter, loc, newOut);

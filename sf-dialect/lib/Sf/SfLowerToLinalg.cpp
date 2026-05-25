@@ -162,6 +162,19 @@ struct SfLowerToLinalgPass
       llvm::errs() << "  [sf-lower-to-linalg] after lowering func '" << func.getName() << "'\n";
     }
 
+    // Debug: check all tensor.extract ops for type mismatches
+    getOperation()->walk([&](Operation *op) {
+      if (auto extractOp = dyn_cast<tensor::ExtractOp>(op)) {
+        auto tensor = extractOp.getTensor();
+        auto tensorTy = dyn_cast<RankedTensorType>(tensor.getType());
+        llvm::errs() << "  [DEBUG] tensor.extract: tensor=" << tensor.getType()
+                     << " result=" << extractOp.getResult().getType();
+        if (tensorTy && tensorTy.getElementType() != extractOp.getResult().getType())
+          llvm::errs() << " *** TYPE MISMATCH ***";
+        llvm::errs() << "\n";
+      }
+    });
+
     // Post-conversion check: report remaining sf ops with their names
     int64_t remaining = 0;
     getOperation()->walk([&](Operation *op) {

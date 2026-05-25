@@ -24,6 +24,21 @@ def _infer_elementwise_pure(
     return [(b, elts[0])]
 
 
+def _infer_new_ones_pure(
+    shapes: list[tuple[int | None, ...]],
+    elts: list[str],
+    **kwargs: Any,
+) -> list[tuple[tuple[int | None, ...], str]]:
+    """new_ones: create tensor of ones with given shape, defaulting to f32.
+    
+    PyTorch's torch.ones() defaults to float32. The input is the shape
+    tensor (from sym_size → i64) — we use its shape but NOT its element type.
+    """
+    if not shapes:
+        return [((1,), "f32")]
+    return [(shapes[0], "f32")]
+
+
 def _infer_scalar_pure(
     shapes: list[tuple[int | None, ...]],
     elts: list[str],
@@ -313,7 +328,7 @@ _PURE_TABLE: dict[str, Any] = {
     "conv1d": _infer_elementwise_pure,
     "expand": _infer_expand_pure,
     "zeros_like": _infer_elementwise_pure,
-    "new_ones": _infer_elementwise_pure,
+    "new_ones": _infer_new_ones_pure,
     "diff": _infer_elementwise_pure,
     "index": _infer_elementwise_pure,
     "scaled_dot_product_attention": _infer_elementwise_pure,

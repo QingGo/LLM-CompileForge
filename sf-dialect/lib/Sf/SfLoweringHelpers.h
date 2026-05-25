@@ -346,10 +346,17 @@ struct SfBinaryLowering : public OpRewritePattern<SfOpTy> {
     }
     // Promote non-float operands: when result is float but operand is int,
     // insert sitofp via linalg.generic (bufferizable DPS pattern).
+    // When both operand and result are the same integer type, pass through.
     auto outEltTy = cast<ShapedType>(resultType).getElementType();
     auto promoteIfNeeded = [&](Value val, Type valEltTy, StringRef side) -> Value {
       if (isa<FloatType>(valEltTy)) return val;
       if (!isa<FloatType>(outEltTy)) {
+        // Int→int pass-through: if both operands match the output type,
+        // let the binary op use integer arithmetic (AddIOp/SubIOp/etc).
+        if (valEltTy == outEltTy &&
+            lhsType.getElementType() == rhsType.getElementType() &&
+            valEltTy == lhsType.getElementType())
+          return val;
         llvm::errs() << "  [SfBinary] SKIP (output not float, can't promote: "
                      << valEltTy << " -> " << outEltTy << ")\n";
         return Value();
@@ -432,7 +439,24 @@ struct SfBinaryLowering : public OpRewritePattern<SfOpTy> {
         rewriter, loc, refinedType, ValueRange{lhs, rhs}, empty,
         {lhsMap, rhsMap, outMap}, iterTypes);
     populateBody(generic, rewriter, [&](OpBuilder &b, Location loc, ValueRange args) {
-      Value v = ArithOpTy::create(b, loc, args[0], args[1]);
+      auto bodyEltTy = cast<ShapedType>(refinedType).getElementType();
+      Value v;
+      if (isa<FloatType>(bodyEltTy))
+        v = ArithOpTy::create(b, loc, args[0], args[1]);
+      else if (isa<IntegerType>(bodyEltTy)) {
+        StringRef opName = ArithOpTy::getOperationName();
+        if (opName == "arith.addf")
+          v = arith::AddIOp::create(b, loc, args[0], args[1]);
+        else if (opName == "arith.subf")
+          v = arith::SubIOp::create(b, loc, args[0], args[1]);
+        else if (opName == "arith.mulf")
+          v = arith::MulIOp::create(b, loc, args[0], args[1]);
+        else {
+          llvm::errs() << "  [SfBinary] unsupported integer op: " << opName << "\n";
+          return;
+        }
+      } else
+        return;
       linalg::YieldOp::create(b, loc, v);
     });
 

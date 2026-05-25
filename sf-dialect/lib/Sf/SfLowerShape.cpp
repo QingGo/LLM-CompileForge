@@ -57,11 +57,13 @@ struct SfViewOpLowering : public OpRewritePattern<sf::ViewOp> {
             Value dynVal = dynShapeOperands[dynIdx++];
             auto dynTy = dyn_cast<RankedTensorType>(dynVal.getType());
             if (dynTy && dynTy.getRank() == 0) {
-              Value extracted = tensor::ExtractOp::create(rewriter, loc, dynVal, ValueRange{});
+              Value extracted = tensor::ExtractOp::create(rewriter, loc,
+                  dynTy.getElementType(), dynVal, ValueRange{});
               Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
               dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), asInt);
             } else if (dynTy && dynTy.getRank() == 1 && dynTy.getDimSize(0) == 1) {
-              Value extracted = tensor::ExtractOp::create(rewriter, loc, dynVal,
+              Value extracted = tensor::ExtractOp::create(rewriter, loc,
+                  dynTy.getElementType(), dynVal,
                   ValueRange{arith::ConstantIndexOp::create(rewriter, loc, 0)});
               if (dynTy.getElementType().isF32() || dynTy.getElementType().isF64()) {
                 Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
@@ -134,11 +136,13 @@ struct SfExpandOpLowering : public OpRewritePattern<sf::ExpandOp> {
           Value dynVal = dynShapeOperands[dynIdx++];
           auto dynTy = dyn_cast<RankedTensorType>(dynVal.getType());
           if (dynTy && dynTy.getRank() == 0) {
-            Value extracted = tensor::ExtractOp::create(rewriter, loc, dynVal, ValueRange{});
+            Value extracted = tensor::ExtractOp::create(rewriter, loc,
+                dynTy.getElementType(), dynVal, ValueRange{});
             Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
             dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), asInt);
           } else if (dynTy && dynTy.getRank() == 1 && dynTy.getDimSize(0) == 1) {
-            Value extracted = tensor::ExtractOp::create(rewriter, loc, dynVal,
+            Value extracted = tensor::ExtractOp::create(rewriter, loc,
+                dynTy.getElementType(), dynVal,
                 ValueRange{arith::ConstantIndexOp::create(rewriter, loc, 0)});
             if (dynTy.getElementType().isF32() || dynTy.getElementType().isF64()) {
               Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);

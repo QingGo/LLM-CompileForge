@@ -116,6 +116,9 @@ def fx_graph_to_mlir(
         if node.op == "call_function":
             hal_op = _map_aten_op(node.target)
             if hal_op is None:
+                # Even unmapped ops have val metadata — capture for type context
+                if "val" in node.meta:
+                    shape_map[node.name] = _fake_to_shape_tuple(node.meta["val"])
                 continue
 
             # Layer detection (split_strategy="layer")
@@ -169,6 +172,7 @@ def fx_graph_to_mlir(
             # Record output shape for downstream ops
             if output_types:
                 shape_map[node.name] = _parse_mlir_type_to_shape(output_types[0])
+
 
             mlir_ops.append(MlirOp(
                 name=f"sf.{hal_op}", dialect="sf", op_name=hal_op,
@@ -416,7 +420,7 @@ def _collect_input_args(
             if isinstance(scalar_val, float):
                 weights[const_name] = torch.tensor(scalar_val, dtype=torch.float32)
             else:
-                weights[const_name] = torch.tensor(scalar_val)
+                weights[const_name] = torch.tensor(scalar_val, dtype=torch.int64)
             input_names.append(const_name)
         elif isinstance(arg, str):
             kwarg_name = scalar_kwargs_map.get(i)
