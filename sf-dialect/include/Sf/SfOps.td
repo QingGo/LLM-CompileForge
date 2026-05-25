@@ -9,15 +9,13 @@ include "mlir/Interfaces/InferTypeOpInterface.td"
 // Base classes
 //===----------------------------------------------------------------------===//
 
-class Sf_BinaryFloatOp<string mnemonic, list<Trait> traits = []> :
-    Sf_Op<mnemonic, !listconcat([Pure,
-      DeclareOpInterfaceMethods<InferTypeOpInterface, ["inferReturnTypes"]>], traits)> {
-  let arguments = (ins Sf_FloatTensor:$lhs, Sf_FloatTensor:$rhs);
-  let results = (outs Sf_FloatTensor:$result);
+class Sf_BinaryOp<string mnemonic, list<Trait> traits = []> :
+    Sf_Op<mnemonic, !listconcat(traits, [SameOperandsAndResultElementType, Pure,
+      DeclareOpInterfaceMethods<InferTypeOpInterface, ["inferReturnTypes"]>])> {
+  let arguments = (ins Sf_FloatOrIntegerTensor:$lhs, Sf_FloatOrIntegerTensor:$rhs);
+  let results = (outs Sf_FloatOrIntegerTensor:$result);
   let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
   let hasVerifier = 1;
-  let hasCanonicalizer = 1;
-  let hasFolder = 1;
 }
 
 class Sf_ActivationOp<string mnemonic, list<Trait> traits = []> :
@@ -26,21 +24,25 @@ class Sf_ActivationOp<string mnemonic, list<Trait> traits = []> :
   let arguments = (ins Sf_FloatTensor:$input);
   let results = (outs Sf_FloatTensor:$result);
   let assemblyFormat = "$input attr-dict `:` type($result)";
-  let hasCanonicalizer = 1;
-  let hasFolder = 1;
 }
 
 class Sf_ShapeOp<string mnemonic, list<Trait> traits = []> :
     Sf_Op<mnemonic, !listconcat([Pure], traits)> {
-  let hasCanonicalizer = 1;
-  let hasFolder = 1;
+}
+
+class Sf_CompareOp<string mnemonic, list<Trait> traits = []> :
+    Sf_Op<mnemonic, !listconcat(traits, [SameOperandsElementType, Pure])> {
+  let arguments = (ins Sf_FloatOrIntegerTensor:$lhs, Sf_FloatOrIntegerTensor:$rhs);
+  let results = (outs AnyTensor:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//
 // Binary arithmetic ops
 //===----------------------------------------------------------------------===//
 
-def Sf_AddOp : Sf_BinaryFloatOp<"add", [
+def Sf_AddOp : Sf_BinaryOp<"add", [
     Commutative,
     DeclareOpInterfaceMethods<InferTypeOpInterface, ["isCompatibleReturnTypes"]>,
 ]> {
@@ -49,8 +51,8 @@ def Sf_AddOp : Sf_BinaryFloatOp<"add", [
                                         ::mlir::TypeRange actual);
   }];
   let extraClassDefinition = [{
-    bool Sf_AddOp::isCompatibleReturnTypes(::mlir::TypeRange inferred,
-                                           ::mlir::TypeRange actual) {
+    bool AddOp::isCompatibleReturnTypes(::mlir::TypeRange inferred,
+                                        ::mlir::TypeRange actual) {
       if (inferred.size() != actual.size() || inferred.size() != 1)
         return false;
       auto inf = ::llvm::dyn_cast<::mlir::RankedTensorType>(inferred[0]);
@@ -62,11 +64,11 @@ def Sf_AddOp : Sf_BinaryFloatOp<"add", [
     }
   }];
 }
-def Sf_MulOp : Sf_BinaryFloatOp<"mul", [Commutative]>;
-def Sf_SubOp : Sf_BinaryFloatOp<"sub">;
-def Sf_PowOp : Sf_BinaryFloatOp<"pow">;
-def Sf_DivOp : Sf_BinaryFloatOp<"div">;
-def Sf_MaxOp : Sf_BinaryFloatOp<"max", [Commutative]>;
+def Sf_MulOp : Sf_BinaryOp<"mul", [Commutative]>;
+def Sf_SubOp : Sf_BinaryOp<"sub">;
+def Sf_PowOp : Sf_BinaryOp<"pow">;
+def Sf_DivOp : Sf_BinaryOp<"div">;
+def Sf_MaxOp : Sf_BinaryOp<"max", [Commutative]>;
 
 //===----------------------------------------------------------------------===//
 // Activation ops
@@ -147,7 +149,7 @@ def Sf_ConstantOp : Sf_Op<"constant"> {
   let results = (outs AnyTensor:$result);
   let hasFolder = 1;
   let extraClassDefinition = [{
-    ::mlir::OpFoldResult Sf_ConstantOp::fold(FoldAdaptor adaptor) {
+    ::mlir::OpFoldResult ConstantOp::fold(FoldAdaptor adaptor) {
       return getValue();
     }
   }];
@@ -189,26 +191,21 @@ def Sf_TransposeOp : Sf_ShapeOp<"transpose"> {
 }
 
 def Sf_SliceOp : Sf_ShapeOp<"slice"> {
-  let arguments = (ins Sf_FloatTensor:$input, I64Attr:$dim,
+  let arguments = (ins AnyTensor:$input, I64Attr:$dim,
                        I64Attr:$start, I64Attr:$end);
-  let results = (outs Sf_FloatTensor:$result);
+  let results = (outs AnyTensor:$result);
 }
 
-def Sf_LogicalAndOp : Sf_Op<"logical_and", [Pure]> {
+def Sf_LogicalAndOp : Sf_Op<"logical_and", [
+    Pure,
+    DeclareOpInterfaceMethods<InferTypeOpInterface, ["inferReturnTypes"]>
+]> {
   let arguments = (ins AnyTensor:$lhs, AnyTensor:$rhs);
   let results = (outs AnyTensor:$result);
   let hasVerifier = 1;
-  let hasCanonicalizer = 1;
-  let hasFolder = 1;
 }
 
-def Sf_LeOp : Sf_Op<"le", [Pure]> {
-  let arguments = (ins Sf_FloatTensor:$lhs, Sf_FloatTensor:$rhs);
-  let results = (outs AnyTensor:$result);
-  let hasVerifier = 1;
-  let hasCanonicalizer = 1;
-  let hasFolder = 1;
-}
+def Sf_LeOp : Sf_CompareOp<"le">;
 
 def Sf_OnesLikeOp : Sf_ShapeOp<"ones_like"> {
   let arguments = (ins AnyTensor:$input, Variadic<AnyTensor>:$dyn_shape);
@@ -218,7 +215,7 @@ def Sf_OnesLikeOp : Sf_ShapeOp<"ones_like"> {
 // Ops that survive lowering (marked legal in pass)
 def Sf_ArangeOp : Sf_ShapeOp<"arange"> {
   let arguments = (ins AnyTensor:$input, Variadic<AnyTensor>:$dyn_shape);
-  let results = (outs AnyTensor:$result);
+  let results = (outs Sf_Int64Tensor:$result);
 }
 
 def Sf_SymSizeOp : Sf_ShapeOp<"sym_size"> {
@@ -232,8 +229,9 @@ def Sf_EmbeddingOp : Sf_ShapeOp<"embedding"> {
 }
 
 def Sf_IndexOp : Sf_ShapeOp<"index"> {
-  let arguments = (ins Sf_FloatTensor:$input, Variadic<AnyTensor>:$dyn_index);
-  let results = (outs Sf_FloatTensor:$result);
+  let arguments = (ins Sf_FloatOrIntegerTensor:$input, Variadic<AnyTensor>:$dyn_index);
+  let results = (outs Sf_FloatOrIntegerTensor:$result);
+  let hasVerifier = 1;
 }
 
 def Sf_CumsumOp : Sf_ShapeOp<"cumsum"> {
@@ -260,37 +258,10 @@ def Sf_RsqrtOp : Sf_ActivationOp<"rsqrt">;
 // Comparison ops (missing from first pass, output is bool/integer tensor)
 //===----------------------------------------------------------------------===//
 
-def Sf_GtOp : Sf_Op<"gt", [Pure]> {
-  let arguments = (ins Sf_FloatTensor:$lhs, Sf_FloatTensor:$rhs);
-  let results = (outs AnyTensor:$result);
-  let hasVerifier = 1;
-  let hasCanonicalizer = 1;
-  let hasFolder = 1;
-}
-
-def Sf_LtOp : Sf_Op<"lt", [Pure]> {
-  let arguments = (ins Sf_FloatTensor:$lhs, Sf_FloatTensor:$rhs);
-  let results = (outs AnyTensor:$result);
-  let hasVerifier = 1;
-  let hasCanonicalizer = 1;
-  let hasFolder = 1;
-}
-
-def Sf_EqOp : Sf_Op<"eq", [Pure]> {
-  let arguments = (ins Sf_FloatTensor:$lhs, Sf_FloatTensor:$rhs);
-  let results = (outs AnyTensor:$result);
-  let hasVerifier = 1;
-  let hasCanonicalizer = 1;
-  let hasFolder = 1;
-}
-
-def Sf_NeOp : Sf_Op<"ne", [Pure]> {
-  let arguments = (ins Sf_FloatTensor:$lhs, Sf_FloatTensor:$rhs);
-  let results = (outs AnyTensor:$result);
-  let hasVerifier = 1;
-  let hasCanonicalizer = 1;
-  let hasFolder = 1;
-}
+def Sf_GtOp : Sf_CompareOp<"gt">;
+def Sf_LtOp : Sf_CompareOp<"lt">;
+def Sf_EqOp : Sf_CompareOp<"eq">;
+def Sf_NeOp : Sf_CompareOp<"ne">;
 
 //===----------------------------------------------------------------------===//
 // Shape / transform ops missing from first pass

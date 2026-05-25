@@ -1,6 +1,3 @@
-import pytest
-
-# ruff: noqa: E501
 """Tests for individual sf→linalg lowering patterns.
 
 Each test constructs a minimal MLIR module with a single sf op, runs
@@ -10,6 +7,10 @@ lowered ops.
 These tests catch pattern-specific bugs (InsertOp args, EmptyOp builders,
 kDynamic overflows) before they compound in the full model.
 """
+
+# ruff: noqa: E501
+
+import pytest
 
 from tests.lowering_test_helpers import (
     ACTIVATION_MODULE,

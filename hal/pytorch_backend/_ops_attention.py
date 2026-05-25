@@ -38,8 +38,8 @@ class _AttentionOps:
                 if attn_mask.shape[-1] == 1 and attn_mask.shape[-2] > 1:
                     attn_mask = attn_mask.expand(-1, -1, -1, attn_mask.shape[-2])
                 if attn_mask.shape[-2] == attn_mask.shape[-1]:
-                    mask_T = attn_mask.transpose(-1, -2)
-                    attn_mask = (attn_mask >= mask_T).to(query.dtype)
+                    mask_t = attn_mask.transpose(-1, -2)
+                    attn_mask = (attn_mask >= mask_t).to(query.dtype)
                     attn_mask = torch.where(attn_mask > 0.5, 0.0, float('-inf'))
 
         return F.scaled_dot_product_attention(

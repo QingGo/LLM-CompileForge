@@ -27,4 +27,16 @@ class Sf_Op<string mnemonic, list<Trait> traits = []> :
 def Sf_FloatTensor : TensorOf<[AnyFloat]>;
 def Sf_FloatOrFloatTensor : AnyTypeOf<[AnyFloat, Sf_FloatTensor]>;
 
+// Integer tensor type constraint — for arange output, index operands, position indices
+def Sf_Int32Tensor : TensorOf<[I32]>;
+def Sf_Int64Tensor : TensorOf<[I64]>;
+def Sf_IntegerTensor : TensorOf<[AnyInteger]>;
+
+// Scalar types (for type_as, constants)
+def Sf_FloatScalar : AnyTypeOf<[F16, F32, F64]>;
+def Sf_IntegerScalar : AnyTypeOf<[I32, I64]>;
+
+// Numeric tensors — float or integer, used for arithmetic ops (add, mul, sub, div)
+def Sf_FloatOrIntegerTensor : TensorOf<[AnyFloat, AnyInteger]>;
+
 #endif // SF_DIALECT

@@ -306,7 +306,6 @@ def _annotate_debug_weight_names(ir_mod: Any) -> None:
     because unregistered dialect attributes block canonicalize.  debug_weight_names
     uses the debug_ prefix and is not stripped — it survives the full pipeline.
     """
-    import mlir.ir as ir
 
     for op in ir_mod.operation.regions[0].blocks[0]:
         if str(op.operation.name) != "func.func":

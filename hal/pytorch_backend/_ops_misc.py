@@ -78,7 +78,7 @@ class _MiscOps:
             end = int(inputs[0].item()) if inputs[0].numel() == 1 else 1
         else:
             end = kwargs.get("end", 1)
-        return torch.arange(start, end, dtype=inputs[0].dtype if inputs else torch.float32)
+        return torch.arange(start, end, dtype=torch.int64)
 
     def _op_cos(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         return torch.cos(inputs[0])

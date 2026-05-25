@@ -73,7 +73,8 @@ struct SfLeOpLowering : public OpRewritePattern<sf::LeOp> {
         SmallVector<int64_t> addedDims;
         for (int64_t i = 0; i < outRank - operandRank; ++i)
           addedDims.push_back(i);
-        Value bcInit = tensor::EmptyOp::create(rewriter, loc, outTensorType, dynSizes);
+        auto bcInitType = RankedTensorType::get(outShape, operandType.getElementType());
+        Value bcInit = tensor::EmptyOp::create(rewriter, loc, bcInitType, dynSizes);
         return linalg::BroadcastOp::create(rewriter, loc, operand, bcInit, addedDims)->getResult(0);
       }
 
@@ -129,7 +130,7 @@ struct SfLeOpLowering : public OpRewritePattern<sf::LeOp> {
               interShape[d] = outShape[d];
             }
           }
-          auto interType = RankedTensorType::get(interShape, f32Type);
+          auto interType = RankedTensorType::get(interShape, operandType.getElementType());
           SmallVector<int64_t> bcDims = {k};
           Value bcInit = tensor::EmptyOp::create(rewriter, loc, interType, /*dynSizes=*/{});
           current = linalg::BroadcastOp::create(rewriter, loc, current, bcInit, bcDims)->getResult(0);
@@ -236,7 +237,8 @@ struct SfLogicalAndOpLowering : public OpRewritePattern<sf::LogicalAndOp> {
         SmallVector<int64_t> addedDims;
         for (int64_t i = 0; i < outRank - operandRank; ++i)
           addedDims.push_back(i);
-        Value bcInit = tensor::EmptyOp::create(rewriter, loc, outTensorType, dynSizes);
+        auto bcInitType = RankedTensorType::get(outShape, operandType.getElementType());
+        Value bcInit = tensor::EmptyOp::create(rewriter, loc, bcInitType, dynSizes);
         return linalg::BroadcastOp::create(rewriter, loc, operand, bcInit, addedDims)->getResult(0);
       }
 
@@ -285,7 +287,7 @@ struct SfLogicalAndOpLowering : public OpRewritePattern<sf::LogicalAndOp> {
               interShape[d] = outShape[d];
             }
           }
-          auto interType = RankedTensorType::get(interShape, f32Type);
+          auto interType = RankedTensorType::get(interShape, operandType.getElementType());
           SmallVector<int64_t> bcDims = {k};
           Value bcInit = tensor::EmptyOp::create(rewriter, loc, interType, /*dynSizes=*/{});
           current = linalg::BroadcastOp::create(rewriter, loc, current, bcInit, bcDims)->getResult(0);

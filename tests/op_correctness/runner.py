@@ -223,9 +223,16 @@ def lower_and_jit(mlir_text: str) -> tuple[Any, tuple[int, ...]]:
 
         # Step 6: JIT compile
         try:
+            from pathlib import Path
+
             from mlir.execution_engine import ExecutionEngine
 
-            engine = ExecutionEngine(module, opt_level=0)
+            _runner_lib = (
+                Path(__file__).resolve().parent.parent.parent
+                / "llvm-project" / "build" / "lib" / "libmlir_c_runner_utils.dylib"
+            )
+            shared_libs = [str(_runner_lib)] if _runner_lib.exists() else []
+            engine = ExecutionEngine(module, opt_level=0, shared_libs=shared_libs)
             return engine, output_shape
         except Exception as e:
             raise RuntimeError(
@@ -314,8 +321,9 @@ class Runner:
     then compares outputs using cosine similarity.
     """
 
-    def __init__(self, case: OpCase) -> None:
+    def __init__(self, case: OpCase, custom_inputs: list[np.ndarray] | None = None) -> None:
         self.case = case
+        self.custom_inputs = custom_inputs
 
     def run(self) -> RunResult:
         """Execute the test pipeline and return the comparison result."""
@@ -331,11 +339,14 @@ class Runner:
         output_shape = (case.output_shapes or [case.input_shapes[0]])[0]
 
         # Step 7: Generate shared input data (same for JIT and torch)
-        rng = np.random.RandomState(42)
-        input_arrays = [rng.randn(*shape).astype(np.float32) for shape in case.input_shapes]
-        kws = case.kwargs or {}
-        if kws.get("positive_inputs"):
-            input_arrays = [np.abs(arr) + 0.1 for arr in input_arrays]
+        if self.custom_inputs is not None:
+            input_arrays = self.custom_inputs
+        else:
+            rng = np.random.RandomState(42)
+            input_arrays = [rng.randn(*shape).astype(np.float32) for shape in case.input_shapes]
+            kws = case.kwargs or {}
+            if kws.get("positive_inputs"):
+                input_arrays = [np.abs(arr) + 0.1 for arr in input_arrays]
 
         # Step 8: Invoke JIT and extract output
         try:

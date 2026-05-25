@@ -110,6 +110,23 @@ OP_TABLE: list[OpCase] = [
            kwargs={}, output_shapes=[()]),
     # Rank-1 ops deferred: LLVM lowering sometimes adds a dimension
     # (tensor<768xf32> → memref<768x1xf32>). Revisit after bufferization fix.
+
+    # ── Linear (matmul + bias) — lowering confirmed ─────────────────────
+    OpCase("sf.linear",
+           lambda x, w, b: torch.nn.functional.linear(x, w, b),
+           [(4, 768), (768, 768), (768,)], 1e-5, "linear"),
+    # ── Layer norm — lowering confirmed ─────────────────────────────────
+    OpCase("sf.layer_norm",
+           lambda x, w, b: torch.nn.functional.layer_norm(
+               x, (768,), weight=w, bias=b, eps=1e-5),
+           [(4, 768), (768,), (768,)], 1e-5, "layer_norm",
+           kwargs={"normalized_shape": [768]}),
+    # ── View (reshape) — lowering confirmed ─────────────────────────────
+    OpCase("sf.view",
+           lambda x: x.view(2, 4, 12, 64),
+           [(2, 4, 768)], 1e-5, "view",
+           kwargs={"shape": [2, 4, 12, 64]},
+           output_shapes=[(2, 4, 12, 64)]),
 ]
 
 # ── Ops missing lowering patterns (documented, not tested) ───────────
