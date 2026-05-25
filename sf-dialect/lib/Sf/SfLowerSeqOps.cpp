@@ -286,20 +286,58 @@ struct SfIndexOpLowering : public OpRewritePattern<sf::IndexOp> {
     }
 
     // Pre-compute output dimension sizes outside the loop.
-    // For dynamic dims, extract from the data tensor with broadcasting offset:
-    //   output-dim-i = data-dim-(i - rank_offset) where rank_offset = outRank - dataRank.
+    // For dynamic dims, source from the appropriate tensor using broadcast
+    // semantics: index tensors define leading dims (broadcast together), data
+    // tensor defines trailing dims beyond the indexed dimensions.
     SmallVector<Value> outDims;
     int64_t dataRank = dataType.getRank();
-    int64_t dynOffset = outType.getRank() - dataRank;
+    int64_t numIndices = (int64_t)indexTensors.size();
+
+    // Compute broadcast rank: maximum rank across all index tensors
+    int64_t broadcastRank = 0;
+    for (auto idx : indexTensors) {
+      auto idxType = cast<RankedTensorType>(idx.getType());
+      broadcastRank = std::max(broadcastRank, idxType.getRank());
+    }
+
+    // For each output dim, determine the correct SSA value
     for (int64_t i = 0; i < outType.getRank(); ++i) {
-      if (outType.isDynamicDim(i)) {
-        int64_t dataIdx = i - dynOffset;
-        if (dataIdx >= 0 && dataIdx < dataRank && dataType.isDynamicDim(dataIdx))
-          outDims.push_back(tensor::DimOp::create(rewriter, loc, data, dataIdx));
-        else
-          outDims.push_back(arith::ConstantIndexOp::create(rewriter, loc, 1));
-      } else {
+      if (!outType.isDynamicDim(i)) {
         outDims.push_back(arith::ConstantIndexOp::create(rewriter, loc, outType.getDimSize(i)));
+        continue;
+      }
+      bool resolved = false;
+      // Try index tensors first (for dims within broadcast rank)
+      if (i < broadcastRank) {
+        for (auto idx : indexTensors) {
+          auto idxType = cast<RankedTensorType>(idx.getType());
+          int64_t idxDim = i - (broadcastRank - idxType.getRank());
+          if (idxDim < 0 || idxDim >= idxType.getRank()) continue;
+          int64_t idxSize = idxType.getDimSize(idxDim);
+          if (idxSize == 1) continue;  // broadcast dim
+          // Found a non-broadcast index tensor dimension
+          if (ShapedType::isDynamic(idxSize)) {
+            outDims.push_back(tensor::DimOp::create(rewriter, loc, idx, idxDim));
+            resolved = true;
+            break;
+          } else {
+            // Static non-1 dimension — use constant
+            outDims.push_back(arith::ConstantIndexOp::create(rewriter, loc, idxSize));
+            resolved = true;
+            break;
+          }
+        }
+      }
+      // Fall back to data tensor for trailing dims
+      if (!resolved) {
+        int64_t dataIdx = numIndices >= dataRank ? -1 : i - (outType.getRank() - dataRank);
+        if (dataIdx >= 0 && dataIdx < dataRank && dataType.isDynamicDim(dataIdx)) {
+          outDims.push_back(tensor::DimOp::create(rewriter, loc, data, dataIdx));
+          resolved = true;
+        }
+      }
+      if (!resolved) {
+        outDims.push_back(arith::ConstantIndexOp::create(rewriter, loc, 1));
       }
     }
 
@@ -367,6 +405,7 @@ struct SfIndexOpLowering : public OpRewritePattern<sf::IndexOp> {
                << rawIdx.getType();
     }
     // Fill remaining dataCoords from outCoords for dims not covered by index tensors.
+    int64_t dynOffset = outType.getRank() - dataRank;
     for (int64_t i = (int64_t)indexTensors.size(); i < dataType.getRank(); ++i)
       dataCoords[i] = outCoords[i + dynOffset];
 

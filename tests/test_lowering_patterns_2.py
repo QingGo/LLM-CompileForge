@@ -142,6 +142,39 @@ def test_index():
 
 
 @pytest.mark.unit
+def test_index_dynamic_dims():
+    """sf.index with dynamic shapes — verifies outDims sources from index tensors.
+
+    Without the fix, outDims reads tensor.dim from the data tensor (%arg0)
+    for all dynamic dims. After the fix, tensor.dim reads from index tensors
+    (%arg1, %arg2) for the leading broadcast dims, falling back to data only
+    when no index tensor provides a non-broadcast dim.
+    """
+    lowered = lower("""module {
+  func.func @test(%data: tensor<?x?xf32>, %idx0: tensor<?x1x1x1xi64>, %idx1: tensor<1x1x1x?xi64>) -> tensor<?x1x?x?xf32> {
+    %0 = "sf.index"(%data, %idx0, %idx1) : (tensor<?x?xf32>, tensor<?x1x1x1xi64>, tensor<1x1x1x?xi64>) -> tensor<?x1x?x?xf32>
+    return %0 : tensor<?x1x?x?xf32>
+  }
+}""")
+    check_lowered(lowered)
+    # Verify outDims sources from index tensors, not data tensor.
+    # Bug: tensor.dim %arg0 (data) was used for all dynamic dims.
+    # Fix: tensor.dim %arg1 (idx0) for dim 0, tensor.dim %arg2 (idx1) for dim 3.
+    assert "tensor.dim %arg1, %c0" in lowered, (
+        f"Expected tensor.dim from idx0 (arg1) for output dim 0:\n{lowered}"
+    )
+    assert "tensor.dim %arg2, %c3" in lowered, (
+        f"Expected tensor.dim from idx1 (arg2) for output dim 3:\n{lowered}"
+    )
+    # Verify no tensor.dim from data tensor (%arg0) for the dynamic dims
+    # (data tensor may still be used for index values, just not for dim sizes)
+    dim_from_data = [ln for ln in lowered.split('\n') if 'tensor.dim %arg0' in ln]
+    assert not dim_from_data, (
+        f"outDims should not source from data tensor (arg0): {dim_from_data}"
+    )
+
+
+@pytest.mark.unit
 def test_identity_type_cast():
     """sf.identity with type change (i1→f32) should insert uitofp."""
     lowered = lower("""module {
