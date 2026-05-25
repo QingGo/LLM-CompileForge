@@ -63,6 +63,7 @@ from compiler.mlir_dialect.shape_inference_pure import (
     _infer_embedding_pure,
 )
 from compiler.mlir_dialect.shape_inference_utils import (
+    _broadcast_shapes,
     _elt_type_str,
     _infer_ir_via_pure,
     _make_ranked_type,
@@ -165,9 +166,22 @@ def infer_sym_size(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
 
 
 def infer_index(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
-    if input_types:
-        return [input_types[0]]
-    return []
+    if len(input_types) < 2:
+        return input_types if input_types else []
+    data_type = input_types[0]
+    idx_types = input_types[1:]
+    data_shape = _ranked_shape(data_type)
+    idx_shapes = [_ranked_shape(t) for t in idx_types]
+    # If any shape is unknown, return fully dynamic result
+    if data_shape is None or any(s is None for s in idx_shapes):
+        return [_make_ranked_type((None,) * 1, _elt_type_str(data_type))]
+    # All shapes known at this point — broadcast index dims then append trailing data dims
+    valid_shapes: list[tuple[int | None, ...]] = [s for s in idx_shapes if s is not None]
+    broadcast_shape = _broadcast_shapes(*valid_shapes)
+    num_indices = len(idx_types)
+    trailing = data_shape[num_indices:] if num_indices < len(data_shape) else ()
+    result_shape = broadcast_shape + trailing
+    return [_make_ranked_type(result_shape, _elt_type_str(data_type))]
 
 
 def infer_einsum(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
