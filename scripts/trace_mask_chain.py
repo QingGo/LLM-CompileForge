@@ -533,10 +533,14 @@ def _test_single_op(
         i1 = np.arange(seq).reshape(1, 1, 1, seq).astype(np.int64)
         engine, shape = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [data, i0, i1], shape)
-        # Reference: data[i0, i1] broadcast to [batch, 1, seq, seq]
-        ref = torch.from_numpy(data)[i0[:, 0, 0, 0], :]
-        ref = ref[:, np.newaxis, :, :]  # [batch, 1, seq, seq]
-        ref_4d = np.broadcast_to(ref[:, :, :, np.newaxis], (batch, 1, seq, seq))
+        # Reference: data[i0, i1] with proper aten.index.Tensor broadcasting
+        # i0: [batch, 1, 1, 1], i1: [1, 1, 1, seq]
+        # Broadcast indices -> [batch, 1, 1, seq]
+        # Output shape: broadcast_shape + data_shape[num_indices:] = [batch, 1, 1, seq]
+        i0_1d = i0[:, 0, 0, 0]  # (batch,)
+        i1_1d = i1[0, 0, 0, :]  # (seq,)
+        ref_2d = data[i0_1d[:, None].astype(np.int64), i1_1d[None, :].astype(np.int64)]  # (batch, seq)
+        ref_4d = ref_2d[:, np.newaxis, np.newaxis, :]  # (batch, 1, 1, seq)
         return engine, out, torch.from_numpy(ref_4d)
 
     if op == "expand":
