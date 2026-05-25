@@ -342,10 +342,14 @@ struct SfIndexOpLowering : public OpRewritePattern<sf::IndexOp> {
     SmallVector<Value> dataCoords(dataType.getRank());
     for (size_t i = 0; i < indexTensors.size() && i < (size_t)dataType.getRank(); ++i) {
       auto idxTensorType = ::mlir::cast<::mlir::RankedTensorType>(indexTensors[i].getType());
+      // For index tensor i (which feeds dataCoords[i]), the j-th idx tensor
+      // dim maps to output dim (i + j).  This ensures each index tensor reads
+      // from the correct output dimension (e.g. row vs col for 2D gather).
       SmallVector<Value> idxCoords;
       for (int64_t j = 0; j < idxTensorType.getRank(); ++j) {
-        if (j < (int64_t)outCoords.size())
-          idxCoords.push_back(outCoords[j]);
+        int64_t outDim = (int64_t)i + j;
+        if (outDim < (int64_t)outCoords.size())
+          idxCoords.push_back(outCoords[outDim]);
         else
           idxCoords.push_back(arith::ConstantIndexOp::create(rewriter, loc, 0));
       }

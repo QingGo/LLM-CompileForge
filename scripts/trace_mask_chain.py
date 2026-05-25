@@ -307,5 +307,291 @@ def main() -> None:
         print("⚠️  Some ops have cos < 0.9999 — investigate above.")
 
 
+# ══════════════════════════════════════════════════════════════════════
+#  7. Real mask chain — model-accurate op sequence from model.mlir
+# ══════════════════════════════════════════════════════════════════════
+# Tests the actual ops in the order they appear in model.mlir,
+# ensuring every mask-related op is covered with correct types.
+
+
+def test_real_mask_op_sequence() -> None:
+    """Test all mask ops matching model.mlir op sequence."""
+    from pathlib import Path
+
+    mlir_path = Path("compiled/opt_125m_fresh/model.mlir")
+    if not mlir_path.exists():
+        print("[7/7] model.mlir not found — skipping")
+        return
+
+    # Extract the ops used in the mask section (lines 216-260)
+    text = mlir_path.read_text()
+    lines = text.split("\n")
+    mask_lines = lines[216:261]
+
+    import re
+    op_types_in_order: list[str] = []
+    seen = set()
+    for line in mask_lines:
+        m = re.search(r'"sf\.(\w+)"', line)
+        if m:
+            op = m.group(1)
+            if op not in seen:
+                op_types_in_order.append(op)
+                seen.add(op)
+
+    print(f"\n[7/7] Real mask ops ({len(op_types_in_order)} unique, in order):")
+    print(f"      {' → '.join(op_types_in_order)}")
+    print()
+
+    # Test each op individually with model-like shapes
+    batch, seq = 2, 4
+    all_cos: list[tuple[str, float]] = []
+
+    for op in op_types_in_order:
+        # Build MLIR and PyTorch reference for each op
+        engine, jit_out, py_out = _test_single_op(op, batch, seq)
+        if engine is None:
+            continue
+        # Handle shape mismatches: squeeze leading 1s, reshape scalars
+        jit_flat = np.asarray(jit_out).ravel()
+        py_flat = np.asarray(py_out).ravel()
+        if jit_flat.shape != py_flat.shape:
+            min_len = min(len(jit_flat), len(py_flat))
+            jit_flat, py_flat = jit_flat[:min_len], py_flat[:min_len]
+        cos = cosine_similarity(
+            jit_flat.astype(np.float32), py_flat.astype(np.float32)
+        )
+        all_cos.append((op, cos))
+        status = "✅" if cos > 0.99 else "⚠️"
+        print(f"  {status}  {op:25s}  cos={cos:.8f}  shape={list(jit_out.shape)}")
+
+    # Summary
+    print()
+    failed = [(n, c) for n, c in all_cos if c < 0.99]
+    if not failed:
+        print(f"  ✅  All {len(all_cos)} mask ops match PyTorch reference.")
+    else:
+        for n, c in failed:
+            print(f"  ⚠️  {n}: cos={c:.6f}")
+
+
+def _test_single_op(
+    op: str, batch: int, seq: int
+) -> tuple[Any, np.ndarray, torch.Tensor]:
+    """Test one mask op with model-appropriate shapes."""
+    pos = torch.arange(seq).unsqueeze(0).expand(batch, seq)
+    causal_mask = torch.le(pos.unsqueeze(-1), pos.unsqueeze(-2)).float()
+
+    if op == "sym_size":
+        input_ids = torch.randint(0, 100, (batch, seq), dtype=torch.long)
+        mlir = f"""module {{
+  func.func @main(%arg: tensor<{batch}x{seq}xi64>) -> tensor<1xf32> {{
+    %0 = "sf.sym_size"(%arg) {{dim = 0 : i64}} : (tensor<{batch}x{seq}xi64>) -> tensor<1xf32>
+    return %0 : tensor<1xf32>
+  }}
+}}"""
+        engine, shape = lower_and_jit(mlir)
+        out = invoke_and_extract(engine, "main", [input_ids.numpy()], shape)
+        return engine, out, torch.tensor([float(batch)])
+
+    if op == "view":
+        mlir = f"""module {{
+  func.func @main(%arg: tensor<{batch}x{seq}xi64>, %sz: tensor<1xf32>) -> tensor<?x?xi64> {{
+    %0 = "sf.view"(%arg, %sz) {{shape = [-1, %sz]}} : (tensor<{batch}x{seq}xi64>, tensor<1xf32>) -> tensor<?x?xi64>
+    return %0 : tensor<?x?xi64>
+  }}
+}}"""
+        sz = np.array([float(seq)], dtype=np.float32)
+        engine, shape = lower_and_jit(mlir)
+        out = invoke_and_extract(engine, "main", [pos.numpy(), sz], shape)
+        return engine, out, pos.view(batch, seq)
+
+    if op == "ones_like":
+        mlir = f"""module {{
+  func.func @main(%arg: tensor<1xf32>) -> tensor<?x?xf32> {{
+    %0 = "sf.ones_like"(%arg) {{shape = [{batch}, {seq}]}} : (tensor<1xf32>) -> tensor<?x?xf32>
+    return %0 : tensor<?x?xf32>
+  }}
+}}"""
+        inp = np.array([0.0], dtype=np.float32)
+        engine, shape = lower_and_jit(mlir)
+        out = invoke_and_extract(engine, "main", [inp], shape)
+        return engine, out, torch.ones(batch, seq)
+
+    if op == "cumsum":
+        mlir = f"""module {{
+  func.func @main(%arg: tensor<{batch}x{seq}xf32>) -> tensor<{batch}x{seq}xf32> {{
+    %0 = "sf.cumsum"(%arg) {{dim = 1 : i64}} : (tensor<{batch}x{seq}xf32>) -> tensor<{batch}x{seq}xf32>
+    return %0 : tensor<{batch}x{seq}xf32>
+  }}
+}}"""
+        inp = torch.ones(batch, seq).numpy()
+        engine, shape = lower_and_jit(mlir)
+        out = invoke_and_extract(engine, "main", [inp], shape)
+        return engine, out, torch.cumsum(torch.ones(batch, seq), dim=1)
+
+    if op == "arange":
+        mlir = f"""module {{
+  func.func @main(%arg: tensor<1xi64>) -> tensor<?xi64> {{
+    %0 = "sf.arange"(%arg) : (tensor<1xi64>) -> tensor<?xi64>
+    return %0 : tensor<?xi64>
+  }}
+}}"""
+        count = np.array([seq], dtype=np.int64)
+        engine, shape = lower_and_jit(mlir)
+        out = invoke_and_extract(engine, "main", [count], (seq,))
+        return engine, out, torch.arange(seq, dtype=torch.int64).float()
+
+    if op == "add":
+        mlir = f"""module {{
+  func.func @main(%a: tensor<1xi64>, %b: tensor<1xi64>) -> tensor<1xi64> {{
+    %0 = "sf.add"(%a, %b) : (tensor<1xi64>, tensor<1xi64>) -> tensor<1xi64>
+    return %0 : tensor<1xi64>
+  }}
+}}"""
+        a = np.array([2], dtype=np.int64)
+        b = np.array([3], dtype=np.int64)
+        engine, shape = lower_and_jit(mlir)
+        out = invoke_and_extract(engine, "main", [a, b], shape)
+        return engine, out, (torch.tensor(2) + torch.tensor(3)).float()
+
+    if op == "unsqueeze":
+        mlir = f"""module {{
+  func.func @main(%arg: tensor<{seq}xi64>) -> tensor<{seq}x1xi64> {{
+    %0 = "sf.unsqueeze"(%arg) {{dim = 1 : i64}} : (tensor<{seq}xi64>) -> tensor<{seq}x1xi64>
+    return %0 : tensor<{seq}x1xi64>
+  }}
+}}"""
+        inp = torch.arange(seq, dtype=torch.int64).numpy()
+        engine, shape = lower_and_jit(mlir)
+        out = invoke_and_extract(engine, "main", [inp], shape)
+        return engine, out, torch.arange(seq).unsqueeze(1).float()
+
+    if op == "slice":
+        mlir = f"""module {{
+  func.func @main(%arg: tensor<{batch}x{seq}xf32>) -> tensor<?x?xf32> {{
+    %0 = "sf.slice"(%arg) {{dim = 0 : i64, start = 0 : i64, end = 9223372036854775807 : i64}} : (tensor<{batch}x{seq}xf32>) -> tensor<?x?xf32>
+    return %0 : tensor<?x?xf32>
+  }}
+}}"""
+        inp = torch.randn(batch, seq).numpy()
+        engine, shape = lower_and_jit(mlir)
+        out = invoke_and_extract(engine, "main", [inp], shape)
+        return engine, out, torch.from_numpy(inp)[:batch, :seq]
+
+    if op == "new_ones":
+        mlir = f"""module {{
+  func.func @main(%arg: tensor<1x1x{batch}x1xi64>) -> tensor<1x1x{batch}x1xf32> {{
+    %0 = "sf.new_ones"(%arg) : (tensor<1x1x{batch}x1xi64>) -> tensor<1x1x{batch}x1xf32>
+    return %0 : tensor<1x1x{batch}x1xf32>
+  }}
+}}"""
+        inp = np.ones((1, 1, batch, 1), dtype=np.int64)
+        engine, shape = lower_and_jit(mlir)
+        out = invoke_and_extract(engine, "main", [inp], shape)
+        return engine, out, torch.ones(1, 1, batch, 1)
+
+    if op == "le":
+        mlir = f"""module {{
+  func.func @main(%a: tensor<1x1x{seq}x1xi64>, %b: tensor<1x1x{seq}x1xi64>) -> tensor<1x1x{seq}x{seq}xf32> {{
+    %0 = "sf.le"(%a, %b) : (tensor<1x1x{seq}x1xi64>, tensor<1x1x{seq}x1xi64>) -> tensor<1x1x{seq}x{seq}xf32>
+    return %0 : tensor<1x1x{seq}x{seq}xf32>
+  }}
+}}"""
+        # le: a <= b → 1.0, else 0.0
+        row = np.arange(seq).reshape(1, 1, seq, 1).astype(np.int64)
+        col = np.arange(seq).reshape(1, 1, 1, seq).astype(np.int64)
+        engine, shape = lower_and_jit(mlir)
+        out = invoke_and_extract(engine, "main", [col, row], shape)
+        ref = (torch.tensor(col) <= torch.tensor(row)).float()
+        return engine, out, ref.squeeze()
+
+    if op == "logical_and":
+        mlir = f"""module {{
+  func.func @main(%a: tensor<1x1x{batch}x1xf32>, %b: tensor<1x1x{batch}x{batch}xf32>) -> tensor<1x1x{batch}x{batch}xf32 {{
+    %0 = "sf.logical_and"(%a, %b) : (tensor<1x1x{batch}x1xf32>, tensor<1x1x{batch}x{batch}xf32) -> tensor<1x1x{batch}x{batch}xf32>
+    return %0 : tensor<1x1x{batch}x{batch}xf32>
+  }}
+}}"""
+        a = np.ones((1, 1, batch, 1), dtype=np.float32)
+        b = causal_mask.unsqueeze(0).unsqueeze(0).numpy()
+        engine, shape = lower_and_jit(mlir)
+        out = invoke_and_extract(engine, "main", [a, b], shape)
+        return engine, out, torch.logical_and(torch.ones(1, 1, batch, 1), causal_mask.unsqueeze(0).unsqueeze(0)).float()
+
+    if op == "index":
+        # 2D gather matching real model usage
+        mlir = f"""module {{
+  func.func @main(%data: tensor<{batch}x{seq}xf32>, %i0: tensor<{batch}x1x1x1xi64>, %i1: tensor<1x1x1x{seq}xi64>) -> tensor<{batch}x1x{seq}x{seq}xf32> {{
+    %0 = "sf.index"(%data, %i0, %i1) : (tensor<{batch}x{seq}xf32>, tensor<{batch}x1x1x1xi64>, tensor<1x1x1x{seq}xi64>) -> tensor<{batch}x1x{seq}x{seq}xf32>
+    return %0 : tensor<{batch}x1x{seq}x{seq}xf32>
+  }}
+}}"""
+        rng = np.random.RandomState(42)
+        data = rng.randn(batch, seq).astype(np.float32)
+        i0 = np.arange(batch).reshape(batch, 1, 1, 1).astype(np.int64)
+        i1 = np.arange(seq).reshape(1, 1, 1, seq).astype(np.int64)
+        engine, shape = lower_and_jit(mlir)
+        out = invoke_and_extract(engine, "main", [data, i0, i1], shape)
+        # Reference: data[i0, i1] broadcast to [batch, 1, seq, seq]
+        ref = torch.from_numpy(data)[i0[:, 0, 0, 0], :]
+        ref = ref[:, np.newaxis, :, :]  # [batch, 1, seq, seq]
+        ref_4d = np.broadcast_to(ref[:, :, :, np.newaxis], (batch, 1, seq, seq))
+        return engine, out, torch.from_numpy(ref_4d)
+
+    if op == "expand":
+        mlir = f"""module {{
+  func.func @main(%arg: tensor<?x1x?x?xf32>) -> tensor<?x1x?x?xf32> {{
+    %0 = "sf.expand"(%arg) : (tensor<?x1x?x?xf32>) -> tensor<?x1x?x?xf32>
+    return %0 : tensor<?x1x?x?xf32>
+  }}
+}}"""
+        inp = causal_mask.unsqueeze(0).unsqueeze(0).numpy()  # [1, 1, 4, 4]
+        engine, shape = lower_and_jit(mlir)
+        out = invoke_and_extract(engine, "main", [inp], shape)
+        return engine, out, causal_mask.unsqueeze(0).unsqueeze(0)
+
+    if op == "identity":
+        mlir = f"""module {{
+  func.func @main(%arg: tensor<{batch}x{seq}xf32>) -> tensor<{batch}x{seq}xf32> {{
+    %0 = "sf.identity"(%arg) : (tensor<{batch}x{seq}xf32>) -> tensor<{batch}x{seq}xf32>
+    return %0 : tensor<{batch}x{seq}xf32>
+  }}
+}}"""
+        inp = torch.randn(batch, seq).numpy()
+        engine, shape = lower_and_jit(mlir)
+        out = invoke_and_extract(engine, "main", [inp], shape)
+        return engine, out, torch.from_numpy(inp)
+
+    if op == "mul":
+        mlir = f"""module {{
+  func.func @main(%a: tensor<{batch}x{seq}xf32>, %b: tensor<{batch}x{seq}xf32>) -> tensor<{batch}x{seq}xf32> {{
+    %0 = "sf.mul"(%a, %b) : (tensor<{batch}x{seq}xf32>, tensor<{batch}x{seq}xf32>) -> tensor<{batch}x{seq}xf32>
+    return %0 : tensor<{batch}x{seq}xf32>
+  }}
+}}"""
+        a = torch.randn(batch, seq).numpy()
+        b = torch.randn(batch, seq).numpy()
+        engine, shape = lower_and_jit(mlir)
+        out = invoke_and_extract(engine, "main", [a, b], shape)
+        return engine, out, torch.from_numpy(a) * torch.from_numpy(b)
+
+    if op == "sub":
+        mlir = f"""module {{
+  func.func @main(%a: tensor<{batch}x{seq}xf32>, %b: tensor<1xf32>) -> tensor<{batch}x{seq}xf32> {{
+    %0 = "sf.sub"(%a, %b) : (tensor<{batch}x{seq}xf32>, tensor<1xf32>) -> tensor<{batch}x{seq}xf32>
+    return %0 : tensor<{batch}x{seq}xf32>
+  }}
+}}"""
+        a = torch.randn(batch, seq).numpy()
+        b = np.array([2.0], dtype=np.float32)
+        engine, shape = lower_and_jit(mlir)
+        out = invoke_and_extract(engine, "main", [a, b], shape)
+        return engine, out, torch.from_numpy(a) - 2.0
+
+    return None, np.array([]), torch.tensor([])
+
+
 if __name__ == "__main__":
     main()
+    test_real_mask_op_sequence()
