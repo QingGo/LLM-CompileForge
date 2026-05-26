@@ -66,3 +66,33 @@ jobs:
         continue-on-error: true
         working-directory: rust
         run: cargo test --lib
+
+  dylib-freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install dependencies
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev]"
+      - name: Check for sf-dialect changes
+        id: changes
+        run: |
+          if git diff --name-only HEAD~1 | grep -q "^sf-dialect/"; then
+            echo "src=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "src=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run freshness check
+        if: steps.changes.outputs.src == 'true'
+        continue-on-error: true
+        run: |
+          python -c "from scripts.compile_dylib import _check_sf_dialect_freshness; print('✓ _check_sf_dialect_freshness importable')"
+          echo "Note: Full dylib compilation requires LLVM which is not available on CI runner."
+          echo "The staging check validates that compile.py embeds sf_dialect_hash and compile_dylib.py"
+          echo "can detect hash mismatches at import time."

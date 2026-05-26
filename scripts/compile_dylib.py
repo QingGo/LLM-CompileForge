@@ -115,6 +115,70 @@ def _save_failure_context(
     return failure_dir
 
 
+def _check_sf_dialect_freshness(compiled_dir: str) -> None:
+    """Check model.mlir is not stale vs current sf-dialect.
+
+    Hard error if sf_dialect_hash in metadata differs from HEAD.
+    Silent pass if metadata has no hash (old model) or not in git repo.
+    """
+    import json as _json
+    import os as _os
+    import subprocess as _subprocess
+    import sys as _sys
+
+    meta_path = _os.path.join(compiled_dir, "metadata.json")
+    if not _os.path.isfile(meta_path):
+        return  # no metadata, skip check
+
+    with open(meta_path) as _f:
+        meta = _json.load(_f)
+
+    old_hash = meta.get("sf_dialect_hash")
+    if old_hash is None:
+        # Pre-staleness-check era model — warn and continue
+        print(
+            "WARNING: model.mlir has no sf_dialect_hash (pre-staleness-check era)",
+            file=_sys.stderr,
+        )
+        return
+
+    try:
+        result = _subprocess.run(
+            ["git", "rev-parse", "HEAD:sf-dialect/"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        print(
+            "WARNING: could not verify sf-dialect freshness (not a git repo?)",
+            file=_sys.stderr,
+        )
+        return
+
+    if result.returncode != 0:
+        print(
+            "WARNING: could not verify sf-dialect freshness (git error)",
+            file=_sys.stderr,
+        )
+        return
+
+    new_hash = result.stdout.strip()
+    if old_hash != new_hash:
+        print("ERROR: model.mlir is stale!", file=_sys.stderr)
+        print(f"  Generated with sf-dialect: {old_hash[:8]}", file=_sys.stderr)
+        print(f"  Current sf-dialect HEAD:  {new_hash[:8]}", file=_sys.stderr)
+        print(
+            f"  Run 'python scripts/compile.py ... --output-dir {compiled_dir}' first.",
+            file=_sys.stderr,
+        )
+        print(
+            "  Or use 'make test-dylib-cos' which handles this automatically.",
+            file=_sys.stderr,
+        )
+        _sys.exit(1)
+
+
 def main() -> None:
     from utils.logging import init_logging
     init_logging()
@@ -282,6 +346,9 @@ def main() -> None:
     bin_path = compiled_path / "constants.bin"
     bin_path.write_bytes(const_bin)
     print(f"   Written {len(const_bin)} bytes to {bin_path}")
+
+    # Freshness check: ensure sf-dialect hash matches current HEAD
+    _check_sf_dialect_freshness(compiled_dir)
 
     # Step 4: MlirModule → ir.Module → register sf dialect → C++ lowering
     if DEBUG:

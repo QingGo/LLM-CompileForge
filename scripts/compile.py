@@ -10,6 +10,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 
@@ -406,6 +407,22 @@ def compile_rwkv(output_dir: str, apply_lowering: bool = False) -> None:
                 "blocks_0_ln0_bias": "ln0_bias",
             },
         }
+        # Embed sf-dialect git hash for staleness detection
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD:sf-dialect/"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                _hash = result.stdout.strip()
+                if len(_hash) == 40 and all(c in "0123456789abcdef" for c in _hash):
+                    meta["sf_dialect_hash"] = _hash
+                else:
+                    print("WARNING: invalid sf_dialect hash, skipping", file=sys.stderr)
+            else:
+                print("WARNING: could not get sf_dialect hash", file=sys.stderr)
+        except Exception:
+            print("WARNING: exception getting sf_dialect hash, skipping", file=sys.stderr)
         with open(meta_path, "w") as f:
             json.dump(meta, f, indent=2)
 
