@@ -206,6 +206,10 @@ impl InferenceRunner {
             // Sample token
             let token_id = self.sampler.sample(logits, sampling);
 
+            eprintln!("[DEBUG step] input_ids.len={} positions.len={} n_tokens={} token_id={} text={:?}",
+                input_ids.len(), req.positions.len(), req.n_tokens, token_id,
+                self.tokenizer.decode_token(token_id));
+
             // Record output in scheduler
             let finished = self.scheduler.record_output(&req.request_id, token_id);
 
