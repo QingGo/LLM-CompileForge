@@ -21,6 +21,13 @@ mod tokenizer;
 mod types;
 mod weight_loader;
 
+use axum::routing::get;
+use axum::{Json, Router};
+use serde::Serialize;
+use std::sync::Arc;
+use tokio::net::TcpListener;
+use tokio::sync::Mutex;
+use tower_http::cors::CorsLayer;
 use clap::{Parser, Subcommand};
 
 #[cfg(test)]
@@ -65,6 +72,14 @@ enum Commands {
         model: String,
         #[arg(short, long, default_value = "compiled")]
         compiled_dir: String,
+    },
+    #[command(name = "serve", about = "Start HTTP server with OpenAI-compatible API")]
+    Serve {
+        model: String,
+        #[arg(short, long, default_value = "compiled")]
+        compiled_dir: String,
+        #[arg(short, long, default_value_t = 8000)]
+        port: u16,
     },
 }
 
@@ -198,7 +213,108 @@ fn main() -> Result<(), anyhow::Error> {
                 println!("Status: not compiled (no .dylib found)");
             }
         }
+        Commands::Serve { model, compiled_dir, port } => {
+            run_serve(&model, &compiled_dir, port)?;
+        }
     }
+
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct HealthResponse {
+    status: String,
+}
+
+async fn health() -> Json<HealthResponse> {
+    Json(HealthResponse { status: "ok".to_string() })
+}
+
+fn run_serve(model: &str, compiled_dir: &str, port: u16) -> Result<(), anyhow::Error> {
+    let artifact_path = std::path::Path::new(&compiled_dir).join(&model);
+
+    // Scan for any .dylib in the model directory — the actual name
+    // depends on --model-name passed to compile_dylib.py, which may
+    // differ from the directory name.
+    let dylib_path = std::fs::read_dir(&artifact_path)
+        .ok()
+        .and_then(|entries| {
+            entries.filter_map(|e| e.ok()).find(|e| {
+                e.path().extension().map(|ext| ext == "dylib").unwrap_or(false)
+            })
+        })
+        .map(|e| e.path().to_string_lossy().to_string())
+        .unwrap_or_else(|| format!("{}/lib{}.dylib", artifact_path.to_string_lossy(), model));
+    let st_path = format!("{}/weights.safetensors", artifact_path.to_string_lossy());
+    let st_path_opt: Option<&str> = if std::path::Path::new(&st_path).exists() {
+        Some(&st_path)
+    } else {
+        None
+    };
+
+    eprintln!("Loading model from: {}", artifact_path.display());
+
+    let executor = executor::ModelExecutor::load(&dylib_path, st_path_opt).map_err(|e| {
+        let ap = artifact_path.display();
+        anyhow::anyhow!(
+            "Failed to load model '{}': {}\n\
+             Tried dylib: {}\n\
+             Suggestions:\n\
+             - Run: python scripts/compile_dylib.py {} --model-name <name>\n\
+             - Check compiled/{} exists and contains a .dylib file\n\
+             - Use --safetensors to point to the weights file",
+            model,
+            e,
+            dylib_path,
+            ap,
+            model,
+        )
+    })?;
+
+    eprintln!(
+        "Model loaded: {} functions, {} weight mappings, {} constants",
+        executor.compute_graph.functions.len(),
+        executor.weight_provider.name_mapping().len(),
+        executor.weight_provider.constants().len(),
+    );
+
+    // Load tokenizer with chat template support
+    let tok_path = format!("{}/tokenizer.json", artifact_path.display());
+    let cfg_path = format!("{}/tokenizer_config.json", artifact_path.display());
+    let cfg_ref = if std::path::Path::new(&cfg_path).exists() {
+        Some(cfg_path.as_str())
+    } else {
+        None
+    };
+    let tok = tokenizer::Tokenizer::from_file_with_chat_template(&tok_path, cfg_ref)
+        .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
+
+    let runner_config = runner::RunnerConfig {
+        ..Default::default()
+    };
+    let runner = runner::InferenceRunner::new(executor, tok, runner_config)
+        .map_err(|e| anyhow::anyhow!("Failed to create runner: {}", e))?;
+
+    let _runner = Arc::new(Mutex::new(runner));
+
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async move {
+        let app = Router::new()
+            .route("/health", get(health))
+            .layer(CorsLayer::permissive());
+
+        let addr = format!("0.0.0.0:{}", port);
+        println!("[serve] Listening on http://{}", addr);
+
+        let listener = TcpListener::bind(&addr)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to bind to {}: {}", addr, e))?;
+        axum::serve(listener, app)
+            .await
+            .map_err(|e| anyhow::anyhow!("Server error: {}", e))?;
+
+        Ok::<_, anyhow::Error>(())
+    })?;
 
     Ok(())
 }
