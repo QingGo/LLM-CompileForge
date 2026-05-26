@@ -432,3 +432,41 @@ rebuild-test:
 	cd rust && cargo test test_opt_125m_forward_runs -- --nocapture 2>&1 | tail -5
 
 # (removed: diagnose_issue45.py was a one-off diagnostic script, deleted)
+
+# ═══════════════════════════════════════════════════════════════
+#  Rust HTTP Server
+# ═══════════════════════════════════════════════════════════════
+
+.PHONY: build serve serve-py run-prompt
+
+# 编译所有 Rust 二进制 (CLI + HTTP server)
+build:
+	cd rust && cargo build --release
+
+# 编译 + 启动 Rust HTTP server (OpenAI 兼容 API)
+# Usage: make serve [MODEL=opt_125m_fresh] [PORT=8000]
+MODEL ?= opt_125m_fresh
+PORT ?= 8000
+serve: build
+	./rust/target/release/serveforge serve $(MODEL) --port $(PORT)
+
+# Python server (调试便利, 需要先手动修复 pyo3 linker)
+# macOS + uv 环境下可能无法构建 --features python-bindings
+# 备选: conda Python + maturin (需激活 conda 环境)
+serve-py:
+	@echo "Python 后端需要 rust/ 的 python-bindings feature 成功编译。"
+	@echo "  可用路径: conda run -n base maturin develop ..."
+	@echo "  详见 Makefile 中的 build-rust / install-rust"
+	python -c "from server.app import create_app,create_engine; import uvicorn; \
+	  uvicorn.run(create_app(create_engine()), port=$(PORT))" 2>&1 || \
+	  echo "❌ Python 后端不可用 (llm_serveforge_runtime import 失败)"
+
+# CLI 推理
+# Usage: make run-prompt PROMPT="Paris" MAX_TOKENS=4 TEMPERATURE=0.0
+PROMPT ?= "Hello"
+MAX_TOKENS ?= 8
+TEMPERATURE ?= 0.0
+run-prompt: build
+	DYLD_LIBRARY_PATH="$(SF_MLIR_LIBS):$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
+	./rust/target/release/serveforge run $(MODEL) \
+	  --prompt "$(PROMPT)" --max-tokens $(MAX_TOKENS) --temperature $(TEMPERATURE) --no-chat-template
