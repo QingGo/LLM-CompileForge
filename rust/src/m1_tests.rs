@@ -202,16 +202,14 @@ mod integration_tests {
 
         // Add a simple prompt — "a b" — which the test tokenizer can encode
         // (test tokenizer has a=4, b=5, <s>=0, </s>=2)
+        let sampling = crate::sampler::SamplerConfig {
+            temperature: 0.0,
+            top_p: 1.0,
+            top_k: 0,
+            max_tokens: Some(5),
+        };
         let rid = runner
-            .add_request(
-                "a b",
-                crate::sampler::SamplerConfig {
-                    temperature: 0.0,
-                    top_p: 1.0,
-                    top_k: 0,
-                    max_tokens: Some(5),
-                },
-            )
+            .add_request("a b", sampling.clone())
             .expect("add request");
 
         eprintln!("Added request: {}", rid);
@@ -219,7 +217,7 @@ mod integration_tests {
 
         // Run up to 10 steps
         for step in 0..10 {
-            let results = runner.step().expect("step failed");
+            let results = runner.step(&sampling).expect("step failed");
             if results.is_empty() {
                 eprintln!("No more work after step {}", step);
                 break;

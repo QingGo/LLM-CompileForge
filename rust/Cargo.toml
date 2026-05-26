@@ -42,6 +42,9 @@ thiserror = "2"
 libffi = "5.1.0"
 half = "2"
 csv = "1.3"
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors"] }
 
 [dev-dependencies]
 proptest = "1"

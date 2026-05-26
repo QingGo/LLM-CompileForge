@@ -10,7 +10,7 @@
 //!   let mut runner = InferenceRunner::new(executor, tokenizer, seed, max_tokens)?;
 //!   runner.add_request("Hello, who are you?", temperature=0.7)?;
 //!   while runner.has_work() {
-//!       let results = runner.step()?;
+//!       let results = runner.step(&sampling)?;
 //!       for r in &results { print!("{}", r.text); }
 //!   }
 
@@ -170,7 +170,7 @@ impl InferenceRunner {
     }
 
     /// Run one scheduling step.  Returns results for all requests in the batch.
-    pub fn step(&mut self) -> Result<Vec<StepResult>, anyhow::Error> {
+    pub fn step(&mut self, sampling: &SamplerConfig) -> Result<Vec<StepResult>, anyhow::Error> {
         // 1. Schedule: get the batch of requests to process
         let cache_hits = std::mem::take(&mut self.cache_hits);
         let batch = self.scheduler.schedule(&mut self.block_manager, &cache_hits);
@@ -204,13 +204,7 @@ impl InferenceRunner {
             };
 
             // Sample token
-            let sampler_config = SamplerConfig {
-                temperature: 1.0,
-                top_p: 1.0,
-                top_k: 0,
-                max_tokens: None,
-            };
-            let token_id = self.sampler.sample(logits, &sampler_config);
+            let token_id = self.sampler.sample(logits, sampling);
 
             // Record output in scheduler
             let finished = self.scheduler.record_output(&req.request_id, token_id);
@@ -270,11 +264,11 @@ impl InferenceRunner {
         if let Err(e) = sampling.validate() {
             anyhow::bail!("invalid sampling config: {}", e);
         }
-        let rid = self.add_request(prompt, sampling)?;
+        let rid = self.add_request(prompt, sampling.clone())?;
         let mut output_tokens: Vec<u32> = Vec::new();
 
         while self.scheduler.has_work() {
-            let results = self.step()?;
+            let results = self.step(&sampling)?;
             for r in &results {
                 if r.request_id == rid {
                     if !r.text.is_empty() {
@@ -387,7 +381,7 @@ mod tests {
         let config = RunnerConfig::default();
         let mut runner =
             InferenceRunner::new(exec, tokenizer, config).expect("create runner");
-        let results = runner.step().expect("step with no requests");
+        let results = runner.step(&SamplerConfig::greedy()).expect("step with no requests");
         assert!(results.is_empty());
     }
 
@@ -397,5 +391,30 @@ mod tests {
         assert_eq!(config.max_batch_size, 8);
         assert_eq!(config.block_size, 16);
         assert!(!config.use_kernel_catalog);
+    }
+
+    #[test]
+    fn test_generate_deterministic() {
+        let exec = compiled_executor();
+        let tokenizer = dummy_tokenizer();
+        let config = RunnerConfig {
+            max_tokens_per_request: 10,
+            use_chat_template: false,
+            ..Default::default()
+        };
+        let mut runner =
+            InferenceRunner::new(exec, tokenizer, config.clone()).expect("create runner");
+        let result1 = runner.generate("Paris", 0.0, 1.0, 0).expect("generate v1");
+
+        let exec2 = compiled_executor();
+        let tokenizer2 = dummy_tokenizer();
+        let mut runner2 =
+            InferenceRunner::new(exec2, tokenizer2, config).expect("create runner");
+        let result2 = runner2.generate("Paris", 0.0, 1.0, 0).expect("generate v2");
+
+        assert_eq!(
+            result1.tokens, result2.tokens,
+            "greedy generation should be deterministic with same seed"
+        );
     }
 }
