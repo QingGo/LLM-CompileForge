@@ -27,6 +27,8 @@ cli = ["clap", "tokenizers", "rand", "minijinja"]
 python-bindings = ["pyo3/extension-module"]
 
 [dependencies]
+log = "0.4"
+env_logger = "0.11"
 pyo3 = { version = "0.24", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 libloading = "0.8"

@@ -95,6 +95,7 @@ enum Commands {
 }
 
 fn main() -> Result<(), anyhow::Error> {
+    env_logger::Builder::from_env(env_logger::Env::default().filter_or("RUST_LOG", "warn")).init();
     let cli = Cli::parse();
 
     match cli.command {
@@ -137,8 +138,8 @@ fn main() -> Result<(), anyhow::Error> {
                 .clone()
                 .unwrap_or_else(|| format!("{}/tokenizer.json", artifact_path.display()));
 
-            eprintln!("Loading model from: {}", artifact_path.display());
-            eprintln!("Prompt: {}", prompt);
+            log::info!("Loading model from: {}", artifact_path.display());
+            log::info!("Prompt: {}", prompt);
 
             let executor = executor::ModelExecutor::load(
                 &dylib_path,
@@ -158,7 +159,7 @@ fn main() -> Result<(), anyhow::Error> {
                 )
             })?;
 
-            eprintln!(
+            log::info!(
                 "Model loaded: {} functions, {} weight mappings, {} constants",
                 executor.compute_graph.functions.len(),
                 executor.weight_provider.name_mapping().len(),
@@ -608,7 +609,7 @@ fn run_serve(model: &str, compiled_dir: &str, port: u16) -> Result<(), anyhow::E
         None
     };
 
-    eprintln!("Loading model from: {}", artifact_path.display());
+    log::info!("Loading model from: {}", artifact_path.display());
 
     let executor = executor::ModelExecutor::load(&dylib_path, st_path_opt).map_err(|e| {
         let ap = artifact_path.display();
@@ -627,7 +628,7 @@ fn run_serve(model: &str, compiled_dir: &str, port: u16) -> Result<(), anyhow::E
         )
     })?;
 
-    eprintln!(
+    log::info!(
         "Model loaded: {} functions, {} weight mappings, {} constants",
         executor.compute_graph.functions.len(),
         executor.weight_provider.name_mapping().len(),

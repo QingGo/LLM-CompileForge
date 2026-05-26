@@ -314,16 +314,16 @@ impl ModelExecutor {
                     if !slice.is_empty() {
                         let has_nan = slice.iter().any(|&x| x.is_nan());
                         if has_nan {
-                            eprintln!(
-                                "[WARN] DUMP_LAYERS: func[{}] output[{}] contains NaN — \
+                            log::warn!(
+                                "DUMP_LAYERS: func[{}] output[{}] contains NaN — \
                                  possible uninitialized buffer or dynamic shape sret issue",
                                 fi, oi,
                             );
                         }
                         let all_same = slice.iter().all(|&x| x == slice[0]);
                         if all_same {
-                            eprintln!(
-                                "[WARN] DUMP_LAYERS: func[{}] output[{}] has ALL IDENTICAL \
+                            log::warn!(
+                                "DUMP_LAYERS: func[{}] output[{}] has ALL IDENTICAL \
                                  values ({}) — possible read bug",
                                 fi, oi, slice[0],
                             );

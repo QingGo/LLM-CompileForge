@@ -136,7 +136,7 @@ impl InferenceRunner {
         };
 
         let input_ids = self.tokenizer.encode(&formatted)?;
-        eprintln!("[DEBUG encode] prompt={:?} input_ids={:?}", formatted, input_ids);
+        log::debug!("encode prompt={:?} input_ids={:?}", formatted, input_ids);
         if input_ids.is_empty() {
             anyhow::bail!("empty prompt after encoding");
         }
@@ -204,15 +204,15 @@ impl InferenceRunner {
                 &all_logits[all_logits.len().saturating_sub(vocab)..]
             };
 
-            eprintln!("[DEBUG logits] all_logits.len={} req.n_tokens={} vocab={} extracted_len={} logits[..5]={:?}",
+            log::debug!("logits all_logits.len={} req.n_tokens={} vocab={} extracted_len={} logits[..5]={:?}",
                 all_logits.len(), req.n_tokens, self.vocab_size(), logits.len(), &logits[..5.min(logits.len())]);
             let argmax_idx = logits.iter().enumerate().fold((0, f32::NEG_INFINITY), |(mi, mv), (i, &v)| if v > mv { (i, v) } else { (mi, mv) }).0;
-            eprintln!("[DEBUG logits] argmax_idx={} argmax_val={}", argmax_idx, logits[argmax_idx]);
+            log::debug!("logits argmax_idx={} argmax_val={}", argmax_idx, logits[argmax_idx]);
 
             // Sample token
             let token_id = self.sampler.sample(logits, sampling);
 
-            eprintln!("[DEBUG step] input_ids.len={} positions.len={} n_tokens={} token_id={} text={:?}",
+            log::debug!("step input_ids.len={} positions.len={} n_tokens={} token_id={} text={:?}",
                 input_ids.len(), req.positions.len(), req.n_tokens, token_id,
                 self.tokenizer.decode_token(token_id));
 

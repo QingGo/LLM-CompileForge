@@ -132,7 +132,9 @@ impl Tokenizer {
             .inner
             .encode(text, true)
             .map_err(|e| anyhow::anyhow!("tokenizer encode error: {}", e))?;
-        Ok(encoding.get_ids().iter().map(|&id| id).collect())
+        let ids: Vec<u32> = encoding.get_ids().iter().map(|&id| id).collect();
+        log::debug!("encode text={:?} input_ids={:?}", text, ids);
+        Ok(ids)
     }
 
     pub fn decode(&self, tokens: &[u32]) -> Result<String, anyhow::Error> {
