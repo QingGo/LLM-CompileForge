@@ -6,6 +6,7 @@ use half::f16;
 use crate::compute_graph::{ComputeGraph, InputBinding};
 use crate::error::ExecutorError;
 use crate::hal::cpu::CpuDevice;
+use crate::hal::cpu::memref::MemRefDesc1;
 use crate::hal::cpu::{Executable, MemRefDescAny, MemRefDesc2};
 use crate::hal::traits::Device as DeviceTrait;
 use crate::tensor::{Dtype, Tensor};
@@ -113,6 +114,60 @@ impl ModelExecutor {
                     io_def.shape.iter().map(|&d| d as usize).collect();
                 let tensor: Tensor = match binding {
                     InputBinding::GlobalInput => {
+                        // shape[i] == 0 is the SFCF dynamic sentinel
+                        let is_dynamic = shape.iter().any(|&d| d == 0);
+                        if is_dynamic {
+                            let rank = io_def.rank as usize;
+                            match rank {
+                                1 => {
+                                    let n_tokens = input_ids.len();
+                                    let raw: Vec<u8> = input_ids.iter()
+                                        .flat_map(|&v| (v as i64).to_ne_bytes())
+                                        .collect();
+                                    let p = raw.as_ptr();
+                                    let memref = MemRefDesc1 {
+                                        allocated: p as *mut c_void,
+                                        aligned: p as *mut c_void,
+                                        offset: 0,
+                                        sizes: [n_tokens as i64],
+                                        strides: [1],
+                                    };
+                                    _raw_buffers.push(raw);
+                                    let desc = MemRefDescAny::R1(memref);
+                                    input_descs.push(desc);
+                                    input_ptrs.push(input_descs.last()
+                                        .expect("input_descs has entry for GlobalInput")
+                                        .as_input_ptr());
+                                    continue;
+                                }
+                                2 => {
+                                    let n_tokens = input_ids.len() as i64;
+                                    let raw: Vec<u8> = input_ids.iter()
+                                        .flat_map(|&v| (v as i64).to_ne_bytes())
+                                        .collect();
+                                    let p = raw.as_ptr();
+                                    let memref = MemRefDesc2 {
+                                        allocated: p as *mut c_void,
+                                        aligned: p as *mut c_void,
+                                        offset: 0,
+                                        sizes: [1, n_tokens],
+                                        strides: [n_tokens, 1],
+                                    };
+                                    _raw_buffers.push(raw);
+                                    let desc = MemRefDescAny::R2(memref);
+                                    input_descs.push(desc);
+                                    input_ptrs.push(input_descs.last()
+                                        .expect("input_descs has entry for GlobalInput")
+                                        .as_input_ptr());
+                                    continue;
+                                }
+                                r => anyhow::bail!(
+                                    "forward_with_positions: unsupported rank {} for \
+                                     dynamic GlobalInput (shape={:?})",
+                                    r, shape,
+                                ),
+                            }
+                        }
                         let expected_numel: usize = shape.iter().product();
                         let n_tokens = input_ids.len().min(expected_numel);
                         let padded: Vec<i64> = (0..expected_numel).map(|i| {
@@ -178,7 +233,7 @@ impl ModelExecutor {
             }
             debug_assert!(_tensors.len() <= input_ptrs.len());
 
-            const SRET_BUF_SIZE: usize = 65536;
+            const SRET_BUF_SIZE: usize = 131072;
             let mut sret: Vec<u8> = vec![0u8; SRET_BUF_SIZE];
             let sret_ptr = sret.as_mut_ptr() as *mut c_void;
 
