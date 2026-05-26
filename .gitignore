@@ -24,3 +24,4 @@ logs/
 *.dylib
 *.bin
 compile_commands.json
+rust/src/bin/

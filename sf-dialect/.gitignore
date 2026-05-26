@@ -9,4 +9,3 @@ cmake_install.cmake
 .ninja_*
 python_packages/
 python/dialects/
-tools/
