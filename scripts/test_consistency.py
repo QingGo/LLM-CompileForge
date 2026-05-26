@@ -33,7 +33,7 @@ RUST_LOGITS_CSV = "/tmp/rust_logits.csv"
 HF_CACHE = os.path.expanduser(
     "~/.cache/huggingface/hub/models--facebook--opt-125m"
 )
-EXPECTED_INPUT_IDS = [2, 32826, 85, 4129]
+EXPECTED_INPUT_IDS = [2, 133, 812, 9, 1470, 16]
 
 
 # =====================================================================
@@ -109,7 +109,7 @@ def run_ctypes_forward(input_ids_np: np.ndarray) -> np.ndarray:
     return logits
 
 
-def run_rust_forward() -> np.ndarray:
+def run_rust_forward(input_ids: list[int] | None = None) -> np.ndarray:
     """Run Rust forward_check binary, read /tmp/rust_logits.csv."""
     binary = os.path.join(_PROJECT_ROOT, FORWARD_CHECK_BIN)
     if not os.path.exists(binary):
@@ -121,11 +121,17 @@ def run_rust_forward() -> np.ndarray:
     if os.path.exists(RUST_LOGITS_CSV):
         os.remove(RUST_LOGITS_CSV)
 
+    # Pass common input tokens so Rust uses the same input as HF/PY/CTYPES
+    rust_env = os.environ.copy()
+    if input_ids is not None:
+        rust_env["FORWARD_CHECK_TOKENS"] = ",".join(str(t) for t in input_ids)
+
     result = subprocess.run(
         [binary],
         cwd=_PROJECT_ROOT,
         capture_output=True,
         text=True,
+        env=rust_env,
         timeout=120,
     )
     # Print stdout (forward_check logs) for transparency
@@ -205,10 +211,9 @@ def main() -> int:
 
     if actual_ids != EXPECTED_INPUT_IDS:
         print(f"  ⚠️  Tokenized IDs differ from expected {EXPECTED_INPUT_IDS}")
-        print("     Using tokenized IDs for HF/Python/ctypes; Rust forward_check")
-        print("     uses hardcoded IDs internally (may cause COS mismatch)")
+        print("     Using tokenized IDs for all four paths")
     else:
-        print("  ✅ Tokenized IDs match expected (BOS + 3 tokens)")
+        print("  ✅ Tokenized IDs match expected")
 
     # ── Step 4: Run all four forwards ─────────────────────────────
     print("\n[4/5] 运行四个 forward 路径...")
@@ -223,7 +228,7 @@ def main() -> int:
     ct_logits = run_ctypes_forward(input_ids_np)
 
     print("\n  --- Rust (forward_check binary) ---")
-    rust_logits = run_rust_forward()
+    rust_logits = run_rust_forward(input_ids=actual_ids)
 
     # Reshape Rust logits to match reference shape (if needed)
     # forward_check writes flat CSV; reshape to [batch, seq, vocab]

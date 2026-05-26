@@ -91,7 +91,16 @@ fn run_forward(dylib_path: &PathBuf, compiled_dir: &PathBuf) -> Result<(), Box<d
     )
     .map_err(|e| format!("Failed to create executor: {}", e))?;
 
-    let input_ids = vec![2u32, 32826, 85, 4129];
+    let input_ids: Vec<u32> = if let Ok(val) = std::env::var("FORWARD_CHECK_TOKENS") {
+        let tokens: Vec<u32> = val
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u32>().ok())
+            .collect();
+        eprintln!("[forward_check] Using tokens from FORWARD_CHECK_TOKENS={:?}", tokens);
+        tokens
+    } else {
+        vec![2u32, 32826, 85, 4129]
+    };
     println!(
         "[forward_check] Running forward with {} input tokens: {:?}",
         input_ids.len(),
