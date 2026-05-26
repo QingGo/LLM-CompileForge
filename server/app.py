@@ -96,8 +96,9 @@ def create_engine(
     chunk_size: int = 256,
     num_blocks: int = 1000,
     block_size: int = 16,
+    artifact_dir: str = "compiled/opt_125m_fresh",
 ) -> LLMEngine:
-    """Create an LLMEngine with a minimal compiled module and HAL backend.
+    """Create an LLMEngine with a compiled module and HAL backend.
 
     This function imports torch (slow on first call) — it should be
     called at application startup, not at module import time.
@@ -109,16 +110,17 @@ def create_engine(
         chunk_size: Max prefill tokens per request per step.
         num_blocks: KV cache block pool size.
         block_size: Tokens per KV cache block.
+        artifact_dir: Path to compiled model artifact directory.
 
     Returns:
         A configured LLMEngine instance.
     """
-    from compiler.mlir_artifact import MlirFunction, MlirModule
+    from compiler.serialize import load_artifact
     from engine.llm_engine import LLMEngine  # concrete import for mypy
     from hal import PyTorchBackend
 
     backend = PyTorchBackend(device)
-    module = MlirModule(functions=[MlirFunction(name="main", inputs=[], outputs=[])])
+    module = load_artifact(artifact_dir)
     engine: LLMEngine = LLMEngine(
         module,
         backend,
@@ -128,4 +130,8 @@ def create_engine(
         num_blocks=num_blocks,
         block_size=block_size,
     )
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained("facebook/opt-125m")
+    engine.set_tokenizer(tokenizer, eos_token_id=tokenizer.eos_token_id)
     return engine

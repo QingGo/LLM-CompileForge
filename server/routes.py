@@ -191,7 +191,7 @@ async def completions(req: CompletionRequest, request: Request) -> Any:
             if finish_reason is not None:
                 break
 
-        text = " ".join(str(t) for t in all_tokens)
+        text = engine._tokenizer.decode(all_tokens)
 
         return CompletionResponse(
             id=rid,
@@ -227,7 +227,7 @@ async def _stream_completions(
             for r in results:
                 if r.request_id == rid:
                     token_val = r.new_tokens[0] if r.new_tokens else 0
-                    token_text = chr(token_val) if 32 <= token_val < 127 else chr(65533)  # U+FFFD
+                    token_text = engine._tokenizer.decode([token_val])
 
                     chunk: dict[str, Any] = {
                         "id": rid,
@@ -300,7 +300,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request) -> Any:
             if finish_reason is not None:
                 break
 
-        text = " ".join(str(t) for t in all_tokens)
+        text = engine._tokenizer.decode(all_tokens)
 
         return ChatCompletionResponse(
             id=rid,
@@ -338,7 +338,7 @@ async def _stream_chat(
             for r in results:
                 if r.request_id == rid:
                     token_val = r.new_tokens[0] if r.new_tokens else 0
-                    token_text = chr(token_val) if 32 <= token_val < 127 else chr(65533)
+                    token_text = engine._tokenizer.decode([token_val])
 
                     chunk: dict[str, Any] = {
                         "id": rid,

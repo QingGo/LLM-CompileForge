@@ -9,6 +9,7 @@ mod block_manager;
 mod compute_graph;
 mod error;
 mod executor;
+mod kernel_catalog;
 mod hal;
 mod radix_cache;
 mod runner;

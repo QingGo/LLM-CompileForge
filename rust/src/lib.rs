@@ -38,7 +38,7 @@ mod py_bindings {
         #[new]
         fn new(num_blocks: usize, block_size: usize) -> PyResult<Self> {
             let inner = BlockManager::new(num_blocks, block_size)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
             Ok(Self { inner })
         }
 
@@ -64,7 +64,7 @@ mod py_bindings {
             self.inner
                 .get_blocks(request_id)
                 .map(|v| v.to_vec())
-                .map_err(|e| pyo3::exceptions::PyKeyError::new_err(e))
+                .map_err(|e| pyo3::exceptions::PyKeyError::new_err(e.to_string()))
         }
 
         fn assign_cached_blocks(
@@ -93,7 +93,7 @@ mod py_bindings {
         ) -> PyResult<Vec<usize>> {
             self.inner
                 .share_prefix(src_request_id, dst_request_id, prefix_len)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
         }
 
         #[getter]
@@ -133,7 +133,7 @@ mod py_bindings {
             chunk_size: usize,
         ) -> PyResult<Self> {
             let inner = Scheduler::new(max_batch_size, max_tokens_per_step, chunk_size)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
             Ok(Self { inner })
         }
 

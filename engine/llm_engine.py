@@ -50,6 +50,8 @@ class _CacheParams:
 
     def __init__(self, module: MlirModule, **overrides: Any) -> None:
         raw = module.metadata.get("cache_policy") if module.metadata else {}
+        if raw is None:
+            raw = {}
         self.num_layers: int = overrides.get("num_layers", 0) or _read_policy_dim(raw, "layers")
         self.num_kv_heads: int = overrides.get("num_kv_heads", 0) or _read_policy_dim(raw, "heads")
         self.head_dim: int = overrides.get("head_dim", 0) or _read_policy_dim(raw, "dim")
