@@ -23,10 +23,14 @@ mod weight_loader;
 
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::response::sse::{Event, Sse};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures::stream::{self, Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
@@ -250,6 +254,29 @@ struct CompletionRequest {
     stream: bool,
 }
 
+#[derive(Deserialize)]
+struct ChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct ChatCompletionRequest {
+    #[serde(default)]
+    model: String,
+    messages: Vec<ChatMessage>,
+    #[serde(default = "default_max_tokens")]
+    max_tokens: usize,
+    #[serde(default = "default_temperature")]
+    temperature: f32,
+    #[serde(default = "default_top_p")]
+    top_p: f32,
+    #[serde(default)]
+    top_k: usize,
+    #[serde(default)]
+    stream: bool,
+}
+
 fn default_max_tokens() -> usize {
     256
 }
@@ -258,6 +285,17 @@ fn default_temperature() -> f32 {
 }
 fn default_top_p() -> f32 {
     1.0
+}
+
+/// Build a chat prompt from messages using a simple fallback format.
+/// Since OPT-125m has no chat template, use "role: content\n" format.
+fn build_chat_prompt(req: &ChatCompletionRequest) -> String {
+    let mut parts = Vec::new();
+    for msg in &req.messages {
+        parts.push(format!("{}: {}", msg.role, msg.content));
+    }
+    parts.push("Assistant: ".to_string());
+    parts.join("\n")
 }
 
 async fn health(
@@ -375,6 +413,174 @@ async fn v1_completions(
     })))
 }
 
+/// SSE streaming for chat completions — yields one SSE event per token.
+fn v1_chat_completions_stream(
+    runner: Arc<Mutex<InferenceRunner>>,
+    prompt: String,
+    sampling: SamplerConfig,
+) -> impl Stream<Item = Result<Event, Infallible>> {
+    let state = (runner, prompt, sampling, false);
+
+    let token_stream = stream::unfold(
+        state,
+        |(runner, prompt, sampling, started)| async move {
+            // Clone Arc before locking so the original runner can be moved freely
+            let guard_runner = runner.clone();
+            let mut guard = guard_runner.lock().await;
+
+            if !started {
+                match guard.add_request(&prompt, sampling.clone()) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        return Some((
+                            Ok(Event::default().data(format!("error: {}", e))),
+                            (runner, prompt, sampling, true),
+                        ));
+                    }
+                }
+            }
+
+            if !guard.has_work() {
+                return None;
+            }
+
+            match guard.step(&sampling) {
+                Ok(results) => {
+                    for r in &results {
+                        let event_data = json!({
+                            "choices": [{
+                                "delta": {"content": &r.text},
+                                "index": 0,
+                                "finish_reason": if r.finished {
+                                    Value::String("stop".to_string())
+                                } else {
+                                    Value::Null
+                                }
+                            }]
+                        })
+                        .to_string();
+                        return Some((
+                            Ok(Event::default().data(event_data)),
+                            (runner, prompt, sampling, true),
+                        ));
+                    }
+                    // No matching result found — keep polling
+                    Some((
+                        Ok(Event::default().data("")),
+                        (runner, prompt, sampling, true),
+                    ))
+                }
+                Err(e) => Some((
+                    Ok(Event::default().data(format!("error: {}", e))),
+                    (runner, prompt, sampling, true),
+                )),
+            }
+        },
+    );
+
+    // Append the SSE closing event
+    token_stream.chain(stream::once(async { Ok(Event::default().data("[DONE]")) }))
+}
+
+/// POST /v1/chat/completions — streaming and non-streaming chat completions.
+async fn v1_chat_completions(
+    State(runner): State<Arc<Mutex<InferenceRunner>>>,
+    Json(req): Json<ChatCompletionRequest>,
+) -> Result<Response, (StatusCode, Json<Value>)> {
+    let prompt = build_chat_prompt(&req);
+
+    if prompt.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "messages must not be empty"})),
+        ));
+    }
+
+    let sampling = SamplerConfig {
+        temperature: req.temperature,
+        top_p: req.top_p,
+        top_k: req.top_k,
+        max_tokens: Some(req.max_tokens),
+    };
+
+    if req.stream {
+        let stream = v1_chat_completions_stream(runner, prompt, sampling);
+        return Ok(Sse::new(stream).into_response());
+    }
+
+    // Non-streaming: same step-loop pattern as v1_completions
+    let mut guard = runner.lock().await;
+    let rid = guard.add_request(&prompt, sampling).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("add_request: {}", e)})),
+        )
+    })?;
+
+    let mut all_tokens: Vec<u32> = Vec::new();
+    let mut output_text = String::new();
+    let mut finished = false;
+
+    while guard.has_work() {
+        let step_sampling = SamplerConfig {
+            temperature: req.temperature,
+            top_p: req.top_p,
+            top_k: req.top_k,
+            max_tokens: Some(req.max_tokens),
+        };
+        let results = guard.step(&step_sampling).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("step: {}", e)})),
+            )
+        })?;
+        for r in &results {
+            if r.request_id == rid {
+                all_tokens.push(r.token_id);
+                output_text.push_str(&r.text);
+                if r.finished {
+                    finished = true;
+                    break;
+                }
+            }
+        }
+        if finished {
+            break;
+        }
+    }
+
+    let created = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let finish_reason: Value = if finished {
+        Value::String("stop".to_string())
+    } else {
+        Value::Null
+    };
+
+    Ok(Json(json!({
+        "id": rid,
+        "object": "chat.completion",
+        "created": created,
+        "model": req.model,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": output_text
+            },
+            "finish_reason": finish_reason
+        }],
+        "usage": {
+            "prompt_tokens": all_tokens.len(),
+            "completion_tokens": all_tokens.len(),
+            "total_tokens": all_tokens.len() * 2
+        }
+    }))
+    .into_response())
+}
+
 fn run_serve(model: &str, compiled_dir: &str, port: u16) -> Result<(), anyhow::Error> {
     let artifact_path = std::path::Path::new(&compiled_dir).join(&model);
 
@@ -448,6 +654,7 @@ fn run_serve(model: &str, compiled_dir: &str, port: u16) -> Result<(), anyhow::E
         let app = Router::new()
             .route("/health", get(health))
             .route("/v1/completions", post(v1_completions))
+            .route("/v1/chat/completions", post(v1_chat_completions))
             .layer(CorsLayer::permissive())
             .with_state(runner);
 
