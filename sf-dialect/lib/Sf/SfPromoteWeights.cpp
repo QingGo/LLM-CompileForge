@@ -1,8 +1,14 @@
+#include "Sf/SfPasses.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/BuiltinOps.h"
+
+#define GEN_PASS_DEF_SFPROMOTEWEIGHTS
+#include "Sf/SfPasses.h.inc"
+
 #define NDEBUG
 #include "SfLoweringHelpers.h"
 #include "Sf/SfDialect.h"
 #include "Sf/SfOps.h"
-#include "Sf/SfPasses.h"
 
 #define DEBUG_TYPE "sf-lower-to-linalg"
 
@@ -18,24 +24,15 @@ using namespace mlir;
 
 namespace {
 struct SfPromoteWeightsPass
-    : public PassWrapper<SfPromoteWeightsPass, OperationPass<ModuleOp>> {
+    : public ::impl::SfPromoteWeightsBase<SfPromoteWeightsPass> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SfPromoteWeightsPass)
-
-  StringRef getArgument() const final { return "sf-promote-weights"; }
-  StringRef getDescription() const final {
-    return "Promote sf.weight and sf.constant ops to function arguments";
-  }
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<func::FuncDialect>();
-  }
 
   void runOnOperation() override {
     llvm::errs() << "  [sf-promote-weights] collecting weight ops\n";
 
     // Phase 1a: collect all weight ops first
     SmallVector<sf::WeightOp> weightOps;
-    getOperation()->walk([&](sf::WeightOp op) {
+    this->getOperation()->walk([&](sf::WeightOp op) {
       if (op->template getParentOfType<func::FuncOp>())
         weightOps.push_back(op);
     });
@@ -66,14 +63,14 @@ struct SfPromoteWeightsPass
           names.assign(existing.begin(), existing.end());
         names.push_back(nameAttr);
         parentFunc->setAttr("sf.weight_names",
-                            ArrayAttr::get(&getContext(), names));
+                            ArrayAttr::get(&this->getContext(), names));
       }
 
       auto origType = parentFunc.getFunctionType();
       SmallVector<Type> newInputs(origType.getInputs());
       newInputs.push_back(resultType);
       parentFunc.setType(
-          FunctionType::get(&getContext(), newInputs, origType.getResults()));
+          FunctionType::get(&this->getContext(), newInputs, origType.getResults()));
 
       op.replaceAllUsesWith(newArg);
       op.erase();
@@ -85,7 +82,7 @@ struct SfPromoteWeightsPass
 
     // Phase 2a: collect all constant ops
     SmallVector<sf::ConstantOp> constOps;
-    getOperation()->walk([&](sf::ConstantOp op) {
+    this->getOperation()->walk([&](sf::ConstantOp op) {
       if (op->template getParentOfType<func::FuncOp>())
         constOps.push_back(op);
     });
@@ -110,7 +107,7 @@ struct SfPromoteWeightsPass
       SmallVector<Type> newInputs(origType.getInputs());
       newInputs.push_back(resultType);
       parentFunc.setType(
-          FunctionType::get(&getContext(), newInputs, origType.getResults()));
+          FunctionType::get(&this->getContext(), newInputs, origType.getResults()));
 
       op.replaceAllUsesWith(newArg);
       op.erase();
@@ -125,7 +122,7 @@ struct SfPromoteWeightsPass
 
     // Phase 3: verify no remaining weight/constant ops
     bool hasRemaining = false;
-    getOperation()->walk([&](Operation *op) {
+    this->getOperation()->walk([&](Operation *op) {
       if (isa<sf::WeightOp>(op) || isa<sf::ConstantOp>(op)) {
         op->emitError("weight/constant not promoted");
         hasRemaining = true;
@@ -134,7 +131,7 @@ struct SfPromoteWeightsPass
       return WalkResult::advance();
     });
     if (hasRemaining) {
-      signalPassFailure();
+      this->signalPassFailure();
     }
   }
 };

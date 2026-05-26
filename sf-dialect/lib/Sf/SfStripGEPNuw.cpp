@@ -20,6 +20,9 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
+
+#define GEN_PASS_DEF_SFSTRIPGEPNUW
+#include "Sf/SfPasses.h.inc"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -30,21 +33,12 @@ using namespace mlir;
 namespace {
 
 struct SfStripGEPNuwPass
-    : public PassWrapper<SfStripGEPNuwPass, OperationPass<ModuleOp>> {
+    : public ::impl::SfStripGEPNuwBase<SfStripGEPNuwPass> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SfStripGEPNuwPass)
-
-  StringRef getArgument() const final { return "sf-strip-gep-nuw"; }
-  StringRef getDescription() const final {
-    return "Strip nuw flag from llvm.getelementptr operations";
-  }
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<LLVM::LLVMDialect>();
-  }
 
   void runOnOperation() override {
     bool modified = false;
-    getOperation()->walk([&](LLVM::GEPOp op) {
+    this->getOperation()->walk([&](LLVM::GEPOp op) {
       auto flags = op.getNoWrapFlags();
       if (bitEnumContainsAny(flags, LLVM::GEPNoWrapFlags::nuw)) {
         op.setNoWrapFlags(bitEnumClear(flags, LLVM::GEPNoWrapFlags::nuw));

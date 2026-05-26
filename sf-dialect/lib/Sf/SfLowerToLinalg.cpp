@@ -1,16 +1,22 @@
+// Include MLIR headers first — the generated SfPasses.h.inc references fully
+// qualified mlir::ModuleOp, mlir::linalg::LinalgDialect, etc.
+#include "Sf/SfPasses.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/BuiltinOps.h"
+
+#define GEN_PASS_DEF_SFLOWERTOLINALG
+#include "Sf/SfPasses.h.inc"
+
 #define NDEBUG
 #include "SfLoweringHelpers.h"
 #include "SfLoweringPatterns.h"
 #include "Sf/SfDialect.h"
 #include "Sf/SfOps.h"
-#include "Sf/SfPasses.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Math/IR/Math.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/Support/raw_ostream.h"
@@ -33,26 +39,15 @@ namespace {
 
 namespace {
 struct SfLowerToLinalgPass
-    : public PassWrapper<SfLowerToLinalgPass, OperationPass<ModuleOp>> {
+    : public ::impl::SfLowerToLinalgBase<SfLowerToLinalgPass> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SfLowerToLinalgPass)
-
-  StringRef getArgument() const final { return "sf-lower-to-linalg"; }
-  StringRef getDescription() const final {
-    return "Lower remaining sf dialect ops to linalg/arith/math/tensor/scf";
-  }
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<linalg::LinalgDialect, arith::ArithDialect,
-                    math::MathDialect, tensor::TensorDialect,
-                    func::FuncDialect, scf::SCFDialect>();
-  }
 
   void runOnOperation() override {
     llvm::errs() << "  [sf-lower-to-linalg] starting\n";
 
     // Quick check: no weight/constant should remain
     bool hasWeight = false;
-    getOperation()->walk([&](Operation *op) {
+    this->getOperation()->walk([&](Operation *op) {
       if (isa<sf::WeightOp>(op) || isa<sf::ConstantOp>(op)) {
         op->emitError("weight/constant found — sf-promote-weights must run first");
         hasWeight = true;
@@ -62,13 +57,13 @@ struct SfLowerToLinalgPass
     });
     if (hasWeight) {
       llvm::errs() << "  [sf-lower-to-linalg] ERROR: weights remain\n";
-      signalPassFailure();
+      this->signalPassFailure();
       return;
     }
 
     // Count sf ops before conversion
     int64_t sfCount = 0;
-    getOperation()->walk([&](Operation *op) {
+    this->getOperation()->walk([&](Operation *op) {
       if (op->getDialect() &&
           isa<sf::SfDialect>(op->getDialect()))
         ++sfCount;
@@ -82,7 +77,7 @@ struct SfLowerToLinalgPass
 
     // Collect functions that contain sf ops
     SmallVector<func::FuncOp> targetFuncs;
-    getOperation()->walk([&](func::FuncOp funcOp) {
+    this->getOperation()->walk([&](func::FuncOp funcOp) {
       bool hasSf = false;
       funcOp.walk([&](Operation *op) {
         if (op->getDialect() && isa<sf::SfDialect>(op->getDialect())) {
@@ -98,7 +93,7 @@ struct SfLowerToLinalgPass
     // Lower per-function using greedy pattern rewriter (avoids
     // dialect-conversion framework worklist divergence at scale).
     for (auto func : targetFuncs) {
-      RewritePatternSet patterns(&getContext());
+      RewritePatternSet patterns(&this->getContext());
       registerActivationPatterns(patterns);
       registerMatmulPatterns(patterns);
       registerShapePatterns(patterns);
@@ -157,13 +152,13 @@ struct SfLowerToLinalgPass
       if (failed(result)) {
         llvm::errs() << "  [sf-lower-to-linalg] greedy rewriter did not converge for '"
                      << func.getName() << "'\n";
-        signalPassFailure();
+        this->signalPassFailure();
       }
       llvm::errs() << "  [sf-lower-to-linalg] after lowering func '" << func.getName() << "'\n";
     }
 
     // Debug: check all tensor.extract ops for type mismatches
-    getOperation()->walk([&](Operation *op) {
+    this->getOperation()->walk([&](Operation *op) {
       if (auto extractOp = dyn_cast<tensor::ExtractOp>(op)) {
         auto tensor = extractOp.getTensor();
         auto tensorTy = dyn_cast<RankedTensorType>(tensor.getType());
@@ -177,7 +172,7 @@ struct SfLowerToLinalgPass
 
     // Post-conversion check: report remaining sf ops with their names
     int64_t remaining = 0;
-    getOperation()->walk([&](Operation *op) {
+    this->getOperation()->walk([&](Operation *op) {
       if (op->getDialect() && isa<sf::SfDialect>(op->getDialect())) {
         if (remaining == 0)
           llvm::errs() << "  [sf-lower-to-linalg] remaining sf ops:\n";
@@ -188,7 +183,7 @@ struct SfLowerToLinalgPass
     if (remaining > 0) {
       llvm::errs() << "  [sf-lower-to-linalg] " << remaining
                    << " sf ops remain unconverted\n";
-      signalPassFailure();
+      this->signalPassFailure();
     } else {
       llvm::errs() << "  [sf-lower-to-linalg] all sf ops converted\n";
     }
@@ -200,3 +195,4 @@ struct SfLowerToLinalgPass
 std::unique_ptr<Pass> mlir::sf::createSfLowerToLinalg() {
   return std::make_unique<SfLowerToLinalgPass>();
 }
+
