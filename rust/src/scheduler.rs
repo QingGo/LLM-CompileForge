@@ -229,22 +229,24 @@ impl Scheduler {
 
                     num_decode += 1;
 
-                    let (last_token, pos) = if let Some(last) = req.output_tokens.last() {
-                        (*last, (req.prompt_tokens.len() + req.output_tokens.len() - 1) as u32)
-                    } else {
-                        let last = req.prompt_tokens[req.prompt_tokens.len() - 1];
-                        (last, (req.prompt_tokens.len() - 1) as u32)
-                    };
-
                     let blocks = match block_manager.get_blocks(&req.request_id) {
                         Ok(blks) => blks.to_vec(),
                         Err(_) => continue,
                     };
 
+                    // Build full input context: prompt tokens + all generated output tokens
+                    let mut full_input_ids = Vec::with_capacity(
+                        req.prompt_tokens.len() + req.output_tokens.len(),
+                    );
+                    full_input_ids.extend_from_slice(&req.prompt_tokens);
+                    full_input_ids.extend_from_slice(&req.output_tokens);
+                    let total_len = full_input_ids.len();
+                    let positions: Vec<u32> = (0..total_len as u32).collect();
+
                     scheduled.push(ScheduledRequest {
                         request_id: req.request_id.clone(),
-                        input_ids: vec![last_token],
-                        positions: vec![pos],
+                        input_ids: full_input_ids,
+                        positions,
                         state: RequestState::Decode,
                         block_table: blocks,
                         n_tokens: 1,
