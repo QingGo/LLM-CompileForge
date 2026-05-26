@@ -11,3 +11,6 @@ add_public_tablegen_target(SfLoweringPatternsIncGen)
 set(LLVM_TARGET_DEFINITIONS SfPasses.td)
 mlir_tablegen(SfPasses.h.inc -gen-pass-decls --name Sf)
 add_public_tablegen_target(SfPassesIncGen)
+
+# Convenience target: regenerate all TableGen .inc files without full build
+add_custom_target(tablegen DEPENDS SfOpsIncGen SfPassesIncGen SfLoweringPatternsIncGen)

@@ -1,18 +1,7 @@
 # sf-opt: standalone mlir-opt-like tool for sf-dialect lowering patterns.
 #
-# NOTE: This tool requires MLIROptLib (from the llvm-project mlir-opt build).
-# If the upstream LLVM build doesn't include mlir-opt, this target is skipped.
-# To enable: build mlir-opt from llvm-project first, then reconfigure.
-#
-#   cd llvm-project/build && ninja mlir-opt
-#   cd sf-dialect && cmake . ... && ninja sf-opt
-
-# Check if we can locate the MLIROptLib library.
-if(NOT TARGET MLIROptLib)
-  message(STATUS "sf-opt: MLIROptLib not found — skipping. "
-                 "Run 'make build-mlir-opt' first.")
-  return()
-endif()
+# NOTE: Requires MLIROptLib (from the upstream mlir-opt build).
+# Build with: cd llvm-project/build && ninja mlir-opt first.
 
 set(LIBS
   MLIROptLib
@@ -21,7 +10,14 @@ set(LIBS
   SfDialect
 )
 
-add_mlir_tool(sf-opt sf-opt.cpp)
-llvm_update_compile_flags(sf-opt)
-target_link_libraries(sf-opt PRIVATE ${LIBS})
-mlir_check_all_link_libraries(sf-opt)
+if(TARGET MLIROptLib)
+  add_mlir_tool(sf-opt sf-opt.cpp)
+  llvm_update_compile_flags(sf-opt)
+  target_link_libraries(sf-opt PRIVATE ${LIBS})
+  mlir_check_all_link_libraries(sf-opt)
+else()
+  message(WARNING "sf-opt: MLIROptLib not found — run 'make build-mlir-opt' first.")
+  add_custom_target(sf-opt
+    COMMAND ${CMAKE_COMMAND} -E echo "sf-opt: MLIROptLib not found. Run 'make build-mlir-opt' first."
+  )
+endif()

@@ -24,19 +24,24 @@ def Sf_Dialect : Dialect {
 class Sf_Op<string mnemonic, list<Trait> traits = []> :
     Op<Sf_Dialect, mnemonic, traits>;
 
+// Floating-point tensor constraint — used by matmul, linear, normalization, attention ops
 def Sf_FloatTensor : TensorOf<[AnyFloat]>;
+// Scalar float or float tensor — used for type_as/conversion ops
 def Sf_FloatOrFloatTensor : AnyTypeOf<[AnyFloat, Sf_FloatTensor]>;
 
-// Integer tensor type constraint — for arange output, index operands, position indices
+// i32 tensor — used for shape/index ops
 def Sf_Int32Tensor : TensorOf<[I32]>;
+// i64 tensor — used for arange output, position indices
 def Sf_Int64Tensor : TensorOf<[I64]>;
+// Any integer tensor — used for bitwise/logical ops
 def Sf_IntegerTensor : TensorOf<[AnyInteger]>;
 
-// Scalar types (for type_as, constants)
+// f16/f32/f64 scalar — used for type_as, constant scalar values
 def Sf_FloatScalar : AnyTypeOf<[F16, F32, F64]>;
+// i32/i64 scalar — used for index scalar values
 def Sf_IntegerScalar : AnyTypeOf<[I32, I64]>;
 
-// Numeric tensors — float or integer, used for arithmetic ops (add, mul, sub, div)
+// Float or integer tensor — used by binary arithmetic ops (add/mul/sub/div)
 def Sf_FloatOrIntegerTensor : TensorOf<[AnyFloat, AnyInteger]>;
 
 #endif // SF_DIALECT

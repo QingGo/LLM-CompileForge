@@ -20,8 +20,7 @@ def SfLowerToLinalg : Pass<"sf-lower-to-linalg", "mlir::ModuleOp"> {
   let description = [{
     Converts all `sf.*` operations (excluding weight/constant which are
     pre-processed by sf-promote-weights) to `linalg`, `arith`, `math`,
-    `tensor`, `scf`, and `func` dialect operations. Uses the DialectConversion
-    framework for progressive lowering.
+    `tensor`, `scf`, and `func` dialect operations. Uses the GreedyPatternRewriteDriver (applyPatternsGreedily) for progressive lowering.
   }];
   let dependentDialects = [
     "mlir::linalg::LinalgDialect",
