@@ -156,6 +156,9 @@ def _symint_to_name(val: Any) -> str | None:
 def _symint_to_int(val: Any) -> int | None:
     if isinstance(val, torch.SymInt):
         if hasattr(val, "node") and val.node is not None:
+            # Symbolic expression (no concrete hint) → dynamic dimension
+            if hasattr(val.node, "expr") and val.node.expr is not None:
+                return None
             hint = getattr(val.node, "hint", None)
             if hint is not None:
                 result = int(hint)
