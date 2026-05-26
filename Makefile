@@ -1,4 +1,4 @@
-.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency verify-dylib verify-consistency verify-diag verify-preflight check-op-consistency build-rust install-rust build-so test-dylib-cos test-dylib-cos-quick clean-compiled test-dylib-quick debug-cos diagnose
+.PHONY: lint lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency test-consistency verify-dylib verify-consistency verify-diag verify-preflight check-op-consistency build-rust install-rust build-so test-dylib-cos test-dylib-cos-quick clean-compiled test-dylib-quick debug-cos diagnose
 
 # ---- 环境 ----
 VENV := .venv
@@ -160,20 +160,21 @@ test-rust-integ: $(VENV)
 test-rust: test-rust-unit test-rust-integ
 
 # ---- Rust 构建 & 安装到 venv (用于 Python FFI) ----
+# 使用 maturin develop --uv 构建 cdylib + Python 绑定
+# 需要: maturin (uv add maturin), .venv 已激活, unset CONDA_PREFIX
+# 上游依赖: 无（独立目标）
+# 下游依赖: test-rust-unit, test-rust-integ（通过 cargo test，不需要 Python bindings）
+.PHONY: build-rust install-rust
 build-rust: $(VENV)
-	cd rust && cargo build --release --features python-bindings 2>&1
+	@echo "  🔧 构建 Python 绑定 (maturin develop --uv --features python-bindings)..."
+	@if [ -n "$$CONDA_PREFIX" ]; then \
+		echo "  ⚠️  检测到 CONDA_PREFIX，自动 unset..."; \
+	fi
+	cd rust && source ../.venv/bin/activate && unset CONDA_PREFIX && maturin develop --features python-bindings --uv 2>&1
+	@echo "  ✅ Rust 模块已安装到 venv"
 
 install-rust: build-rust
-	@mkdir -p logs/rust
-	@echo "  ⚠️  检测环境冲突..." >&2
-	@if [ -n "$$CONDA_PREFIX" ] && [ -n "$$VIRTUAL_ENV" ]; then \
-		echo "  ⚠️  同时检测到 CONDA_PREFIX 和 VIRTUAL_ENV，尝试 unset CONDA_PREFIX..."; \
-		CONDA_PREFIX="" maturin develop -r --manifest-path rust/Cargo.toml 2>&1 || \
-		(echo "  ❌ maturin 失败 — 手动运行: cd rust && VIRTUAL_ENV=$$(pwd)/.venv PATH=$$(pwd)/.venv/bin:$$PATH CONDA_PREFIX= maturin develop -r" >&2 && exit 1); \
-	else \
-		maturin develop -r --manifest-path rust/Cargo.toml > logs/rust/install_$$(date +%Y%m%d_%H%M%S).log 2>&1; \
-	fi
-	@echo "  ✅ Rust 模块已安装到 venv"
+	@echo "  ✅ Rust 模块已安装 (via build-rust)"
 
 # ---- 增量测试: 仅跑 git diff 相关测试 (<30s) ----
 test-changed: $(VENV)
@@ -187,6 +188,16 @@ test-changed: $(VENV)
 # ---- L1n: 权重一致性测试 (三路验证: GT/Python/Rust, <30s) ----
 test-weight-consistency: $(VENV)
 	$(PYTEST) tests/test_weight_consistency.py -v --tb=short --timeout=120 -m "not slow"
+
+# ---- L1p: 四路一致性测试 (HF/PY/CTYPES/RUST, <120s) ----
+# Compares cosine similarity across all four forward paths.
+# Requires: compiled artifacts, HF cache, forward_check binary.
+.PHONY: test-consistency
+test-consistency: $(VENV)
+	@echo "=== 四路一致性测试 (HF/PY/CTYPES/RUST) ==="
+	DYLD_LIBRARY_PATH="$(SF_MLIR_LIBS):$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)" \
+	PYTHONPATH="$(PROJECT_ROOT)/llvm-project/build/tools/mlir/python_packages/mlir_core" \
+	$(PYTHON) scripts/test_consistency.py
 
 # ---- L1o: .dylib vs compute graph vs lowered IR 一致性检查 (<5s) ----
 verify-dylib:

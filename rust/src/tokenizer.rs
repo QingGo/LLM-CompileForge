@@ -130,7 +130,7 @@ impl Tokenizer {
     pub fn encode(&self, text: &str) -> Result<Vec<u32>, anyhow::Error> {
         let encoding = self
             .inner
-            .encode(text, false)
+            .encode(text, true)
             .map_err(|e| anyhow::anyhow!("tokenizer encode error: {}", e))?;
         Ok(encoding.get_ids().iter().map(|&id| id).collect())
     }

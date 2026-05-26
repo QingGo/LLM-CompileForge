@@ -20,6 +20,7 @@ dependencies = [
     "pyyaml>=6",
     "numpy>=1.26",
     "torch @ https://github.com/QingGo/pytorch/releases/download/torch-2.9.1-macos15-py3.10-accelerate/torch-2.9.1a0+gitd38164a-cp310-cp310-macosx_10_15_x86_64.whl",
+    "maturin>=1.13.3",
 ]
 
 [dependency-groups]

@@ -136,6 +136,7 @@ impl InferenceRunner {
         };
 
         let input_ids = self.tokenizer.encode(&formatted)?;
+        eprintln!("[DEBUG encode] prompt={:?} input_ids={:?}", formatted, input_ids);
         if input_ids.is_empty() {
             anyhow::bail!("empty prompt after encoding");
         }
@@ -202,6 +203,11 @@ impl InferenceRunner {
             } else {
                 &all_logits[all_logits.len().saturating_sub(vocab)..]
             };
+
+            eprintln!("[DEBUG logits] all_logits.len={} req.n_tokens={} vocab={} extracted_len={} logits[..5]={:?}",
+                all_logits.len(), req.n_tokens, self.vocab_size(), logits.len(), &logits[..5.min(logits.len())]);
+            let argmax_idx = logits.iter().enumerate().fold((0, f32::NEG_INFINITY), |(mi, mv), (i, &v)| if v > mv { (i, v) } else { (mi, mv) }).0;
+            eprintln!("[DEBUG logits] argmax_idx={} argmax_val={}", argmax_idx, logits[argmax_idx]);
 
             // Sample token
             let token_id = self.sampler.sample(logits, sampling);
@@ -303,9 +309,13 @@ impl InferenceRunner {
         self.scheduler.has_work()
     }
 
-    /// Return the vocabulary size from the tokenizer.
+    /// Return the vocabulary size from the compute graph's global output shape,
+    /// falling back to the tokenizer vocab size if unavailable.
     fn vocab_size(&self) -> usize {
-        self.tokenizer.vocab_size()
+        let (g_func, g_idx) = self.executor.compute_graph.global_output;
+        let output_def = &self.executor.compute_graph.functions[g_func].outputs[g_idx];
+        let vocab = output_def.shape.last().copied().unwrap_or(0) as usize;
+        if vocab > 0 { vocab } else { self.tokenizer.vocab_size() }
     }
 }
 
