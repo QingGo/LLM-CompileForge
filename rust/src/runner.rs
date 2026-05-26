@@ -51,6 +51,9 @@ pub struct RunnerConfig {
     pub max_tokens_per_request: usize,
     pub seed: u64,
     pub use_chat_template: bool,
+    /// Reserved: use KernelCatalog for fixed-shape AOT kernel dispatch.
+    /// Phase 0: always false (dynamic path only).
+    pub use_kernel_catalog: bool,
 }
 
 impl Default for RunnerConfig {
@@ -64,6 +67,7 @@ impl Default for RunnerConfig {
             max_tokens_per_request: 512,
             seed: 42,
             use_chat_template: true,
+            use_kernel_catalog: false,
         }
     }
 }
@@ -392,5 +396,6 @@ mod tests {
         let config = RunnerConfig::default();
         assert_eq!(config.max_batch_size, 8);
         assert_eq!(config.block_size, 16);
+        assert!(!config.use_kernel_catalog);
     }
 }

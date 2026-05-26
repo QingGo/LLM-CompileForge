@@ -6,6 +6,7 @@ use half::f16;
 use crate::compute_graph::{ComputeGraph, InputBinding};
 use crate::error::ExecutorError;
 use crate::hal::cpu::CpuDevice;
+use crate::kernel_catalog::KernelCatalog;
 use crate::hal::cpu::memref::MemRefDesc1;
 use crate::hal::cpu::{Executable, MemRefDescAny, MemRefDesc2};
 use crate::hal::traits::Device as DeviceTrait;
@@ -17,6 +18,10 @@ pub struct ModelExecutor {
     pub weight_provider: WeightProvider,
     pub compute_graph: ComputeGraph,
     pub weight_cache: RefCell<std::collections::HashMap<String, Tensor<'static>>>,
+    /// Reserved: optional KernelCatalog for AOT fixed-shape kernel dispatch.
+    /// Phase 0: always None (dynamic path only).
+    #[allow(dead_code)]
+    pub catalog: Option<Box<dyn KernelCatalog>>,
 }
 
 impl ModelExecutor {
@@ -80,6 +85,7 @@ impl ModelExecutor {
             weight_provider,
             compute_graph,
             weight_cache: RefCell::new(std::collections::HashMap::new()),
+            catalog: None,
         })
     }
 

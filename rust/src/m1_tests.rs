@@ -189,6 +189,7 @@ mod integration_tests {
             max_tokens_per_request: 5,
             seed: 42,
             use_chat_template: false,
+            use_kernel_catalog: false,
         };
 
         let mut runner = match crate::runner::InferenceRunner::new(executor, tokenizer, config) {

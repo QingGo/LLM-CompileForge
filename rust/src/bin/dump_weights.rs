@@ -17,6 +17,8 @@ mod compute_graph;
 mod error;
 #[path = "../executor.rs"]
 mod executor;
+#[path = "../kernel_catalog.rs"]
+mod kernel_catalog;
 #[path = "../hal/mod.rs"]
 mod hal;
 #[path = "../sfcf.rs"]
