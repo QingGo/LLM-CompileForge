@@ -150,11 +150,11 @@ class LLMEngine:
 
     @property
     def num_running(self) -> int:
-        return self._bridge.num_running
+        return self._bridge.running_count
 
     @property
     def num_waiting(self) -> int:
-        return self._bridge.num_waiting
+        return self._bridge.waiting_count
 
     # ── Convenience API ─────────────────────────────────────
 

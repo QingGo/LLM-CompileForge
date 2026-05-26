@@ -35,7 +35,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("LLM-ServeForge server starting (v0.1.0)")
     engine = app.state.engine
     if engine is not None:
-        logger.info("LLMEngine attached: max_batch=%s", engine.scheduler.max_batch_size)
+        logger.info("LLMEngine attached (model loaded)")
     yield
     logger.info("LLM-ServeForge server shutting down")
 

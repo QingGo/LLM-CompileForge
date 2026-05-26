@@ -72,9 +72,6 @@ class SchedulingBridge:
     def free_request(self, request_id: str) -> None:
         self._bm.free(request_id)
 
-    def dump_block_tables(self) -> dict[str, list[int]]:
-        return self._bm.dump_block_tables()
-
     # ── Scheduler API ──
 
     def schedule(self, cache_hits: list[tuple[str, list[int], int]]) -> dict[str, Any]:
@@ -87,25 +84,22 @@ class SchedulingBridge:
         prompt_tokens: list[int],
         max_tokens: int = 256,
     ) -> None:
-        self._scheduler.add_request(request_id, prompt_tokens, max_tokens)
+        self._scheduler.add_request(prompt_tokens, 0, 0.0, max_tokens, [], request_id)
 
     def record_output(self, request_id: str, token_id: int) -> bool:
         """Notify scheduler of an output token. Returns True if request is finished."""
         return self._scheduler.record_output(request_id, token_id)
 
     @property
-    def num_waiting(self) -> int:
-        return self._scheduler.num_waiting()
+    def waiting_count(self) -> int:
+        return self._scheduler.waiting_count()
 
     @property
-    def num_running(self) -> int:
-        return self._scheduler.num_running()
+    def running_count(self) -> int:
+        return self._scheduler.running_count()
 
     def has_work(self) -> bool:
         return self._scheduler.has_work()
-
-    def reset(self) -> None:
-        self._scheduler.reset()
 
     # ── Prefix Cache API ──
 
@@ -156,6 +150,6 @@ class SchedulingBridge:
 
     def __repr__(self) -> str:
         return (
-            f"SchedulingBridge(waiting={self.num_waiting}, running={self.num_running}, "
+            f"SchedulingBridge(waiting={self.waiting_count}, running={self.running_count}, "
             f"free_blocks={self.num_free_blocks}, prefix_cache={self._radix_cache is not None})"
         )

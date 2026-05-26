@@ -198,7 +198,7 @@ class InferenceLoop:
         step_id = self._step_id
         t0 = time.perf_counter()
 
-        log_step_begin(_log, step_id, self._bridge.num_waiting, self._bridge.num_running)
+        log_step_begin(_log, step_id, self._bridge.waiting_count, self._bridge.running_count)
 
         # ── Prefix Cache LRU eviction (under memory pressure) ──
         freed = self._bridge.evict_cache_if_needed()
