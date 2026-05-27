@@ -531,7 +531,9 @@ impl ModelExecutor {
                             if is_decode && block_manager.is_some() {
                                 // Decode: concat cached K/V with new K/V
                                 let pos = positions[0] as usize;
-                                let hidden_dim = *shape.last().unwrap_or(&768);
+                                // hidden_dim = num_kv_heads * head_dim = total_elems / 1_token
+                                let hidden_dim = new_tensor.numel();
+
                                 let bm = block_manager.as_ref().unwrap();
                                 let rid = request_id.unwrap();
 
@@ -551,7 +553,11 @@ impl ModelExecutor {
 
                                 let cached_data = if is_k { &cached_key } else { &cached_val };
                                 let n_cached_tokens = pos;
-                                let num_new_tokens = new_tensor.shape.get(1).copied().unwrap_or(1);
+                                // Number of new tokens = input_ids.len() (1 for decode).
+                                // Cannot use new_tensor.shape[1] because the layout may
+                                // be [batch, num_heads, seq, head_dim] (BNSD) for KV cache,
+                                // where dim[1] is num_heads, not seq.
+                                let num_new_tokens = input_ids.len();
 
                                 // [cached (pos tokens)] ++ [new (1 token)]
                                 let mut all_data = Vec::with_capacity(
@@ -561,6 +567,7 @@ impl ModelExecutor {
                                 all_data.extend_from_slice(new_tensor.as_slice());
 
                                 let all_shape = vec![1, n_cached_tokens + num_new_tokens, hidden_dim];
+
                                 Tensor::new_owned(all_shape, all_data, Dtype::F32)
                             } else {
                                 // Prefill or no cache: pass K/V directly
@@ -568,7 +575,15 @@ impl ModelExecutor {
                             }
                         } else {
                             // Normal SSA input — read from func_outputs
-                            let ref_tensor = &func_outputs[*producer_func][*output_idx];
+                            // Account for consumed_internally outputs that were
+                            // skipped in func_outputs (stored in kv_new instead).
+                            let producer_outputs = &self.compute_graph.functions[*producer_func].outputs;
+                            let ci_before = producer_outputs[..*output_idx]
+                                .iter()
+                                .filter(|o| o.consumed_internally)
+                                .count();
+                            let adjusted_idx = *output_idx - ci_before;
+                            let ref_tensor = &func_outputs[*producer_func][adjusted_idx];
                             ref_tensor.to_owned()
                         }
                     }
@@ -641,7 +656,15 @@ impl ModelExecutor {
                     // Write to BlockManager cache
                     if let Some(bm) = block_manager.as_mut() {
                         let rid = request_id.unwrap();
-                        let hidden_dim = *io_def.shape.last().unwrap_or(&768) as usize;
+                        // Hidden dimension per token = total elements / number of tokens.
+                        // For rank-4 K/V outputs shaped [1, seq, num_heads, head_dim],
+                        // shape.last() would give head_dim, but we need heads*dim (=768).
+                        let num_tokens = input_ids.len();
+                        let hidden_dim = if num_tokens > 0 {
+                            tensor.numel() / num_tokens
+                        } else {
+                            *io_def.shape.last().unwrap_or(&768) as usize
+                        };
                         let start_pos = if is_decode {
                             positions[0] as usize
                         } else {
