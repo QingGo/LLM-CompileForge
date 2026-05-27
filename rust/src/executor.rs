@@ -534,8 +534,10 @@ impl ModelExecutor {
                                 // hidden_dim = num_kv_heads * head_dim = total_elems / 1_token
                                 let hidden_dim = new_tensor.numel();
 
-                                let bm = block_manager.as_ref().unwrap();
-                                let rid = request_id.unwrap();
+                                let bm = block_manager.as_ref()
+                                    .expect("block_manager must be Some in decode path");
+                                let rid = request_id
+                                    .expect("request_id must be Some when block_manager is provided");
 
                                 let (cached_key, cached_val) = bm.read_kv(rid, pos, hidden_dim)
                                     .map_err(|e| anyhow::anyhow!("read_kv: {}", e))?;
@@ -655,7 +657,8 @@ impl ModelExecutor {
 
                     // Write to BlockManager cache
                     if let Some(bm) = block_manager.as_mut() {
-                        let rid = request_id.unwrap();
+                        let rid = request_id
+                            .expect("request_id must be Some when writing to BlockManager cache");
                         // Hidden dimension per token = total elements / number of tokens.
                         // For rank-4 K/V outputs shaped [1, seq, num_heads, head_dim],
                         // shape.last() would give head_dim, but we need heads*dim (=768).
