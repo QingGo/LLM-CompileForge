@@ -41,6 +41,13 @@ jobs:
         working-directory: rust
         run: cargo test --lib
 
+      - name: Rust coverage
+        continue-on-error: true
+        working-directory: rust
+        run: |
+          cargo install cargo-llvm-cov
+          cargo llvm-cov --lib --summary-only
+
       - name: Smoke test
         continue-on-error: true
         run: make smoke
