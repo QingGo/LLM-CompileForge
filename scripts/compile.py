@@ -62,15 +62,20 @@ def compile_opt125m(output_dir: str, apply_lowering: bool = False,
     model.eval()
 
     example_input = torch.randint(0, 50272, (2, 4), dtype=torch.long)
+    position_ids = torch.arange(0, 4, dtype=torch.long).unsqueeze(0).expand(2, -1)
     print(f"Exporting with example input shape: {list(example_input.shape)} (dynamic batch + seq)")
 
     pipeline = compile_mlir
     mlir_mod = pipeline(
         model,
         example_args=(example_input,),
+        example_kwargs={"position_ids": position_ids},
         output_dir=output_dir,
         model_dir=os.path.join(snapshots, snap),
-        dynamic_shapes={"input_ids": {0: Dim("batch"), 1: Dim("seq")}},
+        dynamic_shapes={
+            "input_ids":    {0: Dim("batch"), 1: Dim("seq")},
+            "position_ids": {0: Dim("batch"), 1: Dim("seq")},
+        },
         cache_policy=cache_policy,
     )
 
@@ -115,14 +120,19 @@ def compile_tiny_llama(output_dir: str, apply_lowering: bool = False) -> None:
     model.eval()
 
     example_input = torch.randint(0, 32000, (2, 4), dtype=torch.long)
+    position_ids = torch.arange(0, 4, dtype=torch.long).unsqueeze(0).expand(2, -1)
     print(f"Exporting with example input shape: {list(example_input.shape)} (dynamic batch + seq)")
 
     pipeline = compile_mlir
     mlir_mod = pipeline(
         model,
         example_args=(example_input,),
+        example_kwargs={"position_ids": position_ids},
         output_dir=output_dir,
-        dynamic_shapes={"input_ids": {0: Dim("batch"), 1: Dim("seq")}},
+        dynamic_shapes={
+            "input_ids":    {0: Dim("batch"), 1: Dim("seq")},
+            "position_ids": {0: Dim("batch"), 1: Dim("seq")},
+        },
     )
 
     op_count = len(mlir_mod.functions[0].ops)
@@ -238,6 +248,7 @@ def compile_llama_1b(output_dir: str, apply_lowering: bool = False) -> None:
             model.lm_head.weight = model.model.embed_tokens.weight
 
     example_input = torch.randint(0, 128256, (1, 8), dtype=torch.long)
+    position_ids = torch.arange(0, 8, dtype=torch.long).unsqueeze(0).expand(1, -1)
     print(f"Exporting with example input shape: {list(example_input.shape)} (dynamic seq)")
 
     cache_policy = CachePolicy.for_llama(
@@ -247,11 +258,15 @@ def compile_llama_1b(output_dir: str, apply_lowering: bool = False) -> None:
     )
 
     from torch.export import Dim as _Dim
-    dynamic_shapes = {"input_ids": {1: _Dim("seq", min=1, max=256)}}
+    dynamic_shapes = {
+        "input_ids":    {1: _Dim("seq", min=1, max=256)},
+        "position_ids": {1: _Dim("seq", min=1, max=256)},
+    }
 
     mlir_mod = compile_mlir(
         model,
         example_args=(example_input,),
+        example_kwargs={"position_ids": position_ids},
         output_dir=output_dir,
         dynamic_shapes=dynamic_shapes,
         model_dir=model_dir,
@@ -316,6 +331,7 @@ def compile_llama_3b(output_dir: str, apply_lowering: bool = False) -> None:
     model.eval()
 
     example_input = torch.randint(0, 128256, (1, 8), dtype=torch.long)
+    position_ids = torch.arange(0, 8, dtype=torch.long).unsqueeze(0).expand(1, -1)
     print(f"Exporting with example input shape: {list(example_input.shape)} (dynamic seq)")
 
     cache_policy = CachePolicy.for_llama(
@@ -323,11 +339,15 @@ def compile_llama_3b(output_dir: str, apply_lowering: bool = False) -> None:
         num_kv_heads=config.num_attention_heads,
         head_dim=config.head_dim,
     )
-    dynamic_shapes = {"input_ids": {1: _Dim("seq", min=1, max=256)}}
+    dynamic_shapes = {
+        "input_ids":    {1: _Dim("seq", min=1, max=256)},
+        "position_ids": {1: _Dim("seq", min=1, max=256)},
+    }
 
     mlir_mod = compile_mlir(
         model,
         example_args=(example_input,),
+        example_kwargs={"position_ids": position_ids},
         output_dir=output_dir,
         dynamic_shapes=dynamic_shapes,
         model_dir=model_dir,

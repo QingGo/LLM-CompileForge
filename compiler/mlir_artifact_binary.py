@@ -232,8 +232,9 @@ def _emit_compute_graph_section(
             clean = in_name.lstrip("%")
             rank, shape_dims = _parse_type_shape(in_type_str)
 
-            if fi == 0 and in_idx == 0:
-                # First input of first function → global input (token ids)
+            if fi == 0 and in_idx in (0, 1):
+                # First two inputs of first function → global inputs
+                # in_idx=0: input_ids, in_idx=1: position_ids (when present)
                 parts.append(struct.pack("<B", 2))  # global_input
             elif clean in producer:
                 parts.append(struct.pack("<B", 1))  # ssa
