@@ -95,6 +95,8 @@ pub struct ScheduledRequest {
     pub state: RequestState,
     #[allow(dead_code)]
     pub block_table: Vec<usize>,
+    pub use_kv_cache: bool,
+    pub kv_cache_block_table: Vec<usize>,
     pub n_tokens: usize,
 }
 

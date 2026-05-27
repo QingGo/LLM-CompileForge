@@ -190,6 +190,9 @@ mod integration_tests {
             seed: 42,
             use_chat_template: false,
             use_kernel_catalog: false,
+            use_kv_cache: false,
+            num_kv_heads: 0,
+            head_dim: 0,
         };
 
         let mut runner = match crate::runner::InferenceRunner::new(executor, tokenizer, config) {

@@ -52,6 +52,7 @@ pub struct Scheduler {
     max_batch_size: usize,
     max_tokens_per_step: usize,
     chunk_size: usize,
+    use_kv_cache: bool,
     waiting: BinaryHeap<QueueEntry>,
     running: Vec<Request>,
     request_counter: usize,
@@ -62,6 +63,7 @@ impl Scheduler {
         max_batch_size: usize,
         max_tokens_per_step: usize,
         chunk_size: usize,
+        use_kv_cache: bool,
     ) -> Result<Self, anyhow::Error> {
         if max_batch_size == 0 {
             return Err(anyhow::anyhow!("max_batch_size must be positive"));
@@ -73,6 +75,7 @@ impl Scheduler {
             max_batch_size,
             max_tokens_per_step,
             chunk_size,
+            use_kv_cache,
             waiting: BinaryHeap::new(),
             running: Vec::new(),
             request_counter: 0,
@@ -216,6 +219,8 @@ impl Scheduler {
                         positions,
                         state: RequestState::Prefill,
                         block_table: blocks,
+                        use_kv_cache: false,
+                        kv_cache_block_table: Vec::new(),
                         n_tokens,
                     });
 
@@ -234,23 +239,45 @@ impl Scheduler {
                         Err(_) => continue,
                     };
 
-                    // Build full input context: prompt tokens + all generated output tokens
-                    let mut full_input_ids = Vec::with_capacity(
-                        req.prompt_tokens.len() + req.output_tokens.len(),
-                    );
-                    full_input_ids.extend_from_slice(&req.prompt_tokens);
-                    full_input_ids.extend_from_slice(&req.output_tokens);
-                    let total_len = full_input_ids.len();
-                    let positions: Vec<u32> = (0..total_len as u32).collect();
+                    if self.use_kv_cache {
+                        // Decode with KV cache: send only the most recent token.
+                        // The KV cache already has prompt + previous output tokens,
+                        // so the model only needs the last token and its absolute position.
+                        let last_token = req.output_tokens.last().copied()
+                            .unwrap_or_else(|| req.prompt_tokens.last().copied().unwrap_or(0));
+                        let current_seq_len = req.prompt_tokens.len() + req.output_tokens.len();
 
-                    scheduled.push(ScheduledRequest {
-                        request_id: req.request_id.clone(),
-                        input_ids: full_input_ids,
-                        positions,
-                        state: RequestState::Decode,
-                        block_table: blocks,
-                        n_tokens: 1,
-                    });
+                        scheduled.push(ScheduledRequest {
+                            request_id: req.request_id.clone(),
+                            input_ids: vec![last_token],
+                            positions: vec![current_seq_len as u32],
+                            state: RequestState::Decode,
+                            block_table: blocks.clone(),
+                            use_kv_cache: true,
+                            kv_cache_block_table: blocks,
+                            n_tokens: 1,
+                        });
+                    } else {
+                        // Decode without KV cache: send full sequence (prompt + output)
+                        let mut full_input_ids = Vec::with_capacity(
+                            req.prompt_tokens.len() + req.output_tokens.len(),
+                        );
+                        full_input_ids.extend_from_slice(&req.prompt_tokens);
+                        full_input_ids.extend_from_slice(&req.output_tokens);
+                        let total_len = full_input_ids.len();
+                        let positions: Vec<u32> = (0..total_len as u32).collect();
+
+                        scheduled.push(ScheduledRequest {
+                            request_id: req.request_id.clone(),
+                            input_ids: full_input_ids,
+                            positions,
+                            state: RequestState::Decode,
+                            block_table: blocks,
+                            use_kv_cache: false,
+                            kv_cache_block_table: Vec::new(),
+                            n_tokens: 1,
+                        });
+                    }
                 }
 
                 _ => {}

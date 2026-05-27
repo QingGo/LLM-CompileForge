@@ -7,12 +7,17 @@ pub mod hal;
 pub mod sfcf;
 pub mod ciface_high;
 pub mod block_manager;
+pub mod kv_cache;
 pub mod radix_cache;
 pub mod scheduler;
 pub mod types;
 
 #[cfg(test)]
 mod integration_tests;
+
+#[cfg(test)]
+#[path = "kv_cache_tests.rs"]
+mod kv_cache_tests;
 
 // Include compute_graph module for testing (normally only in main.rs bin).
 #[cfg(test)]
@@ -132,7 +137,7 @@ mod py_bindings {
             max_tokens_per_step: usize,
             chunk_size: usize,
         ) -> PyResult<Self> {
-            let inner = Scheduler::new(max_batch_size, max_tokens_per_step, chunk_size)
+            let inner = Scheduler::new(max_batch_size, max_tokens_per_step, chunk_size, false)
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
             Ok(Self { inner })
         }

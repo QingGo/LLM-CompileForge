@@ -8,6 +8,8 @@
 /// Modules use #[path] to reference source files in src/ since this
 /// binary lives under src/bin/.
 
+#[path = "../block_manager.rs"]
+mod block_manager;
 #[path = "../ciface_high.rs"]
 mod ciface_high;
 #[path = "../compute_graph.rs"]
@@ -20,6 +22,8 @@ mod executor;
 mod kernel_catalog;
 #[path = "../hal/mod.rs"]
 mod hal;
+#[path = "../kv_cache.rs"]
+mod kv_cache;
 #[path = "../sfcf.rs"]
 mod sfcf;
 #[path = "../tensor.rs"]

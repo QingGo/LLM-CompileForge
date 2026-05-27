@@ -19,7 +19,7 @@ mod integration_tests {
     }
 
     fn make_scheduler(max_batch: usize, max_tokens: usize, chunk: usize) -> Scheduler {
-        Scheduler::new(max_batch, max_tokens, chunk).unwrap()
+        Scheduler::new(max_batch, max_tokens, chunk, false).unwrap()
     }
 
     // ── Scheduler integration tests ──────────────────────────

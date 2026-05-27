@@ -316,6 +316,77 @@ mod tests {
         buf
     }
 
+    fn make_test_data_v3_with_kv() -> Vec<u8> {
+        // Build test binary in SFCF v3 format where some outputs have
+        // consumed_internally=true.  Simulates a split KV-head function:
+        //   output[0]=logits(False), output[1]=K(True), output[2]=V(True).
+        let mut buf = Vec::new();
+        // SFCF header
+        buf.extend_from_slice(b"SFCF");
+        buf.extend_from_slice(&3u32.to_le_bytes()); // version
+        buf.extend_from_slice(&0u32.to_le_bytes()); // 0 name mappings
+        buf.extend_from_slice(&0u32.to_le_bytes()); // 0 constants
+        // Compute graph section: 1 function with 3 outputs
+        buf.extend_from_slice(&1u32.to_le_bytes()); // 1 function
+
+        // Function 0: _mlir_ciface_main_0, 2 inputs, 3 outputs
+        {
+            let s = b"_mlir_ciface_main_0";
+            buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            buf.extend_from_slice(s);
+            buf.extend_from_slice(&2u32.to_le_bytes()); // num_inputs
+            buf.extend_from_slice(&3u32.to_le_bytes()); // num_outputs
+
+            // Input 0: global_input, rank 2, shape [1, 0]
+            buf.push(2u8); // global_input
+            buf.push(2u8); // rank
+            buf.extend_from_slice(&2u32.to_le_bytes());
+            buf.extend_from_slice(&1u64.to_le_bytes());
+            buf.extend_from_slice(&0u64.to_le_bytes());
+
+            // Input 1: weight "w", rank 2, shape [4096, 4096]
+            buf.push(0u8); // weight
+            let key = b"w";
+            buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
+            buf.extend_from_slice(key);
+            buf.push(2u8); // rank
+            buf.extend_from_slice(&2u32.to_le_bytes());
+            buf.extend_from_slice(&4096u64.to_le_bytes());
+            buf.extend_from_slice(&4096u64.to_le_bytes());
+
+            // Output 0: logits — consumed_internally=false, rank 2, shape [1, 0]
+            buf.push(0u8); // consumed_internally = false
+            buf.push(2u8); // rank
+            buf.extend_from_slice(&2u32.to_le_bytes());
+            buf.extend_from_slice(&1u64.to_le_bytes());
+            buf.extend_from_slice(&0u64.to_le_bytes());
+
+            // Output 1: K cache — consumed_internally=true, rank 3, shape [1, 32, 128]
+            buf.push(1u8); // consumed_internally = true
+            buf.push(3u8); // rank
+            buf.extend_from_slice(&3u32.to_le_bytes());
+            buf.extend_from_slice(&1u64.to_le_bytes());
+            buf.extend_from_slice(&32u64.to_le_bytes());
+            buf.extend_from_slice(&128u64.to_le_bytes());
+
+            // Output 2: V cache — consumed_internally=true, rank 3, shape [1, 32, 128]
+            buf.push(1u8); // consumed_internally = true
+            buf.push(3u8); // rank
+            buf.extend_from_slice(&3u32.to_le_bytes());
+            buf.extend_from_slice(&1u64.to_le_bytes());
+            buf.extend_from_slice(&32u64.to_le_bytes());
+            buf.extend_from_slice(&128u64.to_le_bytes());
+        }
+
+        // Global I/O
+        buf.extend_from_slice(&0u32.to_le_bytes()); // global_input_func
+        buf.extend_from_slice(&0u32.to_le_bytes()); // global_input_arg
+        buf.extend_from_slice(&0u32.to_le_bytes()); // global_output_func
+        buf.extend_from_slice(&0u32.to_le_bytes()); // global_output_idx
+
+        buf
+    }
+
     #[test]
     fn test_parse_compute_graph_v2_backward_compat() {
         let data = make_test_data_v2();
@@ -344,6 +415,43 @@ mod tests {
 
         assert_eq!(graph.global_input, (0, 0));
         assert_eq!(graph.global_output, (1, 0));
+    }
+
+    #[test]
+    fn test_parse_consumed_internally() {
+        let data = make_test_data_v3_with_kv();
+        // Skip SFCF header + name_mapping (0 entries) + constants (0 entries)
+        let mut pos = 8 + 4 + 4; // magic(4) + version(4) + nm_count(4) + const_count(4)
+
+        let graph = ComputeGraph::parse(&data, &mut pos, 3).unwrap();
+        assert_eq!(graph.functions.len(), 1);
+
+        // Output 0: consumed_internally=false (logits)
+        assert!(
+            !graph.functions[0].outputs[0].consumed_internally,
+            "output[0] (logits): expected consumed_internally=false"
+        );
+        assert_eq!(graph.functions[0].outputs[0].rank, 2);
+        assert_eq!(graph.functions[0].outputs[0].shape, vec![1, 0]);
+
+        // Output 1: consumed_internally=true (K cache)
+        assert!(
+            graph.functions[0].outputs[1].consumed_internally,
+            "output[1] (K): expected consumed_internally=true"
+        );
+        assert_eq!(graph.functions[0].outputs[1].rank, 3);
+        assert_eq!(graph.functions[0].outputs[1].shape, vec![1, 32, 128]);
+
+        // Output 2: consumed_internally=true (V cache)
+        assert!(
+            graph.functions[0].outputs[2].consumed_internally,
+            "output[2] (V): expected consumed_internally=true"
+        );
+        assert_eq!(graph.functions[0].outputs[2].rank, 3);
+        assert_eq!(graph.functions[0].outputs[2].shape, vec![1, 32, 128]);
+
+        assert_eq!(graph.global_input, (0, 0));
+        assert_eq!(graph.global_output, (0, 0));
     }
 
     #[test]

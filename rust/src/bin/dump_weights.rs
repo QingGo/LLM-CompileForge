@@ -9,6 +9,8 @@
 /// SFCF blob, resolves HF keys in the safetensors file, converts f16→f32,
 /// and writes individual .npy files plus a weights_index.json.
 
+#[path = "../block_manager.rs"]
+mod block_manager;
 #[path = "../ciface_high.rs"]
 mod ciface_high;
 #[path = "../compute_graph.rs"]
@@ -21,6 +23,8 @@ mod executor;
 mod kernel_catalog;
 #[path = "../hal/mod.rs"]
 mod hal;
+#[path = "../kv_cache.rs"]
+mod kv_cache;
 #[path = "../sfcf.rs"]
 mod sfcf;
 #[path = "../tensor.rs"]

@@ -11,6 +11,7 @@ mod error;
 mod executor;
 mod kernel_catalog;
 mod hal;
+mod kv_cache;
 mod radix_cache;
 mod runner;
 mod sampler;
