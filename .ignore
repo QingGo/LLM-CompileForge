@@ -15,3 +15,5 @@
 !*.dylib
 !*.bin
 !rust/src/bin/
+!repro.mlir
+!*.log

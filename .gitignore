@@ -25,3 +25,5 @@ logs/
 *.bin
 compile_commands.json
 rust/src/bin/
+repro.mlir
+*.log
