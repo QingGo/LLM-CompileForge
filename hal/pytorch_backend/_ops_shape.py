@@ -13,8 +13,6 @@ class _ShapeOps:
     def _op_view(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         raw_shape = kwargs["shape"]
         x = inputs[0]
-        if _log.isEnabledFor(logging.DEBUG):
-            _log.debug("view: %s -> %s", x.shape, raw_shape)
         dim_inputs = list(inputs[1:])
         resolved = []
         for s in raw_shape:
@@ -24,7 +22,17 @@ class _ShapeOps:
                 resolved.append(s)
             else:
                 resolved.append(1)
-        if -1 in resolved:
+        # Use dim_inputs for -1 entries, right-to-left (matching the
+        # original sf.view operand order where SSA refs were always in
+        # the last positions).  Extras are treated as "infer from product"
+        # (PyTorch's standard -1 semantics).
+        for i in range(len(resolved) - 1, -1, -1):
+            if resolved[i] == -1 and dim_inputs:
+                resolved[i] = int(dim_inputs.pop().item())
+        # All -1 with no dim_inputs → flatten (equivalent to reshape(-1))
+        if all(s == -1 for s in resolved) and not dim_inputs:
+            resolved = [-1]
+        elif -1 in resolved:
             neg_idx = resolved.index(-1)
             total_elements = x.numel()
             product_other = 1
@@ -46,7 +54,8 @@ class _ShapeOps:
                     remaining *= s
                 if remaining > 0 and total_elements % remaining == 0:
                     resolved[0] = total_elements // remaining
-        return x.reshape(*resolved)
+        result = x.reshape(*resolved)
+        return result
 
     def _op_permute(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         dims = kwargs["dims"]

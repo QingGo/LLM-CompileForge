@@ -38,12 +38,41 @@ struct SfViewOpLowering : public OpRewritePattern<sf::ViewOp> {
         shapeVals.push_back(arith::ConstantIndexOp::create(rewriter, loc, outType.getDimSize(i)));
         continue;
       }
-      // Dynamic dim — consult the shape attribute
+      // Dynamic dim — consult the shape attribute.
+      // IntegerAttr(-1) means "infer from product of other dims" (only for the
+      // LAST unresolved dim).  If dyn_shape operands are still available, they
+      // take priority over the -1 sentinel — the -1 was placed there by the
+      // compiler to mark a dynamic dimension that comes from an operand, not
+      // from inference.
       if (shapeAttr && i < (int64_t)shapeAttr.size()) {
         Attribute elem = shapeAttr[i];
         if (auto intAttr = dyn_cast<IntegerAttr>(elem)) {
           int64_t val = intAttr.getInt();
-          if (val == -1) {
+          if (val == -1 && dynIdx < (int64_t)dynShapeOperands.size()) {
+            // -1 with remaining operands → dynamic dim from operand
+            Value dynVal = dynShapeOperands[dynIdx++];
+            auto dynTy = dyn_cast<RankedTensorType>(dynVal.getType());
+            if (dynTy && dynTy.getRank() == 0) {
+              Value extracted = tensor::ExtractOp::create(rewriter, loc,
+                  dynTy.getElementType(), dynVal, ValueRange{});
+              Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
+              dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), asInt);
+            } else if (dynTy && dynTy.getRank() == 1 && dynTy.getDimSize(0) == 1) {
+              Value extracted = tensor::ExtractOp::create(rewriter, loc,
+                  dynTy.getElementType(), dynVal,
+                  ValueRange{arith::ConstantIndexOp::create(rewriter, loc, 0)});
+              if (dynTy.getElementType().isF32() || dynTy.getElementType().isF64()) {
+                Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
+                dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), asInt);
+              } else {
+                dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), extracted);
+              }
+            } else if (!dynVal.getType().isIndex()) {
+              dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), dynVal);
+            }
+            shapeVals.push_back(dynVal);
+          } else if (val == -1) {
+            // -1 with no remaining operands → truly inferred (pass 2)
             inferredIdx = i;
             shapeVals.push_back(nullptr);  // placeholder for pass 2
           } else {

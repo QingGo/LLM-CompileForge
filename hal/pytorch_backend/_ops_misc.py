@@ -37,6 +37,9 @@ class _MiscOps:
                     resolved.append(s)
                 else:
                     resolved.append(1)
+            for i in range(len(resolved) - 1, -1, -1):
+                if resolved[i] == -1 and dim_inputs:
+                    resolved[i] = int(dim_inputs.pop().item())
             if resolved:
                 return torch.ones(resolved, dtype=torch.float32)
         if inputs:
@@ -57,6 +60,9 @@ class _MiscOps:
                     resolved.append(s)
                 else:
                     resolved.append(1)
+            for i in range(len(resolved) - 1, -1, -1):
+                if resolved[i] == -1 and dim_inputs:
+                    resolved[i] = int(dim_inputs.pop().item())
             if resolved:
                 return torch.full(resolved, value, dtype=torch.float32)
         is_simple = not any(

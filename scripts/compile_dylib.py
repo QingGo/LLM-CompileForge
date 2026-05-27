@@ -336,6 +336,37 @@ def main() -> None:
     ws = metadata.get("weight_source", {})
     if "weight_source" not in module.metadata:
         module.metadata["weight_source"] = ws
+
+    # Restore consumed_internally flags from the original constants.bin
+    # (the text parser defaults them to False, but the compiler produced
+    # the correct values in the original binary).
+    _orig_bin_path = compiled_path / "constants.bin"
+    if _orig_bin_path.exists():
+        try:
+            _existing = _orig_bin_path.read_bytes()
+            _sfcf_off = _existing.find(b"SFCF")
+            if _sfcf_off >= 0:
+                from compiler.sfcf_parser import parse_sfcf_blob, parse_compute_graph
+                _nm, _const, _gpos, _ver = parse_sfcf_blob(_existing[_sfcf_off:])
+                _existing_graph = parse_compute_graph(_existing[_sfcf_off:], _gpos, _ver)
+                # Map existing consumed_internally flags back to re-parsed functions
+                for _fi, _ef in enumerate(_existing_graph["functions"]):
+                    if _fi < len(module.functions):
+                        _mf = module.functions[_fi]
+                        _eo = _ef["outputs"]
+                        if len(_eo) == len(_mf.outputs):
+                            _mf.outputs = [
+                                (m[0], m[1], eo.get("consumed_internally", False))
+                                for i, (m, eo) in enumerate(
+                                    zip(_mf.outputs, _eo, strict=False)
+                                )
+                            ]
+        except Exception as _e:
+            if DEBUG:
+                import traceback; traceback.print_exc()
+            # If restoration fails, proceed without it (no cache support)
+            pass
+
     print("[3/5] Generating constants.bin ...")
     name_mapping = _build_name_mapping(module)
     if name_mapping:
