@@ -106,7 +106,7 @@ impl ModelExecutor {
 
     /// Like forward() but accepts explicit positions for each token.
     /// positions[i] gives the position of input_ids[i] in the sequence.
-    pub fn forward_with_positions(&self, input_ids: &[u32], _positions: &[u32]) -> Result<Tensor<'static>, anyhow::Error> {
+    pub fn forward_with_positions(&self, input_ids: &[u32], positions: &[u32]) -> Result<Tensor<'static>, anyhow::Error> {
         let num_funcs = self.compute_graph.functions.len();
         let mut func_outputs: Vec<Vec<Tensor<'static>>> = vec![Vec::new(); num_funcs];
 
@@ -123,7 +123,7 @@ impl ModelExecutor {
             let mut _tensors: Vec<Tensor<'static>> = Vec::with_capacity(func_def.num_inputs);
             let mut _raw_buffers: Vec<Vec<u8>> = Vec::new();
 
-            for (_bi, (binding, io_def)) in func_def.inputs.iter().enumerate() {
+            for (bi, (binding, io_def)) in func_def.inputs.iter().enumerate() {
                 let shape: Vec<usize> =
                     io_def.shape.iter().map(|&d| d as usize).collect();
                 let tensor: Tensor = match binding {
@@ -132,10 +132,11 @@ impl ModelExecutor {
                         let is_dynamic = shape.iter().any(|&d| d == 0);
                         if is_dynamic {
                             let rank = io_def.rank as usize;
+                            let data_source: &[u32] = if bi == 1 { positions } else { input_ids };
                             match rank {
                                 1 => {
-                                    let n_tokens = input_ids.len();
-                                    let raw: Vec<u8> = input_ids.iter()
+                                    let n_tokens = data_source.len();
+                                    let raw: Vec<u8> = data_source.iter()
                                         .flat_map(|&v| (v as i64).to_ne_bytes())
                                         .collect();
                                     let p = raw.as_ptr();
@@ -155,8 +156,8 @@ impl ModelExecutor {
                                     continue;
                                 }
                                 2 => {
-                                    let n_tokens = input_ids.len() as i64;
-                                    let raw: Vec<u8> = input_ids.iter()
+                                    let n_tokens = data_source.len() as i64;
+                                    let raw: Vec<u8> = data_source.iter()
                                         .flat_map(|&v| (v as i64).to_ne_bytes())
                                         .collect();
                                     let p = raw.as_ptr();
@@ -182,11 +183,12 @@ impl ModelExecutor {
                                 ),
                             }
                         }
+                        let data_source: &[u32] = if bi == 1 { positions } else { input_ids };
                         let expected_numel: usize = shape.iter().product();
-                        let n_tokens = input_ids.len().min(expected_numel);
+                        let n_tokens = data_source.len().min(expected_numel);
                         let padded: Vec<i64> = (0..expected_numel).map(|i| {
                             if i < n_tokens {
-                                input_ids[i] as i64
+                                data_source[i] as i64
                             } else {
                                 0i64
                             }
@@ -404,7 +406,7 @@ impl ModelExecutor {
             let mut _tensors: Vec<Tensor<'static>> = Vec::with_capacity(func_def.num_inputs);
             let mut _raw_buffers: Vec<Vec<u8>> = Vec::new();
 
-            for (_bi, (binding, io_def)) in func_def.inputs.iter().enumerate() {
+            for (bi, (binding, io_def)) in func_def.inputs.iter().enumerate() {
                 let shape: Vec<usize> =
                     io_def.shape.iter().map(|&d| d as usize).collect();
                 match binding {
@@ -412,10 +414,11 @@ impl ModelExecutor {
                         let is_dynamic = shape.iter().any(|&d| d == 0);
                         if is_dynamic {
                             let rank = io_def.rank as usize;
+                            let data_source: &[u32] = if bi == 1 { positions } else { input_ids };
                             match rank {
                                 1 => {
-                                    let n_tokens = input_ids.len();
-                                    let raw: Vec<u8> = input_ids.iter()
+                                    let n_tokens = data_source.len();
+                                    let raw: Vec<u8> = data_source.iter()
                                         .flat_map(|&v| (v as i64).to_ne_bytes())
                                         .collect();
                                     let p = raw.as_ptr();
@@ -435,8 +438,8 @@ impl ModelExecutor {
                                     continue;
                                 }
                                 2 => {
-                                    let n_tokens = input_ids.len() as i64;
-                                    let raw: Vec<u8> = input_ids.iter()
+                                    let n_tokens = data_source.len() as i64;
+                                    let raw: Vec<u8> = data_source.iter()
                                         .flat_map(|&v| (v as i64).to_ne_bytes())
                                         .collect();
                                     let p = raw.as_ptr();
@@ -462,11 +465,12 @@ impl ModelExecutor {
                                 ),
                             }
                         }
+                        let data_source: &[u32] = if bi == 1 { positions } else { input_ids };
                         let expected_numel: usize = shape.iter().product();
-                        let n_tokens = input_ids.len().min(expected_numel);
+                        let n_tokens = data_source.len().min(expected_numel);
                         let padded: Vec<i64> = (0..expected_numel).map(|i| {
                             if i < n_tokens {
-                                input_ids[i] as i64
+                                data_source[i] as i64
                             } else {
                                 0i64
                             }
@@ -534,12 +538,11 @@ impl ModelExecutor {
                                 // hidden_dim = num_kv_heads * head_dim = total_elems / 1_token
                                 let hidden_dim = new_tensor.numel();
 
-                                let bm = block_manager.as_ref()
-                                    .expect("block_manager must be Some in decode path");
-                                let rid = request_id
-                                    .expect("request_id must be Some when block_manager is provided");
+                                let bm = block_manager.as_ref().unwrap();
+                                let rid = request_id.unwrap();
+                                let layer_rid = format!("{}_f{}", rid, producer_func);
 
-                                let (cached_key, cached_val) = bm.read_kv(rid, pos, hidden_dim)
+                                let (cached_key, cached_val) = bm.read_kv(&layer_rid, pos, hidden_dim)
                                     .map_err(|e| anyhow::anyhow!("read_kv: {}", e))?;
 
                                 // Determine if this SSA binding refers to K or V.
@@ -555,22 +558,32 @@ impl ModelExecutor {
 
                                 let cached_data = if is_k { &cached_key } else { &cached_val };
                                 let n_cached_tokens = pos;
-                                // Number of new tokens = input_ids.len() (1 for decode).
-                                // Cannot use new_tensor.shape[1] because the layout may
-                                // be [batch, num_heads, seq, head_dim] (BNSD) for KV cache,
-                                // where dim[1] is num_heads, not seq.
                                 let num_new_tokens = input_ids.len();
+                                let total_tokens = n_cached_tokens + num_new_tokens;
 
-                                // [cached (pos tokens)] ++ [new (1 token)]
-                                let mut all_data = Vec::with_capacity(
-                                    (n_cached_tokens + num_new_tokens) * hidden_dim,
-                                );
-                                all_data.extend_from_slice(cached_data);
-                                all_data.extend_from_slice(new_tensor.as_slice());
+                                // Concat: cached (BNLD from read_kv) ++ new (1 token, BNSD but
+                                // flat-equivalent to BNLD for a single position).
+                                let mut bnld = Vec::with_capacity(total_tokens * hidden_dim);
+                                bnld.extend_from_slice(cached_data);
+                                bnld.extend_from_slice(new_tensor.as_slice());
 
-                                let all_shape = vec![1, n_cached_tokens + num_new_tokens, hidden_dim];
-
-                                Tensor::new_owned(all_shape, all_data, Dtype::F32)
+                                // Transpose BNLD->BNSD so main_Xb receives correct layout.
+                                // new_tensor.shape is BNSD [b, h, s, d] for seq=1.
+                                let ns = &new_tensor.shape;
+                                if ns.len() >= 4 {
+                                    let nh = ns[1];
+                                    let hd = ns[3];
+                                    let mut bnsd = Vec::with_capacity(nh * total_tokens * hd);
+                                    for h in 0..nh {
+                                        for p in 0..total_tokens {
+                                            let off = p * hidden_dim + h * hd;
+                                            bnsd.extend_from_slice(&bnld[off..off + hd]);
+                                        }
+                                    }
+                                    Tensor::new_owned(vec![1, nh, total_tokens, hd], bnsd, Dtype::F32)
+                                } else {
+                                    Tensor::new_owned(vec![1, total_tokens, hidden_dim], bnld, Dtype::F32)
+                                }
                             } else {
                                 // Prefill or no cache: pass K/V directly
                                 new_tensor.clone()
@@ -657,8 +670,8 @@ impl ModelExecutor {
 
                     // Write to BlockManager cache
                     if let Some(bm) = block_manager.as_mut() {
-                        let rid = request_id
-                            .expect("request_id must be Some when writing to BlockManager cache");
+                        let rid = request_id.unwrap();
+                        let layer_rid = format!("{}_f{}", rid, fi);
                         // Hidden dimension per token = total elements / number of tokens.
                         // For rank-4 K/V outputs shaped [1, seq, num_heads, head_dim],
                         // shape.last() would give head_dim, but we need heads*dim (=768).
@@ -681,8 +694,36 @@ impl ModelExecutor {
                             .map(|(i, _)| i)
                             .collect();
                         let is_key = kv_indices.first() == Some(&oi);
-
-                        if let Err(e) = bm.write_kv(rid, start_pos, tensor.as_slice(), hidden_dim, is_key) {
+                        // BNSD→BNLD: prefill outputs K/V in head-major layout
+                        // [1, num_heads, seq, head_dim]; write_kv expects
+                        // position-major where each hidden_dim chunk = 1 position.
+                        let write_data: Vec<f32> = if tensor.shape.len() >= 4
+                            && num_tokens > 1
+                        {
+                            let nh = tensor.shape[1] as usize;
+                            let sl = tensor.shape[2] as usize;
+                            let hd = tensor.shape[3] as usize;
+                            let src = tensor.as_slice();
+                            let mut dst = vec![0.0f32; num_tokens * hidden_dim];
+                            for p in 0..num_tokens {
+                                for h in 0..nh {
+                                    let src_off = h * (sl * hd) + p * hd;
+                                    let dst_off = p * hidden_dim + h * hd;
+                                    dst[dst_off..dst_off + hd]
+                                        .copy_from_slice(&src[src_off..src_off + hd]);
+                                }
+                            }
+                            dst
+                        } else {
+                            tensor.as_slice().to_vec()
+                        };
+                        if let Err(e) = bm.write_kv(
+                            &layer_rid,
+                            start_pos,
+                            &write_data,
+                            hidden_dim,
+                            is_key,
+                        ) {
                             log::warn!(
                                 "forward_with_kv: write_kv failed for func_{} output_{}: {}",
                                 fi, oi, e,
