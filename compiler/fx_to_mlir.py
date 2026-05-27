@@ -47,6 +47,7 @@ def fx_graph_to_mlir(
     program: ExportedProgram,
     function_name: str = "main",
     split_strategy: str = "layer",
+    cache_policy: Any = None,
 ) -> MlirModule:
     gm = program.graph_module
     graph = gm.graph
@@ -185,7 +186,7 @@ def fx_graph_to_mlir(
                 if hasattr(fake_val, "shape"):
                     for d in fake_val.shape:
                         sym_name = _symint_to_name(d)
-                        dim_names.append(sym_name if sym_name else "")
+                        dim_names.append(sym_name if sym_name else "?")
                 if dim_names:
                     kwargs["dim_names"] = dim_names
 
@@ -239,6 +240,29 @@ def fx_graph_to_mlir(
     # Constants: everything NOT from state_dict (synthesised scalars etc.)
     all_weight_names = set(weights.keys())
     const_names = (const_names or set()) | (all_weight_names - param_names)
+
+    # ── SD-PA boundary detection (KV cache split) ────────────
+    # When CachePolicy has scaled_dot_product_attention intercepts, add
+    # SD-PA op indices to the boundary set so each transformer layer is
+    # split into two functions at the SD-PA boundary:
+    #   main_Xa (QKV proj) → [K/V consumed_internally] → main_Xb (Attn+FFN)
+    # Works with or without layer boundaries (SDPA ops may exist even in
+    # models without detectable layer structure).
+    if cache_policy is not None and hasattr(cache_policy, "intercepts"):
+        has_sdpa_intercept = any(
+            getattr(i, "op_name", None) == "scaled_dot_product_attention"
+            for i in cache_policy.intercepts
+        )
+        if has_sdpa_intercept:
+            sdpa_indices = [i for i, op in enumerate(mlir_ops)
+                            if op.op_name == "scaled_dot_product_attention"]
+            if sdpa_indices:
+                adjusted_boundaries = sorted(set(adjusted_boundaries) | set(sdpa_indices))
+                _log.info(
+                    "[fx_to_mlir] SD-PA split: %d SD-PA ops found, "
+                    "total boundaries = %d",
+                    len(sdpa_indices), len(adjusted_boundaries),
+                )
 
     # ── Phase 5: split into per-function chunks (bufferization scaling) ──
     if adjusted_boundaries:
@@ -420,9 +444,9 @@ def _semantic_ssa_name(
             ctx = str(name_counter)
         return f"%arange_{ctx}_{name_counter}"
     if hal_op == "le":
-        return f"%causal_mask"
+        return "%causal_mask"
     if hal_op == "expand":
-        return f"%attn_mask"
+        return "%attn_mask"
     if hal_op == "logical_and":
         return f"%mask_and_{name_counter}"
     if hal_op == "view":
@@ -513,11 +537,16 @@ def _collect_input_args(
                     extra_kwargs.setdefault("shape", tuple(resolved_shape))
             elif list_arg_attr not in extra_kwargs:
                 resolved: list[str | int] = []
-                use_view = hal_op == "view"
+                use_view = hal_op in ("view", "ones_like", "full_like", "new_zeros")
                 for s in arg:
                     if isinstance(s, torch.fx.Node):
                         ssa_name = ssa_map.get(s.name, s.name)
-                        resolved.append(ssa_name)
+                        # Dynamic dim: add as operand but put -1 in shape attr
+                        # (SSA refs are invalid inside MLIR attribute arrays)
+                        if use_view:
+                            resolved.append(-1)
+                        else:
+                            resolved.append(ssa_name)
                         input_names.append(ssa_name)
                     elif use_view:
                         resolved.append(_symint_for_view(s))

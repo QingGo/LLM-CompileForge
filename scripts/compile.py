@@ -13,6 +13,7 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 # Ensure the project root is on sys.path
 _project_root = Path(__file__).resolve().parent.parent
@@ -22,8 +23,13 @@ sys.path.insert(0, str(_project_root))
 from compiler.mlir_dialect.compile_utils import _patch_transformers_torch
 
 
-def compile_opt125m(output_dir: str, apply_lowering: bool = False) -> None:
-    """Compile facebook/opt-125m through the full pipeline."""
+def compile_opt125m(output_dir: str, apply_lowering: bool = False,
+                    cache_policy: Any = None) -> None:
+    """Compile facebook/opt-125m through the full pipeline.
+
+    Args:
+        cache_policy: Optional CachePolicy for KV cache strategy.
+    """
     import os
 
     import torch
@@ -65,6 +71,7 @@ def compile_opt125m(output_dir: str, apply_lowering: bool = False) -> None:
         output_dir=output_dir,
         model_dir=os.path.join(snapshots, snap),
         dynamic_shapes={"input_ids": {0: Dim("batch"), 1: Dim("seq")}},
+        cache_policy=cache_policy,
     )
 
     op_count = len(mlir_mod.functions[0].ops)
@@ -448,6 +455,12 @@ def main() -> None:
         default=None,
         help="Output directory for compiled artifacts",
     )
+    parser.add_argument(
+        "--cache-policy",
+        action="store_true",
+        default=False,
+        help="Enable CachePolicy for models that support it (opt-125m: for_llama, etc.)",
+    )
     args = parser.parse_args()
 
     targets = {
@@ -461,7 +474,24 @@ def main() -> None:
 
     func, default_dir = targets[args.model]
     output_dir = args.output_dir or default_dir
-    func(output_dir)
+
+    # Build CachePolicy for models that support it
+    cache_policy = None
+    if args.cache_policy:
+        from compiler.cache_policy import CachePolicy
+
+        if args.model == "opt-125m":
+            cache_policy = CachePolicy.for_llama(
+                num_layers=12, num_kv_heads=12, head_dim=64,
+            )
+            print("CachePolicy enabled: opt-125m (12 layers, 12 KV heads, head_dim=64)")
+        else:
+            print(f"WARNING: --cache-policy not yet implemented for {args.model}, ignoring")
+
+    if args.model == "opt-125m":
+        func(output_dir, cache_policy=cache_policy)
+    else:
+        func(output_dir)
 
 
 if __name__ == "__main__":

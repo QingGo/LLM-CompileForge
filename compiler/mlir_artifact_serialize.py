@@ -94,7 +94,7 @@ def mlir_module_to_text(module: MlirModule) -> str:
         if len(ret_types) == 1:
             ret_type_str = f" : {ret_types[0]}"
         else:
-            ret_type_str = f" : ({', '.join(ret_types)})"
+            ret_type_str = f" : {', '.join(ret_types)}"
         lines.append(f"    func.return {ret_str}{ret_type_str}")
         lines.append("  }")
 
@@ -130,7 +130,10 @@ def _format_attr(key: str, value: Any) -> str:
     if isinstance(value, str):
         return f'{key} = "{value}"'
     if isinstance(value, (list, tuple)):
-        items = ", ".join(str(v) for v in value)
+        items = ", ".join(
+            f'"{v}"' if isinstance(v, str) else str(v)
+            for v in value
+        )
         return f"{key} = [{items}]"
     if value is None:
         return f"{key} = none"

@@ -81,10 +81,17 @@ def _split_into_functions(
     indices (layer-aware splitting). Otherwise, insert a sentinel every
     *ops_per_func* ops (op-count splitting, existing behaviour).
 
+    When CachePolicy provides SD-PA intercepts, *boundaries* may also
+    include SD-PA op indices (in addition to layer boundaries), causing
+    each transformer layer to split into TWO blocks at the SD-PA boundary:
+      Block A (QKV proj):  ops before SD-PA
+      Block B (Attn+FFN):  SD-PA and all following ops in that layer
+
     Returns (augmented_ops, num_functions).
     """
     if boundaries:
-        # Layer-based: insert sentinel before each boundary op
+        # Insert sentinel before each boundary op.
+        # Boundaries may be a mix of layer-start and SD-PA op indices.
         result: list[MlirOp] = []
         boundary_set = set(boundaries)
         for i, op in enumerate(mlir_ops):
@@ -182,7 +189,18 @@ def _make_multi_functions(
     const_names: set[str],
     base_name: str,
 ) -> list[MlirFunction]:
-    """Split mlir_ops at sentinel boundaries into separate MlirFunction objects."""
+    """Split mlir_ops at sentinel boundaries into separate MlirFunction objects.
+
+    If a block's first op is ``scaled_dot_product_attention`` (SD-PA), it is
+    a "b" block (Attention+FFN half of a split layer).  The preceding block
+    is its "a" block (QKV projection half).  The two share a layer number:
+
+      main_N_a  —  QKV projection (K/V outputs get consumed_internally=True)
+      main_N_b  —  Attention+FFN (K/V inputs come from executor, not SSA)
+
+    All other blocks (embedding, unsplit layers, output) keep the plain
+    ``main_N`` naming.
+    """
 
     # Remove sentinel ops and partition into blocks
     blocks: list[list[MlirOp]] = []
@@ -230,6 +248,42 @@ def _make_multi_functions(
                 if key in weights:
                     weight_refs_per_func[fi].add(key)
 
+    # ── Detect SD-PA split pairs and assign function names ──
+    # A "b" block is one whose first op is scaled_dot_product_attention.
+    # The preceding block is its "a" block (QKV proj).
+    # Both share the same layer number; other blocks count independently.
+    _is_b_block: list[bool] = [False] * len(blocks)
+    for fi, block in enumerate(blocks):
+        if fi > 0 and block and block[0].op_name == "scaled_dot_product_attention":
+            _is_b_block[fi] = True
+
+    # Collect SSA names of K/V outputs from each "b" block's SD-PA op.
+    # operands[1]=K, operands[2]=V.
+    sdpa_kv_ssa: dict[int, tuple[str, str]] = {}  # block index → (K_ssa, V_ssa)
+    for fi, is_b in enumerate(_is_b_block):
+        if is_b:
+            sdpa_op = blocks[fi][0]
+            k_ssa = sdpa_op.operands[1].lstrip("%") if len(sdpa_op.operands) > 1 else ""
+            v_ssa = sdpa_op.operands[2].lstrip("%") if len(sdpa_op.operands) > 2 else ""
+            sdpa_kv_ssa[fi] = (k_ssa, v_ssa)
+
+    # Assign layer numbers and suffixes
+    func_names: list[str] = [""] * len(blocks)
+    layer_n: int = 0
+    for fi in range(len(blocks)):
+        if _is_b_block[fi]:
+            # "b" block — share layer number with the "a" block preceding it
+            func_names[fi - 1] = f"{base_name}_{layer_n}a"
+            func_names[fi] = f"{base_name}_{layer_n}b"
+            layer_n += 1
+        elif fi + 1 < len(blocks) and _is_b_block[fi + 1]:
+            pass  # "a" block — named above when its "b" sibling is processed
+        else:
+            # Standalone block (embed, unsplit layer, or output)
+            func_names[fi] = f"{base_name}_{layer_n}"
+            layer_n += 1
+
+    # ── Build functions ──
     funcs: list[MlirFunction] = []
 
     for fi, block in enumerate(blocks):
@@ -260,11 +314,6 @@ def _make_multi_functions(
             #   Non-weight from func[0] first (sorted by func[0] output index),
             #   then cross-function values (from func[fi-1] etc.),
             #   then weights from func[0] last.
-            # Order inputs to match ciface calling convention:
-            # 1. Non-weight values from func[0] (scalar, hidden_state, mask)
-            # 2. Cross-function values (hidden state from func[fi-1])
-            # 3. Weight values from func[0]
-            # 4. sym_size scalars from func[0]
             # Order inputs to match func[1]'s proven-correct convention:
             # [scalar, hidden_state, mask, weights..., sym_size...]
             nw_0 = [(v, prod_order.get(v, (999, 999))) for v in needed
@@ -312,7 +361,23 @@ def _make_multi_functions(
             if name.lstrip("%") in produced_here:
                 exported.add(name.lstrip("%"))
 
-        f_outputs = [(f"%{v}", type_map.get(v, "tensor<f32>"), False) for v in sorted(exported)]
+        # Determine consumed_internally for each output.
+        # If this is an "a" block (has a following "b" sibling), the K and V
+        # SSAs consumed by that sibling's SD-PA op are consumed_internally=True.
+        is_a_block = (fi + 1 < len(blocks) and _is_b_block[fi + 1])
+        kv_to_mark: set[str] = set()
+        if is_a_block:
+            k_ssa, v_ssa = sdpa_kv_ssa[fi + 1]
+            if k_ssa:
+                kv_to_mark.add(k_ssa)
+            if v_ssa:
+                kv_to_mark.add(v_ssa)
+
+        f_outputs: list[tuple[str, str, bool]] = []
+        for v in sorted(exported):
+            consumed = v in kv_to_mark
+            f_outputs.append((f"%{v}", type_map.get(v, "tensor<f32>"), consumed))
+
         if not f_outputs:
             p = list(produced_here)[0]
             f_outputs = [(f"%{p}", type_map.get(p, "tensor<f32>"), True)]
@@ -326,7 +391,7 @@ def _make_multi_functions(
         adjusted_block = [_adjust_op_attributes(op, input_rank_map) for op in block]
 
         funcs.append(MlirFunction(
-            name=f"{base_name}_{fi}",
+            name=func_names[fi],
             inputs=f_inputs,
             outputs=f_outputs,
             ops=adjusted_block,

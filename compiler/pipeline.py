@@ -83,7 +83,7 @@ def compile_mlir(
     )
 
     # Step 2: single-step FX → MlirModule
-    mlir_mod = fx_graph_to_mlir(program)
+    mlir_mod = fx_graph_to_mlir(program, cache_policy=cache_policy)
 
     # Step 3: emit MLIR text
     mlir_text = mlir_module_to_text(mlir_mod)
@@ -118,7 +118,8 @@ def compile_mlir(
     except (ValueError, IndexError, KeyError) as e:
         _log.warning("re-parse of optimized MLIR text failed, using original module: %s", e)
         mlir_mod = orig_mlir_mod
-    # Preserve weights through the MLIR text roundtrip
+    # Preserve weights, metadata, and consumed_internally flags
+    # through the MLIR text roundtrip.
     mlir_mod.metadata["source"] = "torch.export"
     mlir_mod.metadata["artifact_format"] = "mlir"
     # Restore metadata and weights from the original module
@@ -130,6 +131,13 @@ def compile_mlir(
                 mf.weights = {wname: orig_func.weights[wname] for wname in orig_func.weights}
                 mf.param_weight_names = set(orig_func.param_weight_names)
                 mf.const_weight_names = set(orig_func.const_weight_names)
+                # Restore consumed_internally flags (lost during MLIR text round-trip
+                # because _parse_mlir_text defaults them to False)
+                if len(orig_func.outputs) == len(mf.outputs):
+                    mf.outputs = [
+                        (mf_out[0], mf_out[1], orig_func.outputs[i][2])
+                        for i, mf_out in enumerate(mf.outputs)
+                    ]
                 break
 
     # Step 6: serialize
@@ -241,7 +249,11 @@ def _apply_mlir_passes(
             except Exception as e:
                 raise RuntimeError(f"[pipeline] CRITICAL: canonicalize/cse failed: {e}") from e
         except ImportError as e:
-            _log.warning("sf dialect Python bindings not available (canonicalize/cse skipped): %s", e)
+            _log.warning(
+                "sf dialect Python bindings not available (canonicalize/cse skipped): %s\n"
+                "  To enable, run: make build-so",
+                e,
+            )
 
     # Phase 2: fusion
     try:
