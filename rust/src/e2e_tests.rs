@@ -196,6 +196,89 @@ mod e2e_tests {
         eprintln!("PASS: KV model loaded with {} functions, {} consumed_internally", n, ci);
     }
 
+    // ── Test: KV cache multi-step decode (should match HF) ────────
+    #[test]
+    fn test_kv_multistep_decode_matches_hf() {
+        let executor = compiled_kv_executor();
+        let num_kv_heads = 12usize;
+        let head_dim = 64usize;
+        let block_size = 16usize;
+        let num_blocks = 64usize;
+
+        let mut bm = BlockManager::new_with_cache(num_blocks, block_size, num_kv_heads, head_dim)
+            .expect("block manager with cache");
+
+        bm.allocate("test_req", PROMPT_IDS.len() + 10)
+            .expect("allocate blocks for prefill + decode");
+
+        let n_tokens = PROMPT_IDS.len() + 10;
+        for func in &executor.compute_graph.functions {
+            let has_ci = func.outputs.iter().any(|o| o.consumed_internally);
+            if has_ci {
+                let layer_rid = format!("test_req_f{}", func.index);
+                bm.allocate(&layer_rid, n_tokens)
+                    .unwrap_or_else(|e| panic!("alloc {}: {e}", layer_rid));
+            }
+        }
+
+        // Prefill
+        let positions: Vec<u32> = (0..PROMPT_IDS.len() as u32).collect();
+        let output = executor
+            .forward_with_kv(PROMPT_IDS, &positions, Some(&mut bm), Some("test_req"))
+            .expect("prefill");
+
+        assert_eq!(output.shape.len(), 3);
+        assert_eq!(output.shape[2], 50272);
+        eprintln!("✅ PREFILL: shape {:?}", output.shape);
+        assert!(output.as_slice().iter().all(|v| v.is_finite()));
+
+        // Get last token's argmax
+        let logits = output.as_slice();
+        let last_start = (PROMPT_IDS.len() - 1) * 50272;
+        let last_logits = &logits[last_start..last_start + 50272];
+        let (first_tok, _) = last_logits.iter().enumerate().fold(
+            (0usize, f32::NEG_INFINITY),
+            |(mi, mv), (i, &v)| if v > mv { (i, v) } else { (mi, mv) },
+        );
+        eprintln!("PREFILL last token argmax: {}", first_tok);
+
+        // Decode 5 steps — prefill token is the first generated token
+        let mut generated: Vec<u32> = vec![first_tok as u32];
+        let mut current_token = first_tok as u32;
+
+        for step in 0..5 {
+            let pos = (PROMPT_IDS.len() + step) as u32;
+            let out = executor
+                .forward_with_kv(&[current_token], &[pos], Some(&mut bm), Some("test_req"))
+                .expect(&format!("decode step {}", step));
+
+            let out_logits = out.as_slice();
+            let (next_tok, _) = out_logits.iter().enumerate().fold(
+                (0usize, f32::NEG_INFINITY),
+                |(mi, mv), (i, &v)| if v > mv { (i, v) } else { (mi, mv) },
+            );
+
+            generated.push(next_tok as u32);
+            current_token = next_tok as u32;
+            eprintln!("Step {step}: token={next_tok}");
+        }
+
+        eprintln!("Generated: {generated:?}");
+        eprintln!("Expected:  {EXPECTED_TOKENS:?}");
+
+        for (i, (&g, &e)) in generated.iter().zip(EXPECTED_TOKENS.iter()).enumerate() {
+            let diff = if g > e { g - e } else { e - g };
+            assert!(
+                diff <= 1,
+                "Token {i}: got={g} expected={e} diff={diff} — KV cache decode should match HF baseline"
+            );
+        }
+        eprintln!(
+            "✅ PASS: test_kv_multistep_decode_matches_hf (all {} tokens within diff≤1)",
+            generated.len()
+        );
+    }
+
     // ── Test A: forward_with_kv with BlockManager ──────────────────
 
     #[test]
@@ -212,6 +295,16 @@ mod e2e_tests {
 
         bm.allocate("test_req", PROMPT_IDS.len())
             .expect("allocate blocks for prefill");
+
+        let layer_n_tokens = PROMPT_IDS.len() + 1;
+        for func in &executor.compute_graph.functions {
+            let has_ci = func.outputs.iter().any(|o| o.consumed_internally);
+            if has_ci {
+                let layer_rid = format!("test_req_f{}", func.index);
+                bm.allocate(&layer_rid, layer_n_tokens)
+                    .unwrap_or_else(|e| panic!("alloc {}: {e}", layer_rid));
+            }
+        }
 
         // ── PREFILL ──────────────────────────────────────────────────
         let positions: Vec<u32> = (0..PROMPT_IDS.len() as u32).collect();
@@ -280,8 +373,12 @@ mod e2e_tests {
 
         // ── VERIFY CACHE ─────────────────────────────────────────────
         let up_to_pos = PROMPT_IDS.len() + 1;
+        let first_ci_layer = executor.compute_graph.functions.iter()
+            .find(|f| f.outputs.iter().any(|o| o.consumed_internally))
+            .expect("at least one consumed_internally func");
+        let cache_rid = format!("test_req_f{}", first_ci_layer.index);
         let (key_data, val_data) = bm
-            .read_kv("test_req", up_to_pos, hidden_dim)
+            .read_kv(&cache_rid, up_to_pos, hidden_dim)
             .expect("read_kv should succeed");
         assert_eq!(
             key_data.len(),
@@ -332,6 +429,16 @@ mod e2e_tests {
         // Allocate blocks for prompt
         bm.allocate("test_req", PROMPT_IDS.len())
             .expect("allocate blocks");
+
+        let gn_ntokens = PROMPT_IDS.len() + 10;
+        for func in &executor.compute_graph.functions {
+            let has_ci = func.outputs.iter().any(|o| o.consumed_internally);
+            if has_ci {
+                let layer_rid = format!("test_req_f{}", func.index);
+                bm.allocate(&layer_rid, gn_ntokens)
+                    .unwrap_or_else(|e| panic!("alloc {}: {e}", layer_rid));
+            }
+        }
 
         // PREFILL
         let positions: Vec<u32> = (0..PROMPT_IDS.len() as u32).collect();
@@ -419,10 +526,14 @@ mod e2e_tests {
         }
         eprintln!("✅ {}/{} tokens within diff≤5 of reference", matched, n_compare);
 
-        // Verify cache has data
+        // Verify cache has data (first consumed_internally layer)
         let cache_pos = PROMPT_IDS.len() + generated.len();
+        let first_ci_layer = executor.compute_graph.functions.iter()
+            .find(|f| f.outputs.iter().any(|o| o.consumed_internally))
+            .expect("at least one consumed_internally func");
+        let cache_rid = format!("test_req_f{}", first_ci_layer.index);
         let (k, v) = bm
-            .read_kv("test_req", cache_pos, hidden_dim)
+            .read_kv(&cache_rid, cache_pos, hidden_dim)
             .expect("read_kv");
         assert!(k.iter().any(|&x| x != 0.0), "key cache should have non-zero data");
         assert!(v.iter().any(|&x| x != 0.0), "value cache should have non-zero data");
@@ -570,6 +681,16 @@ mod e2e_tests {
         // 2 blocks (32 slots) for 6 prompt + 15 decode + headroom.
         bm.allocate("test_req", PROMPT_IDS.len() + num_decode_steps + 10)
             .expect("allocate blocks");
+
+        let perf_ntokens = PROMPT_IDS.len() + num_decode_steps + 10;
+        for func in &exec_kv.compute_graph.functions {
+            let has_ci = func.outputs.iter().any(|o| o.consumed_internally);
+            if has_ci {
+                let layer_rid = format!("test_req_f{}", func.index);
+                bm.allocate(&layer_rid, perf_ntokens)
+                    .unwrap_or_else(|e| panic!("alloc {}: {e}", layer_rid));
+            }
+        }
 
         // PREFILL
         let positions: Vec<u32> = (0..PROMPT_IDS.len() as u32).collect();
