@@ -308,7 +308,7 @@ fn test_forward_with_kv_requires_compiled_model() {
     // If the model isn't compiled, we skip gracefully.
     let dylib = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../compiled/opt_125m_v8/libopt_125m.dylib"
+        "/../compiled/opt_125m_fresh/libopt_125m.dylib"
     );
     if !std::path::Path::new(dylib).exists() {
         eprintln!("SKIP: no compiled model at {dylib}");

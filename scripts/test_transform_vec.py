@@ -129,7 +129,7 @@ def test_batch_matmul_dynamic() -> None:
 
 def test_full_lowered_module() -> None:
     """Run transform on the actual model's lowered MLIR."""
-    lowered_path = Path(__file__).resolve().parent.parent / "compiled" / "opt_125m_v8" / "model.lowered.mlir"
+    lowered_path = Path(__file__).resolve().parent.parent / "compiled" / "opt_125m_fresh" / "model.lowered.mlir"
     if not lowered_path.exists():
         print("  ⚠ lowered MLIR not found, skipping full module test")
         return

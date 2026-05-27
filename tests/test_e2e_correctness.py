@@ -25,7 +25,7 @@ _log = logging.getLogger(__name__)
 
 COMPILED_DIR = Path(__file__).resolve().parent.parent / "compiled"
 MODEL_DIRS = {
-    "opt_125m": COMPILED_DIR / "opt_125m_v8",
+    "opt_125m": COMPILED_DIR / "opt_125m_fresh",
     "tiny_llama": COMPILED_DIR / "tiny_llama",
 }
 

@@ -405,12 +405,12 @@ mod tests {
     use crate::executor::ModelExecutor;
     use crate::tokenizer::Tokenizer;
 
-    /// Create a ModelExecutor that loads from the opt_125m_v8 compiled model.
+    /// Create a ModelExecutor that loads from the opt_125m_fresh compiled model.
     /// Panics with clear instructions if the compiled model is not found.
     fn compiled_executor() -> ModelExecutor {
         let dylib = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../compiled/opt_125m_v8/libopt_125m.dylib"
+            "/../compiled/opt_125m_fresh/libopt_125m.dylib"
         );
         ModelExecutor::load(dylib, None)
             .expect(&format!(

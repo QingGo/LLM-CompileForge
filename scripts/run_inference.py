@@ -1,6 +1,6 @@
 """Run inference on a compiled .dylib model using Python ctypes.
 
-Usage: python scripts/run_inference.py compiled/opt_125m_v8 [--model-name opt_125m] [--prompt "Hello"] [--max-tokens 10]
+Usage: python scripts/run_inference.py compiled/opt_125m_fresh [--model-name opt_125m] [--prompt "Hello"] [--max-tokens 10]
 """
 
 import argparse

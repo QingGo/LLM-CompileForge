@@ -75,7 +75,7 @@ def test_vectorize_flattens_nested_module():
     lowered_path = (
         Path(__file__).resolve().parent.parent
         / "compiled"
-        / "opt_125m_v8"
+        / "opt_125m_fresh"
         / "model.lowered.mlir"
     )
     if not lowered_path.exists():
@@ -166,7 +166,7 @@ def test_transform_ops_removed_after_vectorize():
     lowered_path = (
         Path(__file__).resolve().parent.parent
         / "compiled"
-        / "opt_125m_v8"
+        / "opt_125m_fresh"
         / "model.lowered.mlir"
     )
     if not lowered_path.exists():
@@ -205,7 +205,7 @@ def test_bufferize_produces_memrefs():
     lowered_path = (
         Path(__file__).resolve().parent.parent
         / "compiled"
-        / "opt_125m_v8"
+        / "opt_125m_fresh"
         / "model.lowered.mlir"
     )
     if not lowered_path.exists():
@@ -259,7 +259,7 @@ def test_contract_lowering_outerproduct_finishes():
     lowered_path = (
         Path(__file__).resolve().parent.parent
         / "compiled"
-        / "opt_125m_v8"
+        / "opt_125m_fresh"
         / "model.lowered.mlir"
     )
     if not lowered_path.exists():
@@ -321,7 +321,7 @@ def test_mlir_executor_multi_function():
     from hal.pytorch_backend import PyTorchBackend
 
     mod_dir = (
-        Path(__file__).resolve().parent.parent / "compiled" / "opt_125m_v8"
+        Path(__file__).resolve().parent.parent / "compiled" / "opt_125m_fresh"
     )
     if not (mod_dir / "model.mlir").exists():
         pytest.skip("compiled model not found")

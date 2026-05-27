@@ -56,7 +56,7 @@ def test_no_arith_ops_after_lowering():
     if not has_mlir_bindings():
         pytest.skip("MLIR bindings not available")
 
-    mod, ctx, ir = _load_lowered("compiled/opt_125m_v8")
+    mod, ctx, ir = _load_lowered("compiled/opt_125m_fresh")
     import mlir.passmanager as pm
 
     from compiler.mlir_dialect.llvm_backend import (
@@ -114,7 +114,7 @@ def test_tile_sizes_within_bounds():
     if not has_mlir_bindings():
         pytest.skip("MLIR bindings not available")
 
-    mod, ctx, ir = _load_lowered("compiled/opt_125m_v8")
+    mod, ctx, ir = _load_lowered("compiled/opt_125m_fresh")
     import mlir.passmanager as pm
 
     from compiler.mlir_dialect.llvm_backend import _tile_matmuls_per_func
@@ -158,7 +158,7 @@ def test_pipeline_timing():
     if not has_mlir_bindings():
         pytest.skip("MLIR bindings not available")
 
-    mod, ctx, ir = _load_lowered("compiled/opt_125m_v8")
+    mod, ctx, ir = _load_lowered("compiled/opt_125m_fresh")
     import mlir.passmanager as pm
 
     from compiler.mlir_dialect.llvm_backend import (
@@ -218,7 +218,7 @@ def test_fma_fusion_fires():
     if not has_mlir_bindings():
         pytest.skip("MLIR bindings not available")
 
-    mod, ctx, ir = _load_lowered("compiled/opt_125m_v8")
+    mod, ctx, ir = _load_lowered("compiled/opt_125m_fresh")
     import mlir.passmanager as pm
 
     from compiler.mlir_dialect.llvm_backend import (

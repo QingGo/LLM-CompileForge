@@ -70,8 +70,8 @@ mod integration_tests {
         let candidates = [
             format!("{}/.cache/huggingface/hub/models--facebook--opt-125m/snapshots", home),
             format!("{}/.cache/huggingface/hub/models--facebook--opt-125m/blobs", home),
-            "compiled/opt_125m_v8/model.safetensors".to_string(),
-            "compiled/opt_125m_v8/weights.safetensors".to_string(),
+            "compiled/opt_125m_fresh/model.safetensors".to_string(),
+            "compiled/opt_125m_fresh/weights.safetensors".to_string(),
         ];
         for dir_path in &candidates {
             let path = std::path::Path::new(dir_path);

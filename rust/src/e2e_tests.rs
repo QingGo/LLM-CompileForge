@@ -10,6 +10,15 @@ mod e2e_tests {
 
     const COMPILED_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../compiled/opt_125m_fresh");
 
+    // ── KV-cache model constants ──────────────────────────────────────────
+    const PROMPT_TEXT: &str = "The capital of France is";
+    const PROMPT_IDS: &[u32] = &[2, 133, 812, 9, 1470, 16];
+    const EXPECTED_TOKENS: &[u32] = &[5, 812, 9, 5, 1515];
+    const KV_COMPILED_DIR: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../compiled/opt_125m_kv");
+    const FRESH_COMPILED_DIR: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../compiled/opt_125m_fresh");
+
     /// Find the local safetensors path for a HuggingFace model.
     fn find_safetensors(model_name: &str) -> Option<String> {
         // Try common HF cache locations
@@ -46,6 +55,29 @@ mod e2e_tests {
             }
         }).next()
     }
+
+    // ── KV-cache helper functions ─────────────────────────────────────────
+    fn compiled_kv_executor() -> ModelExecutor {
+        let dylib = find_dylib(KV_COMPILED_DIR)
+            .expect("no .dylib found in opt_125m_kv directory. Run: make build-all");
+        let st_path = find_safetensors("facebook/opt-125m")
+            .expect("no safetensors found for facebook/opt-125m. Run: python scripts/compile.py opt-125m");
+        ModelExecutor::load(&dylib, Some(&st_path))
+            .expect("failed to load opt_125m_kv model")
+    }
+
+    fn compiled_fresh_executor() -> ModelExecutor {
+        let dylib = find_dylib(FRESH_COMPILED_DIR)
+            .expect("no .dylib found in opt_125m_fresh directory");
+        // The `opt_125m_fresh` model also needs safetensors for weight data.
+        // (The embedded constants only store name mappings + compiler constants.)
+        let st_path = find_safetensors("facebook/opt-125m")
+            .expect("no safetensors found for facebook/opt-125m");
+        ModelExecutor::load(&dylib, Some(&st_path))
+            .expect("failed to load opt_125m_fresh model")
+    }
+
+    // ── Tests ─────────────────────────────────────────────────────────────
 
     /// Check Rust forward produces the same argmax token as Python reference.
     #[test]
@@ -144,5 +176,20 @@ mod e2e_tests {
                 "mean logit {} is out of reasonable range", mean);
         assert!(min > -100.0 && max < 100.0,
                 "logit range [{}, {}] is out of reasonable range", min, max);
+    }
+
+    /// Verify the KV-cache compiled model loads and has the expected structure.
+    /// Does NOT run forward() — KV models with 28 functions and consumed_internally
+    /// outputs require forward_with_kv() for proper execution (tested in Task 3).
+    #[test]
+    fn test_compiled_kv_executor_loads() {
+        let executor = compiled_kv_executor();
+        let n = executor.compute_graph.functions.len();
+        let ci = executor.compute_graph.functions.iter()
+            .flat_map(|f| &f.outputs).filter(|o| o.consumed_internally).count();
+        eprintln!("KV model: {} functions, {} consumed_internally=True", n, ci);
+        assert!(n > 16, "expected >16 functions (split model), got {}", n);
+        assert!(ci > 0, "expected consumed_internally=True outputs, got {}", ci);
+        eprintln!("PASS: KV model loaded with {} functions, {} consumed_internally", n, ci);
     }
 }
