@@ -103,6 +103,7 @@ struct SfLowerToLinalgPass
       registerSeqOpsPatterns(patterns);
       registerComparePatterns(patterns);
       registerReducePatterns(patterns);
+      registerFusedPatterns(patterns);
       populateWithGenerated(patterns);
 
       int64_t sfBefore = 0;

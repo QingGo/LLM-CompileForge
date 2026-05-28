@@ -2,6 +2,7 @@ add_mlir_dialect_library(SfDialect
   SfDialect.cpp
   SfLowerActivation.cpp
   SfLowerAttention.cpp
+  SfLowerFused.cpp
   SfLowerCompare.cpp
   SfLowerGenOps.cpp
   SfLowerMatmul.cpp

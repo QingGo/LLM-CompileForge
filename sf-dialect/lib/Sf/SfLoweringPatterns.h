@@ -12,5 +12,6 @@ void registerGenOpsPatterns(RewritePatternSet &patterns);
 void registerSeqOpsPatterns(RewritePatternSet &patterns);
 void registerComparePatterns(RewritePatternSet &patterns);
 void registerReducePatterns(RewritePatternSet &patterns);
+void registerFusedPatterns(RewritePatternSet &patterns);
 }
 }

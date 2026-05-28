@@ -3,8 +3,8 @@
 //! `executable.execute(op_name, stream, &input_bufs, &output_bufs)`,
 //! and extracts output Tensors from the returned shapes and buffers.
 //!
-//! No direct ciface / lookup_typed / parse_sret_descriptor calls — all
-//! kernel dispatch goes through the HAL Executable trait.
+//! No direct ciface / lookup_typed calls — all kernel dispatch goes through
+//! the HAL Executable trait.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -62,6 +62,7 @@ pub fn run_function_graph(
                     let raw_buf = InnerCpuBuffer::from_raw_parts(
                         raw_bytes.as_ptr() as *mut u8,
                         raw_bytes.len(),
+                        true,  // borrowed
                     )
                     .map_err(|e| anyhow::anyhow!("{}", e))?;
                     let rank = io_def.rank as usize;
@@ -105,6 +106,7 @@ pub fn run_function_graph(
                     let raw_buf = InnerCpuBuffer::from_raw_parts(
                         tensor.as_slice().as_ptr() as *mut u8,
                         tensor.as_slice().len() * 4,
+                        true,  // borrowed
                     )
                     .map_err(|e| anyhow::anyhow!("{}", e))?;
                     let cpu_buf = CpuBuffer::with_meta(raw_buf, 4 /* f32 */, tensor.shape.clone());
@@ -119,6 +121,7 @@ pub fn run_function_graph(
                     let raw_buf = InnerCpuBuffer::from_raw_parts(
                         ref_tensor.as_slice().as_ptr() as *mut u8,
                         ref_tensor.as_slice().len() * 4,
+                        true,  // borrowed
                     )
                     .map_err(|e| anyhow::anyhow!("{}", e))?;
                     let dims = ref_tensor.shape.clone();
@@ -145,6 +148,7 @@ pub fn run_function_graph(
             let raw_buf = InnerCpuBuffer::from_raw_parts(
                 vec.as_mut_ptr() as *mut u8,
                 numel * 4,
+                true,  // borrowed
             )
             .map_err(|e| anyhow::anyhow!("{}", e))?;
             let shape_fallback: Vec<usize> = io_def.shape.iter()
@@ -258,6 +262,7 @@ pub fn run_function_graph_with_kv_intercept(
                 let raw_buf = InnerCpuBuffer::from_raw_parts(
                     raw_bytes.as_ptr() as *mut u8,
                     raw_bytes.len(),
+                    true,  // borrowed
                 )
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
                 let rank = io_def.rank as usize;
@@ -337,6 +342,7 @@ pub fn run_function_graph_with_kv_intercept(
             let raw_buf = InnerCpuBuffer::from_raw_parts(
                 tensor.as_slice().as_ptr() as *mut u8,
                 tensor.as_slice().len() * 4,
+                true,  // borrowed
             )
             .map_err(|e| anyhow::anyhow!("{}", e))?;
             let cpu_buf = CpuBuffer::with_meta(raw_buf, 4 /* f32 */, tensor.shape.clone());
@@ -356,6 +362,7 @@ pub fn run_function_graph_with_kv_intercept(
             let raw_buf = InnerCpuBuffer::from_raw_parts(
                 vec.as_mut_ptr() as *mut u8,
                 numel * 4,
+                true,  // borrowed
             )
             .map_err(|e| anyhow::anyhow!("{}", e))?;
             let shape_fallback: Vec<usize> = io_def.shape.iter()
@@ -408,41 +415,4 @@ pub fn run_function_graph_with_kv_intercept(
     Ok(result.to_owned())
 }
 
-/// Parse a single sret output descriptor (ranked MemRef) from raw bytes.
-///
-/// # Safety
-///
-/// `slice` must contain valid MemRef descriptor binary data written by a
-/// ciface kernel.  The layout is:
-///   struct { allocated: ptr, aligned: ptr, offset: i64,
-///            sizes: [i64; RANK], strides: [i64; RANK] }
-/// with `RANK` = `rank` parameter.
-///
-/// Returns `(CpuBuffer, actual_sizes)` where the CpuBuffer wraps the
-/// dylib-allocated output memory.
-///
-/// NOTE: This function is kept for backward compatibility of existing
-/// `parse_sret_descriptor` tests in `executor_tests.rs`.  The
-/// compute-graph runner no longer uses it — sret parsing is handled
-/// inside `CpuExecutable::execute()`.
-#[allow(dead_code)]
-pub(crate) unsafe fn parse_sret_descriptor(
-    slice: &[u8],
-    rank: usize,
-) -> Result<(InnerCpuBuffer, Vec<i64>), String> {
-    let min_len = 24 + rank * 8;
-    if slice.len() < min_len {
-        return Err(format!("slice too short: {} < {}", slice.len(), min_len));
-    }
-    let aligned = std::ptr::read_unaligned(slice.as_ptr().add(8) as *const *mut u8);
-    if aligned.is_null() {
-        return Err("aligned pointer is null".to_string());
-    }
-    let sizes: Vec<i64> = (0..rank)
-        .map(|i| std::ptr::read_unaligned(slice.as_ptr().add(24 + i * 8) as *const i64))
-        .collect();
-    let n: usize = sizes.iter().map(|&s| std::cmp::max(0, s) as usize).product();
-    let n_bytes = n * 4; // f32 element size
-    let cpu_buf = InnerCpuBuffer::from_raw_parts(aligned, n_bytes)?;
-    Ok((cpu_buf, sizes))
-}
+

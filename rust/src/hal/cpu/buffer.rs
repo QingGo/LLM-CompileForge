@@ -1,8 +1,9 @@
 //! CPU Buffer — heap-allocated memory with initialization tracking.
 //!
-//! Supports two allocation sources:
-//! - `std::alloc` via `CpuDevice::allocate()` (owned_from_sret: false)
-//! - `libc::malloc` via dylib sret output (owned_from_sret: true)
+//! Supports three ownership modes:
+//! - `borrowed: true`  — caller retains ownership; Drop is no-op
+//! - `borrowed: false` — owned via `std::alloc`; Drop calls `alloc::dealloc`
+//! - `size == 0`       — empty buffer; Drop is no-op
 
 use std::alloc::{self, Layout};
 use std::ffi::c_void;
@@ -17,7 +18,7 @@ pub struct CpuBuffer {
     size: usize,
     layout: Layout,
     initialized: bool,
-    owned_from_sret: bool,
+    borrowed: bool,
 }
 
 #[allow(dead_code)]
@@ -28,7 +29,7 @@ impl CpuBuffer {
             size: 0,
             layout: Layout::new::<u8>(),
             initialized: true,
-            owned_from_sret: false,
+            borrowed: false,
         }
     }
 
@@ -38,23 +39,22 @@ impl CpuBuffer {
             size,
             layout,
             initialized: false,
-            owned_from_sret: false,
+            borrowed: false,
         }
     }
 
-    /// Create a CpuBuffer from raw pointer and length (dylib sret output).
+    /// Create a CpuBuffer from a raw pointer and byte length.
     ///
-    /// The caller transfers ownership of the allocation at `ptr` which must
-    /// have been allocated by `libc::malloc`. The buffer will be freed via
-    /// `libc::free` on Drop.
-    pub fn from_raw_parts(ptr: *mut u8, len: usize) -> Result<Self, String> {
+    /// When `borrowed` is `true`, the caller retains ownership — Drop does
+    /// nothing. When `borrowed` is `false`, Drop frees via `alloc::dealloc`.
+    pub fn from_raw_parts(ptr: *mut u8, len: usize, borrowed: bool) -> Result<Self, String> {
         let ptr = NonNull::new(ptr).ok_or_else(|| "null pointer".to_string())?;
         Ok(Self {
             ptr,
             size: len,
             layout: Layout::new::<u8>(),
             initialized: true,
-            owned_from_sret: true,
+            borrowed,
         })
     }
 
@@ -149,22 +149,10 @@ impl CpuBuffer {
 
 impl Drop for CpuBuffer {
     fn drop(&mut self) {
-        if self.size > 0 {
-            if self.owned_from_sret {
-                // NOTE: The dylib's output memory was allocated by the
-                // MLIR runtime. We intentionally do NOT free it here
-                // because the allocation mechanism (malloc vs alloca vs
-                // custom allocator) is opaque at this layer. The data
-                // has already been copied (via into_tensor's to_vec())
-                // before the CpuBuffer is dropped, so the buffer is
-                // safe to leak. This matches the pre-existing behavior
-                // (the old code path leaked dylib output memory too).
-                // A future HAL IR will provide proper allocation tracking.
-            } else {
-                // SAFETY: `self.ptr` was allocated with `self.layout`
-                // in `CpuDevice::allocate`. No other references exist.
-                unsafe { alloc::dealloc(self.ptr.as_ptr(), self.layout) };
-            }
+        if self.size > 0 && !self.borrowed {
+            // SAFETY: `self.ptr` was allocated with `self.layout`
+            // in `CpuDevice::allocate`. No other references exist.
+            unsafe { alloc::dealloc(self.ptr.as_ptr(), self.layout) };
         }
     }
 }

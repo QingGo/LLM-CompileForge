@@ -282,4 +282,47 @@ def Sf_CatOp : Sf_ShapeOp<"cat"> {
   let results = (outs AnyTensor:$result);
 }
 
+//===----------------------------------------------------------------------===//
+// Fused ops (produced by fusion passes, decomposed during lowering)
+//===----------------------------------------------------------------------===//
+
+def Sf_FusedSiluMulOp : Sf_Op<"fused_silu_mul", [Pure]> {
+  let summary = "fused silu(gate) * up";
+  let arguments = (ins Sf_FloatTensor:$gate, Sf_FloatTensor:$up);
+  let results = (outs Sf_FloatTensor:$output);
+}
+
+def Sf_FusedRmsNormMatmulOp : Sf_Op<"fused_rms_norm_matmul", [Pure]> {
+  let summary = "fused rms_norm(x) * weight followed by matmul";
+  let arguments = (ins Sf_FloatTensor:$input, Sf_FloatTensor:$rms_weight,
+                       Sf_FloatTensor:$matmul_weight);
+  let results = (outs Sf_FloatTensor:$output);
+}
+
+def Sf_FusedQKVOp : Sf_Op<"fused_qkv", [Pure]> {
+  let summary = "fused Q, K, V projections from the same input";
+  let arguments = (ins Sf_FloatTensor:$input,
+                       Sf_FloatTensor:$q_weight, Sf_FloatTensor:$k_weight,
+                       Sf_FloatTensor:$v_weight);
+  let results = (outs Sf_FloatTensor:$q, Sf_FloatTensor:$k, Sf_FloatTensor:$v);
+}
+
+def Sf_FusedAttentionOutputOp : Sf_Op<"fused_attention_output", [Pure]> {
+  let summary = "fused SDPA + output projection";
+  let arguments = (ins Sf_FloatTensor:$query, Sf_FloatTensor:$key,
+                       Sf_FloatTensor:$value,
+                       Optional<Sf_FloatTensor>:$attn_mask,
+                       Sf_FloatTensor:$o_weight);
+  let results = (outs Sf_FloatTensor:$output);
+}
+
+def Sf_FusedAttentionBlockOp : Sf_Op<"fused_attention_block", [Pure]> {
+  let summary = "fused attention block: norm -> QKV -> SDPA -> output proj";
+  let arguments = (ins Sf_FloatTensor:$input,
+                       Sf_FloatTensor:$norm_weight,
+                       Sf_FloatTensor:$q_weight, Sf_FloatTensor:$k_weight,
+                       Sf_FloatTensor:$v_weight, Sf_FloatTensor:$o_weight);
+  let results = (outs Sf_FloatTensor:$output);
+}
+
 #endif // SF_OPS
