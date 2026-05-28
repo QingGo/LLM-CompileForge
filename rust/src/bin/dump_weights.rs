@@ -27,6 +27,8 @@ mod kernel_catalog;
 mod hal;
 #[path = "../kv_cache.rs"]
 mod kv_cache;
+#[path = "../kv_cache_intercept.rs"]
+mod kv_cache_intercept;
 #[path = "../sfcf.rs"]
 mod sfcf;
 #[path = "../tensor.rs"]

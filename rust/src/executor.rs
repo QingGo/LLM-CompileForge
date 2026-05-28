@@ -13,6 +13,7 @@ use crate::hal::cpu::memref::MemRefDesc1;
 use crate::hal::cpu::{Executable, MemRefDescAny, MemRefDesc2};
 use crate::hal::traits::Device as DeviceTrait;
 use crate::kv_cache::CachePolicy;
+use crate::kv_cache_intercept::{intercept_consumed_input, intercept_consumed_output};
 use crate::tensor::{Dtype, Tensor};
 use crate::weight_loader::WeightProvider;
 
@@ -358,70 +359,16 @@ impl ModelExecutor {
                     } => {
                         let prod_output_def = &self.compute_graph.functions[*producer_func].outputs[*output_idx];
                         if prod_output_def.consumed_internally {
-                            // K/V input — override SSA binding with cache-derived data
-                            let new_tensor = kv_new.get(&(*producer_func, *output_idx))
-                                .ok_or_else(|| anyhow::anyhow!(
-                                    "forward_with_kv: func_{} output_{} is consumed_internally \
-                                     but no KV data available (funcs must execute in topological order)",
-                                    producer_func, output_idx
-                                ))?;
-
-                            if is_decode && block_manager.is_some() {
-                                // Decode: concat cached K/V with new K/V
-                                let pos = positions[0] as usize;
-                                // hidden_dim = num_kv_heads * head_dim = total_elems / 1_token
-                                let hidden_dim = new_tensor.numel();
-
-                                let bm = block_manager.as_ref().unwrap();
-                                let rid = request_id.unwrap();
-                                let layer_rid = format!("{}_f{}", rid, producer_func);
-
-                                let (cached_key, cached_val) = bm.read_kv(&layer_rid, pos, hidden_dim)
-                                    .map_err(|e| anyhow::anyhow!("read_kv: {}", e))?;
-
-                                // Determine if this SSA binding refers to K or V.
-                                // The producer func has two consumed_internally outputs:
-                                // first (lower output_idx) is K, second is V.
-                                let kv_indices: Vec<usize> = self.compute_graph.functions[*producer_func]
-                                    .outputs.iter()
-                                    .enumerate()
-                                    .filter(|(_, o)| o.consumed_internally)
-                                    .map(|(i, _)| i)
-                                    .collect();
-                                let is_k = kv_indices.first() == Some(output_idx);
-
-                                let cached_data = if is_k { &cached_key } else { &cached_val };
-                                let n_cached_tokens = pos;
-                                let num_new_tokens = input_ids.len();
-                                let total_tokens = n_cached_tokens + num_new_tokens;
-
-                                // Concat: cached (BNLD from read_kv) ++ new (1 token, BNSD but
-                                // flat-equivalent to BNLD for a single position).
-                                let mut bnld = Vec::with_capacity(total_tokens * hidden_dim);
-                                bnld.extend_from_slice(cached_data);
-                                bnld.extend_from_slice(new_tensor.as_slice());
-
-                                // Transpose BNLD->BNSD so main_Xb receives correct layout.
-                                // new_tensor.shape is BNSD [b, h, s, d] for seq=1.
-                                let ns = &new_tensor.shape;
-                                if ns.len() >= 4 {
-                                    let nh = ns[1];
-                                    let hd = ns[3];
-                                    let mut bnsd = Vec::with_capacity(nh * total_tokens * hd);
-                                    for h in 0..nh {
-                                        for p in 0..total_tokens {
-                                            let off = p * hidden_dim + h * hd;
-                                            bnsd.extend_from_slice(&bnld[off..off + hd]);
-                                        }
-                                    }
-                                    Tensor::new_owned(vec![1, nh, total_tokens, hd], bnsd, Dtype::F32)
-                                } else {
-                                    Tensor::new_owned(vec![1, total_tokens, hidden_dim], bnld, Dtype::F32)
-                                }
-                            } else {
-                                // Prefill or no cache: pass K/V directly
-                                new_tensor.clone()
-                            }
+                            intercept_consumed_input(
+                                *producer_func,
+                                *output_idx,
+                                &self.compute_graph,
+                                &kv_new,
+                                block_manager.as_deref(),
+                                request_id,
+                                positions,
+                                is_decode,
+                            )?
                         } else {
                             // Normal SSA input — read from func_outputs
                             // Account for consumed_internally outputs that were
@@ -499,71 +446,17 @@ impl ModelExecutor {
                 let tensor = Tensor::new_owned(shape, data, Dtype::F32);
 
                 if io_def.consumed_internally {
-                    // K/V output: store for downstream override and write to cache
-                    kv_new.insert((fi, oi), tensor.clone());
-
-                    // Write to BlockManager cache
-                    if let Some(bm) = block_manager.as_mut() {
-                        let rid = request_id.unwrap();
-                        let layer_rid = format!("{}_f{}", rid, fi);
-                        // Hidden dimension per token = total elements / number of tokens.
-                        // For rank-4 K/V outputs shaped [1, seq, num_heads, head_dim],
-                        // shape.last() would give head_dim, but we need heads*dim (=768).
-                        let num_tokens = input_ids.len();
-                        let hidden_dim = if num_tokens > 0 {
-                            tensor.numel() / num_tokens
-                        } else {
-                            *io_def.shape.last().unwrap_or(&768) as usize
-                        };
-                        let start_pos = if is_decode {
-                            positions[0] as usize
-                        } else {
-                            0 // prefill starts at position 0
-                        };
-
-                        // Determine if this output is K or V by checking ordering
-                        let kv_indices: Vec<usize> = func_def.outputs.iter()
-                            .enumerate()
-                            .filter(|(_, o)| o.consumed_internally)
-                            .map(|(i, _)| i)
-                            .collect();
-                        let is_key = kv_indices.first() == Some(&oi);
-                        // BNSD→BNLD: prefill outputs K/V in head-major layout
-                        // [1, num_heads, seq, head_dim]; write_kv expects
-                        // position-major where each hidden_dim chunk = 1 position.
-                        let write_data: Vec<f32> = if tensor.shape.len() >= 4
-                            && num_tokens > 1
-                        {
-                            let nh = tensor.shape[1] as usize;
-                            let sl = tensor.shape[2] as usize;
-                            let hd = tensor.shape[3] as usize;
-                            let src = tensor.as_slice();
-                            let mut dst = vec![0.0f32; num_tokens * hidden_dim];
-                            for p in 0..num_tokens {
-                                for h in 0..nh {
-                                    let src_off = h * (sl * hd) + p * hd;
-                                    let dst_off = p * hidden_dim + h * hd;
-                                    dst[dst_off..dst_off + hd]
-                                        .copy_from_slice(&src[src_off..src_off + hd]);
-                                }
-                            }
-                            dst
-                        } else {
-                            tensor.as_slice().to_vec()
-                        };
-                        if let Err(e) = bm.write_kv(
-                            &layer_rid,
-                            start_pos,
-                            &write_data,
-                            hidden_dim,
-                            is_key,
-                        ) {
-                            log::warn!(
-                                "forward_with_kv: write_kv failed for func_{} output_{}: {}",
-                                fi, oi, e,
-                            );
-                        }
-                    }
+                    intercept_consumed_output(
+                        fi,
+                        oi,
+                        &tensor,
+                        &mut kv_new,
+                        block_manager.as_deref_mut(),
+                        request_id,
+                        positions,
+                        is_decode,
+                        &func_def.outputs,
+                    )?;
                 } else {
                     func_outputs[fi].push(tensor);
                 }

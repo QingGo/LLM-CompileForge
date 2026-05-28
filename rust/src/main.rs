@@ -13,6 +13,7 @@ mod executor;
 mod kernel_catalog;
 mod hal;
 mod kv_cache;
+mod kv_cache_intercept;
 mod radix_cache;
 mod runner;
 mod sampler;
