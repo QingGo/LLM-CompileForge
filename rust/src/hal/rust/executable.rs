@@ -20,15 +20,32 @@ use crate::hal::traits;
 #[derive(Debug)]
 pub struct HalRustExecutable {
     function_count: usize,
+    /// SFCF blob (serveforge_constants_data) containing weight registry,
+    /// compute graph, and contract metadata. Read from ``constants.bin``
+    /// at model-load time; returned by ``module_data()`` so the caller can
+    /// parse the compute graph and weight mappings without needing a dylib.
+    blob: Vec<u8>,
 }
 
 impl HalRustExecutable {
-    /// Create a new ``HalRustExecutable``.
+    /// Create a new ``HalRustExecutable`` with no embedded blob.
     ///
     /// ``function_count`` is the number of functions in the model's
     /// compute graph (typically 28 for a KV-cache model).
+    ///
+    /// ``module_data()`` returns an empty slice — only suitable for tests
+    /// or backends that load weights via an alternative mechanism.
     pub fn new(function_count: usize) -> Self {
-        Self { function_count }
+        Self { function_count, blob: Vec::new() }
+    }
+
+    /// Create a ``HalRustExecutable`` with the SFCF constants blob.
+    ///
+    /// Use this constructor when ``module_data()`` must return real
+    /// weight-registry / compute-graph data (e.g. for the hal-rust
+    /// integration path in ``ModelExecutor::load_with_device``).
+    pub fn with_blob(function_count: usize, blob: Vec<u8>) -> Self {
+        Self { function_count, blob }
     }
 
     /// Convert a trait Buffer to a ``&[f32]`` slice.
@@ -80,7 +97,12 @@ impl HalRustExecutable {
     ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
         let input_slices: Vec<&[f32]> = inputs
             .iter()
-            .map(|b| unsafe { Self::buf_as_f32_slice(*b) })
+            .map(|b| {
+                // SAFETY: buf_as_f32_slice requires f32 data (element_size == 4).
+                // Matmul inputs are f32 tensors from weights or SSA wires, guaranteed
+                // by the compute graph runner.
+                unsafe { Self::buf_as_f32_slice(*b) }
+            })
             .collect();
         let output_shapes: Vec<Vec<i64>> = outputs
             .iter()
@@ -89,6 +111,9 @@ impl HalRustExecutable {
         let meta = Self::build_shape_meta(inputs, outputs);
 
         if let Some(out_buf) = outputs.first() {
+            // SAFETY: buf_as_f32_mut requires f32 data and write access. The output
+            // buffer is pre-allocated as f32 by the compute graph runner and valid
+            // for the matmul result size.
             let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
             crate::hal::hal_ops_cpu::matmul_cpu(&input_slices, &mut out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("matmul_cpu: {}", e))?;
@@ -105,7 +130,11 @@ impl HalRustExecutable {
     ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
         let input_slices: Vec<&[f32]> = inputs
             .iter()
-            .map(|b| unsafe { Self::buf_as_f32_slice(*b) })
+            .map(|b| {
+                // SAFETY: buf_as_f32_slice requires f32 data. Element-wise
+                // inputs are f32 tensors guaranteed by the compute graph runner.
+                unsafe { Self::buf_as_f32_slice(*b) }
+            })
             .collect();
         let output_shapes: Vec<Vec<i64>> = outputs
             .iter()
@@ -115,6 +144,8 @@ impl HalRustExecutable {
         meta.kind = Some(kind.to_string());
 
         if let Some(out_buf) = outputs.first() {
+            // SAFETY: buf_as_f32_mut requires f32 data and write access.
+            // The output buffer is pre-allocated as f32 by the compute graph runner.
             let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
             crate::hal::hal_ops_cpu::element_wise_cpu(&input_slices, &mut out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("element_wise_cpu: {}", e))?;
@@ -130,7 +161,11 @@ impl HalRustExecutable {
     ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
         let input_slices: Vec<&[f32]> = inputs
             .iter()
-            .map(|b| unsafe { Self::buf_as_f32_slice(*b) })
+            .map(|b| {
+                // SAFETY: buf_as_f32_slice requires f32 data. Softmax inputs
+                // are f32 tensors guaranteed by the compute graph runner.
+                unsafe { Self::buf_as_f32_slice(*b) }
+            })
             .collect();
         let output_shapes: Vec<Vec<i64>> = outputs
             .iter()
@@ -139,6 +174,8 @@ impl HalRustExecutable {
         let meta = Self::build_shape_meta(inputs, outputs);
 
         if let Some(out_buf) = outputs.first() {
+            // SAFETY: buf_as_f32_mut requires f32 data and write access.
+            // The output buffer is pre-allocated as f32 by the compute graph runner.
             let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
             crate::hal::hal_ops_cpu::softmax_cpu(&input_slices, &mut out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("softmax_cpu: {}", e))?;
@@ -154,7 +191,11 @@ impl HalRustExecutable {
     ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
         let input_slices: Vec<&[f32]> = inputs
             .iter()
-            .map(|b| unsafe { Self::buf_as_f32_slice(*b) })
+            .map(|b| {
+                // SAFETY: buf_as_f32_slice requires f32 data. Reshape inputs
+                // are f32 tensors guaranteed by the compute graph runner.
+                unsafe { Self::buf_as_f32_slice(*b) }
+            })
             .collect();
         let output_shapes: Vec<Vec<i64>> = outputs
             .iter()
@@ -163,6 +204,8 @@ impl HalRustExecutable {
         let meta = Self::build_shape_meta(inputs, outputs);
 
         if let Some(out_buf) = outputs.first() {
+            // SAFETY: buf_as_f32_mut requires f32 data and write access.
+            // The output buffer is pre-allocated as f32 by the compute graph runner.
             let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
             crate::hal::hal_ops_cpu::reshape_cpu(&input_slices, &mut out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("reshape_cpu: {}", e))?;
@@ -179,7 +222,11 @@ impl HalRustExecutable {
     ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
         let input_slices: Vec<&[f32]> = inputs
             .iter()
-            .map(|b| unsafe { Self::buf_as_f32_slice(*b) })
+            .map(|b| {
+                // SAFETY: buf_as_f32_slice requires f32 data. Transpose inputs
+                // are f32 tensors guaranteed by the compute graph runner.
+                unsafe { Self::buf_as_f32_slice(*b) }
+            })
             .collect();
         let output_shapes: Vec<Vec<i64>> = outputs
             .iter()
@@ -189,6 +236,8 @@ impl HalRustExecutable {
         meta.kind = perm.map(|s| s.to_string());
 
         if let Some(out_buf) = outputs.first() {
+            // SAFETY: buf_as_f32_mut requires f32 data and write access.
+            // The output buffer is pre-allocated as f32 by the compute graph runner.
             let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
             crate::hal::hal_ops_cpu::transpose_cpu(&input_slices, &mut out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("transpose_cpu: {}", e))?;
@@ -205,7 +254,11 @@ impl HalRustExecutable {
     ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
         let input_slices: Vec<&[f32]> = inputs
             .iter()
-            .map(|b| unsafe { Self::buf_as_f32_slice(*b) })
+            .map(|b| {
+                // SAFETY: buf_as_f32_slice requires f32 data. Reduce inputs
+                // are f32 tensors guaranteed by the compute graph runner.
+                unsafe { Self::buf_as_f32_slice(*b) }
+            })
             .collect();
         let output_shapes: Vec<Vec<i64>> = outputs
             .iter()
@@ -215,6 +268,8 @@ impl HalRustExecutable {
         meta.kind = Some(kind.to_string());
 
         if let Some(out_buf) = outputs.first() {
+            // SAFETY: buf_as_f32_mut requires f32 data and write access.
+            // The output buffer is pre-allocated as f32 by the compute graph runner.
             let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
             crate::hal::hal_ops_cpu::reduce_cpu(&input_slices, &mut out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("reduce_cpu: {}", e))?;
@@ -230,7 +285,11 @@ impl HalRustExecutable {
     ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
         let input_slices: Vec<&[f32]> = inputs
             .iter()
-            .map(|b| unsafe { Self::buf_as_f32_slice(*b) })
+            .map(|b| {
+                // SAFETY: buf_as_f32_slice requires f32 data. Gather inputs
+                // are f32 tensors guaranteed by the compute graph runner.
+                unsafe { Self::buf_as_f32_slice(*b) }
+            })
             .collect();
         let output_shapes: Vec<Vec<i64>> = outputs
             .iter()
@@ -239,6 +298,8 @@ impl HalRustExecutable {
         let meta = Self::build_shape_meta(inputs, outputs);
 
         if let Some(out_buf) = outputs.first() {
+            // SAFETY: buf_as_f32_mut requires f32 data and write access.
+            // The output buffer is pre-allocated as f32 by the compute graph runner.
             let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
             crate::hal::hal_ops_cpu::gather_cpu(&input_slices, &mut out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("gather_cpu: {}", e))?;
@@ -256,7 +317,11 @@ impl HalRustExecutable {
     ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
         let input_slices: Vec<&[f32]> = inputs
             .iter()
-            .map(|b| unsafe { Self::buf_as_f32_slice(*b) })
+            .map(|b| {
+                // SAFETY: buf_as_f32_slice requires f32 data. Fill inputs
+                // are f32 tensors guaranteed by the compute graph runner.
+                unsafe { Self::buf_as_f32_slice(*b) }
+            })
             .collect();
         let output_shapes: Vec<Vec<i64>> = outputs
             .iter()
@@ -267,6 +332,8 @@ impl HalRustExecutable {
         meta.value = value;
 
         if let Some(out_buf) = outputs.first() {
+            // SAFETY: buf_as_f32_mut requires f32 data and write access.
+            // The output buffer is pre-allocated as f32 by the compute graph runner.
             let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
             crate::hal::hal_ops_cpu::fill_cpu(&input_slices, &mut out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("fill_cpu: {}", e))?;
@@ -282,7 +349,11 @@ impl HalRustExecutable {
     ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
         let input_slices: Vec<&[f32]> = inputs
             .iter()
-            .map(|b| unsafe { Self::buf_as_f32_slice(*b) })
+            .map(|b| {
+                // SAFETY: buf_as_f32_slice requires f32 data. Shape-of inputs
+                // are f32 tensors guaranteed by the compute graph runner.
+                unsafe { Self::buf_as_f32_slice(*b) }
+            })
             .collect();
         let output_shapes: Vec<Vec<i64>> = outputs
             .iter()
@@ -291,6 +362,8 @@ impl HalRustExecutable {
         let meta = Self::build_shape_meta(inputs, outputs);
 
         if let Some(out_buf) = outputs.first() {
+            // SAFETY: buf_as_f32_mut requires f32 data and write access.
+            // The output buffer is pre-allocated as f32 by the compute graph runner.
             let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
             crate::hal::hal_ops_cpu::shape_of_cpu(&input_slices, &mut out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("shape_of_cpu: {}", e))?;
@@ -306,7 +379,11 @@ impl HalRustExecutable {
     ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
         let input_slices: Vec<&[f32]> = inputs
             .iter()
-            .map(|b| unsafe { Self::buf_as_f32_slice(*b) })
+            .map(|b| {
+                // SAFETY: buf_as_f32_slice requires f32 data. Slice inputs
+                // are f32 tensors guaranteed by the compute graph runner.
+                unsafe { Self::buf_as_f32_slice(*b) }
+            })
             .collect();
         let output_shapes: Vec<Vec<i64>> = outputs
             .iter()
@@ -315,6 +392,8 @@ impl HalRustExecutable {
         let meta = Self::build_shape_meta(inputs, outputs);
 
         if let Some(out_buf) = outputs.first() {
+            // SAFETY: buf_as_f32_mut requires f32 data and write access.
+            // The output buffer is pre-allocated as f32 by the compute graph runner.
             let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
             crate::hal::hal_ops_cpu::slice_cpu(&input_slices, &mut out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("slice_cpu: {}", e))?;
@@ -330,7 +409,11 @@ impl HalRustExecutable {
     ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
         let input_slices: Vec<&[f32]> = inputs
             .iter()
-            .map(|b| unsafe { Self::buf_as_f32_slice(*b) })
+            .map(|b| {
+                // SAFETY: buf_as_f32_slice requires f32 data. Unsqueeze inputs
+                // are f32 tensors guaranteed by the compute graph runner.
+                unsafe { Self::buf_as_f32_slice(*b) }
+            })
             .collect();
         let output_shapes: Vec<Vec<i64>> = outputs
             .iter()
@@ -339,6 +422,8 @@ impl HalRustExecutable {
         let meta = Self::build_shape_meta(inputs, outputs);
 
         if let Some(out_buf) = outputs.first() {
+            // SAFETY: buf_as_f32_mut requires f32 data and write access.
+            // The output buffer is pre-allocated as f32 by the compute graph runner.
             let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
             crate::hal::hal_ops_cpu::unsqueeze_cpu(&input_slices, &mut out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("unsqueeze_cpu: {}", e))?;
@@ -355,7 +440,11 @@ impl HalRustExecutable {
     ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
         let input_slices: Vec<&[f32]> = inputs
             .iter()
-            .map(|b| unsafe { Self::buf_as_f32_slice(*b) })
+            .map(|b| {
+                // SAFETY: buf_as_f32_slice requires f32 data. Compare inputs
+                // are f32 tensors guaranteed by the compute graph runner.
+                unsafe { Self::buf_as_f32_slice(*b) }
+            })
             .collect();
         let output_shapes: Vec<Vec<i64>> = outputs
             .iter()
@@ -365,6 +454,8 @@ impl HalRustExecutable {
         meta.kind = Some(kind.to_string());
 
         if let Some(out_buf) = outputs.first() {
+            // SAFETY: buf_as_f32_mut requires f32 data and write access.
+            // The output buffer is pre-allocated as f32 by the compute graph runner.
             let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
             crate::hal::hal_ops_cpu::compare_cpu(&input_slices, &mut out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("compare_cpu: {}", e))?;
@@ -384,7 +475,11 @@ impl HalRustExecutable {
             .collect();
         // Simple flat copy (works if no actual concat needed — metadata-only)
         if let (Some(inp), Some(out)) = (inputs.first(), outputs.first()) {
+            // SAFETY: buf_as_f32_slice requires f32 data. Concat inputs
+            // are f32 tensors guaranteed by the compute graph runner.
             let in_slice = unsafe { Self::buf_as_f32_slice(*inp) };
+            // SAFETY: buf_as_f32_mut requires f32 data and write access.
+            // The output buffer is pre-allocated as f32 by the compute graph runner.
             let out_slice = unsafe { Self::buf_as_f32_mut(*out) };
             let n = in_slice.len().min(out_slice.len());
             out_slice[..n].copy_from_slice(&in_slice[..n]);
@@ -401,19 +496,29 @@ impl traits::Executable for HalRustExecutable {
         inputs: &[&dyn traits::Buffer],
         outputs: &[&dyn traits::Buffer],
     ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
-        match op_name {
+        // Parse optional kind suffix from op_name: "element_wise:add" → kind="add".
+        // This allows the caller to specify the operation variant while keeping
+        // simple names ("element_wise") backward-compatible with defaults.
+        let (base_op, kind) = if let Some(pos) = op_name.find(':') {
+            (&op_name[..pos], Some(&op_name[pos + 1..]))
+        } else {
+            (op_name, None)
+        };
+        match base_op {
             "matmul" => self.dispatch_matmul(inputs, outputs),
-            "element_wise" | "elementwise" => self.dispatch_element_wise(inputs, outputs, "add"),
+            "element_wise" | "elementwise" => {
+                self.dispatch_element_wise(inputs, outputs, kind.unwrap_or("add"))
+            }
             "softmax" => self.dispatch_softmax(inputs, outputs),
             "reshape" => self.dispatch_reshape(inputs, outputs),
-            "transpose" => self.dispatch_transpose(inputs, outputs, None),
-            "reduce" => self.dispatch_reduce(inputs, outputs, "sum"),
+            "transpose" => self.dispatch_transpose(inputs, outputs, kind),
+            "reduce" => self.dispatch_reduce(inputs, outputs, kind.unwrap_or("sum")),
             "gather" => self.dispatch_gather(inputs, outputs),
-            "fill" => self.dispatch_fill(inputs, outputs, None, None),
+            "fill" => self.dispatch_fill(inputs, outputs, kind, None),
             "shape_of" => self.dispatch_shape_of(inputs, outputs),
             "slice" => self.dispatch_slice(inputs, outputs),
             "unsqueeze" => self.dispatch_unsqueeze(inputs, outputs),
-            "compare" => self.dispatch_compare(inputs, outputs, "eq"),
+            "compare" => self.dispatch_compare(inputs, outputs, kind.unwrap_or("eq")),
             "concat" => self.dispatch_concat(inputs, outputs),
             "cache_read" | "cache_write" => {
                 // Cache ops are handled by the runtime (block_manager/kv_cache).
@@ -435,8 +540,7 @@ impl traits::Executable for HalRustExecutable {
     }
 
     fn module_data(&self) -> &[u8] {
-        // Weights are loaded from safetensors, not embedded.
-        &[]
+        &self.blob
     }
 }
 

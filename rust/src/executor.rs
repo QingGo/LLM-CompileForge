@@ -7,6 +7,8 @@ use crate::hal::cpu::CpuDevice;
 use crate::hal::cpu::CpuStream;
 use crate::kernel_catalog::KernelCatalog;
 use crate::hal::traits;
+#[cfg(test)]
+pub(crate) use crate::hal::traits::Buffer;
 use crate::kv_cache::CachePolicy;
 use crate::tensor::Tensor;
 use crate::weight_loader::WeightProvider;
@@ -45,14 +47,53 @@ impl ModelExecutor {
 
     /// Load a model using a specific HAL device.  The device is used for
     /// compiling/loading the executable.
+    #[allow(unused_variables)]
     pub fn load_with_device(
         device: &dyn traits::Device,
         dylib_path: &str,
         safetensors_path: Option<&str>,
     ) -> Result<Self, anyhow::Error> {
-        let dylib_bytes = dylib_path.as_bytes();
-        let executable: Box<dyn traits::Executable> = device.compile(dylib_bytes)
-            .map_err(|e| anyhow::anyhow!("Device rejected dylib '{}': {}", dylib_path, e))?;
+        #[cfg(not(feature = "hal-rust"))]
+        let executable: Box<dyn traits::Executable> = {
+            let dylib_bytes = dylib_path.as_bytes();
+            device.compile(dylib_bytes)
+                .map_err(|e| anyhow::anyhow!("Device rejected dylib '{}': {}", dylib_path, e))?
+        };
+
+        #[cfg(feature = "hal-rust")]
+        let executable: Box<dyn traits::Executable> = {
+            let dylib_dir = std::path::Path::new(dylib_path)
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."));
+            let constants_path = dylib_dir.join("constants.bin");
+            // If constants.bin exists alongside the dylib, build a
+            // HalRustExecutable (pure-Rust dispatch, no dylib loaded).
+            // Otherwise, fall back to device.compile() (dylib path) —
+            // this covers tests and environments without the SFCF blob.
+            if constants_path.exists() {
+                let constants_data = std::fs::read(&constants_path)
+                    .map_err(|e| anyhow::anyhow!(
+                        "Failed to read constants.bin from {:?}: {}", constants_path, e,
+                    ))?;
+                let hal_ir_path = dylib_dir.join("generated").join("hal_ir.json");
+                let hal_ir_content = std::fs::read_to_string(&hal_ir_path)
+                    .map_err(|e| anyhow::anyhow!(
+                        "Failed to read hal_ir.json from {:?}: {}", hal_ir_path, e,
+                    ))?;
+                let hal_ir: serde_json::Value = serde_json::from_str(&hal_ir_content)
+                    .map_err(|e| anyhow::anyhow!("Failed to parse hal_ir.json: {}", e))?;
+                let function_count = hal_ir["num_functions"].as_u64().unwrap_or(0) as usize;
+                Box::new(
+                    crate::hal::rust::executable::HalRustExecutable::with_blob(
+                        function_count, constants_data,
+                    )
+                )
+            } else {
+                let dylib_bytes = dylib_path.as_bytes();
+                device.compile(dylib_bytes)
+                    .map_err(|e| anyhow::anyhow!("Device rejected dylib '{}': {}", dylib_path, e))?
+            }
+        };
 
         let data = executable.module_data();
         let (registry, graph_pos, sfcf_version) = crate::weight_loader::parse_embedded(data)?;
