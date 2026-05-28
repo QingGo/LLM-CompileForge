@@ -1,4 +1,5 @@
 use super::*;
+use crate::hal::cpu::MemRefDesc2;
 use crate::hal::traits::{self, Device as _, Executable as _};
 
 /// A mock device that records its compile() call for validation.

@@ -9,8 +9,7 @@ use crate::compute_graph::{ComputeGraph, InputBinding};
 use crate::error::ExecutorError;
 use crate::hal::cpu::CpuDevice;
 use crate::kernel_catalog::KernelCatalog;
-use crate::hal::cpu::memref::MemRefDesc1;
-use crate::hal::cpu::{Executable, MemRefDescAny, MemRefDesc2};
+use crate::hal::cpu::{Executable, MemRefDescAny};
 use crate::hal::traits::Device as DeviceTrait;
 use crate::kv_cache::CachePolicy;
 use crate::kv_cache_intercept::{intercept_consumed_input, intercept_consumed_output};
@@ -246,84 +245,17 @@ impl ModelExecutor {
                     io_def.shape.iter().map(|&d| d as usize).collect();
                 match binding {
                     InputBinding::GlobalInput => {
-                        let is_dynamic = shape.iter().any(|&d| d == 0);
-                        if is_dynamic {
-                            let rank = io_def.rank as usize;
-                            let data_source: &[u32] = if bi == 1 { positions } else { input_ids };
-                            match rank {
-                                1 => {
-                                    let n_tokens = data_source.len();
-                                    let raw: Vec<u8> = data_source.iter()
-                                        .flat_map(|&v| (v as i64).to_ne_bytes())
-                                        .collect();
-                                    let p = raw.as_ptr();
-                                    let memref = MemRefDesc1 {
-                                        allocated: p as *mut c_void,
-                                        aligned: p as *mut c_void,
-                                        offset: 0,
-                                        sizes: [n_tokens as i64],
-                                        strides: [1],
-                                    };
-                                    _raw_buffers.push(raw);
-                                    let desc = MemRefDescAny::R1(memref);
-                                    input_descs.push(desc);
-                                    input_ptrs.push(input_descs.last()
-                                        .expect("input_descs has entry for GlobalInput")
-                                        .as_input_ptr());
-                                    continue;
-                                }
-                                2 => {
-                                    let n_tokens = data_source.len() as i64;
-                                    let raw: Vec<u8> = data_source.iter()
-                                        .flat_map(|&v| (v as i64).to_ne_bytes())
-                                        .collect();
-                                    let p = raw.as_ptr();
-                                    let memref = MemRefDesc2 {
-                                        allocated: p as *mut c_void,
-                                        aligned: p as *mut c_void,
-                                        offset: 0,
-                                        sizes: [1, n_tokens],
-                                        strides: [n_tokens, 1],
-                                    };
-                                    _raw_buffers.push(raw);
-                                    let desc = MemRefDescAny::R2(memref);
-                                    input_descs.push(desc);
-                                    input_ptrs.push(input_descs.last()
-                                        .expect("input_descs has entry for GlobalInput")
-                                        .as_input_ptr());
-                                    continue;
-                                }
-                                r => anyhow::bail!(
-                                    "forward_with_kv: unsupported rank {} for \
-                                     dynamic GlobalInput (shape={:?})",
-                                    r, shape,
-                                ),
-                            }
-                        }
-                        let data_source: &[u32] = if bi == 1 { positions } else { input_ids };
-                        let expected_numel: usize = shape.iter().product();
-                        let n_tokens = data_source.len().min(expected_numel);
-                        let padded: Vec<i64> = (0..expected_numel).map(|i| {
-                            if i < n_tokens {
-                                data_source[i] as i64
-                            } else {
-                                0i64
-                            }
-                        }).collect();
-                        let raw: Vec<u8> = padded.iter().flat_map(|&v| v.to_ne_bytes()).collect();
-                        let p = raw.as_ptr();
-                        let memref = MemRefDesc2 {
-                            allocated: p as *mut c_void,
-                            aligned: p as *mut c_void,
-                            offset: 0,
-                            sizes: [shape[0] as i64, shape.get(1).copied().unwrap_or(1) as i64],
-                            strides: [shape.get(1).copied().unwrap_or(1) as i64, 1],
-                        };
+                        let (desc, raw) = crate::global_input::fill_global_input(
+                            input_ids,
+                            positions,
+                            io_def,
+                            bi,
+                        )?;
                         _raw_buffers.push(raw);
-                        let desc = MemRefDescAny::R2(memref);
                         input_descs.push(desc);
                         input_ptrs.push(input_descs.last()
-                            .expect("input_descs has entry for GlobalInput").as_input_ptr());
+                            .expect("input_descs has entry for GlobalInput")
+                            .as_input_ptr());
                         continue;
                     }
                     _ => {}

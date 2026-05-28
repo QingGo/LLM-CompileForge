@@ -33,6 +33,8 @@ mod kv_cache_intercept;
 mod sfcf;
 #[path = "../tensor.rs"]
 mod tensor;
+#[path = "../global_input.rs"]
+mod global_input;
 #[path = "../weight_loader.rs"]
 mod weight_loader;
 

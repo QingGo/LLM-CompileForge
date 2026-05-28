@@ -23,6 +23,7 @@ mod tensor;
 mod tokenizer;
 mod types;
 mod weight_loader;
+mod global_input;
 
 use axum::extract::State;
 use axum::http::StatusCode;
