@@ -138,13 +138,17 @@ pub fn run_function_graph(
         let mut output_vecs: Vec<Vec<f32>> = Vec::with_capacity(func_def.outputs.len());
         let mut output_bufs: Vec<Box<dyn traits::Buffer>> =
             Vec::with_capacity(func_def.outputs.len());
-        for io_def in &func_def.outputs {
+        for (oi, io_def) in func_def.outputs.iter().enumerate() {
             let numel = estimate_output_numel(&io_def.shape, seq_len);
             let mut vec = Vec::with_capacity(numel);
             // SAFETY: set_len to capacity — the buffer is filled by
             // execute() before any f32 reads.  execute() checks that
             // the output does not exceed numel.
             unsafe { vec.set_len(numel); }
+            log::trace!(
+                "run_function_graph: func[{}] output[{}] estimated numel={} (shape={:?}, seq_len={})",
+                fi, oi, numel, io_def.shape, seq_len,
+            );
             let raw_buf = InnerCpuBuffer::from_raw_parts(
                 vec.as_mut_ptr() as *mut u8,
                 numel * 4,
@@ -174,12 +178,23 @@ pub fn run_function_graph(
         for (oi, shapes) in output_shapes.iter().enumerate() {
             let actual_n: usize = shapes.iter().map(|&s| std::cmp::max(0, s) as usize).product();
             let mut out_vec = std::mem::take(&mut output_vecs[oi]);
+            debug_assert!(
+                actual_n <= out_vec.capacity(),
+                "func[{}] output[{}]: sret actual_n={} exceeds pre-allocated capacity={}. \
+                 estimate_output_numel under-estimated: shapes={:?}, estimated={}",
+                fi, oi, actual_n, out_vec.capacity(), shapes, out_vec.capacity(),
+            );
             if actual_n < out_vec.len() {
-                // SAFETY: actual_n ≤ out_vec.len() (checked by execute).
+                // SAFETY: actual_n ≤ out_vec.capacity() (guaranteed by execute's
+                // n_bytes ≤ output_buf.len() check, double-checked by debug_assert above).
                 // Data is written by execute() via copy_nonoverlapping.
                 unsafe { out_vec.set_len(actual_n); }
             }
             let shape_usize: Vec<usize> = shapes.iter().map(|&s| std::cmp::max(1, s) as usize).collect();
+            log::trace!(
+                "run_function_graph: func[{}] output[{}] actual shapes={:?} actual_n={} final_shape={:?}",
+                fi, oi, shapes, actual_n, shape_usize,
+            );
             func_outputs[fi].push(Tensor::new_owned(shape_usize, out_vec, Dtype::F32));
         }
     }
@@ -381,10 +396,14 @@ pub fn run_function_graph_with_kv_intercept(
         let mut output_vecs: Vec<Vec<f32>> = Vec::with_capacity(func_def.outputs.len());
         let mut output_bufs: Vec<Box<dyn traits::Buffer>> =
             Vec::with_capacity(func_def.outputs.len());
-        for io_def in &func_def.outputs {
+        for (oi, io_def) in func_def.outputs.iter().enumerate() {
             let numel = estimate_output_numel(&io_def.shape, seq_len);
             let mut vec = Vec::with_capacity(numel);
             unsafe { vec.set_len(numel); }
+            log::trace!(
+                "run_function_graph_kv: func[{}] output[{}] estimated numel={} (shape={:?}, seq_len={})",
+                fi, oi, numel, io_def.shape, seq_len,
+            );
             let raw_buf = InnerCpuBuffer::from_raw_parts(
                 vec.as_mut_ptr() as *mut u8,
                 numel * 4,
@@ -410,9 +429,18 @@ pub fn run_function_graph_with_kv_intercept(
         for (oi, shapes) in output_shapes.iter().enumerate() {
             let actual_n: usize = shapes.iter().map(|&s| std::cmp::max(0, s) as usize).product();
             let mut out_vec = std::mem::take(&mut output_vecs[oi]);
+            debug_assert!(
+                actual_n <= out_vec.capacity(),
+                "func[{}] output[{}]: sret actual_n={} exceeds pre-allocated capacity={}",
+                fi, oi, actual_n, out_vec.capacity(),
+            );
             if actual_n < out_vec.len() {
                 unsafe { out_vec.set_len(actual_n); }
             }
+            log::trace!(
+                "run_function_graph_kv: func[{}] output[{}] actual shapes={:?} actual_n={}",
+                fi, oi, shapes, actual_n,
+            );
             let shape_usize: Vec<usize> =
                 shapes.iter().map(|&s| std::cmp::max(1, s) as usize).collect();
             let tensor = Tensor::new_owned(shape_usize, out_vec, Dtype::F32);
@@ -439,6 +467,89 @@ pub fn run_function_graph_with_kv_intercept(
     let (g_func, g_idx) = compute_graph.global_output;
     let result = &func_outputs[g_func][g_idx];
     Ok(result.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compute_graph::IOTensorDef;
+    use crate::kv_cache::{CachePolicy, InterceptSpec};
+
+    /// When cache_policy.intercepts is populated, should_intercept_consumed
+    /// must use the intercepts list (not consumed_internally).
+    #[test]
+    fn test_should_intercept_with_cache_policy() {
+        let policy = CachePolicy {
+            intercepts: vec![
+                InterceptSpec {
+                    slab_id: "k".into(),
+                    op_name: "attn".into(),
+                    direction: "read_write".into(),
+                    source: "operand[1]".into(),
+                    layer: "sequential".into(),
+                    func_index: 1,
+                    output_index: 2,
+                },
+            ],
+            slabs: vec![],
+            block_size: 16,
+            max_requests: 256,
+        };
+
+        // Output at (1, 2) should be intercepted
+        let io_def_matched = IOTensorDef::new(2, vec![1, 64], false);
+        assert!(should_intercept_consumed(1, 2, &policy, &io_def_matched),
+            "func=1, output=2 should match intercept");
+
+        // Output at (0, 0) should NOT be intercepted (not in intercepts list)
+        let io_def_other = IOTensorDef::new(2, vec![1, 64], false);
+        assert!(!should_intercept_consumed(0, 0, &policy, &io_def_other),
+            "func=0, output=0 should not match any intercept");
+    }
+
+    /// When cache_policy.intercepts is empty, should_intercept_consumed
+    /// must fall back to io_def.consumed_internally.
+    #[test]
+    fn test_should_intercept_fallback_consumed() {
+        let policy = CachePolicy::none(); // empty intercepts
+
+        // consumed_internally=true should intercept
+        let io_def_consumed = IOTensorDef::new(2, vec![1, 64], true);
+        assert!(should_intercept_consumed(0, 0, &policy, &io_def_consumed),
+            "should fall back to consumed_internally=true");
+
+        // consumed_internally=false should NOT intercept
+        let io_def_not_consumed = IOTensorDef::new(2, vec![1, 64], false);
+        assert!(!should_intercept_consumed(0, 0, &policy, &io_def_not_consumed),
+            "should fall back to consumed_internally=false");
+    }
+
+    /// When cache_policy has intercepts but consumed_internally is false,
+    /// the intercepts list takes priority.
+    #[test]
+    fn test_should_intercept_intercepts_priority() {
+        let policy = CachePolicy {
+            intercepts: vec![
+                InterceptSpec {
+                    slab_id: "k".into(),
+                    op_name: "attn".into(),
+                    direction: "read_write".into(),
+                    source: "operand[1]".into(),
+                    layer: "sequential".into(),
+                    func_index: 0,
+                    output_index: 0,
+                },
+            ],
+            slabs: vec![],
+            block_size: 16,
+            max_requests: 256,
+        };
+
+        // Even though consumed_internally=false, intercepts list says yes
+        let io_def = IOTensorDef::new(1, vec![64], false);
+        assert!(should_intercept_consumed(0, 0, &policy, &io_def),
+            "intercepts list should take priority over consumed_internally=false");
+    }
 }
 
 

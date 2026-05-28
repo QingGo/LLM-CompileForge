@@ -15,6 +15,7 @@ pub mod device;
 pub mod executable;
 pub mod kernel;
 pub mod memref;
+pub mod sret;
 
 use buffer::CpuBuffer as RawCpuBuffer;
 use device::CpuDevice as RawCpuDevice;
@@ -181,6 +182,13 @@ impl traits::Executable for CpuExecutable {
         // descriptor lives on the heap (in the Vec) rather than on the stack.
         let mut input_descs: Vec<MemRefDescAny> = Vec::with_capacity(inputs.len());
         let mut input_ptrs: Vec<*const c_void> = Vec::with_capacity(inputs.len());
+        // Collect input data pointers to detect pass-through tensors in sret.
+        // When the dylib returns a weight or SSA wire as a pass-through output,
+        // the sret's `allocated` pointer matches an input data pointer.
+        // We must NOT free these — Rust owns them.
+        let input_data_ptrs: Vec<*const u8> = inputs.iter()
+            .map(|buf| buf.as_ptr())
+            .collect();
         for &buf in inputs {
             let desc = make_memref_descriptor(buf)?;
             input_descs.push(desc);
@@ -252,6 +260,13 @@ impl traits::Executable for CpuExecutable {
                     .product();
                 let n_bytes = n * 4;
 
+                log::trace!(
+                    "execute: output[{}] sret rank={} sizes={:?} n={} n_bytes={} buf_cap={} \
+                     allocated={:p} aligned={:p}",
+                    oi, out_rank, sizes, n, n_bytes, output_buf.len(),
+                    allocated, aligned,
+                );
+
                 if n_bytes == 0 {
                     output_shapes.push(sizes);
                     continue;
@@ -263,6 +278,12 @@ impl traits::Executable for CpuExecutable {
                         oi, n_bytes, output_buf.len(),
                     );
                 }
+
+                debug_assert!(
+                    n_bytes <= output_buf.len(),
+                    "output {}: panic on n_bytes={} > buf.len()={}",
+                    oi, n_bytes, output_buf.len(),
+                );
 
                 let dst = output_buf.as_ptr() as *mut u8;
                 // SAFETY: `aligned` points to valid dylib output data.
@@ -284,28 +305,49 @@ impl traits::Executable for CpuExecutable {
 
             // ── Pass 2: dedup + free ──────────────────────────────
             //
-            // Only free pointers that are verifiably heap-allocated.
+            // Only free pointers that are verifiably heap-allocated
+            // AND not owned by Rust.
+            //
             // Some MemRef descriptors in the sret have `allocated`
             // pointing to non-malloc memory (stack, globals, or
             // garbage from misaligned sret parsing). Use the system
             // allocator's own validation (malloc_zone_from_ptr) to
             // distinguish safe-to-free pointers from the rest.
+            //
+            // CRITICAL: The dylib's ciface calls pass through weight
+            // and SSA wire tensors as outputs.  Their MemRef descriptors
+            // have `allocated` pointing to Rust-owned memory (weight
+            // cache, func_outputs Vecs).  Freeing these causes a
+            // double-free crash (SIGABRT in Arc::drop_slow) because
+            // Rust's allocator detects the double-free.
+            // Use input_data_ptrs to skip these pass-through pointers.
             to_free.sort();
             to_free.dedup();
             for ptr in &to_free {
                 let addr = *ptr as *const std::ffi::c_void;
+                if addr.is_null() {
+                    continue;
+                }
+                // Skip if this pointer matches an input buffer — it's
+                // a pass-through weight or SSA wire owned by Rust.
+                let addr_u8 = addr as *const u8;
+                if input_data_ptrs.iter().any(|&ip| ip == addr_u8) {
+                    log::trace!(
+                        "execute: skip free of pass-through input ptr {:p}",
+                        addr,
+                    );
+                    continue;
+                }
                 // SAFETY: malloc_zone_from_ptr is thread-safe and
                 // read-only. Returns null if addr is not in any
                 // malloc zone (stack, global, or invalid pointer).
-                if !addr.is_null() {
-                    #[link(name = "System")]
-                    extern "C" {
-                        fn malloc_zone_from_ptr(ptr: *const std::ffi::c_void) -> *const std::ffi::c_void;
-                    }
-                    let zone = unsafe { malloc_zone_from_ptr(addr) };
-                    if !zone.is_null() {
-                        unsafe { (self.free_fn)(*ptr); }
-                    }
+                #[link(name = "System")]
+                extern "C" {
+                    fn malloc_zone_from_ptr(ptr: *const std::ffi::c_void) -> *const std::ffi::c_void;
+                }
+                let zone = unsafe { malloc_zone_from_ptr(addr) };
+                if !zone.is_null() {
+                    unsafe { (self.free_fn)(*ptr); }
                 }
             }
         }
@@ -318,79 +360,6 @@ impl traits::Executable for CpuExecutable {
         &self.constants_data
     }
 }
-
-// ── Helper functions ─────────────────────────────────────────────────
-
-/// Construct a MemRef descriptor from a Buffer, respecting its element
-/// size and shape metadata.
-///
-/// Zero-copy: the descriptor's `aligned` pointer points directly into the
-/// buffer's backing memory. The buffer must remain valid for the kernel call.
-fn make_memref_descriptor(buf: &dyn traits::Buffer) -> Result<MemRefDescAny, anyhow::Error> {
-    let ptr = buf.as_ptr();
-    let shape = buf.shape();
-    match shape.len() {
-        1 => Ok(MemRefDescAny::R1(memref::MemRefDesc1::from_raw_ptr(ptr, &shape))),
-        2 => Ok(MemRefDescAny::R2(memref::MemRefDesc2::from_raw_ptr(ptr, &shape))),
-        3 => Ok(MemRefDescAny::R3(memref::MemRefDesc3::from_raw_ptr(ptr, &shape))),
-        4 => Ok(MemRefDescAny::R4(memref::MemRefDesc4::from_raw_ptr(ptr, &shape))),
-        r => anyhow::bail!(
-            "make_memref_descriptor: unsupported rank {} for input buffer (shape={:?})",
-            r, shape,
-        ),
-    }
-}
-
-/// Read a single sret output descriptor at a KNOWN rank.
-///
-/// Reads exactly the bytes for the given rank. The caller must supply the
-/// correct rank (from the compute graph) to avoid misaligned reads when
-/// consecutive descriptors have different ranks.
-///
-/// The MemRef descriptor layout (MLIR LLVM dialect convention):
-///
-/// ```text
-///   offset 0:  allocated ptr   — raw malloc return; safe to free
-///   offset 8:  aligned  ptr   — aligned data pointer; use for reads
-///   offset 16: offset   i64   — byte offset within allocation
-///   offset 24: sizes    [i64; RANK]
-///   offset 24+8*RANK: strides [i64; RANK]
-/// ```
-///
-/// When no alignment is requested (default for f32), allocated == aligned.
-/// When alignment IS requested, aligned may differ from allocated — only
-/// `allocated` is safe to pass to `free()`.
-///
-/// Returns `(allocated, aligned, sizes)`.
-///
-/// # Safety
-///
-/// `slice` must be at least `24 + 16 * rank` bytes long and contain valid
-/// MemRef descriptor data written by a ciface kernel.
-unsafe fn read_sret_descriptor(
-    slice: &[u8],
-    rank: usize,
-) -> Result<(*mut u8, *mut u8, Vec<i64>), anyhow::Error> {
-    let min_len = 24 + rank * 16;
-    if slice.len() < min_len {
-        anyhow::bail!(
-            "sret slice too short: {} < {} (rank {})",
-            slice.len(),
-            min_len,
-            rank,
-        );
-    }
-    let allocated = std::ptr::read_unaligned(slice.as_ptr() as *const *mut u8);
-    let aligned = std::ptr::read_unaligned(slice.as_ptr().add(8) as *const *mut u8);
-    if aligned.is_null() {
-        anyhow::bail!("sret aligned pointer is null (rank {})", rank);
-    }
-    let sizes: Vec<i64> = (0..rank)
-        .map(|i| std::ptr::read_unaligned(slice.as_ptr().add(24 + i * 8) as *const i64))
-        .collect();
-    Ok((allocated, aligned, sizes))
-}
-
 // ── CpuEvent ──────────────────────────────────────────────────────────
 
 /// CPU event — no-op (CPU is synchronous, all work completes immediately).
@@ -419,13 +388,14 @@ impl traits::Stream for CpuStream {
 
 pub use executable::CpuExecutable as Executable;
 pub use memref::{MemRefDesc2, MemRefDescAny};
+pub use sret::{make_memref_descriptor, read_sret_descriptor};
 
 // ── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hal::traits::{Device as _, Executable as _, Stream as _};
+    use crate::hal::traits::{Device as _, Stream as _};
 
     #[test]
     fn test_cpu_device_name() {

@@ -6,7 +6,6 @@
 //! - `size == 0`       — empty buffer; Drop is no-op
 
 use std::alloc::{self, Layout};
-use std::ffi::c_void;
 use std::ptr::NonNull;
 
 use crate::tensor::{Dtype, Tensor};
@@ -164,3 +163,61 @@ unsafe impl Send for CpuBuffer {}
 // SAFETY: CpuBuffer is read-only after initialization. Synchronization
 // is the caller's responsibility.
 unsafe impl Sync for CpuBuffer {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that a borrowed buffer (borrowed=true) does NOT free its
+    /// backing memory on Drop. We detect this by creating a buffer from
+    /// a stack-allocated array: if Drop tried to free, we'd get a
+    /// heap-use-after-free error (or crash). Since the backing memory
+    /// is on the stack and never heap-allocated, running the test
+    /// successfully proves no dealloc was attempted.
+    #[test]
+    fn test_buffer_borrowed_flag_no_free() {
+        let mut backing = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        let buf = CpuBuffer::from_raw_parts(backing.as_mut_ptr(), 8, true)
+            .expect("from_raw_parts with borrowed=true");
+        // Verify data is readable
+        assert_eq!(buf.as_slice(), &[1u8, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(buf.size(), 8);
+        assert!(!buf.is_empty());
+        // Drop happens here — should NOT call alloc::dealloc on stack memory
+    }
+
+    /// Verify that an owned buffer (borrowed=false) properly deallocates.
+    /// We allocate on the heap, wrap it, and drop. The test passes if
+    /// there's no double-free or memory corruption — since we're using
+    /// the same allocator, a double-free would cause an abort.
+    #[test]
+    fn test_buffer_owned_from_raw_frees() {
+        let layout = Layout::array::<u8>(16).expect("valid layout");
+        let ptr = unsafe { alloc::alloc(layout) };
+        assert!(!ptr.is_null(), "alloc should succeed");
+        // Write some data
+        unsafe { std::ptr::write_bytes(ptr, 0xAB, 16); }
+        let buf = CpuBuffer::from_raw_parts(ptr, 16, false)
+            .expect("from_raw_parts with borrowed=false");
+        assert_eq!(buf.size(), 16);
+        assert_eq!(buf.as_slice(), &[0xABu8; 16]);
+        // Drop happens here — should deallocate via alloc::dealloc
+    }
+
+    /// Verify that an empty buffer's Drop is a no-op (edge case).
+    #[test]
+    fn test_buffer_empty_drop_noop() {
+        let buf = CpuBuffer::empty();
+        assert!(buf.is_empty());
+        assert_eq!(buf.size(), 0);
+        // Drop here — should be safe (no-op for empty buffers)
+    }
+
+    /// Verify that from_raw_parts rejects null pointers.
+    #[test]
+    fn test_buffer_from_raw_parts_rejects_null() {
+        let result = CpuBuffer::from_raw_parts(std::ptr::null_mut(), 8, true);
+        assert!(result.is_err(), "null pointer should be rejected");
+        assert_eq!(result.unwrap_err(), "null pointer");
+    }
+}

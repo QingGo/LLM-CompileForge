@@ -439,3 +439,116 @@ impl traits::Executable for HalRustExecutable {
         &[]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hal::traits;
+    use crate::hal::traits::Executable as _;
+
+    /// A minimal buffer backed by a Vec<f32> for testing.
+    #[derive(Debug)]
+    struct TestBuf(Vec<u8>, usize, Vec<usize>);
+
+    impl traits::Buffer for TestBuf {
+        fn as_ptr(&self) -> *const u8 { self.0.as_ptr() }
+        fn as_mut_ptr(&mut self) -> *mut u8 { self.0.as_mut_ptr() }
+        fn len(&self) -> usize { self.0.len() }
+        fn copy_from_host(&mut self, src: &[u8], _: &dyn traits::Stream) -> Result<(), anyhow::Error> {
+            self.0.copy_from_slice(src);
+            Ok(())
+        }
+        fn copy_to_host(&self, dst: &mut [u8], _: &dyn traits::Stream) -> Result<(), anyhow::Error> {
+            dst.copy_from_slice(&self.0);
+            Ok(())
+        }
+        fn element_size(&self) -> usize { self.1 }
+        fn shape(&self) -> Vec<usize> { self.2.clone() }
+        fn rank(&self) -> u8 { self.2.len() as u8 }
+    }
+
+    #[derive(Debug)]
+    struct NoopStream;
+    impl traits::Stream for NoopStream {
+        fn synchronize(&self) -> Result<(), anyhow::Error> { Ok(()) }
+        fn wait_event(&self, _: &dyn traits::Event) -> Result<(), anyhow::Error> { Ok(()) }
+        fn record_event(&self, _: &dyn traits::Event) -> Result<(), anyhow::Error> { Ok(()) }
+    }
+
+    #[test]
+    fn test_hal_rust_executable_new() {
+        let exe = HalRustExecutable::new(28);
+        assert_eq!(exe.function_count, 28);
+    }
+
+    #[test]
+    fn test_hal_rust_executable_function_count() {
+        let exe = HalRustExecutable::new(16);
+        assert_eq!(exe.function_count(), 16);
+
+        let exe2 = HalRustExecutable::new(28);
+        assert_eq!(exe2.function_count(), 28);
+    }
+
+    #[test]
+    fn test_hal_rust_executable_module_data_empty() {
+        let exe = HalRustExecutable::new(1);
+        assert!(exe.module_data().is_empty());
+    }
+
+    #[test]
+    fn test_hal_rust_executable_execute_unknown_op() {
+        let exe = HalRustExecutable::new(1);
+        let stream = NoopStream;
+        let result = exe.execute("nonexistent_op", &stream, &[], &[]);
+        assert!(result.is_err(), "unknown op should return error");
+        assert!(
+            result.unwrap_err().to_string().contains("unknown op"),
+            "error message should mention 'unknown op'"
+        );
+    }
+
+    #[test]
+    fn test_hal_rust_executable_cache_ops_noop() {
+        // cache_read and cache_write are no-op stubs that return output shapes.
+        let exe = HalRustExecutable::new(1);
+        let stream = NoopStream;
+        let input = TestBuf(vec![0u8; 16], 4, vec![4]);
+        let output = TestBuf(vec![0u8; 16], 4, vec![4]);
+        let inputs: [&dyn traits::Buffer; 1] = [&input];
+        let outputs: [&dyn traits::Buffer; 1] = [&output];
+
+        let result = exe.execute("cache_read", &stream, &inputs, &outputs);
+        assert!(result.is_ok(), "cache_read should be a no-op");
+        let shapes = result.unwrap();
+        assert_eq!(shapes, vec![vec![4i64]]);
+
+        let result2 = exe.execute("cache_write", &stream, &inputs, &outputs);
+        assert!(result2.is_ok(), "cache_write should be a no-op");
+    }
+
+    #[test]
+    fn test_hal_rust_executable_register_expert_kernel() {
+        // Verify that register_expert_kernel works (default impl errors).
+        // Use the trait method directly via the Executable import.
+        let mut exe = HalRustExecutable::new(1);
+        let result = traits::Executable::register_expert_kernel(
+            &mut exe, "test_op", Box::new(NoopExpertKernel),
+        );
+        assert!(result.is_err(), "default register_expert_kernel should error");
+    }
+
+    #[derive(Debug)]
+    struct NoopExpertKernel;
+    impl traits::ExpertKernel for NoopExpertKernel {
+        fn execute(
+            &self,
+            _stream: &dyn traits::Stream,
+            _inputs: &[&dyn traits::Buffer],
+            _outputs: &[&dyn traits::Buffer],
+        ) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+    }
+}
+
