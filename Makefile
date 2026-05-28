@@ -1,4 +1,4 @@
-.PHONY: lint lint-clippy lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-rust-cov test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-forward-smoke-rust test-forward-cos test-weight-consistency test-consistency verify-dylib verify-dylib-fresh verify-consistency verify-diag verify-preflight check-op-consistency build-rust install-rust build-so test-dylib-cos test-dylib-cos-quick clean-compiled test-dylib-quick debug-cos diagnose test-kv-compiler test-kv-rust test-kv-python-e2e test-kv-all build-sf rebuild-clean rebuild-mlir rebuild-dylib rebuild-test rebuild build-all build build-plugin serve serve-py run-prompt
+.PHONY: lint lint-clippy lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-rust-cov test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-forward-smoke-rust test-forward-cos test-weight-consistency test-consistency verify-dylib verify-dylib-fresh verify-consistency verify-diag verify-preflight check-op-consistency build-rust install-rust build-so test-dylib-cos test-dylib-cos-quick clean-compiled test-dylib-quick debug-cos diagnose test-kv-compiler test-kv-rust test-kv-python-e2e test-kv-all build-sf rebuild-clean rebuild-mlir rebuild-dylib rebuild-test rebuild build-all build build-plugin serve serve-py run-prompt test-e2e-forward
 
 # ═══════════════════════════════════════════════════════════════
 #  环境
@@ -246,6 +246,8 @@ test-rust-unit: $(VENV)
 	mkdir -p logs/rust
 	cd rust && cargo test --lib > ../logs/rust/test_unit_$$(date +%Y%m%d_%H%M%S).log 2>&1
 test-rust: test-rust-unit test-rust-integ
+test-e2e-forward:
+	cargo test --test integration_tests
 test-rust-cov:
 	cargo llvm-cov --lib --summary-only
 test-pipeline-timing: $(VENV)

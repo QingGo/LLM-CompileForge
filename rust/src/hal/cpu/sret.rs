@@ -222,4 +222,32 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("null"));
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn checked_product_from_i64_doesnt_panic(
+            sizes in proptest::collection::vec(any::<i64>(), 0..10)
+        ) {
+            let _ = checked_product_from_i64(&sizes);
+        }
+
+        #[test]
+        fn checked_product_usize_doesnt_panic(
+            sizes in proptest::collection::vec(any::<usize>(), 0..10)
+        ) {
+            let _ = checked_product_usize(&sizes);
+        }
+
+        #[test]
+        fn checked_product_from_i64_matches_manual(
+            a in 0i64..1000,
+            b in 0i64..1000,
+        ) {
+            let result = checked_product_from_i64(&[a, b]);
+            let expected = (a as usize).checked_mul(b as usize);
+            assert_eq!(result, expected);
+        }
+    }
 }
