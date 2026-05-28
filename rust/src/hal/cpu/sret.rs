@@ -78,6 +78,20 @@ pub unsafe fn read_sret_descriptor(
     Ok((allocated, aligned, sizes))
 }
 
+/// Compute checked product of i64 dimensions. Negative dims clamped to 0.
+/// Returns None on overflow.
+pub fn checked_product_from_i64(sizes: &[i64]) -> Option<usize> {
+    sizes.iter().try_fold(1usize, |acc, &s| {
+        let dim = std::cmp::max(0, s) as usize;
+        acc.checked_mul(dim)
+    })
+}
+
+/// Compute checked product of usize dimensions. Returns None on overflow.
+pub fn checked_product_usize(sizes: &[usize]) -> Option<usize> {
+    sizes.iter().try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

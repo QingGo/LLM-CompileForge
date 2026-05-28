@@ -81,7 +81,10 @@ pub fn fill_global_input(
         }
     }
     let data_source: &[u32] = if bi == 1 { positions } else { input_ids };
-    let expected_numel: usize = shape.iter().product();
+    let expected_numel: usize = crate::hal::cpu::sret::checked_product_usize(&shape)
+        .ok_or_else(|| anyhow::anyhow!(
+            "global_input shape overflow: {:?}", shape
+        ))?;
     let n_tokens = data_source.len().min(expected_numel);
     let padded: Vec<i64> = (0..expected_numel)
         .map(|i| {

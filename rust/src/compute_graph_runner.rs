@@ -176,7 +176,10 @@ pub fn run_function_graph(
 
         // Extract Tensors from output buffers using the returned shapes.
         for (oi, shapes) in output_shapes.iter().enumerate() {
-            let actual_n: usize = shapes.iter().map(|&s| std::cmp::max(0, s) as usize).product();
+            let actual_n: usize = crate::hal::cpu::sret::checked_product_from_i64(&shapes)
+                .ok_or_else(|| anyhow::anyhow!(
+                    "func[{}] output[{}] sret shapes overflow: {:?}", fi, oi, shapes
+                ))?;
             let mut out_vec = std::mem::take(&mut output_vecs[oi]);
             debug_assert!(
                 actual_n <= out_vec.capacity(),
@@ -427,7 +430,10 @@ pub fn run_function_graph_with_kv_intercept(
             executable.execute(&func_def.symbol, stream, &input_refs, &output_refs)?;
 
         for (oi, shapes) in output_shapes.iter().enumerate() {
-            let actual_n: usize = shapes.iter().map(|&s| std::cmp::max(0, s) as usize).product();
+            let actual_n: usize = crate::hal::cpu::sret::checked_product_from_i64(&shapes)
+                .ok_or_else(|| anyhow::anyhow!(
+                    "func[{}] output[{}] sret shapes overflow: {:?}", fi, oi, shapes
+                ))?;
             let mut out_vec = std::mem::take(&mut output_vecs[oi]);
             debug_assert!(
                 actual_n <= out_vec.capacity(),

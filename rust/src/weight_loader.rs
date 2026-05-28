@@ -36,7 +36,7 @@ pub struct ConstantTensor {
 impl ConstantTensor {
     #[allow(dead_code)]
     pub fn numel(&self) -> usize {
-        self.shape.iter().product()
+        crate::hal::cpu::sret::checked_product_usize(&self.shape).unwrap_or(usize::MAX)
     }
 }
 

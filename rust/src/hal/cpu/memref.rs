@@ -43,7 +43,7 @@ pub type MemRefDesc4 = MemRefDesc<4>;
 impl<const RANK: usize> MemRefDesc<RANK> {
     /// Build a descriptor from a ``&[f32]`` slice with given logical shape.
     pub fn from_f32_slice(data: &[f32], shape: [usize; RANK]) -> Self {
-        let numel: usize = shape.iter().product();
+        let numel: usize = super::sret::checked_product_usize(&shape).unwrap_or(usize::MAX);
         assert_eq!(data.len(), numel);
         let p = data.as_ptr();
         let mut sizes = [0i64; RANK];
@@ -86,7 +86,7 @@ impl<const RANK: usize> MemRefDesc<RANK> {
 
     /// Build a zero-initialized output descriptor (allocates memory).
     pub fn zeroed(shape: [usize; RANK]) -> Self {
-        let numel: usize = shape.iter().product();
+        let numel: usize = super::sret::checked_product_usize(&shape).unwrap_or(usize::MAX);
         let layout = std::alloc::Layout::array::<f32>(numel.max(1)).expect("invalid layout");
         let ptr = unsafe { std::alloc::alloc_zeroed(layout) as *mut c_void };
         let mut sizes = [0i64; RANK];
@@ -110,7 +110,7 @@ impl<const RANK: usize> MemRefDesc<RANK> {
     pub fn zeroed_dyn(shape: &[usize]) -> Self {
         assert_eq!(shape.len(), RANK, "shape rank mismatch");
         let safe_shape: Vec<usize> = shape.iter().map(|&d| if d == 0 { 1 } else { d }).collect();
-        let numel: usize = safe_shape.iter().product();
+        let numel: usize = super::sret::checked_product_usize(&safe_shape).unwrap_or(usize::MAX);
         let layout = std::alloc::Layout::array::<f32>(numel.max(1)).expect("invalid layout");
         let ptr = unsafe { std::alloc::alloc_zeroed(layout) as *mut c_void };
         let mut sizes = [0i64; RANK];
@@ -150,7 +150,7 @@ impl<const RANK: usize> MemRefDesc<RANK> {
     }
 
     pub fn numel(&self) -> usize {
-        self.sizes.iter().map(|&s| s as usize).product()
+        super::sret::checked_product_from_i64(&self.sizes).unwrap_or(usize::MAX)
     }
 
     pub fn is_null(&self) -> bool {

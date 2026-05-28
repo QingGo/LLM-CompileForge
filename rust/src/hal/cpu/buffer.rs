@@ -133,7 +133,7 @@ impl CpuBuffer {
     /// supports `Vec<f32>` ownership. After calling this, the original
     /// heap allocation is freed via the appropriate deallocator.
     pub fn into_tensor(self, shape: Vec<usize>) -> Tensor {
-        let n: usize = shape.iter().product();
+        let n: usize = super::sret::checked_product_usize(&shape).unwrap_or(usize::MAX);
         let data = if n == 0 {
             Vec::new()
         } else {

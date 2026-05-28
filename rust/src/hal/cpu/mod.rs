@@ -255,9 +255,10 @@ impl traits::Executable for CpuExecutable {
                 };
                 sret_offset += desc_size;
 
-                let n: usize = sizes.iter()
-                    .map(|&s| std::cmp::max(0, s) as usize)
-                    .product();
+                let n: usize = crate::hal::cpu::sret::checked_product_from_i64(&sizes)
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "output {} sret sizes overflow: {:?}", oi, sizes
+                    ))?;
                 let n_bytes = n * 4;
 
                 log::trace!(
