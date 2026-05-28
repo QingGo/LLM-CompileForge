@@ -68,9 +68,11 @@ def step_lower_to_hal(output_dir: str) -> str:
     mlir_path = os.path.join(output_dir, "model.normalized.mlir")
     meta_path = os.path.join(output_dir, "metadata.json")
 
+    hal_ir_out = os.path.join(output_dir, "generated", "hal_ir.json")
     result_path = lower_sf_to_hal_file(
         mlir_path=mlir_path,
         metadata_path=meta_path if os.path.isfile(meta_path) else None,
+        output_path=hal_ir_out,
     )
 
     # Load the JSON to report stats
@@ -101,7 +103,7 @@ def step_emit_rust(hal_ir_path: str, output_dir: str) -> str:
     _log.info("Step [4/4]: EmitRust — generating hal_ops_cpu.rs ...")
     rust_path = emit_rust(
         hal_ir_path=hal_ir_path,
-        output_path=os.path.join(output_dir, "hal_ops_cpu.rs"),
+        output_path=os.path.join(output_dir, "generated", "hal_ops_cpu.rs"),
     )
     _log.info("  Generated: %s", rust_path)
     return rust_path

@@ -112,7 +112,7 @@ def lower_sf_to_hal_file(
 
     # Determine output path
     if output_path is None:
-        output_path = model_dir / "hal_ir.json"
+        output_path = model_dir / "generated" / "hal_ir.json"
     output_path = Path(output_path)
 
     # Build HAL IR
@@ -157,7 +157,7 @@ def main() -> None:
     parser.add_argument(
         "--output", "-o",
         default=None,
-        help="Output JSON path (default: <model_dir>/hal_ir.json)",
+        help="Output JSON path (default: <model_dir>/generated/hal_ir.json)",
     )
     parser.add_argument(
         "--metadata", "-m",
