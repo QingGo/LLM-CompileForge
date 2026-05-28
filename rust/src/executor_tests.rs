@@ -1,6 +1,9 @@
 use super::*;
+use crate::compute_graph_runner::parse_sret_descriptor;
 use crate::hal::cpu::MemRefDesc2;
+use crate::hal::cpu::MemRefDescAny;
 use crate::hal::traits::{self, Device as _, Executable as _};
+use crate::tensor::Dtype;
 
 /// A mock device that records its compile() call for validation.
 #[derive(Debug)]
