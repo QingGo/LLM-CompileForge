@@ -1,4 +1,4 @@
-.PHONY: lint lint-clippy lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-rust-cov test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-weight-consistency test-consistency verify-dylib verify-consistency verify-diag verify-preflight check-op-consistency build-rust install-rust build-so test-dylib-cos test-dylib-cos-quick clean-compiled test-dylib-quick debug-cos diagnose test-kv-compiler test-kv-rust test-kv-python-e2e test-kv-all build-sf rebuild-clean rebuild-mlir rebuild-dylib rebuild-test rebuild build-all build build-plugin serve serve-py run-prompt
+.PHONY: lint lint-clippy lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-rust-cov test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-forward-smoke-rust test-forward-cos test-weight-consistency test-consistency verify-dylib verify-dylib-fresh verify-consistency verify-diag verify-preflight check-op-consistency build-rust install-rust build-so test-dylib-cos test-dylib-cos-quick clean-compiled test-dylib-quick debug-cos diagnose test-kv-compiler test-kv-rust test-kv-python-e2e test-kv-all build-sf rebuild-clean rebuild-mlir rebuild-dylib rebuild-test rebuild build-all build build-plugin serve serve-py run-prompt
 
 # ═══════════════════════════════════════════════════════════════
 #  环境
@@ -266,6 +266,21 @@ test-forward-smoke: $(VENV)
 			LLM_SERVEFORGE_LOG=INFO $(PYTHON) scripts/check_forward_smoke.py $$model > logs/test/forward_smoke_$$(date +%Y%m%d_%H%M%S).log 2>&1 || exit 1; \
 		fi; \
 	done
+
+# L1.5: Rust forward smoke (uses forward_check binary)
+test-forward-smoke-rust: verify-dylib-fresh
+	cargo build --bin forward_check
+	@echo "[forward_check] Running Rust forward pass..."
+	$(DYLIB_ENV) ./rust/target/debug/forward_check
+
+test-forward-cos: test-forward-smoke
+	@for model in compiled/opt_125m_fresh; do \
+		if [ -d $$model ]; then \
+			echo "[$$model]"; \
+			$(PYTHON) scripts/check_forward_cos.py $$model || exit 1; \
+		fi; \
+	done
+
 test-vec: $(VENV)
 	$(PYTHON) scripts/test_transform_vec.py
 	$(PYTHON) -m pytest tests/test_pipeline_bugs.py -v --tb=short --timeout=60
@@ -284,6 +299,14 @@ test-weight-consistency: $(VENV)
 	$(PYTEST) tests/test_weight_consistency.py -v --tb=short --timeout=120 -m "not slow"
 verify-dylib:
 	$(PYTHON) scripts/verify_dylib_consistency.py compiled/opt_125m_fresh
+
+verify-dylib-fresh:
+	@for model in compiled/opt_125m_fresh compiled/tiny_llama; do \
+		if [ -d $$model ]; then \
+			echo "[$$model]"; \
+			$(PYTHON) scripts/check_dylib_freshness.py $$model || exit 1; \
+		fi; \
+	done
 verify-consistency: $(VENV)
 	$(PYTHON) scripts/verify_dylib_consistency.py compiled/opt_125m_fresh
 verify-diag:
