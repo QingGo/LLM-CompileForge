@@ -12,11 +12,12 @@ use std::collections::HashMap;
 use half::f16;
 
 use crate::block_manager::BlockManager;
-use crate::compute_graph::{ComputeGraph, InputBinding};
+use crate::compute_graph::{ComputeGraph, InputBinding, IOTensorDef};
 use crate::hal::cpu::buffer::CpuBuffer as InnerCpuBuffer;
 use crate::hal::cpu::CpuBuffer;
 use crate::hal::cpu::CpuStream;
 use crate::hal::traits;
+use crate::kv_cache::CachePolicy;
 use crate::kv_cache_intercept::{intercept_consumed_input, intercept_consumed_output};
 use crate::tensor::{Dtype, Tensor};
 use crate::weight_loader::WeightProvider;
@@ -214,6 +215,26 @@ fn estimate_output_numel(shape: &[u64], seq_len: usize) -> usize {
     numel.max(16)
 }
 
+/// Determine whether a given output should be intercepted (consumed internally
+/// by the KV cache) based on the CachePolicy.
+///
+/// When `cache_policy.intercepts` is non-empty, it is used to determine which
+/// outputs are intercepted via `(func_index, output_index)` matching.
+/// When empty, falls back to the `io_def.consumed_internally` flag (SFCF v2/v3
+/// compat).
+fn should_intercept_consumed(
+    fi: usize,
+    oi: usize,
+    cache_policy: &CachePolicy,
+    io_def: &IOTensorDef,
+) -> bool {
+    if !cache_policy.intercepts.is_empty() {
+        cache_policy.intercepts.iter().any(|i| i.func_index == fi && i.output_index == oi)
+    } else {
+        io_def.consumed_internally
+    }
+}
+
 /// Same as [`run_function_graph`] but with KV cache intercept callbacks.
 ///
 /// Iterates all `FuncDef`s in order, with the same dispatch logic as
@@ -228,6 +249,11 @@ fn estimate_output_numel(shape: &[u64], seq_len: usize) -> usize {
 ///    `func_outputs`.
 /// 3. Normal (non-consumed) outputs are pushed to `func_outputs` as usual.
 ///
+/// `cache_policy` controls which outputs are intercepted. When
+/// `cache_policy.intercepts` is populated, it overrides the
+/// `consumed_internally` flag from the compute graph — this allows the
+/// compiler policy to drive cache behavior without recompiling the model.
+///
 /// Returns the global output tensor (same as `run_function_graph`).
 pub fn run_function_graph_with_kv_intercept(
     compute_graph: &ComputeGraph,
@@ -239,6 +265,7 @@ pub fn run_function_graph_with_kv_intercept(
     positions: &[u32],
     mut block_manager: Option<&mut BlockManager>,
     request_id: Option<&str>,
+    cache_policy: &CachePolicy,
 ) -> Result<Tensor, anyhow::Error> {
     let is_decode = input_ids.len() == 1;
     let mut kv_new: HashMap<(usize, usize), Tensor> = HashMap::new();
@@ -314,7 +341,7 @@ pub fn run_function_graph_with_kv_intercept(
                 } => {
                     let prod_output_def =
                         &compute_graph.functions[*producer_func].outputs[*output_idx];
-                    if prod_output_def.consumed_internally {
+                    if should_intercept_consumed(*producer_func, *output_idx, cache_policy, prod_output_def) {
                         intercept_consumed_input(
                             *producer_func,
                             *output_idx,
@@ -392,7 +419,7 @@ pub fn run_function_graph_with_kv_intercept(
             let tensor = Tensor::new_owned(shape_usize, out_vec, Dtype::F32);
 
             let io_def = &func_def.outputs[oi];
-            if io_def.consumed_internally {
+            if should_intercept_consumed(fi, oi, cache_policy, io_def) {
                 intercept_consumed_output(
                     fi,
                     oi,

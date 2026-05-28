@@ -119,6 +119,39 @@ pub trait Executable: Debug + Send + Sync {
     /// registry, compute graph, and contract metadata.
     #[allow(dead_code)]
     fn module_data(&self) -> &[u8];
+
+    /// List of operation names this executable supports.
+    /// Default returns empty slice (unknown/unconstrained).
+    fn supported_ops(&self) -> &[&str] {
+        &[]
+    }
+
+    /// Register an expert kernel for a named operation.
+    /// Expert kernels override the default execution path for specific ops.
+    /// Default implementation returns an error — backends with expert
+    /// kernel support must override.
+    fn register_expert_kernel(
+        &mut self,
+        op_name: &str,
+        kernel: Box<dyn ExpertKernel>,
+    ) -> Result<(), anyhow::Error> {
+        anyhow::bail!("register_expert_kernel not supported by this backend")
+    }
+}
+
+/// An expert kernel — a specialized implementation for a single operation.
+///
+/// Expert kernels allow backends to register optimized or hardware-specific
+/// implementations for individual ops, overriding the default compiled
+/// kernel path.
+pub trait ExpertKernel: Debug + Send + Sync {
+    /// Execute this expert kernel with the given inputs and outputs.
+    fn execute(
+        &self,
+        stream: &dyn Stream,
+        inputs: &[&dyn Buffer],
+        outputs: &[&dyn Buffer],
+    ) -> Result<(), anyhow::Error>;
 }
 
 /// Synchronization event.

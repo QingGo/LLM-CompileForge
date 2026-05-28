@@ -216,7 +216,9 @@ def _apply_mlir_passes(
         raise TypeError(f"Unexpected keyword arguments in _apply_mlir_passes: {kwargs}")
 
     from compiler.mlir_dialect.compile_utils import _has_bindings
-    from compiler.mlir_passes.fusion import fuse_rms_norm_pass, fuse_silu_pass
+
+    # Track whether we have C++ pass availability for fallback logic
+    _cpp_fusion_available = False
 
     # Phase 0: register sf dialect (must happen before parsing MLIR text)
     if _has_bindings():
@@ -248,6 +250,24 @@ def _apply_mlir_passes(
                     mlir_text = str(module)
             except Exception as e:
                 raise RuntimeError(f"[pipeline] CRITICAL: canonicalize/cse failed: {e}") from e
+
+            # Phase 2: fusion — C++ passes (sf-fuse-silu, sf-fuse-rms-norm, sf-fuse-qkv, sf-fuse-attention)
+            try:
+                with ctx:
+                    # Re-parse after canonicalize; module is consumed above
+                    module = ir.Module.parse(mlir_text, ctx)
+                    pman = pm.PassManager.parse(
+                        "builtin.module(func.func("
+                        "sf-fuse-silu,sf-fuse-rms-norm,sf-fuse-qkv,sf-fuse-attention"
+                        "))",
+                        ctx)
+                    pman.run(module.operation)
+                    mlir_text = str(module)
+                    _cpp_fusion_available = True
+                    _log.info("C++ fusion passes applied successfully")
+            except Exception as e:
+                _log.warning(
+                    "C++ fusion passes not available, falling back to Python: %s", e)
         except ImportError as e:
             _log.warning(
                 "sf dialect Python bindings not available (canonicalize/cse skipped): %s\n"
@@ -255,15 +275,27 @@ def _apply_mlir_passes(
                 e,
             )
 
-    # Phase 2: fusion
-    try:
-        mlir_text = fuse_silu_pass(mlir_text)
-    except Exception as e:
-        raise RuntimeError(f"[pipeline] CRITICAL: fuse_silu pass failed: {e}") from e
-    try:
-        mlir_text = fuse_rms_norm_pass(mlir_text)
-    except Exception as e:
-        raise RuntimeError(f"[pipeline] CRITICAL: fuse_rms_norm pass failed: {e}") from e
+    # Phase 2 fallback: Python fusion passes
+    if not _cpp_fusion_available:
+        from compiler.mlir_passes.fusion import (
+            fuse_silu_pass,
+            fuse_rms_norm_pass,
+            fuse_qkv_pass,
+            fuse_attention_pass,
+        )
+        fusion_pipeline = [
+            ("fuse_silu", fuse_silu_pass),
+            ("fuse_rms_norm", fuse_rms_norm_pass),
+            ("fuse_qkv", fuse_qkv_pass),
+            ("fuse_attention", fuse_attention_pass),
+        ]
+        for name, fn in fusion_pipeline:
+            try:
+                mlir_text = fn(mlir_text)
+            except Exception as e:
+                raise RuntimeError(
+                    f"[pipeline] CRITICAL: Python fusion pass '{name}' failed: {e}"
+                ) from e
 
     # Phase 3: sf→linalg lowering (optional, after fusion, via C++ DialectConversion)
     lowered_text: str | None = None

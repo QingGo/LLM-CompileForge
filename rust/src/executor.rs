@@ -137,6 +137,7 @@ impl ModelExecutor {
             positions,
             block_manager,
             request_id,
+            &self.cache_policy,
         )?;
 
         dump_layers(&func_outputs);

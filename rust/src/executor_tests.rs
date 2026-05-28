@@ -76,6 +76,16 @@ impl traits::Executable for MockExecutable {
     }
     fn function_count(&self) -> usize { self.function_count }
     fn module_data(&self) -> &[u8] { &self.module_data }
+    fn supported_ops(&self) -> &[&str] {
+        &["mock"]
+    }
+    fn register_expert_kernel(
+        &mut self,
+        _op_name: &str,
+        _kernel: Box<dyn traits::ExpertKernel>,
+    ) -> Result<(), anyhow::Error> {
+        Ok(())
+    }
 }
 
 impl traits::Device for MockDevice {

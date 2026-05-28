@@ -1,5 +1,6 @@
 add_mlir_dialect_library(SfDialect
   SfDialect.cpp
+  SfFusionPasses.cpp
   SfLowerActivation.cpp
   SfLowerAttention.cpp
   SfLowerFused.cpp

@@ -48,4 +48,49 @@ def SfStripGEPNuw : Pass<"sf-strip-gep-nuw", "mlir::ModuleOp"> {
   ];
 }
 
+//===----------------------------------------------------------------------===//
+// Fusion passes
+//===----------------------------------------------------------------------===//
+
+def SfFuseSiluPass : Pass<"sf-fuse-silu", "mlir::func::FuncOp"> {
+  let summary = "Fuse sf.silu + sf.mul into sf.fused_silu_mul";
+  let description = [{
+    Fuses a sf.silu(gate) followed by sf.mul(silu_out, up) into a single
+    sf.fused_silu_mul(gate, up) operation. This enables fusion of the
+    SiLU activation with the element-wise multiplication in the gated MLP.
+  }];
+  let dependentDialects = ["mlir::sf::SfDialect"];
+}
+
+def SfFuseRmsNormPass : Pass<"sf-fuse-rms-norm", "mlir::func::FuncOp"> {
+  let summary = "Fuse sf.rms_norm + sf.mul + sf.matmul into sf.fused_rms_norm_matmul";
+  let description = [{
+    Fuses a chain of sf.rms_norm(x, w1) → sf.mul(normed, w2) → sf.matmul(mul_out, w3)
+    into a single sf.fused_rms_norm_matmul(x, w2, w3). This eliminates the
+    intermediate norm normalization tensor materialization.
+  }];
+  let dependentDialects = ["mlir::sf::SfDialect"];
+}
+
+def SfFuseQKVPass : Pass<"sf-fuse-qkv", "mlir::func::FuncOp"> {
+  let summary = "Fuse 3× sf.linear with same input into sf.fused_qkv";
+  let description = [{
+    Fuses three sf.linear (or sf.matmul) operations that share the same
+    input tensor into a single sf.fused_qkv operation. This is the QKV
+    projection fusion used in attention blocks.
+  }];
+  let dependentDialects = ["mlir::sf::SfDialect"];
+}
+
+def SfFuseAttentionPass : Pass<"sf-fuse-attention", "mlir::func::FuncOp"> {
+  let summary = "Fuse SDPA + transpose + view + linear into sf.fused_attention_output";
+  let description = [{
+    Fuses the chain sf.scaled_dot_product_attention → sf.transpose → sf.view
+    → sf.linear (output projection) into a single sf.fused_attention_output
+    operation. This reduces memory traffic by keeping the attention output
+    in-register.
+  }];
+  let dependentDialects = ["mlir::sf::SfDialect"];
+}
+
 #endif // SF_PASSES

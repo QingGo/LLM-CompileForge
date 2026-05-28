@@ -68,6 +68,10 @@ pub struct InterceptSpec {
     pub direction: String,
     pub source: String,
     pub layer: String,
+    /// Which function in the compute graph this intercept applies to.
+    pub func_index: usize,
+    /// Which output of that function is intercepted.
+    pub output_index: usize,
 }
 
 /// Declarative model cache strategy — serialized from Python at compile
@@ -143,6 +147,8 @@ impl CachePolicy {
                         source: io.get("source").and_then(|v| v.as_str())
                             .ok_or_else(|| "missing source in intercept".to_string())?.to_string(),
                         layer: io.get("layer").and_then(|v| v.as_str()).unwrap_or("sequential").to_string(),
+                        func_index: io.get("func_index").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+                        output_index: io.get("output_index").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
                     });
                 }
                 intercepts
@@ -232,9 +238,11 @@ mod tests {
             ],
             "intercepts": [
                 {"slab_id": "k", "op_name": "scaled_dot_product_attention",
-                 "direction": "read_write", "source": "operand[1]", "layer": "sequential"},
+                 "direction": "read_write", "source": "operand[1]", "layer": "sequential",
+                 "func_index": 1, "output_index": 1},
                 {"slab_id": "v", "op_name": "scaled_dot_product_attention",
-                 "direction": "read_write", "source": "operand[2]", "layer": "sequential"},
+                 "direction": "read_write", "source": "operand[2]", "layer": "sequential",
+                 "func_index": 1, "output_index": 2},
             ],
             "block_size": 16,
             "max_requests": 256,
@@ -266,9 +274,13 @@ mod tests {
         assert_eq!(policy.intercepts[0].direction, "read_write");
         assert_eq!(policy.intercepts[0].source, "operand[1]");
         assert_eq!(policy.intercepts[0].layer, "sequential");
+        assert_eq!(policy.intercepts[0].func_index, 1);
+        assert_eq!(policy.intercepts[0].output_index, 1);
 
         assert_eq!(policy.intercepts[1].slab_id, "v");
         assert_eq!(policy.intercepts[1].source, "operand[2]");
+        assert_eq!(policy.intercepts[1].func_index, 1);
+        assert_eq!(policy.intercepts[1].output_index, 2);
 
         assert_eq!(policy.block_size, 16);
         assert_eq!(policy.max_requests, 256);

@@ -341,93 +341,11 @@ fn make_memref_descriptor(buf: &dyn traits::Buffer) -> Result<MemRefDescAny, any
     }
 }
 
-/// Parse a single output descriptor from the sret buffer at ``offset``.
-///
-/// The MLIR ciface convention writes one or more contiguous MemRef descriptors
-/// into the sret buffer. Each descriptor has the layout:
-///
-/// ```text
-///   struct { allocated: ptr, aligned: ptr, offset: i64,
-///            sizes: [i64; RANK], strides: [i64; RANK] }
-/// ```
-///
-/// Since the caller does not (yet) supply rank metadata, we probe ranks 1–4
-/// and accept the first descriptor with a non-null aligned pointer and valid
-/// sizes. Returns ``(aligned_ptr, sizes, descriptor_byte_size)``.
-///
-/// # Safety
-///
-/// ``sret`` must contain valid binary data written by a ciface kernel.
-/// ``offset`` must be within bounds.
-unsafe fn parse_sret_descriptor_at(
-    sret: &[u8],
-    offset: usize,
-) -> Result<(*mut u8, Vec<i64>, usize), anyhow::Error> {
-    // Try ranks 1..=4 — the most common output ranks for compiled models.
-    for rank in 1..=4 {
-        let desc_size = 24 + 16 * rank;
-        if offset + desc_size > sret.len() {
-            continue;
-        }
-        let slice = &sret[offset..offset + desc_size];
-
-        let aligned = std::ptr::read_unaligned(slice.as_ptr().add(8) as *const *mut u8);
-        if aligned.is_null() {
-            continue;
-        }
-
-        let sizes: Vec<i64> = (0..rank)
-            .map(|i| {
-                std::ptr::read_unaligned(slice.as_ptr().add(24 + i * 8) as *const i64)
-            })
-            .collect();
-
-        // Validate: all sizes positive, total element count reasonable.
-        let all_ok = sizes.iter().all(|&s| s > 0 && s < 1_000_000);
-        if !all_ok {
-            continue;
-        }
-        let n: usize = sizes.iter().map(|&s| s as usize).product();
-        if n > 0 && n < 100_000_000 {
-            return Ok((aligned, sizes, desc_size));
-        }
-    }
-
-    // Fallback: try rank 1 without validation (accepts zero or negative sizes).
-    {
-        let desc_size = 24 + 16 * 1;
-        if offset + desc_size <= sret.len() {
-            let slice = &sret[offset..offset + desc_size];
-            let aligned = std::ptr::read_unaligned(slice.as_ptr().add(8) as *const *mut u8);
-            if !aligned.is_null() {
-                let s0 = std::ptr::read_unaligned(slice.as_ptr().add(24) as *const i64);
-                let n = std::cmp::max(0, s0) as usize;
-                if n < 100_000_000 {
-                    return Ok((aligned, vec![s0], desc_size));
-                }
-            }
-        }
-    }
-
-    Err(anyhow::anyhow!(
-        "failed to parse sret output descriptor at offset {} (sret len {}, outputs follow)",
-        offset,
-        sret.len(),
-    ))
-}
-
 /// Read a single sret output descriptor at a KNOWN rank.
 ///
-/// Unlike [`parse_sret_descriptor_at`] which probes ranks 1-4, this function
-/// reads exactly the bytes for the given rank.  The caller must supply the
+/// Reads exactly the bytes for the given rank. The caller must supply the
 /// correct rank (from the compute graph) to avoid misaligned reads when
 /// consecutive descriptors have different ranks.
-///
-/// # Safety
-///
-/// `slice` must be at least `24 + 16 * rank` bytes long and contain valid
-/// MemRef descriptor data written by a ciface kernel.
-/// Read a single sret output descriptor at a KNOWN rank.
 ///
 /// The MemRef descriptor layout (MLIR LLVM dialect convention):
 ///
