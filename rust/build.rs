@@ -53,4 +53,12 @@ fn main() {
     println!("cargo:rustc-link-lib=static=call_gen");
     println!("cargo:rustc-link-search=native={}", out_dir);
     println!("cargo:rerun-if-changed=build.rs");
+
+    // BLAS linking for HAL matmul (cblas_sgemm)
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+    match target_os.as_str() {
+        "macos" => println!("cargo:rustc-link-lib=framework=Accelerate"),
+        "linux" => println!("cargo:rustc-link-lib=openblas"),
+        other => panic!("unsupported target OS for BLAS linking: {other}"),
+    }
 }
