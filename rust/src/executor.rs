@@ -62,9 +62,16 @@ impl ModelExecutor {
 
         #[cfg(feature = "hal-rust")]
         let executable: Box<dyn traits::Executable> = {
-            let dylib_dir = std::path::Path::new(dylib_path)
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."));
+            let dylib_p = std::path::Path::new(dylib_path);
+            // If dylib_path is a directory (model dir), use it directly.
+            // If it's a file (dylib), use its parent as the model dir.
+            let dylib_dir = if dylib_p.is_dir() {
+                dylib_p.to_path_buf()
+            } else {
+                dylib_p.parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .to_path_buf()
+            };
             let constants_path = dylib_dir.join("constants.bin");
             // If constants.bin exists alongside the dylib, build a
             // HalRustExecutable (pure-Rust dispatch, no dylib loaded).
