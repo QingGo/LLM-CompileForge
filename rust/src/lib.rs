@@ -24,6 +24,14 @@ mod kv_cache_tests;
 #[path = "compute_graph.rs"]
 mod compute_graph_test;
 
+#[cfg(test)]
+#[path = "tensor.rs"]
+mod tensor;
+
+#[cfg(test)]
+#[path = "weight_loader.rs"]
+mod weight_loader;
+
 #[cfg(feature = "python-bindings")]
 mod py_bindings {
     use crate::block_manager::BlockManager;

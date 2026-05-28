@@ -87,6 +87,31 @@ impl ModelExecutor {
             return Err(ExecutorError::MissingComputeGraph.into());
         };
 
+        // Parse contract section (v4+): key-value metadata appended after
+        // the compute graph. Backward compat: v2/v3 has no contract section.
+        let contract = crate::weight_loader::parse_contract(data, &mut pos)?;
+        if !contract.is_empty() {
+            log::info!(
+                "SFCF v{} contract: num_global_inputs={:?}, global_input_names={:?}",
+                sfcf_version,
+                contract.get("num_global_inputs"),
+                contract.get("global_input_names"),
+            );
+            // Validate that the model was compiled with exactly 2 global
+            // inputs (input_ids, position_ids) as required by the runtime.
+            if let Some(num_str) = contract.get("num_global_inputs") {
+                if let Ok(n) = num_str.parse::<usize>() {
+                    if n != 2 {
+                        panic!(
+                            "model compiled with {} global inputs, runtime expects 2. \
+                             Recompile with: scripts/compile.py opt-125m",
+                            n,
+                        );
+                    }
+                }
+            }
+        }
+
         Ok(Self {
             executable,
             weight_provider,

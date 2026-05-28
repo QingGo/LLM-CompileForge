@@ -54,9 +54,9 @@ pub fn parse_embedded(data: &[u8]) -> Result<(WeightRegistry, usize, u32), anyho
         )).into());
     }
     let version = u32::from_le_bytes(data[4..8].try_into()?);
-    if version < 2 || version > 3 {
+    if version < 2 || version > 4 {
         return Err(ExecutorError::SfcfParse(format!(
-            "unsupported binary version: {} (expected 2 or 3)", version,
+            "unsupported binary version: {} (expected 2..=4)", version,
         )).into());
     }
 
@@ -116,6 +116,31 @@ pub fn parse_embedded(data: &[u8]) -> Result<(WeightRegistry, usize, u32), anyho
         pos,
         version,
     ))
+}
+
+// ── Contract parsing (v4+) ──────────────────────────────────────────
+
+/// Parse the contract section appended after the compute graph trailer.
+///
+/// Format:
+///   contract_count: u32
+///   for each entry:
+///     key_len: u32, key: utf8 bytes, val_len: u32, val: utf8 bytes
+///
+/// Returns an empty HashMap when no contract section is present (v2/v3
+/// backward compat).
+pub fn parse_contract(data: &[u8], pos: &mut usize) -> Result<HashMap<String, String>, anyhow::Error> {
+    if *pos >= data.len() {
+        return Ok(HashMap::new());
+    }
+    let count = sfcf::read_u32(data, pos)? as usize;
+    let mut contract = HashMap::with_capacity(count);
+    for _ in 0..count {
+        let key = sfcf::read_string(data, pos)?;
+        let val = sfcf::read_string(data, pos)?;
+        contract.insert(key, val);
+    }
+    Ok(contract)
 }
 
 // ── Dylib loading ─────────────────────────────────────────────────
@@ -372,5 +397,91 @@ mod tests {
         buf.extend_from_slice(&0u32.to_le_bytes()); // 0 constants
         let (_, _, ver) = parse_embedded(&buf).expect("v3 should be supported");
         assert_eq!(ver, 3);
+    }
+
+    // ── Contract (v4) tests ──────────────────────────────────
+
+    /// Build a minimal SFCF v4 binary followed by a contract section.
+    fn sfcf_v4_with_contract(entries: &[(&str, &str)]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        // SFCF header
+        buf.extend_from_slice(b"SFCF");
+        buf.extend_from_slice(&4u32.to_le_bytes()); // v4
+        buf.extend_from_slice(&0u32.to_le_bytes()); // 0 name mappings
+        buf.extend_from_slice(&0u32.to_le_bytes()); // 0 constants
+
+        // Minimal compute graph: 0 functions, then global I/O trailer
+        buf.extend_from_slice(&0u32.to_le_bytes()); // num_funcs
+        buf.extend_from_slice(&0u32.to_le_bytes()); // global_input_func
+        buf.extend_from_slice(&0u32.to_le_bytes()); // global_input_arg
+        buf.extend_from_slice(&0u32.to_le_bytes()); // global_output_func
+        buf.extend_from_slice(&0u32.to_le_bytes()); // global_output_idx
+
+        // Contract section
+        buf.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        for (k, v) in entries {
+            let kb = k.as_bytes();
+            buf.extend_from_slice(&(kb.len() as u32).to_le_bytes());
+            buf.extend_from_slice(kb);
+            let vb = v.as_bytes();
+            buf.extend_from_slice(&(vb.len() as u32).to_le_bytes());
+            buf.extend_from_slice(vb);
+        }
+        buf
+    }
+
+    #[test]
+    fn test_parse_v4_supported() {
+        let buf = sfcf_v4_with_contract(&[]);
+        let (_, _, ver) = parse_embedded(&buf).expect("v4 should be supported");
+        assert_eq!(ver, 4);
+    }
+
+    #[test]
+    fn test_parse_contract_v4() {
+        let buf = sfcf_v4_with_contract(&[
+            ("sfcf_version", "4"),
+            ("num_global_inputs", "2"),
+            ("global_input_names", "input_ids,position_ids"),
+        ]);
+        let (_, graph_pos, ver) = parse_embedded(&buf).expect("parse v4 with contract");
+        assert_eq!(ver, 4);
+
+        // Parse contract from position after compute graph (which has 0 functions)
+        // Header is 16 bytes + compute graph trailer is 20 bytes = 36
+        let mut pos = graph_pos + 20; // skip compute graph (0 funcs)
+        let contract = parse_contract(&buf, &mut pos).expect("parse contract");
+        assert_eq!(contract.len(), 3);
+        assert_eq!(contract.get("sfcf_version").map(|s| s.as_str()), Some("4"));
+        assert_eq!(contract.get("num_global_inputs").map(|s| s.as_str()), Some("2"));
+        assert_eq!(
+            contract.get("global_input_names").map(|s| s.as_str()),
+            Some("input_ids,position_ids"),
+        );
+    }
+
+    #[test]
+    fn test_parse_contract_v3_backward_compat() {
+        // v3 binary has no contract section — parse_contract must return empty HashMap
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"SFCF");
+        buf.extend_from_slice(&3u32.to_le_bytes()); // v3
+        buf.extend_from_slice(&0u32.to_le_bytes()); // 0 name mappings
+        buf.extend_from_slice(&0u32.to_le_bytes()); // 0 constants
+
+        let mut pos = 16; // past the header
+        let contract = parse_contract(&buf, &mut pos).expect("v3 backward compat");
+        assert!(contract.is_empty(), "v3 binary should have no contract");
+        // pos should not advance past the header for v3
+        assert_eq!(pos, 16);
+    }
+
+    #[test]
+    fn test_parse_contract_empty_data() {
+        // Parsing from end of data returns empty HashMap (no crash)
+        let mut pos = 0usize;
+        let contract = parse_contract(&[], &mut pos).expect("empty data");
+        assert!(contract.is_empty());
+        assert_eq!(pos, 0);
     }
 }
