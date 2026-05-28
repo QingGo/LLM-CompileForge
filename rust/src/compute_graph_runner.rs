@@ -15,7 +15,6 @@ use crate::block_manager::BlockManager;
 use crate::compute_graph::{ComputeGraph, InputBinding, IOTensorDef};
 use crate::hal::cpu::buffer::CpuBuffer as InnerCpuBuffer;
 use crate::hal::cpu::CpuBuffer;
-use crate::hal::cpu::CpuStream;
 use crate::hal::traits;
 use crate::kv_cache::CachePolicy;
 use crate::kv_cache_intercept::{intercept_consumed_input, intercept_consumed_output};
@@ -42,8 +41,8 @@ pub fn run_function_graph(
     func_outputs: &mut Vec<Vec<Tensor>>,
     input_ids: &[u32],
     positions: &[u32],
+    stream: &dyn traits::Stream,
 ) -> Result<Tensor, anyhow::Error> {
-    let stream = CpuStream;
 
     for func_def in &compute_graph.functions {
         let fi = func_def.index;
@@ -169,7 +168,7 @@ pub fn run_function_graph(
         // SAFETY: executable.execute handles the ciface kernel call
         // internally, including sret allocation, lookup_typed, and
         // parsing output descriptors.
-        let output_shapes = executable.execute(&func_def.symbol, &stream, &input_refs, &output_refs)?;
+        let output_shapes = executable.execute(&func_def.symbol, stream, &input_refs, &output_refs)?;
 
         // Extract Tensors from output buffers using the returned shapes.
         for (oi, shapes) in output_shapes.iter().enumerate() {
@@ -263,13 +262,13 @@ pub fn run_function_graph_with_kv_intercept(
     func_outputs: &mut Vec<Vec<Tensor>>,
     input_ids: &[u32],
     positions: &[u32],
+    stream: &dyn traits::Stream,
     mut block_manager: Option<&mut BlockManager>,
     request_id: Option<&str>,
     cache_policy: &CachePolicy,
 ) -> Result<Tensor, anyhow::Error> {
     let is_decode = input_ids.len() == 1;
     let mut kv_new: HashMap<(usize, usize), Tensor> = HashMap::new();
-    let stream = CpuStream;
 
     for func_def in &compute_graph.functions {
         let fi = func_def.index;
@@ -406,7 +405,7 @@ pub fn run_function_graph_with_kv_intercept(
             output_bufs.iter().map(|b| b.as_ref()).collect();
 
         let output_shapes =
-            executable.execute(&func_def.symbol, &stream, &input_refs, &output_refs)?;
+            executable.execute(&func_def.symbol, stream, &input_refs, &output_refs)?;
 
         for (oi, shapes) in output_shapes.iter().enumerate() {
             let actual_n: usize = shapes.iter().map(|&s| std::cmp::max(0, s) as usize).product();

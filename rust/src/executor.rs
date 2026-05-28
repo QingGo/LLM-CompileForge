@@ -4,11 +4,24 @@ use crate::block_manager::BlockManager;
 use crate::compute_graph::ComputeGraph;
 use crate::error::ExecutorError;
 use crate::hal::cpu::CpuDevice;
+use crate::hal::cpu::CpuStream;
 use crate::kernel_catalog::KernelCatalog;
 use crate::hal::traits;
 use crate::kv_cache::CachePolicy;
 use crate::tensor::Tensor;
 use crate::weight_loader::WeightProvider;
+
+/// Load a pure-Rust HAL executable (no dylib dependency).
+///
+/// The generated ``hal_ops_cpu.rs`` functions are compiled directly into
+/// the binary via ``#[cfg(feature = "hal-rust")]``.
+///
+/// ``function_count`` is the number of functions in the compute graph
+/// (typically 16 for no-cache or 28 for KV-cache models).
+#[cfg(feature = "hal-rust")]
+pub fn load_hal_rust_executable(function_count: usize) -> Box<dyn traits::Executable> {
+    Box::new(crate::hal::rust::executable::HalRustExecutable::new(function_count))
+}
 
 pub struct ModelExecutor {
     pub executable: Box<dyn traits::Executable>,
@@ -100,6 +113,7 @@ impl ModelExecutor {
     pub fn forward_with_positions(&self, input_ids: &[u32], positions: &[u32]) -> Result<Tensor, anyhow::Error> {
         let num_funcs = self.compute_graph.functions.len();
         let mut func_outputs: Vec<Vec<Tensor>> = vec![Vec::new(); num_funcs];
+        let stream = CpuStream;
 
         let result = crate::compute_graph_runner::run_function_graph(
             &self.compute_graph,
@@ -109,6 +123,7 @@ impl ModelExecutor {
             &mut func_outputs,
             input_ids,
             positions,
+            &stream,
         )?;
 
         dump_layers(&func_outputs);
@@ -126,6 +141,7 @@ impl ModelExecutor {
     ) -> Result<Tensor, anyhow::Error> {
         let num_funcs = self.compute_graph.functions.len();
         let mut func_outputs: Vec<Vec<Tensor>> = vec![Vec::new(); num_funcs];
+        let stream = CpuStream;
 
         let result = crate::compute_graph_runner::run_function_graph_with_kv_intercept(
             &self.compute_graph,
@@ -135,6 +151,7 @@ impl ModelExecutor {
             &mut func_outputs,
             input_ids,
             positions,
+            &stream,
             block_manager,
             request_id,
             &self.cache_policy,

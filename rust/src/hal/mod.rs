@@ -7,5 +7,8 @@ pub mod traits;
 pub mod cpu;
 
 #[cfg(feature = "hal-rust")]
+pub mod rust;
+
+#[cfg(feature = "hal-rust")]
 #[path = "../../../compiled/opt_125m_kv/hal_ops_cpu.rs"]
 pub mod hal_ops_cpu;
