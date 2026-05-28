@@ -135,210 +135,21 @@ impl ModelExecutor {
         let num_funcs = self.compute_graph.functions.len();
         let mut func_outputs: Vec<Vec<Tensor<'static>>> = vec![Vec::new(); num_funcs];
 
-        for func_def in &self.compute_graph.functions {
-            let fi = func_def.index;
-            let kernel = self
-                .executable
-                .lookup_typed(&func_def.symbol, func_def.total_args())?;
+        let result = crate::compute_graph_runner::run_function_graph(
+            &self.compute_graph,
+            &self.executable,
+            &self.weight_provider,
+            &self.weight_cache,
+            &mut func_outputs,
+            input_ids,
+            positions,
+        )?;
 
-            let mut input_descs: Vec<MemRefDescAny> =
-                Vec::with_capacity(func_def.num_inputs);
-            let mut input_ptrs: Vec<*const c_void> =
-                Vec::with_capacity(func_def.num_inputs);
-            let mut _tensors: Vec<Tensor<'static>> = Vec::with_capacity(func_def.num_inputs);
-            let mut _raw_buffers: Vec<Vec<u8>> = Vec::new();
-
-            for (bi, (binding, io_def)) in func_def.inputs.iter().enumerate() {
-                let shape: Vec<usize> =
-                    io_def.shape.iter().map(|&d| d as usize).collect();
-                let tensor: Tensor = match binding {
-                    InputBinding::GlobalInput => {
-                        // shape[i] == 0 is the SFCF dynamic sentinel
-                        let is_dynamic = shape.iter().any(|&d| d == 0);
-                        if is_dynamic {
-                            let rank = io_def.rank as usize;
-                            let data_source: &[u32] = if bi == 1 { positions } else { input_ids };
-                            match rank {
-                                1 => {
-                                    let n_tokens = data_source.len();
-                                    let raw: Vec<u8> = data_source.iter()
-                                        .flat_map(|&v| (v as i64).to_ne_bytes())
-                                        .collect();
-                                    let p = raw.as_ptr();
-                                    let memref = MemRefDesc1 {
-                                        allocated: p as *mut c_void,
-                                        aligned: p as *mut c_void,
-                                        offset: 0,
-                                        sizes: [n_tokens as i64],
-                                        strides: [1],
-                                    };
-                                    _raw_buffers.push(raw);
-                                    let desc = MemRefDescAny::R1(memref);
-                                    input_descs.push(desc);
-                                    input_ptrs.push(input_descs.last()
-                                        .expect("input_descs has entry for GlobalInput")
-                                        .as_input_ptr());
-                                    continue;
-                                }
-                                2 => {
-                                    let n_tokens = data_source.len() as i64;
-                                    let raw: Vec<u8> = data_source.iter()
-                                        .flat_map(|&v| (v as i64).to_ne_bytes())
-                                        .collect();
-                                    let p = raw.as_ptr();
-                                    let memref = MemRefDesc2 {
-                                        allocated: p as *mut c_void,
-                                        aligned: p as *mut c_void,
-                                        offset: 0,
-                                        sizes: [1, n_tokens],
-                                        strides: [n_tokens, 1],
-                                    };
-                                    _raw_buffers.push(raw);
-                                    let desc = MemRefDescAny::R2(memref);
-                                    input_descs.push(desc);
-                                    input_ptrs.push(input_descs.last()
-                                        .expect("input_descs has entry for GlobalInput")
-                                        .as_input_ptr());
-                                    continue;
-                                }
-                                r => anyhow::bail!(
-                                    "forward_with_positions: unsupported rank {} for \
-                                     dynamic GlobalInput (shape={:?})",
-                                    r, shape,
-                                ),
-                            }
-                        }
-                        let data_source: &[u32] = if bi == 1 { positions } else { input_ids };
-                        let expected_numel: usize = shape.iter().product();
-                        let n_tokens = data_source.len().min(expected_numel);
-                        let padded: Vec<i64> = (0..expected_numel).map(|i| {
-                            if i < n_tokens {
-                                data_source[i] as i64
-                            } else {
-                                0i64
-                            }
-                        }).collect();
-                        let raw: Vec<u8> = padded.iter().flat_map(|&v| v.to_ne_bytes()).collect();
-                        let p = raw.as_ptr();
-                        let memref = MemRefDesc2 {
-                            allocated: p as *mut c_void,
-                            aligned: p as *mut c_void,
-                            offset: 0,
-                            sizes: [shape[0] as i64, shape.get(1).copied().unwrap_or(1) as i64],
-                            strides: [shape.get(1).copied().unwrap_or(1) as i64, 1],
-                        };
-                        _raw_buffers.push(raw);
-                        let desc = MemRefDescAny::R2(memref);
-                        input_descs.push(desc);
-                        input_ptrs.push(input_descs.last()
-                            .expect("input_descs has entry for GlobalInput").as_input_ptr());
-                        continue;
-                    }
-                    InputBinding::Weight(key) => {
-                        let mut cache = self.weight_cache.borrow_mut();
-                        if let Some(cached) = cache.get(key) {
-                            cached.to_owned()
-                        } else {
-                            let desc = self
-                                .weight_provider
-                                .get_weight_memref(key)
-                                .ok_or_else(|| {
-                                    anyhow::anyhow!("weight not found: {}", key)
-                                })?;
-                            let n = desc.numel();
-                            let data: Vec<f32> = unsafe {
-                                let raw = desc.aligned as *const u16;
-                                let slice = std::slice::from_raw_parts(raw, n);
-                                slice.iter().map(|&h| f16::from_bits(h).to_f32()).collect()
-                            };
-                            let tensor = Tensor::new_owned(shape, data, Dtype::F32);
-                            cache.insert(key.clone(), tensor.to_owned());
-                            tensor
-                        }
-                    }
-                    InputBinding::Ssa {
-                        producer_func,
-                        output_idx,
-                    } => {
-                        let ref_tensor = &func_outputs[*producer_func][*output_idx];
-                        ref_tensor.to_owned()
-                    }
-                };
-
-                let desc = MemRefDescAny::from_f32(&tensor.shape, tensor.as_slice())
-                    .map_err(|e| anyhow::anyhow!("weight desc: {}", e))?;
-                input_descs.push(desc);
-                input_ptrs.push(input_descs.last()
-                    .expect("input_descs has entry for Weight/Ssa input").as_input_ptr());
-                _tensors.push(tensor);
-            }
-            debug_assert!(_tensors.len() <= input_ptrs.len());
-
-            const SRET_BUF_SIZE: usize = 131072;
-            let mut sret: Vec<u8> = vec![0u8; SRET_BUF_SIZE];
-            let sret_ptr = sret.as_mut_ptr() as *mut c_void;
-
-            let mut all_args: Vec<*const c_void> = Vec::with_capacity(1 + input_ptrs.len());
-            all_args.push(sret_ptr);
-            all_args.extend(input_ptrs.iter().copied());
-            // SAFETY: kernel was loaded from the compiled .dylib and validated
-            // by Executable::lookup_typed().  sret_ptr and input_ptrs point to
-            // writable/readable buffers of appropriate size.  The kernel is
-            // _mlir_ciface_* — a C ABI function that reads MemRef descriptors
-            // from input_ptrs and writes output descriptors to sret_ptr.
-            unsafe {
-                let raw_ptr = kernel.as_raw_ptr();
-                crate::ciface_high::call_high_arity(raw_ptr, &all_args);
-            }
-
-            let mut sret_offset: usize = 0;
-            for (oi, io_def) in func_def.outputs.iter().enumerate() {
-                let r = io_def.rank as usize;
-                let desc_size = 24 + 16 * r;
-                let end = sret_offset + desc_size;
-                if end > SRET_BUF_SIZE {
-                    anyhow::bail!(
-                        "sret overflow: func {} output {} desc_size={} offset={} exceeds {}",
-                        fi, oi, desc_size, sret_offset, SRET_BUF_SIZE,
-                    );
-                }
-                let ptr_slice = &sret[sret_offset..end];
-                // SAFETY: parse_sret_descriptor reads structured binary data
-                // from the sret buffer written by the MLIR ciface kernel.
-                // desc_size was computed from the known rank r.  The slice
-                // bounds are validated above (end <= SRET_BUF_SIZE).
-                let (aligned, runtime_sizes) = match unsafe { parse_sret_descriptor(ptr_slice, r) } {
-                    Ok(result) => result,
-                    Err(e) => {
-                        eprintln!("[executor] func_{} output_{}: {} — skipping", fi, oi, e);
-                        sret_offset += desc_size;
-                        continue;
-                    }
-                };
-                let fallback: Vec<i64> = io_def.shape.iter().map(|&d|
-                    if d == 0 { 1 } else { d as i64 }
-                ).collect();
-                let sizes: Vec<i64> = runtime_sizes.iter().zip(fallback.iter()).map(|(&r, &f)|
-                    if r <= 0 || r > 1_000_000_000 { f } else { r }
-                ).collect();
-                let n: usize = sizes.iter().map(|&s| s as usize).product();
-                let data: Vec<f32> = if aligned.is_null() {
-                    Vec::new()
-                } else {
-                    unsafe {
-                        let slice = std::slice::from_raw_parts(aligned as *const f32, n);
-                        slice.to_vec()
-                    }
-                };
-                let shape: Vec<usize> = sizes.iter().map(|&s| s as usize).collect();
-                func_outputs[fi].push(Tensor::new_owned(shape, data, Dtype::F32));
-                sret_offset += desc_size;
-            }
-
-            // Dump layer outputs if DUMP_LAYERS is set
-            if let Ok(dump_dir) = std::env::var("DUMP_LAYERS") {
-                let _ = std::fs::create_dir_all(&dump_dir);
-                for (oi, t) in func_outputs[fi].iter().enumerate() {
+        // Dump layer outputs if DUMP_LAYERS is set
+        if let Ok(dump_dir) = std::env::var("DUMP_LAYERS") {
+            let _ = std::fs::create_dir_all(&dump_dir);
+            for (fi, outputs) in func_outputs.iter().enumerate() {
+                for (oi, t) in outputs.iter().enumerate() {
                     let path = format!("{}/func_{}_{}.npy", dump_dir, fi, oi);
                     let slice = t.as_slice();
 
@@ -375,9 +186,7 @@ impl ModelExecutor {
             }
         }
 
-        let (g_func, g_idx) = self.compute_graph.global_output;
-        let result = &func_outputs[g_func][g_idx];
-        Ok(result.to_owned())
+        Ok(result)
     }
 
     /// Run the compute graph with K/V cache interception.
@@ -822,7 +631,7 @@ impl ModelExecutor {
     }
 }
 
-unsafe fn parse_sret_descriptor(slice: &[u8], rank: usize) -> Result<(*mut u8, Vec<i64>), String> {
+pub(crate) unsafe fn parse_sret_descriptor(slice: &[u8], rank: usize) -> Result<(*mut u8, Vec<i64>), String> {
     let min_len = 24 + rank * 8;
     if slice.len() < min_len {
         return Err(format!(

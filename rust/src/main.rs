@@ -8,6 +8,7 @@ mod ciface_high;
 mod block_manager;
 mod compute_graph;
 mod error;
+mod compute_graph_runner;
 mod executor;
 mod kernel_catalog;
 mod hal;

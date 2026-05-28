@@ -16,6 +16,8 @@ mod ciface_high;
 mod compute_graph;
 #[path = "../error.rs"]
 mod error;
+#[path = "../compute_graph_runner.rs"]
+mod compute_graph_runner;
 #[path = "../executor.rs"]
 mod executor;
 #[path = "../kernel_catalog.rs"]
