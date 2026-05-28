@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import struct
+import subprocess
 from typing import Any
 
 import torch
@@ -141,7 +142,7 @@ def _build_constants_binary(module: MlirModule, name_mapping: dict[str, str]) ->
 
     # Header
     parts.append(b"SFCF")
-    parts.append(struct.pack("<I", 3))  # version (v3 adds consumed_internally flag per output)
+    parts.append(struct.pack("<I", 4))  # version (v4 adds contract section with metadata)
 
     # Name mapping
     parts.append(struct.pack("<I", len(name_mapping)))
@@ -179,6 +180,37 @@ def _build_constants_binary(module: MlirModule, name_mapping: dict[str, str]) ->
 
     # ── Compute graph section ──
     _emit_compute_graph_section(parts, module, name_mapping)
+
+    # ── Contract section (v4+) — appended after compute graph trailer ──
+    # Count global inputs using same logic as _emit_compute_graph_section
+    global_input_names: list[str] = []
+    for in_idx, (in_name, _in_type_str) in enumerate(module.functions[0].inputs):
+        if in_idx in (0, 1):
+            global_input_names.append(in_name.lstrip("%"))
+
+    try:
+        compiler_version = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        compiler_version = "unknown"
+
+    contract_entries = [
+        ("sfcf_version", "4"),
+        ("num_global_inputs", str(len(global_input_names))),
+        ("global_input_names", ",".join(global_input_names)),
+        ("compiler_version", compiler_version),
+    ]
+
+    parts.append(struct.pack("<I", len(contract_entries)))
+    for key, val in contract_entries:
+        key_bytes = key.encode("utf-8")
+        val_bytes = val.encode("utf-8")
+        parts.append(struct.pack("<I", len(key_bytes)))
+        parts.append(key_bytes)
+        parts.append(struct.pack("<I", len(val_bytes)))
+        parts.append(val_bytes)
 
     return b"".join(parts)
 

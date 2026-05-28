@@ -106,7 +106,7 @@ class CtypesOracle:
         self._name_mapping, self._sfcf_constants, graph_pos, sfcf_version = parse_sfcf_blob(
             blob_bytes
         )
-        self._graph = parse_compute_graph(blob_bytes, graph_pos, version=sfcf_version)
+        self._graph, _ = parse_compute_graph(blob_bytes, graph_pos, version=sfcf_version)
         _log.info(
             "Parsed SFCF blob: %d functions, %d constants, %d name mappings",
             len(self._graph["functions"]),

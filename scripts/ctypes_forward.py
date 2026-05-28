@@ -131,7 +131,7 @@ def run_ctypes(
         (ctypes.c_uint8 * size_ptr[0]).from_address(data_ptr.value)
     )
     _, sfcf_constants, graph_pos, sfcf_version = parse_sfcf_blob(blob_bytes)
-    graph = parse_compute_graph(blob_bytes, graph_pos, version=sfcf_version)
+    graph, _ = parse_compute_graph(blob_bytes, graph_pos, version=sfcf_version)
 
     # Weight lookup with multi-strategy resolution
     def _get_weight(name: str) -> np.ndarray:

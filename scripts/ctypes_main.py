@@ -107,7 +107,7 @@ def main():
     for k in list(sfcf_constants.keys())[:5]:
         print(f"    constant {k}: shape={sfcf_constants[k].shape}")
 
-    graph = parse_compute_graph(blob_bytes, graph_pos, version=sfcf_version)
+    graph, _ = parse_compute_graph(blob_bytes, graph_pos, version=sfcf_version)
     print(f"  Compute graph: {len(graph['functions'])} functions")
     for fi, f in enumerate(graph['functions']):
         print(f"    [{fi:2d}] {f['symbol']}: "

@@ -115,7 +115,7 @@ def dump_weight_mapping(model_dir: str) -> int:
     # Parse
     try:
         name_mapping, constants, graph_pos, sfcf_version = parse_sfcf_blob(blob)
-        graph = parse_compute_graph(blob, graph_pos, version=sfcf_version)
+        graph, _ = parse_compute_graph(blob, graph_pos, version=sfcf_version)
     except Exception as e:
         print(f"❌ Failed to parse SFCF blob: {e}")
         return 1

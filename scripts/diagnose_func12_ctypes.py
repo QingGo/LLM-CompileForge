@@ -124,7 +124,7 @@ def diagnose_func12(
         blob = f.read()
 
     _, _, graph_pos, sfcf_version = parse_sfcf_blob(blob)
-    graph = parse_compute_graph(blob, graph_pos, version=sfcf_version)
+    graph, _ = parse_compute_graph(blob, graph_pos, version=sfcf_version)
     functions = graph["functions"]
 
     if func_index >= len(functions):

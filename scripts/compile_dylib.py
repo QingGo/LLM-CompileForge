@@ -348,7 +348,7 @@ def main() -> None:
             if _sfcf_off >= 0:
                 from compiler.sfcf_parser import parse_sfcf_blob, parse_compute_graph
                 _nm, _const, _gpos, _ver = parse_sfcf_blob(_existing[_sfcf_off:])
-                _existing_graph = parse_compute_graph(_existing[_sfcf_off:], _gpos, _ver)
+                _existing_graph, _ = parse_compute_graph(_existing[_sfcf_off:], _gpos, _ver)
                 # Map existing consumed_internally flags back to re-parsed functions
                 for _fi, _ef in enumerate(_existing_graph["functions"]):
                     if _fi < len(module.functions):

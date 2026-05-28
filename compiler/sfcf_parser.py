@@ -45,7 +45,7 @@ def parse_sfcf_blob(blob: bytes):
     """Parse SFCF v2/v3 blob → (name_mapping, constants_dict, graph_start_pos, version)."""
     assert blob[:4] == b'SFCF', f"Bad magic: {blob[:4]}"
     v, pos = _read_u32(blob, 4)
-    assert 2 <= v <= 3, f"Unsupported SFCF version: {v}"
+    assert 2 <= v <= 4, f"Unsupported SFCF version: {v}"
 
     # Name mappings  (compiled → hf_key)
     nm_count, pos = _read_u32(blob, pos)
@@ -86,6 +86,31 @@ def parse_sfcf_blob(blob: bytes):
         constants[name] = arr
 
     return name_mapping, constants, pos, v
+
+
+def parse_contract_section(data: bytes, pos: int) -> dict[str, str]:
+    """Parse the trailing contract section appended after the compute graph trailer.
+
+    Contract format:
+        contract_count: u32
+        for each entry:
+            key_len: u32
+            key: UTF-8
+            val_len: u32
+            val: UTF-8
+
+    Returns a dict of key-value pairs, or empty dict if pos >= len(data)
+    (backward compatible: v2/v3 binaries have no contract section).
+    """
+    if pos >= len(data):
+        return {}
+    contract_count, pos = _read_u32(data, pos)
+    contract: dict[str, str] = {}
+    for _ in range(contract_count):
+        key, pos = _read_str(data, pos)
+        val, pos = _read_str(data, pos)
+        contract[key] = val
+    return contract
 
 
 def parse_compute_graph(data: bytes, pos: int, version: int = 3):
@@ -166,7 +191,7 @@ def parse_compute_graph(data: bytes, pos: int, version: int = 3):
         'functions': functions,
         'global_input': (gi_func, gi_arg),
         'global_output': (go_func, go_idx),
-    }
+    }, pos
 
 
 # =====================================================================
