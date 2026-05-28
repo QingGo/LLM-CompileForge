@@ -45,6 +45,8 @@ impl CpuExecutable {
     /// containing the weight registry, compute graph, and contract.
     pub fn load_constants(&self) -> Result<Vec<u8>, anyhow::Error> {
         let data_ptr: *const u8 = {
+            // SAFETY: Symbol lookup from a loaded dylib returns a valid pointer
+            // if the dylib exports the named symbol.
             let sym: libloading::Symbol<*const std::ffi::c_void> = unsafe {
                 self.lib.get(b"serveforge_constants_data")
                     .map_err(|e| anyhow::anyhow!("missing serveforge_constants_data: {}", e))?
@@ -52,12 +54,17 @@ impl CpuExecutable {
             *sym as *const u8
         };
         let size_val: u64 = {
+            // SAFETY: Same as above — symbol lookup from a loaded dylib.
             let sym = unsafe {
                 self.lib.get::<*const u64>(b"serveforge_constants_size")
                     .map_err(|e| anyhow::anyhow!("missing serveforge_constants_size: {}", e))?
             };
+            // SAFETY: Dereferencing a symbol pointer that was just successfully
+            // looked up from the dylib.
             unsafe { *(*sym) }
         };
+        // SAFETY: data_ptr and size_val come from the dylib's exported constants.
+        // The dylib guarantees the data region is at least size_val bytes.
         let data: &[u8] =
             unsafe { std::slice::from_raw_parts(data_ptr, size_val as usize) };
         Ok(data.to_vec())

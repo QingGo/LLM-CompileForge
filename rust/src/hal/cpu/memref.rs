@@ -88,6 +88,8 @@ impl<const RANK: usize> MemRefDesc<RANK> {
     pub fn zeroed(shape: [usize; RANK]) -> Self {
         let numel: usize = super::sret::checked_product_usize(&shape).unwrap_or(usize::MAX);
         let layout = std::alloc::Layout::array::<f32>(numel.max(1)).expect("invalid layout");
+        // SAFETY: layout was computed by Layout::array::<f32>(numel.max(1)) which is
+        // guaranteed valid for numel >= 1.
         let ptr = unsafe { std::alloc::alloc_zeroed(layout) as *mut c_void };
         let mut sizes = [0i64; RANK];
         let mut strides_arr = [0i64; RANK];
@@ -112,6 +114,8 @@ impl<const RANK: usize> MemRefDesc<RANK> {
         let safe_shape: Vec<usize> = shape.iter().map(|&d| if d == 0 { 1 } else { d }).collect();
         let numel: usize = super::sret::checked_product_usize(&safe_shape).unwrap_or(usize::MAX);
         let layout = std::alloc::Layout::array::<f32>(numel.max(1)).expect("invalid layout");
+        // SAFETY: Same as above — layout was computed by Layout::array::<f32>(numel.max(1))
+        // which is guaranteed valid for numel >= 1.
         let ptr = unsafe { std::alloc::alloc_zeroed(layout) as *mut c_void };
         let mut sizes = [0i64; RANK];
         let mut strides_arr = [0i64; RANK];

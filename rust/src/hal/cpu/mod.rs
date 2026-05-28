@@ -70,6 +70,8 @@ impl traits::Device for CpuDevice {
         // CpuExecutable to satisfy the borrow checker.
         let free_fn: unsafe extern "C" fn(*mut std::ffi::c_void) = {
             let sym: libloading::Symbol<unsafe extern "C" fn(*mut std::ffi::c_void)> =
+                // SAFETY: lib.get() returns a valid symbol pointer if the dylib
+                // was loaded successfully.
                 unsafe { inner.lib().get(b"serveforge_free")? };
             *sym
         };

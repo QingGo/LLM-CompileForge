@@ -132,8 +132,8 @@ pub trait Executable: Debug + Send + Sync {
     /// kernel support must override.
     fn register_expert_kernel(
         &mut self,
-        op_name: &str,
-        kernel: Box<dyn ExpertKernel>,
+        _op_name: &str,
+        _kernel: Box<dyn ExpertKernel>,
     ) -> Result<(), anyhow::Error> {
         anyhow::bail!("register_expert_kernel not supported by this backend")
     }

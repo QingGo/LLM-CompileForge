@@ -89,6 +89,8 @@ pub fn run_function_graph(
                                 anyhow::anyhow!("weight not found: {}", key)
                             })?;
                         let n = desc.numel();
+                        // SAFETY: The pointer comes from a valid MemRefDesc's aligned
+                        // field. The f16 data was written by the dylib's execute() call.
                         let data: Vec<f32> = unsafe {
                             let raw = desc.aligned as *const u16;
                             let slice = std::slice::from_raw_parts(raw, n);
@@ -337,6 +339,8 @@ pub fn run_function_graph_with_kv_intercept(
                                 anyhow::anyhow!("weight not found: {}", key)
                             })?;
                         let n = desc.numel();
+                        // SAFETY: The pointer comes from a valid MemRefDesc's aligned
+                        // field. The f16 data was written by the dylib's execute() call.
                         let data: Vec<f32> = unsafe {
                             let raw = desc.aligned as *const u16;
                             let slice = std::slice::from_raw_parts(raw, n);
@@ -402,6 +406,9 @@ pub fn run_function_graph_with_kv_intercept(
         for (oi, io_def) in func_def.outputs.iter().enumerate() {
             let numel = estimate_output_numel(&io_def.shape, seq_len);
             let mut vec = Vec::with_capacity(numel);
+            // SAFETY: numel is computed from the function's output shape.
+            // The vec was allocated with Vec::with_capacity(numel).
+            // execute() will fill the buffer before any reads.
             unsafe { vec.set_len(numel); }
             log::trace!(
                 "run_function_graph_kv: func[{}] output[{}] estimated numel={} (shape={:?}, seq_len={})",
@@ -441,6 +448,9 @@ pub fn run_function_graph_with_kv_intercept(
                 fi, oi, actual_n, out_vec.capacity(),
             );
             if actual_n < out_vec.len() {
+                // SAFETY: actual_n <= out_vec.capacity() (guaranteed by execute's
+                // n_bytes check, double-checked by debug_assert above).
+                // Data was written by execute() via copy_nonoverlapping.
                 unsafe { out_vec.set_len(actual_n); }
             }
             log::trace!(
