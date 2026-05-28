@@ -1,0 +1,269 @@
+"""HAL IR Builder — builds the HAL IR JSON structure from normalized MLIR.
+
+Usage::
+
+    builder = HalIRBuilder()
+    builder.load_mlir(mlir_text)
+    builder.load_metadata(metadata_dict)
+    result = builder.build()
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from typing import Any
+
+from compiler.mlir_dialect.compile_utils import _setup_mlir_path
+from compiler.mlir_dialect.hal_ir.op_lowering import (
+    infer_dtype_from_type,
+    lower_op,
+    parse_sf_op_name,
+    shape_from_type,
+    strip_mlir_quotes,
+)
+from compiler.mlir_dialect.hal_ir.ssa_tracker import SSATracker
+
+_log = logging.getLogger(__name__)
+
+
+# ── HAL IR Builder ──────────────────────────────────────────────────
+
+
+class HalIRBuilder:
+    """Builds the HAL IR structure from a normalized MLIR module.
+
+    Usage::
+
+        builder = HalIRBuilder()
+        builder.load_mlir(mlir_text)
+        builder.load_metadata(metadata_dict)
+        result = builder.build()
+    """
+
+    def __init__(self) -> None:
+        self._model_name = "model"
+        self._mlir_text: str = ""
+        self._metadata: dict[str, Any] = {}
+        self._functions: list[dict[str, Any]] = []
+        self._cache_policy: dict[str, Any] = {}
+        self._weight_classification: dict[str, Any] = {}
+        self._hf_key_map: dict[str, str] = {}
+
+    def load_mlir(self, mlir_text: str) -> None:
+        """Parse and store the MLIR text."""
+        self._mlir_text = mlir_text
+
+    def load_metadata(self, metadata: dict[str, Any]) -> None:
+        """Load compilation metadata (from metadata.json)."""
+        self._metadata = metadata
+        self._cache_policy = metadata.get("cache_policy", {})
+        self._weight_classification = metadata.get("weight_classification", {})
+        self._hf_key_map = metadata.get("hf_key_map", {})
+
+    def set_model_name(self, name: str) -> None:
+        self._model_name = name
+
+    def build(self) -> dict[str, Any]:
+        """Build the complete HAL IR structure.
+
+        Returns a dict ready to be serialized as JSON.
+        """
+        _setup_mlir_path()
+        import sys
+        from pathlib import Path as _Path
+
+        import mlir.ir as ir
+
+        _sf_base = _Path(__file__).resolve().parent.parent.parent.parent / "sf-dialect"
+        for _sf_candidate in [
+            _sf_base / "build" / "python_packages" / "sf",
+            _sf_base / "python_packages" / "sf",
+        ]:
+            if _sf_candidate.is_dir() and str(_sf_candidate) not in sys.path:
+                sys.path.insert(0, str(_sf_candidate))
+
+        ctx = ir.Context()
+        ctx.allow_unregistered_dialects = True
+        try:
+            from mlir_sf._mlir_libs._sfDialectsNanobind import sf
+
+            sf.register_dialects(ctx._CAPIPtr, load=True)
+        except ImportError:
+            _log.warning("SF dialect bindings not available; "
+                         "proceeding without registration")
+
+        with ctx, ir.Location.unknown(ctx):
+            module = ir.Module.parse(self._mlir_text, ctx)
+            self._build_from_module(module)
+
+        return {
+            "model_name": self._model_name,
+            "num_functions": len(self._functions),
+            "functions": self._functions,
+        }
+
+    def _build_from_module(self, module: Any) -> None:
+        """Walk the module and build function entries."""
+        for op in module.operation.regions[0].blocks[0]:
+            op_name = str(op.operation.name)
+            if op_name == "func.func":
+                func_entry = self._build_function(op)
+                self._functions.append(func_entry)
+
+    def _extract_layer(self, func_name: str) -> int | None:
+        """Extract layer number from function name pattern like main_1a, main_2b."""
+        m = re.search(r"main_(\d+)", func_name)
+        if m:
+            return int(m.group(1))
+        return None
+
+    def _get_weight_classification(
+        self, func_name: str
+    ) -> dict[str, list[str]]:
+        """Return the weight classification for a function (empty if missing)."""
+        return self._weight_classification.get(func_name, {
+            "params": [],
+            "constants": [],
+        })
+
+    def _build_function(self, func_op: Any) -> dict[str, Any]:
+        """Process a single func.func op and return its HAL IR entry."""
+        # Get function name (strip MLIR string quotes from StringAttr)
+        func_name = strip_mlir_quotes(
+            str(func_op.attributes.get("sym_name", "unknown"))
+        )
+        layer_idx = self._extract_layer(func_name)
+        # func_type unused but available for debugging
+        _ = str(func_op.attributes.get("function_type", ""))
+
+        # Get operands and results
+        func_region = func_op.regions[0]
+        func_block = func_region.blocks[0]
+
+        # ── Inputs from block args ──────────────────────────────
+        inputs: list[dict[str, Any]] = []
+        weight_class = self._get_weight_classification(func_name)
+        param_names = weight_class.get("params", [])
+        const_names = weight_class.get("constants", [])
+
+        ssa = SSATracker()
+        for i, arg in enumerate(func_block.arguments):
+            arg_name = f"%arg{i}"
+            ssa.register_arg(arg, arg_name)
+            arg_type = str(arg.type) if hasattr(arg, "type") else "unknown"
+            dtype = infer_dtype_from_type(arg_type)
+            shape = shape_from_type(arg_type)
+            inputs.append({
+                "name": arg_name,
+                "shape": shape,
+                "dtype": dtype,
+            })
+
+        # ── Detect consumed_internally patterns ─────────────────
+        # main_{N}a: Q, K, V outputs — K and V are consumed_internally
+        # main_0: attention mask (14th output at index 13) is consumed_internally
+        consumed_internally: list[int] = []
+        is_kv_func_a = bool(re.match(r"main_\d+a$", func_name))
+        is_kv_func_b = bool(re.match(r"main_\d+b$", func_name))
+        is_embed_func = func_name == "main_0"
+
+        if is_kv_func_a:
+            # K and V are outputs 1 and 2 (0-indexed: 1, 2)
+            consumed_internally = [1, 2]
+        elif is_embed_func:
+            # The attention mask (%250) is the 14th returned value (index 13)
+            consumed_internally = [13]
+
+        # Determine if block_table is needed (for cache_read)
+        needs_block_table = is_kv_func_a or is_kv_func_b
+
+        # ── Walk ops ────────────────────────────────────────────
+        ops: list[dict[str, Any]] = []
+        weights: list[dict[str, Any]] = []
+        constants: list[dict[str, Any]] = []
+        weight_index: dict[str, int] = {}
+
+        for inner_op in func_block:
+            raw_name = str(inner_op.operation.name)
+            op_name = parse_sf_op_name(raw_name)
+
+            result_hal = lower_op(
+                inner_op, op_name, ssa, weights, constants,
+                weight_index, param_names, const_names,
+            )
+            if result_hal is not None:
+                ops.append(result_hal)
+
+        # ── Handle consumed_internally: insert cache_write/cache_read ──
+        if is_kv_func_a and consumed_internally:
+            self._add_cache_ops(ops, func_name, layer_idx, consumed_internally, is_kv_func_b)
+        if is_kv_func_b:
+            self._add_cache_ops(ops, func_name, layer_idx, [], True)
+
+        # ── Determine outputs ───────────────────────────────────
+        return_op = None
+        for inner_op in func_block:
+            if str(inner_op.operation.name) in ("func.return", "return"):
+                return_op = inner_op
+                break
+
+        outputs: list[dict[str, Any]] = []
+        if return_op is not None:
+            for i, operand in enumerate(return_op.operands):
+                ot = str(operand.type) if hasattr(operand, "type") else "unknown"
+                dtype = infer_dtype_from_type(ot)
+                shape = shape_from_type(ot)
+                out_entry: dict[str, Any] = {
+                    "name": ssa.lookup(operand),
+                    "shape": shape,
+                    "dtype": dtype,
+                }
+                if i in consumed_internally:
+                    out_entry["consumed_internally"] = True
+                outputs.append(out_entry)
+
+        # ── Build function entry ────────────────────────────────
+        func_entry: dict[str, Any] = {
+            "name": func_name,
+            "layer": layer_idx,
+            "inputs": inputs,
+            "outputs": outputs,
+            "weights": weights,
+            "constants": constants,
+            "ops": ops,
+        }
+
+        if needs_block_table:
+            func_entry["block_table"] = True
+
+        return func_entry
+
+    def _add_cache_ops(
+        self,
+        ops: list[dict[str, Any]],
+        func_name: str,
+        layer_idx: int | None,
+        consumed_indices: list[int],
+        is_b_func: bool,
+    ) -> None:
+        """Insert cache_write and cache_read ops for consumed_internally outputs."""
+        if layer_idx is None:
+            return
+
+        if is_b_func:
+            cache_read_entry: dict[str, Any] = {
+                "op": "cache_read",
+                "layer": layer_idx,
+                "inputs": ["%block_table"],
+                "outputs": [f"%cache_k_{layer_idx}", f"%cache_v_{layer_idx}"],
+            }
+            ops.insert(0, cache_read_entry)
+        else:
+            cache_write_entry: dict[str, Any] = {
+                "op": "cache_write",
+                "layer": layer_idx,
+                "inputs": [],
+                "outputs": [],
+            }
+            ops.append(cache_write_entry)
