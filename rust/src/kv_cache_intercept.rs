@@ -20,8 +20,8 @@ use crate::tensor::{Dtype, Tensor};
 pub fn intercept_consumed_output(
     fi: usize,
     oi: usize,
-    tensor: &Tensor<'static>,
-    kv_new: &mut HashMap<(usize, usize), Tensor<'static>>,
+    tensor: &Tensor,
+    kv_new: &mut HashMap<(usize, usize), Tensor>,
     block_manager: Option<&mut BlockManager>,
     request_id: Option<&str>,
     positions: &[u32],
@@ -109,12 +109,12 @@ pub fn intercept_consumed_input(
     producer_func: usize,
     output_idx: usize,
     compute_graph: &ComputeGraph,
-    kv_new: &HashMap<(usize, usize), Tensor<'static>>,
+    kv_new: &HashMap<(usize, usize), Tensor>,
     block_manager: Option<&BlockManager>,
     request_id: Option<&str>,
     positions: &[u32],
     is_decode: bool,
-) -> Result<Tensor<'static>, anyhow::Error> {
+) -> Result<Tensor, anyhow::Error> {
     let new_tensor = kv_new
         .get(&(producer_func, output_idx))
         .ok_or_else(|| {

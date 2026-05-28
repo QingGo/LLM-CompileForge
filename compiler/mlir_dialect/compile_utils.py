@@ -389,6 +389,8 @@ def _compile_mlir_to_dylib_with_constants(
                 _compile_embedded_data(const_bin_path, td)
             )
 
+        obj_files.append(_compile_serveforge_free(td))
+
         link_dylib(obj_files, dylib_path)
 
 
@@ -433,6 +435,34 @@ def _compile_embedded_data(bin_path: str, work_dir: str) -> str:
             f"{result.stderr[:2000]}"
         )
 
+    return o_path
+
+
+def _compile_serveforge_free(work_dir: str) -> str:
+    """Create a .o file exporting ``serveforge_free`` for the dylib.
+
+    The dylib allocates output buffers via ``malloc``.  This stub
+    exports the matching ``free`` so the Rust runtime can release
+    dylib-allocated memory via the dylib's own allocator.
+    """
+    c_path = os.path.join(work_dir, "serveforge_free.c")
+    o_path = os.path.join(work_dir, "serveforge_free.o")
+    with open(c_path, "w") as f:
+        f.write("""\
+#include <stdlib.h>
+void serveforge_free(void* ptr) { free(ptr); }
+""")
+    cc_bin = _find_cc()
+    result = subprocess.run(
+        [cc_bin, "-c", c_path, "-o", o_path],
+        capture_output=True, text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to compile serveforge_free stub (exit {result.returncode}):\n"
+            f"{result.stderr[:2000]}"
+        )
     return o_path
 
 

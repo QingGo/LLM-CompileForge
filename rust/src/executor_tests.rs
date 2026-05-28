@@ -1,8 +1,7 @@
 use super::*;
-use crate::compute_graph_runner::parse_sret_descriptor;
 use crate::hal::cpu::MemRefDesc2;
 use crate::hal::cpu::MemRefDescAny;
-use crate::hal::traits::{self, Device as _, Executable as _};
+use crate::hal::traits::{self, Executable as _};
 use crate::tensor::Dtype;
 
 /// A mock device that records its compile() call for validation.
@@ -43,22 +42,40 @@ impl traits::Buffer for MockBuffer {
 }
 
 #[derive(Debug)]
-struct MockStream;
+struct MockEvent;
 
-impl traits::Stream for MockStream {
+impl traits::Event for MockEvent {
+    fn is_complete(&self) -> bool { true }
     fn synchronize(&self) -> Result<(), anyhow::Error> { Ok(()) }
 }
 
 #[derive(Debug)]
+struct MockStream;
+
+impl traits::Stream for MockStream {
+    fn synchronize(&self) -> Result<(), anyhow::Error> { Ok(()) }
+    fn wait_event(&self, _event: &dyn traits::Event) -> Result<(), anyhow::Error> { Ok(()) }
+    fn record_event(&self, _event: &dyn traits::Event) -> Result<(), anyhow::Error> { Ok(()) }
+}
+
+#[derive(Debug)]
 struct MockExecutable {
-    entry_count: usize,
+    function_count: usize,
+    module_data: Vec<u8>,
+}
+
+impl MockExecutable {
+    fn new(count: usize) -> Self {
+        Self { function_count: count, module_data: Vec::new() }
+    }
 }
 
 impl traits::Executable for MockExecutable {
-    fn execute(&self, _stream: &dyn traits::Stream, _inputs: &[&dyn traits::Buffer], _outputs: &[&dyn traits::Buffer]) -> Result<(), anyhow::Error> {
-        Ok(())
+    fn execute(&self, _op_name: &str, _stream: &dyn traits::Stream, _inputs: &[&dyn traits::Buffer], _outputs: &[&dyn traits::Buffer]) -> Result<Vec<Vec<i64>>, anyhow::Error> {
+        Ok(Vec::new())
     }
-    fn entry_count(&self) -> usize { self.entry_count }
+    fn function_count(&self) -> usize { self.function_count }
+    fn module_data(&self) -> &[u8] { &self.module_data }
 }
 
 impl traits::Device for MockDevice {
@@ -68,10 +85,13 @@ impl traits::Device for MockDevice {
     fn create_stream(&self) -> Result<Box<dyn traits::Stream>, anyhow::Error> {
         Ok(Box::new(MockStream))
     }
+    fn create_event(&self) -> Result<Box<dyn traits::Event>, anyhow::Error> {
+        Ok(Box::new(MockEvent))
+    }
     fn compile(&self, module_data: &[u8]) -> Result<Box<dyn traits::Executable>, anyhow::Error> {
         self.compile_called.store(true, std::sync::atomic::Ordering::Relaxed);
         assert!(!module_data.is_empty(), "compile should receive non-empty data");
-        Ok(Box::new(MockExecutable { entry_count: 2 }))
+        Ok(Box::new(MockExecutable::new(2)))
     }
     fn name(&self) -> &str { &self.name }
 }
@@ -93,44 +113,6 @@ fn test_executor_load_with_device_calls_compile() {
     // The compile_called flag indicates the trait was used
     assert!(device.was_compile_called(),
         "Device::compile() should be called during load_with_device");
-}
-
-#[test]
-fn test_parse_sret_descriptor_rank1() {
-    let data: Vec<f32> = vec![1.0, 2.0, 3.0];
-    let dummy_allocated = data.as_ptr() as u64;
-    let mut buf = Vec::<u8>::new();
-    buf.extend_from_slice(&dummy_allocated.to_ne_bytes());
-    buf.extend_from_slice(&dummy_allocated.to_ne_bytes());
-    buf.extend_from_slice(&0u64.to_ne_bytes());
-    buf.extend_from_slice(&3u64.to_ne_bytes());
-    buf.extend_from_slice(&1u64.to_ne_bytes());
-    assert_eq!(buf.len(), 40);
-    let (aligned, sizes) = unsafe { parse_sret_descriptor(&buf, 1).unwrap() };
-    assert_eq!(aligned as u64, dummy_allocated);
-    assert_eq!(sizes, vec![3]);
-}
-
-#[test]
-fn test_parse_sret_descriptor_rank4() {
-    let data: Vec<f32> = vec![0.0; 10];
-    let p = data.as_ptr() as u64;
-    let mut buf = Vec::<u8>::new();
-    buf.extend_from_slice(&p.to_ne_bytes());
-    buf.extend_from_slice(&p.to_ne_bytes());
-    buf.extend_from_slice(&0u64.to_ne_bytes());
-    buf.extend_from_slice(&2u64.to_ne_bytes());
-    buf.extend_from_slice(&1u64.to_ne_bytes());
-    buf.extend_from_slice(&4u64.to_ne_bytes());
-    buf.extend_from_slice(&4u64.to_ne_bytes());
-    buf.extend_from_slice(&4u64.to_ne_bytes());
-    buf.extend_from_slice(&4u64.to_ne_bytes());
-    buf.extend_from_slice(&1u64.to_ne_bytes());
-    buf.extend_from_slice(&1u64.to_ne_bytes());
-    assert_eq!(buf.len(), 88);
-    let (aligned, sizes) = unsafe { parse_sret_descriptor(&buf, 4).unwrap() };
-    assert_eq!(aligned as u64, p);
-    assert_eq!(sizes, vec![2, 1, 4, 4]);
 }
 
 #[test]

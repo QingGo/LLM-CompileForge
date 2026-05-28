@@ -5,6 +5,7 @@
 //! ``CpuBuffer`` wraps heap memory with initialization tracking.
 //! ``CpuStream`` is a no-op (CPU is synchronous).
 
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::traits;
@@ -48,18 +49,30 @@ impl traits::Device for CpuDevice {
         let mut d = RawCpuDevice::new();
         let buf = d.allocate(size);
         self.allocated.fetch_add(d.total_allocated(), Ordering::Relaxed);
-        Ok(Box::new(CpuBuffer(buf)))
+        Ok(Box::new(CpuBuffer::new(buf)))
     }
 
     fn create_stream(&self) -> Result<Box<dyn traits::Stream>, anyhow::Error> {
         Ok(Box::new(CpuStream))
     }
 
+    fn create_event(&self) -> Result<Box<dyn traits::Event>, anyhow::Error> {
+        Ok(Box::new(CpuEvent))
+    }
+
     fn compile(&self, module_data: &[u8]) -> Result<Box<dyn traits::Executable>, anyhow::Error> {
         let dylib_path = std::str::from_utf8(module_data)
             .map_err(|e| anyhow::anyhow!("module_data is not valid UTF-8 path: {}", e))?;
         let inner = RawCpuExecutable::load(dylib_path)?;
-        Ok(Box::new(CpuExecutable { inner }))
+        let constants_data = inner.load_constants()?;
+        // Cache serveforge_free symbol. Load BEFORE moving `inner` into
+        // CpuExecutable to satisfy the borrow checker.
+        let free_fn: unsafe extern "C" fn(*mut std::ffi::c_void) = {
+            let sym: libloading::Symbol<unsafe extern "C" fn(*mut std::ffi::c_void)> =
+                unsafe { inner.lib().get(b"serveforge_free")? };
+            *sym
+        };
+        Ok(Box::new(CpuExecutable { inner, constants_data, free_fn }))
     }
 
     fn name(&self) -> &str {
@@ -71,25 +84,62 @@ impl traits::Device for CpuDevice {
 
 #[derive(Debug)]
 #[allow(dead_code)]
-pub struct CpuBuffer(RawCpuBuffer);
+pub struct CpuBuffer {
+    inner: RawCpuBuffer,
+    /// Element size in bytes (4 for f32, 8 for i64).
+    elem_size: usize,
+    /// Logical shape for MemRef descriptor construction.
+    dims: Vec<usize>,
+    /// Tensor rank for output descriptor parsing.
+    rank: u8,
+}
+
+impl CpuBuffer {
+    pub fn new(inner: RawCpuBuffer) -> Self {
+        let size = inner.size();
+        Self { inner, elem_size: 4, dims: vec![size / 4], rank: 1 }
+    }
+
+    /// Create a buffer with explicit metadata for correct MemRef descriptor construction.
+    /// Used for non-f32 inputs (e.g. i64 GlobalInputs with element_size=8).
+    pub fn with_meta(inner: RawCpuBuffer, elem_size: usize, dims: Vec<usize>) -> Self {
+        let rank = dims.len() as u8;
+        Self { inner, elem_size, dims, rank }
+    }
+
+    /// Access the inner RawCpuBuffer (for HAL-internal use).
+    pub fn inner(&self) -> &RawCpuBuffer { &self.inner }
+}
 
 impl traits::Buffer for CpuBuffer {
-    fn as_ptr(&self) -> *const u8 { self.0.as_ptr() }
-    fn as_mut_ptr(&mut self) -> *mut u8 { self.0.as_mut_ptr() }
-    fn len(&self) -> usize { self.0.size() }
+    fn as_ptr(&self) -> *const u8 { self.inner.as_ptr() }
+    fn as_mut_ptr(&mut self) -> *mut u8 { self.inner.as_mut_ptr() }
+    fn len(&self) -> usize { self.inner.size() }
 
     fn copy_from_host(&mut self, src: &[u8], _stream: &dyn traits::Stream) -> Result<(), anyhow::Error> {
-        let dst = self.0.as_mut_slice();
+        let dst = self.inner.as_mut_slice();
         let n = dst.len().min(src.len());
         dst[..n].copy_from_slice(&src[..n]);
         Ok(())
     }
 
     fn copy_to_host(&self, dst: &mut [u8], _stream: &dyn traits::Stream) -> Result<(), anyhow::Error> {
-        let src = self.0.as_slice();
+        let src = self.inner.as_slice();
         let n = dst.len().min(src.len());
         dst[..n].copy_from_slice(&src[..n]);
         Ok(())
+    }
+
+    fn element_size(&self) -> usize {
+        self.elem_size
+    }
+
+    fn shape(&self) -> Vec<usize> {
+        self.dims.clone()
+    }
+
+    fn rank(&self) -> u8 {
+        self.rank
     }
 }
 
@@ -97,25 +147,342 @@ impl traits::Buffer for CpuBuffer {
 
 #[derive(Debug)]
 pub struct CpuExecutable {
-    #[allow(dead_code)]
     inner: RawCpuExecutable,
+    constants_data: Vec<u8>,
+    /// Cached function pointer for `serveforge_free` exported by the dylib.
+    /// Eliminates per-call libloading symbol lookup and memory leak.
+    free_fn: unsafe extern "C" fn(*mut c_void),
 }
 
 impl CpuExecutable {
     #[allow(dead_code)]
     pub fn inner(&self) -> &RawCpuExecutable { &self.inner }
 
-    #[allow(dead_code)]
-    pub fn lookup_typed(&self, name: &str, arity: usize) -> Result<kernel::KernelFn, anyhow::Error> {
-        self.inner.lookup_typed(name, arity)
+    /// Access the cached constants data embedded in the dylib.
+    pub fn module_data(&self) -> &[u8] {
+        &self.constants_data
     }
 }
 
 impl traits::Executable for CpuExecutable {
-    fn execute(&self, _stream: &dyn traits::Stream, _inputs: &[&dyn traits::Buffer], _outputs: &[&dyn traits::Buffer]) -> Result<(), anyhow::Error> {
-        anyhow::bail!("direct execute() not supported; use ModelExecutor::forward() instead")
+    fn execute(
+        &self,
+        op_name: &str,
+        _stream: &dyn traits::Stream,
+        inputs: &[&dyn traits::Buffer],
+        outputs: &[&dyn traits::Buffer],
+    ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
+        // Step 1: Look up kernel by symbol name (arity = 1 sret + inputs)
+        let arity = 1 + inputs.len();
+        let kernel = self.inner.lookup_typed(op_name, arity)?;
+
+        // Step 2: Construct MemRef descriptors from input Buffers (zero-copy)
+        // IMPORTANT: Push to input_descs BEFORE taking the pointer, so the
+        // descriptor lives on the heap (in the Vec) rather than on the stack.
+        let mut input_descs: Vec<MemRefDescAny> = Vec::with_capacity(inputs.len());
+        let mut input_ptrs: Vec<*const c_void> = Vec::with_capacity(inputs.len());
+        for &buf in inputs {
+            let desc = make_memref_descriptor(buf)?;
+            input_descs.push(desc);
+            input_ptrs.push(input_descs.last().unwrap().as_input_ptr());
+        }
+
+        // Step 3: Allocate sret buffer for output descriptors
+        const SRET_BUF_SIZE: usize = 131072;
+        let mut sret: Vec<u8> = vec![0u8; SRET_BUF_SIZE];
+        let sret_ptr = sret.as_mut_ptr() as *mut c_void;
+
+        // Step 4: Build argument list and call the ciface kernel
+        let mut all_args: Vec<*const c_void> = Vec::with_capacity(1 + input_ptrs.len());
+        all_args.push(sret_ptr);
+        all_args.extend(input_ptrs);
+        let raw_ptr = kernel.as_raw_ptr();
+        // SAFETY: kernel was loaded from a valid compiled .dylib.
+        // sret_ptr and input_ptrs point to writable/readable buffers.
+        // The kernel is a _mlir_ciface_* function that reads input descriptors
+        // and writes output descriptors to the sret buffer.
+        unsafe {
+            crate::ciface_high::call_high_arity(raw_ptr, &all_args);
+        }
+        // Step 5: Parse sret output descriptors, copy data to output
+        // buffers, collect shapes and dylib-allocated pointers to free.
+        //
+        // Two-pass strategy prevents use-after-free and double-free:
+        //   Pass 1: parse all descriptors, copy data from dylib buffers
+        //           to pre-allocated Rust output buffers.
+        //   Pass 2: deduplicate allocated pointers and free them via
+        //           the dylib's own serveforge_free.
+        let mut output_shapes: Vec<Vec<i64>> = Vec::with_capacity(outputs.len());
+        if !outputs.is_empty() {
+            let mut sret_offset: usize = 0;
+            let mut to_free: Vec<*mut std::ffi::c_void> =
+                Vec::with_capacity(outputs.len());
+
+            // ── Pass 1: parse + copy ──────────────────────────────
+            for (oi, output_buf) in outputs.iter().enumerate() {
+                if sret_offset >= SRET_BUF_SIZE - 24 {
+                    anyhow::bail!(
+                        "sret overflow at output {} (offset {} >= {})",
+                        oi, sret_offset, SRET_BUF_SIZE,
+                    );
+                }
+
+                let out_rank = output_buf.rank() as usize;
+                if out_rank < 1 || out_rank > 4 {
+                    anyhow::bail!(
+                        "output {}: unsupported rank {} for sret parsing",
+                        oi, out_rank,
+                    );
+                }
+                let desc_size = 24 + 16 * out_rank;
+                if sret_offset + desc_size > sret.len() {
+                    anyhow::bail!(
+                        "sret overflow at output {} (offset {} + {} > {})",
+                        oi, sret_offset, desc_size, sret.len(),
+                    );
+                }
+                let slice = &sret[sret_offset..sret_offset + desc_size];
+                let (allocated, aligned, sizes) = unsafe {
+                    read_sret_descriptor(slice, out_rank)?
+                };
+                sret_offset += desc_size;
+
+                let n: usize = sizes.iter()
+                    .map(|&s| std::cmp::max(0, s) as usize)
+                    .product();
+                let n_bytes = n * 4;
+
+                if n_bytes == 0 {
+                    output_shapes.push(sizes);
+                    continue;
+                }
+
+                if n_bytes > output_buf.len() {
+                    anyhow::bail!(
+                        "output {}: dylib output {} bytes exceeds buffer capacity {} bytes",
+                        oi, n_bytes, output_buf.len(),
+                    );
+                }
+
+                let dst = output_buf.as_ptr() as *mut u8;
+                // SAFETY: `aligned` points to valid dylib output data.
+                // `dst` is a pre-allocated Rust buffer. Regions are disjoint.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(aligned, dst, n_bytes);
+                }
+
+                // Track for deferred free (Pass 2). Only enqueue heap
+                // pointers; skip nullptr and MLIR sentinel 0xdeadbeef
+                // (global constants from memref.get_global).
+                let allocated_addr = allocated as usize;
+                if allocated_addr != 0 && allocated_addr != 0xdeadbeef {
+                    to_free.push(allocated as *mut std::ffi::c_void);
+                }
+
+                output_shapes.push(sizes);
+            }
+
+            // ── Pass 2: dedup + free ──────────────────────────────
+            //
+            // Only free pointers that are verifiably heap-allocated.
+            // Some MemRef descriptors in the sret have `allocated`
+            // pointing to non-malloc memory (stack, globals, or
+            // garbage from misaligned sret parsing). Use the system
+            // allocator's own validation (malloc_zone_from_ptr) to
+            // distinguish safe-to-free pointers from the rest.
+            to_free.sort();
+            to_free.dedup();
+            for ptr in &to_free {
+                let addr = *ptr as *const std::ffi::c_void;
+                // SAFETY: malloc_zone_from_ptr is thread-safe and
+                // read-only. Returns null if addr is not in any
+                // malloc zone (stack, global, or invalid pointer).
+                if !addr.is_null() {
+                    #[link(name = "System")]
+                    extern "C" {
+                        fn malloc_zone_from_ptr(ptr: *const std::ffi::c_void) -> *const std::ffi::c_void;
+                    }
+                    let zone = unsafe { malloc_zone_from_ptr(addr) };
+                    if !zone.is_null() {
+                        unsafe { (self.free_fn)(*ptr); }
+                    }
+                }
+            }
+        }
+        Ok(output_shapes)
     }
-    fn entry_count(&self) -> usize { 1 }
+
+    fn function_count(&self) -> usize { 1 }
+
+    fn module_data(&self) -> &[u8] {
+        &self.constants_data
+    }
+}
+
+// ── Helper functions ─────────────────────────────────────────────────
+
+/// Construct a MemRef descriptor from a Buffer, respecting its element
+/// size and shape metadata.
+///
+/// Zero-copy: the descriptor's `aligned` pointer points directly into the
+/// buffer's backing memory. The buffer must remain valid for the kernel call.
+fn make_memref_descriptor(buf: &dyn traits::Buffer) -> Result<MemRefDescAny, anyhow::Error> {
+    let ptr = buf.as_ptr();
+    let shape = buf.shape();
+    match shape.len() {
+        1 => Ok(MemRefDescAny::R1(memref::MemRefDesc1::from_raw_ptr(ptr, &shape))),
+        2 => Ok(MemRefDescAny::R2(memref::MemRefDesc2::from_raw_ptr(ptr, &shape))),
+        3 => Ok(MemRefDescAny::R3(memref::MemRefDesc3::from_raw_ptr(ptr, &shape))),
+        4 => Ok(MemRefDescAny::R4(memref::MemRefDesc4::from_raw_ptr(ptr, &shape))),
+        r => anyhow::bail!(
+            "make_memref_descriptor: unsupported rank {} for input buffer (shape={:?})",
+            r, shape,
+        ),
+    }
+}
+
+/// Parse a single output descriptor from the sret buffer at ``offset``.
+///
+/// The MLIR ciface convention writes one or more contiguous MemRef descriptors
+/// into the sret buffer. Each descriptor has the layout:
+///
+/// ```text
+///   struct { allocated: ptr, aligned: ptr, offset: i64,
+///            sizes: [i64; RANK], strides: [i64; RANK] }
+/// ```
+///
+/// Since the caller does not (yet) supply rank metadata, we probe ranks 1–4
+/// and accept the first descriptor with a non-null aligned pointer and valid
+/// sizes. Returns ``(aligned_ptr, sizes, descriptor_byte_size)``.
+///
+/// # Safety
+///
+/// ``sret`` must contain valid binary data written by a ciface kernel.
+/// ``offset`` must be within bounds.
+unsafe fn parse_sret_descriptor_at(
+    sret: &[u8],
+    offset: usize,
+) -> Result<(*mut u8, Vec<i64>, usize), anyhow::Error> {
+    // Try ranks 1..=4 — the most common output ranks for compiled models.
+    for rank in 1..=4 {
+        let desc_size = 24 + 16 * rank;
+        if offset + desc_size > sret.len() {
+            continue;
+        }
+        let slice = &sret[offset..offset + desc_size];
+
+        let aligned = std::ptr::read_unaligned(slice.as_ptr().add(8) as *const *mut u8);
+        if aligned.is_null() {
+            continue;
+        }
+
+        let sizes: Vec<i64> = (0..rank)
+            .map(|i| {
+                std::ptr::read_unaligned(slice.as_ptr().add(24 + i * 8) as *const i64)
+            })
+            .collect();
+
+        // Validate: all sizes positive, total element count reasonable.
+        let all_ok = sizes.iter().all(|&s| s > 0 && s < 1_000_000);
+        if !all_ok {
+            continue;
+        }
+        let n: usize = sizes.iter().map(|&s| s as usize).product();
+        if n > 0 && n < 100_000_000 {
+            return Ok((aligned, sizes, desc_size));
+        }
+    }
+
+    // Fallback: try rank 1 without validation (accepts zero or negative sizes).
+    {
+        let desc_size = 24 + 16 * 1;
+        if offset + desc_size <= sret.len() {
+            let slice = &sret[offset..offset + desc_size];
+            let aligned = std::ptr::read_unaligned(slice.as_ptr().add(8) as *const *mut u8);
+            if !aligned.is_null() {
+                let s0 = std::ptr::read_unaligned(slice.as_ptr().add(24) as *const i64);
+                let n = std::cmp::max(0, s0) as usize;
+                if n < 100_000_000 {
+                    return Ok((aligned, vec![s0], desc_size));
+                }
+            }
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "failed to parse sret output descriptor at offset {} (sret len {}, outputs follow)",
+        offset,
+        sret.len(),
+    ))
+}
+
+/// Read a single sret output descriptor at a KNOWN rank.
+///
+/// Unlike [`parse_sret_descriptor_at`] which probes ranks 1-4, this function
+/// reads exactly the bytes for the given rank.  The caller must supply the
+/// correct rank (from the compute graph) to avoid misaligned reads when
+/// consecutive descriptors have different ranks.
+///
+/// # Safety
+///
+/// `slice` must be at least `24 + 16 * rank` bytes long and contain valid
+/// MemRef descriptor data written by a ciface kernel.
+/// Read a single sret output descriptor at a KNOWN rank.
+///
+/// The MemRef descriptor layout (MLIR LLVM dialect convention):
+///
+/// ```text
+///   offset 0:  allocated ptr   — raw malloc return; safe to free
+///   offset 8:  aligned  ptr   — aligned data pointer; use for reads
+///   offset 16: offset   i64   — byte offset within allocation
+///   offset 24: sizes    [i64; RANK]
+///   offset 24+8*RANK: strides [i64; RANK]
+/// ```
+///
+/// When no alignment is requested (default for f32), allocated == aligned.
+/// When alignment IS requested, aligned may differ from allocated — only
+/// `allocated` is safe to pass to `free()`.
+///
+/// Returns `(allocated, aligned, sizes)`.
+///
+/// # Safety
+///
+/// `slice` must be at least `24 + 16 * rank` bytes long and contain valid
+/// MemRef descriptor data written by a ciface kernel.
+unsafe fn read_sret_descriptor(
+    slice: &[u8],
+    rank: usize,
+) -> Result<(*mut u8, *mut u8, Vec<i64>), anyhow::Error> {
+    let min_len = 24 + rank * 16;
+    if slice.len() < min_len {
+        anyhow::bail!(
+            "sret slice too short: {} < {} (rank {})",
+            slice.len(),
+            min_len,
+            rank,
+        );
+    }
+    let allocated = std::ptr::read_unaligned(slice.as_ptr() as *const *mut u8);
+    let aligned = std::ptr::read_unaligned(slice.as_ptr().add(8) as *const *mut u8);
+    if aligned.is_null() {
+        anyhow::bail!("sret aligned pointer is null (rank {})", rank);
+    }
+    let sizes: Vec<i64> = (0..rank)
+        .map(|i| std::ptr::read_unaligned(slice.as_ptr().add(24 + i * 8) as *const i64))
+        .collect();
+    Ok((allocated, aligned, sizes))
+}
+
+// ── CpuEvent ──────────────────────────────────────────────────────────
+
+/// CPU event — no-op (CPU is synchronous, all work completes immediately).
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct CpuEvent;
+
+impl traits::Event for CpuEvent {
+    fn is_complete(&self) -> bool { true }
+    fn synchronize(&self) -> Result<(), anyhow::Error> { Ok(()) }
 }
 
 // ── CpuStream ─────────────────────────────────────────────────────────
@@ -126,6 +493,8 @@ pub struct CpuStream;
 
 impl traits::Stream for CpuStream {
     fn synchronize(&self) -> Result<(), anyhow::Error> { Ok(()) }
+    fn wait_event(&self, _event: &dyn traits::Event) -> Result<(), anyhow::Error> { Ok(()) }
+    fn record_event(&self, _event: &dyn traits::Event) -> Result<(), anyhow::Error> { Ok(()) }
 }
 
 // ── Re-exports (used by executor.rs, weight_loader.rs) ─

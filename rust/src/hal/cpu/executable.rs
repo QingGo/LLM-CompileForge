@@ -40,6 +40,29 @@ impl CpuExecutable {
         Ok(*sym)
     }
 
+    /// Read the embedded constants data (serveforge_constants_data/size)
+    /// from the loaded dynamic library. This is the raw binary blob
+    /// containing the weight registry, compute graph, and contract.
+    pub fn load_constants(&self) -> Result<Vec<u8>, anyhow::Error> {
+        let data_ptr: *const u8 = {
+            let sym: libloading::Symbol<*const std::ffi::c_void> = unsafe {
+                self.lib.get(b"serveforge_constants_data")
+                    .map_err(|e| anyhow::anyhow!("missing serveforge_constants_data: {}", e))?
+            };
+            *sym as *const u8
+        };
+        let size_val: u64 = {
+            let sym = unsafe {
+                self.lib.get::<*const u64>(b"serveforge_constants_size")
+                    .map_err(|e| anyhow::anyhow!("missing serveforge_constants_size: {}", e))?
+            };
+            unsafe { *(*sym) }
+        };
+        let data: &[u8] =
+            unsafe { std::slice::from_raw_parts(data_ptr, size_val as usize) };
+        Ok(data.to_vec())
+    }
+
     /// Look up a kernel function by symbol name with a specific arity.
     pub fn lookup_typed(
         &self,

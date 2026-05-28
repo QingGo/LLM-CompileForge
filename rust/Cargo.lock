@@ -851,6 +851,7 @@ dependencies = [
  "env_logger",
  "futures",
  "half",
+ "libc",
  "libffi",
  "libloading",
  "log",

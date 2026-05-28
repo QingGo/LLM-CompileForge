@@ -2,6 +2,7 @@
 //! intermediate activations, and outputs.
 
 use std::fmt;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -57,19 +58,19 @@ impl fmt::Display for Dtype {
     }
 }
 
-pub enum TensorData<'a> {
-    Owned(Vec<f32>),
+pub enum TensorData {
+    Owned(Arc<[f32]>),
     #[allow(dead_code)]
-    Borrowed(&'a [f32]),
+    Borrowed(&'static [f32]),
 }
 
-pub struct Tensor<'a> {
-    pub data: TensorData<'a>,
+pub struct Tensor {
+    pub data: TensorData,
     pub shape: Vec<usize>,
     pub dtype: Dtype,
 }
 
-impl<'a> Tensor<'a> {
+impl Tensor {
     pub fn new_owned(shape: Vec<usize>, data: Vec<f32>, dtype: Dtype) -> Self {
         debug_assert_eq!(
             data.len(),
@@ -79,14 +80,14 @@ impl<'a> Tensor<'a> {
             shape.iter().product::<usize>()
         );
         Self {
-            data: TensorData::Owned(data),
+            data: TensorData::Owned(Arc::from(data)),
             shape,
             dtype,
         }
     }
 
     #[allow(dead_code)]
-    pub fn from_borrowed(shape: Vec<usize>, data: &'a [f32], dtype: Dtype) -> Self {
+    pub fn from_borrowed(shape: Vec<usize>, data: &'static [f32], dtype: Dtype) -> Self {
         debug_assert_eq!(data.len(), shape.iter().product::<usize>());
         Self {
             data: TensorData::Borrowed(data),
@@ -98,7 +99,7 @@ impl<'a> Tensor<'a> {
     #[allow(dead_code)]
     pub fn scalar(value: f32) -> Self {
         Self {
-            data: TensorData::Owned(vec![value]),
+            data: TensorData::Owned(Arc::from(vec![value])),
             shape: vec![],
             dtype: Dtype::F32,
         }
@@ -106,7 +107,7 @@ impl<'a> Tensor<'a> {
 
     pub fn as_slice(&self) -> &[f32] {
         match &self.data {
-            TensorData::Owned(v) => v.as_slice(),
+            TensorData::Owned(arc) => arc.as_ref(),
             TensorData::Borrowed(s) => s,
         }
     }
@@ -120,20 +121,27 @@ impl<'a> Tensor<'a> {
         self.shape.len()
     }
 
-    pub fn to_owned(&self) -> Tensor<'static> {
-        Tensor {
-            data: TensorData::Owned(self.as_slice().to_vec()),
-            shape: self.shape.clone(),
-            dtype: self.dtype,
+    pub fn to_owned(&self) -> Tensor {
+        match &self.data {
+            TensorData::Owned(arc) => Tensor {
+                data: TensorData::Owned(Arc::clone(arc)),
+                shape: self.shape.clone(),
+                dtype: self.dtype,
+            },
+            TensorData::Borrowed(s) => Tensor {
+                data: TensorData::Owned(Arc::from(s.to_vec())),
+                shape: self.shape.clone(),
+                dtype: self.dtype,
+            },
         }
     }
 }
 
-impl Clone for Tensor<'_> {
+impl Clone for Tensor {
     fn clone(&self) -> Self {
         match &self.data {
-            TensorData::Owned(v) => Self {
-                data: TensorData::Owned(v.clone()),
+            TensorData::Owned(arc) => Self {
+                data: TensorData::Owned(Arc::clone(arc)),
                 shape: self.shape.clone(),
                 dtype: self.dtype,
             },
@@ -146,7 +154,7 @@ impl Clone for Tensor<'_> {
     }
 }
 
-impl fmt::Debug for Tensor<'_> {
+impl fmt::Debug for Tensor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let data_preview = if self.numel() <= 6 {
             format!("{:?}", self.as_slice())
@@ -197,9 +205,10 @@ mod tests {
 
     #[test]
     fn test_to_owned() {
-        let data = [1.0, 2.0, 3.0];
-        let borrowed = Tensor::from_borrowed(vec![3], &data, Dtype::F32);
-        let owned = borrowed.to_owned();
-        assert_eq!(owned.as_slice(), &[1.0, 2.0, 3.0]);
+        let owned = Tensor::new_owned(vec![3], vec![1.0, 2.0, 3.0], Dtype::F32);
+        let cloned = owned.to_owned();
+        assert_eq!(cloned.as_slice(), &[1.0, 2.0, 3.0]);
+        // Verify Arc::clone is O(1): both share the same underlying data
+        assert_eq!(owned.as_slice().as_ptr(), cloned.as_slice().as_ptr());
     }
 }

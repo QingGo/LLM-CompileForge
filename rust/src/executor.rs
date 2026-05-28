@@ -1,22 +1,20 @@
 use std::cell::RefCell;
-use std::ffi::c_void;
 
 use crate::block_manager::BlockManager;
 use crate::compute_graph::ComputeGraph;
 use crate::error::ExecutorError;
 use crate::hal::cpu::CpuDevice;
 use crate::kernel_catalog::KernelCatalog;
-use crate::hal::cpu::Executable;
-use crate::hal::traits::Device as DeviceTrait;
+use crate::hal::traits;
 use crate::kv_cache::CachePolicy;
 use crate::tensor::Tensor;
 use crate::weight_loader::WeightProvider;
 
 pub struct ModelExecutor {
-    pub executable: Executable,
+    pub executable: Box<dyn traits::Executable>,
     pub weight_provider: WeightProvider,
     pub compute_graph: ComputeGraph,
-    pub weight_cache: RefCell<std::collections::HashMap<String, Tensor<'static>>>,
+    pub weight_cache: RefCell<std::collections::HashMap<String, Tensor>>,
     #[allow(dead_code)]
     pub catalog: Option<Box<dyn KernelCatalog>>,
     pub cache_policy: CachePolicy,
@@ -35,35 +33,15 @@ impl ModelExecutor {
     /// Load a model using a specific HAL device.  The device is used for
     /// compiling/loading the executable.
     pub fn load_with_device(
-        device: &dyn DeviceTrait,
+        device: &dyn traits::Device,
         dylib_path: &str,
         safetensors_path: Option<&str>,
     ) -> Result<Self, anyhow::Error> {
         let dylib_bytes = dylib_path.as_bytes();
-        let _exec = device.compile(dylib_bytes)
+        let executable: Box<dyn traits::Executable> = device.compile(dylib_bytes)
             .map_err(|e| anyhow::anyhow!("Device rejected dylib '{}': {}", dylib_path, e))?;
 
-        let executable = Executable::load(dylib_path)
-            .map_err(|e| anyhow::anyhow!("Failed to load dylib '{}': {}", dylib_path, e))?;
-        let lib = executable.lib();
-
-        let data_ptr: *const u8 = {
-            let sym: libloading::Symbol<*const c_void> = unsafe {
-                lib.get(b"serveforge_constants_data")
-                    .map_err(|e| anyhow::anyhow!("{}", e))?
-            };
-            *sym as *const u8
-        };
-        let size_val: u64 = {
-            let sym = unsafe {
-                lib.get::<*const u64>(b"serveforge_constants_size")
-                    .map_err(|e| anyhow::anyhow!("{}", e))?
-            };
-            unsafe { *(*sym) }
-        };
-        let data: &[u8] =
-            unsafe { std::slice::from_raw_parts(data_ptr, size_val as usize) };
-
+        let data = executable.module_data();
         let (registry, graph_pos, sfcf_version) = crate::weight_loader::parse_embedded(data)?;
         let st_path = safetensors_path.map(std::path::Path::new);
         let weight_provider = WeightProvider::new(registry, st_path)?;
@@ -111,7 +89,7 @@ impl ModelExecutor {
     }
 
     #[allow(dead_code)]
-    pub fn forward(&self, input_ids: &[u32]) -> Result<Tensor<'static>, anyhow::Error> {
+    pub fn forward(&self, input_ids: &[u32]) -> Result<Tensor, anyhow::Error> {
         // Default: use sequential positions [0, 1, ..., N-1] (full prefill)
         let positions: Vec<u32> = (0..input_ids.len() as u32).collect();
         self.forward_with_positions(input_ids, &positions)
@@ -119,13 +97,13 @@ impl ModelExecutor {
 
     /// Like forward() but accepts explicit positions for each token.
     /// positions[i] gives the position of input_ids[i] in the sequence.
-    pub fn forward_with_positions(&self, input_ids: &[u32], positions: &[u32]) -> Result<Tensor<'static>, anyhow::Error> {
+    pub fn forward_with_positions(&self, input_ids: &[u32], positions: &[u32]) -> Result<Tensor, anyhow::Error> {
         let num_funcs = self.compute_graph.functions.len();
-        let mut func_outputs: Vec<Vec<Tensor<'static>>> = vec![Vec::new(); num_funcs];
+        let mut func_outputs: Vec<Vec<Tensor>> = vec![Vec::new(); num_funcs];
 
         let result = crate::compute_graph_runner::run_function_graph(
             &self.compute_graph,
-            &self.executable,
+            &*self.executable,
             &self.weight_provider,
             &self.weight_cache,
             &mut func_outputs,
@@ -145,13 +123,13 @@ impl ModelExecutor {
         positions: &[u32],
         block_manager: Option<&mut BlockManager>,
         request_id: Option<&str>,
-    ) -> Result<Tensor<'static>, anyhow::Error> {
+    ) -> Result<Tensor, anyhow::Error> {
         let num_funcs = self.compute_graph.functions.len();
-        let mut func_outputs: Vec<Vec<Tensor<'static>>> = vec![Vec::new(); num_funcs];
+        let mut func_outputs: Vec<Vec<Tensor>> = vec![Vec::new(); num_funcs];
 
         let result = crate::compute_graph_runner::run_function_graph_with_kv_intercept(
             &self.compute_graph,
-            &self.executable,
+            &*self.executable,
             &self.weight_provider,
             &self.weight_cache,
             &mut func_outputs,
@@ -172,7 +150,7 @@ impl ModelExecutor {
         position: u32,
         block_manager: &mut BlockManager,
         request_id: &str,
-    ) -> Result<Tensor<'static>, anyhow::Error> {
+    ) -> Result<Tensor, anyhow::Error> {
         self.forward_with_kv(
             input_ids,
             &[position],
@@ -182,7 +160,7 @@ impl ModelExecutor {
     }
 }
 
-fn dump_layers(func_outputs: &[Vec<Tensor<'static>>]) {
+fn dump_layers(func_outputs: &[Vec<Tensor>]) {
     let Ok(dump_dir) = std::env::var("DUMP_LAYERS") else { return };
     let _ = std::fs::create_dir_all(&dump_dir);
     for (fi, outputs) in func_outputs.iter().enumerate() {

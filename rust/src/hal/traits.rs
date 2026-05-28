@@ -4,11 +4,12 @@
 //! The runtime and compiler dispatch through trait objects, never calling
 //! platform-specific APIs directly.
 //!
-//! Four core traits:
-//! - ``Device`` — compute device lifecycle: alloc, compile, create_stream
+//! Five core traits:
+//! - ``Device`` — compute device lifecycle: alloc, compile, create_stream, create_event
 //! - ``Buffer`` — device memory view: as_ptr, copy_from/to_host
-//! - ``Executable`` — compiled compute module: execute, entry_count
-//! - ``Stream`` — async execution ordering: synchronize
+//! - ``Executable`` — compiled compute module: execute(op_name, …), function_count
+//! - ``Stream`` — async execution ordering: synchronize, wait_event, record_event
+//! - ``Event`` — synchronization primitive: is_complete, synchronize
 
 use std::fmt::Debug;
 
@@ -30,6 +31,10 @@ pub trait Device: Debug + Send + Sync {
     /// Operations on different Streams may execute in parallel.
     #[allow(dead_code)]
     fn create_stream(&self) -> Result<Box<dyn Stream>, anyhow::Error>;
+
+    /// Create a synchronization event.
+    #[allow(dead_code)]
+    fn create_event(&self) -> Result<Box<dyn Event>, anyhow::Error>;
 
     /// Compile a serialized compute module into an executable.
     /// `module_data` contains the compiler-generated IR (SFCF binary
@@ -64,33 +69,85 @@ pub trait Buffer: Debug + Send + Sync {
 
     /// Copy data from this buffer into host memory.
     fn copy_to_host(&self, dst: &mut [u8], stream: &dyn Stream) -> Result<(), anyhow::Error>;
+
+    /// Element size in bytes. Default is 4 (f32).
+    /// Override for non-f32 inputs (e.g. 8 for i64 GlobalInputs).
+    fn element_size(&self) -> usize {
+        4
+    }
+
+    /// Logical shape of the buffer contents.
+    /// Default is rank-1 with element_count elements.
+    fn shape(&self) -> Vec<usize> {
+        let n = self.len() / self.element_size();
+        vec![n]
+    }
+
+    /// Tensor rank for MemRef descriptor construction.
+    /// Default is 1 (rank-1 descriptor).
+    fn rank(&self) -> u8 {
+        1
+    }
 }
 
 /// Compiled compute module.
 ///
 /// An Executable wraps the complete model forward pass.
-/// `execute()` is synchronous — on return, all computation is complete.
+/// `execute()` dispatches to a named operation — the runtime selects
+/// which kernel/function to run via `op_name`.
 pub trait Executable: Debug + Send + Sync {
-    /// Execute the compiled module with given inputs and outputs.
+    /// Execute a named operation with given inputs and outputs.
+    /// `op_name` identifies which kernel/function to run.
     /// `stream` provides execution ordering (no-op for CPU).
     /// `inputs` and `outputs` are Buffer reference arrays.
+    /// Returns the actual output shapes (sizes) for each output.
     #[allow(dead_code)]
     fn execute(
         &self,
+        op_name: &str,
         stream: &dyn Stream,
         inputs: &[&dyn Buffer],
         outputs: &[&dyn Buffer],
-    ) -> Result<(), anyhow::Error>;
+    ) -> Result<Vec<Vec<i64>>, anyhow::Error>;
 
     /// Number of functions / entry points in this module.
     #[allow(dead_code)]
-    fn entry_count(&self) -> usize;
+    fn function_count(&self) -> usize;
+
+    /// Return the embedded constants data (serveforge_constants_data/size)
+    /// as a byte slice. This is the raw binary blob containing weight
+    /// registry, compute graph, and contract metadata.
+    #[allow(dead_code)]
+    fn module_data(&self) -> &[u8];
+}
+
+/// Synchronization event.
+///
+/// An Event tracks operation completion on a Stream.
+/// CPU implementation is a no-op (CPU is synchronous).
+#[allow(dead_code)]
+pub trait Event: Debug + Send + Sync {
+    /// Check whether the event has completed.
+    fn is_complete(&self) -> bool;
+
+    /// Block until the event completes.
+    fn synchronize(&self) -> Result<(), anyhow::Error>;
 }
 
 /// Asynchronous execution stream.
+///
+/// Operations on the same Stream execute in FIFO order.
+/// Operations on different Streams may execute in parallel.
+/// CPU implementation is a no-op (CPU is synchronous).
 #[allow(dead_code)]
 pub trait Stream: Debug + Send + Sync {
     /// Wait for all operations on this stream to complete.
-    /// CPU implementation is a no-op.
     fn synchronize(&self) -> Result<(), anyhow::Error>;
+
+    /// Make future operations on this stream wait until the event completes.
+    fn wait_event(&self, event: &dyn Event) -> Result<(), anyhow::Error>;
+
+    /// Record that all prior operations on this stream have completed.
+    /// The event is signalled when all preceding work is done.
+    fn record_event(&self, event: &dyn Event) -> Result<(), anyhow::Error>;
 }
