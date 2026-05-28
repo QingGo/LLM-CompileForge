@@ -59,7 +59,7 @@ impl fmt::Display for Dtype {
 }
 
 pub enum TensorData {
-    Owned(Arc<[f32]>),
+    Owned(Arc<Vec<f32>>),
     #[allow(dead_code)]
     Borrowed(&'static [f32]),
 }
@@ -80,7 +80,7 @@ impl Tensor {
             shape.iter().product::<usize>()
         );
         Self {
-            data: TensorData::Owned(Arc::from(data)),
+            data: TensorData::Owned(Arc::new(data)),
             shape,
             dtype,
         }
@@ -99,7 +99,7 @@ impl Tensor {
     #[allow(dead_code)]
     pub fn scalar(value: f32) -> Self {
         Self {
-            data: TensorData::Owned(Arc::from(vec![value])),
+            data: TensorData::Owned(Arc::new(vec![value])),
             shape: vec![],
             dtype: Dtype::F32,
         }
@@ -107,7 +107,7 @@ impl Tensor {
 
     pub fn as_slice(&self) -> &[f32] {
         match &self.data {
-            TensorData::Owned(arc) => arc.as_ref(),
+            TensorData::Owned(arc) => arc.as_slice(),
             TensorData::Borrowed(s) => s,
         }
     }
@@ -129,7 +129,7 @@ impl Tensor {
                 dtype: self.dtype,
             },
             TensorData::Borrowed(s) => Tensor {
-                data: TensorData::Owned(Arc::from(s.to_vec())),
+                data: TensorData::Owned(Arc::new(s.to_vec())),
                 shape: self.shape.clone(),
                 dtype: self.dtype,
             },
