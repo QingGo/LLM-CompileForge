@@ -21,6 +21,11 @@ path = "src/bin/forward_check.rs"
 name = "dump_weights"
 path = "src/bin/dump_weights.rs"
 
+[[bin]]
+name = "forward_check_hal"
+path = "src/bin/forward_check_hal.rs"
+# Requires --features hal-rust to access HalRustExecutable
+
 [features]
 default = ["cli"]
 cli = ["clap", "tokenizers", "rand", "minijinja"]

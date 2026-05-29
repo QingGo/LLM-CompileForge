@@ -1,4 +1,4 @@
-.PHONY: lint lint-clippy lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-rust-cov test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-forward-smoke-rust test-forward-cos test-weight-consistency test-consistency verify-dylib verify-dylib-fresh verify-consistency verify-diag verify-preflight check-op-consistency build-rust install-rust build-so test-dylib-cos test-dylib-cos-quick clean-compiled test-dylib-quick debug-cos diagnose test-kv-compiler test-kv-rust test-kv-python-e2e test-kv-all build-sf rebuild-clean rebuild-mlir rebuild-dylib rebuild-test rebuild build-all build build-plugin serve serve-py run-prompt test-e2e-forward
+.PHONY: lint lint-clippy lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-rust-cov test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-forward-smoke-rust test-forward-smoke-rust-hal test-forward-cos test-weight-consistency test-consistency verify-dylib verify-dylib-fresh verify-consistency verify-diag verify-preflight check-op-consistency build-rust install-rust build-so test-dylib-cos test-dylib-cos-quick clean-compiled test-dylib-quick debug-cos diagnose test-kv-compiler test-kv-rust test-kv-python-e2e test-kv-all build-sf rebuild-clean rebuild-mlir rebuild-dylib rebuild-test rebuild build-all build build-plugin serve serve-py run-prompt test-e2e-forward test-e2e-forward-hal
 
 # ═══════════════════════════════════════════════════════════════
 #  环境
@@ -248,6 +248,10 @@ test-rust-unit: $(VENV)
 test-rust: test-rust-unit test-rust-integ
 test-e2e-forward:
 	cargo test --test integration_tests
+
+test-e2e-forward-hal:
+	cd rust && cargo build --bin forward_check_hal --features hal-rust
+	cd rust && cargo test --test hal_forward_test --features hal-rust
 test-rust-cov:
 	cargo llvm-cov --lib --summary-only
 test-pipeline-timing: $(VENV)
@@ -274,6 +278,12 @@ test-forward-smoke-rust: verify-dylib-fresh
 	cargo build --bin forward_check
 	@echo "[forward_check] Running Rust forward pass..."
 	$(DYLIB_ENV) ./rust/target/debug/forward_check
+
+# L1.5: HAL IR forward smoke (uses forward_check_hal binary, Path B)
+test-forward-smoke-rust-hal:
+	cd rust && cargo build --bin forward_check_hal --features hal-rust
+	@echo "[forward_check_hal] Running Rust HAL forward pass (zero weights)..."
+	./rust/target/debug/forward_check_hal
 
 test-forward-cos: test-forward-smoke
 	@for model in compiled/opt_125m_fresh; do \

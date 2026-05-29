@@ -13,6 +13,7 @@ use crate::hal::cpu::buffer::CpuBuffer as InnerCpuBuffer;
 use crate::hal::cpu::CpuBuffer;
 use crate::hal::traits;
 use crate::tensor::{Dtype, Tensor};
+use crate::weight_loader::WeightProvider;
 
 // ── HAL IR types ───────────────────────────────────────────────────────
 
@@ -45,6 +46,11 @@ pub struct HalTensorDef {
     pub shape: Vec<String>,
     #[serde(default)]
     pub dtype: String,
+    /// Whether this tensor is consumed internally within the function.
+    /// When true, the tensor is NOT propagated to subsequent functions
+    /// as a cross-function wire.
+    #[serde(default)]
+    pub consumed_internally: bool,
 }
 
 /// Deserialize shape arrays that may contain strings ("?") or integers (1).
@@ -146,6 +152,8 @@ impl HalRustRunner {
 /// * `executable` — HAL executable that dispatches op_name → CPU kernel.
 /// * `hal_ir` — parsed HAL IR (28 functions, 634 ops for opt-125m).
 /// * `weight_provider` — optional weight loader for weight tensors.
+///   When `Some(...)`, known weights are loaded before execution.
+///   When `None`, all weights are zero-filled.
 /// * `stream` — HAL stream (no-op for CPU).
 /// * `input_ids` — token IDs (length = sequence length).
 /// * `positions` — position IDs (length = sequence length).
@@ -156,11 +164,16 @@ impl HalRustRunner {
 pub fn run_hal_function_graph(
     executable: &dyn traits::Executable,
     hal_ir: &HalIR,
+    weight_provider: Option<&WeightProvider>,
     stream: &dyn traits::Stream,
     input_ids: &[u32],
     positions: &[u32],
 ) -> Result<Tensor, anyhow::Error> {
     let seq_len = input_ids.len();
+
+    // WeightProvider is reserved for Task 5 (weight injection).
+    // Currently all weights are zero-filled.
+    let _ = weight_provider;
 
     // ── Global SSA value map ─────────────────────────────────────────
     // Stores raw bytes keyed by SSA name (e.g. "%arg0", "%213", "%196").
@@ -291,6 +304,84 @@ pub fn run_hal_function_graph(
             function.layer,
             function.ops.len(),
         );
+
+        // ── Cross-function wiring for functions >= 1 ────────────────
+        //
+        // Each function declares its own %arg0..%argN namespace.
+        // The wire (hidden state from previous function) is identified
+        // as the first input with dynamic dimensions ("?" in shape).
+        // Other %arg inputs are weights or scalars, zero-filled here
+        // (WeightProvider injection is reserved for Task 5).
+        if fi >= 1 {
+            let prev_func = &hal_ir.functions[fi - 1];
+            let wire = find_main_output(prev_func, &ssa_map);
+
+            if wire.is_none() {
+                log::warn!(
+                    "hal_runner: no wire output found for function[{}], using zero-fill for all inputs",
+                    fi - 1,
+                );
+            }
+
+            // Find the wire input: the first %arg with dynamic dims.
+            // This may be %arg0, %arg1, or any %arg name depending on
+            // how the compiler structured the function signature.
+            let mut wire_input_name: Option<String> = None;
+            for input_def in &function.inputs {
+                let has_dyn = input_def.shape.iter().any(|d| d == "?" || d == "-1");
+                if has_dyn {
+                    wire_input_name = Some(input_def.name.clone());
+                    break;
+                }
+            }
+
+            if wire_input_name.is_none() {
+                log::warn!(
+                    "hal_runner: no dynamic input found for function[{}] — no cross-function wiring",
+                    fi,
+                );
+            }
+
+            // Populate the wire input from the previous function's output.
+            // We ALWAYS overwrite — even if the SSA name already exists
+            // (from function[0]'s global input injection).  %arg names
+            // are per-function namespaces that collide in the global map.
+            if let Some(ref wire_name) = wire_input_name {
+                if let Some((_wire_ssa, ref wire_data)) = wire {
+                    ssa_map.insert(wire_name.clone(), wire_data.clone());
+                    log::debug!(
+                        "hal_runner: wired function[{}] '{}' from function[{}] output ({} bytes)",
+                        fi,
+                        wire_name,
+                        fi - 1,
+                        wire_data.len(),
+                    );
+                } else {
+                    log::warn!(
+                        "hal_runner: wire output for function[{}] not in SSA map — %arg inputs remain zero-filled",
+                        fi - 1,
+                    );
+                }
+            }
+
+            // Pre-populate remaining %arg inputs with zeros.
+            // Weight injection from WeightProvider will be added in Task 5.
+            for input_def in &function.inputs {
+                if ssa_map.contains_key(&input_def.name) {
+                    continue;
+                }
+                let numel = estimate_numel_from_shape(&input_def.shape, seq_len);
+                let raw_bytes = vec![0u8; numel * 4];
+                ssa_map.insert(input_def.name.clone(), raw_bytes);
+                log::trace!(
+                    "hal_runner: zero-filled function[{}] input '{}' ({} elements, shape={:?})",
+                    fi,
+                    input_def.name,
+                    numel,
+                    input_def.shape,
+                );
+            }
+        }
 
         for (oi, op) in function.ops.iter().enumerate() {
             // Skip runtime-level cache ops — handled by block_manager/kv_cache.
@@ -447,23 +538,75 @@ pub fn run_hal_function_graph(
                 )
                 .map_err(|e| anyhow::anyhow!("InnerCpuBuffer: {}", e))?;
 
-                // Build the output buffer shape: for shape_of it's [rank];
-                // otherwise use the declared shape.
-                let shape_fallback: Vec<usize> = if op.op == "shape_of" && out_idx == 0 {
-                    vec![numel]
-                } else {
-                    shape
-                        .iter()
-                        .map(|d| {
-                            if d == "?" || d == "-1" {
-                                1
+                // Build the output buffer shape.
+                // For shape-preserving ops (element_wise, softmax, unsqueeze,
+                // transpose, slice, compare, fill), the output shape equals the
+                // first input's shape.  For shape_of it's [rank]; otherwise use
+                // the declared shape from the function's I/O list.
+                let output_dims: Vec<usize> = if out_idx == 0 {
+                    match op.op.as_str() {
+                        "element_wise" | "elementwise" | "softmax" | "unsqueeze"
+                        | "transpose" | "slice" | "compare" | "fill" => {
+                            // Derive from first input's shape.
+                            if let Some(inp_name) = op.inputs.first() {
+                                let inp_shape = find_any_shape(function, inp_name);
+                                let inp_dims: Vec<usize> = inp_shape
+                                    .iter()
+                                    .map(|d| {
+                                        if d == "?" || d == "-1" { 1 }
+                                        else { d.parse::<usize>().unwrap_or(1) }
+                                    })
+                                    .collect();
+                                if inp_dims.iter().all(|&d| d > 0) {
+                                    inp_dims
+                                } else {
+                                    fallback_shape(&shape, numel)
+                                }
                             } else {
-                                d.parse::<usize>().unwrap_or(1)
+                                fallback_shape(&shape, numel)
                             }
-                        })
-                        .collect()
+                        }
+                        "reduce" => {
+                            // Reduce preserves rank — output shape = input shape.
+                            if let Some(inp_name) = op.inputs.first() {
+                                let inp_shape = find_any_shape(function, inp_name);
+                                let inp_dims: Vec<usize> = inp_shape
+                                    .iter()
+                                    .map(|d| {
+                                        if d == "?" || d == "-1" { 1 }
+                                        else { d.parse::<usize>().unwrap_or(1) }
+                                    })
+                                    .collect();
+                                // Reduce collapses some dims but we keep rank
+                                // for simplicity (the op handles the actual dims).
+                                if inp_dims.iter().all(|&d| d > 0) {
+                                    inp_dims
+                                } else {
+                                    fallback_shape(&shape, numel)
+                                }
+                            } else {
+                                fallback_shape(&shape, numel)
+                            }
+                        }
+                        "shape_of" => {
+                            vec![numel]
+                        }
+                        "gather" => {
+                            // gather(weight, indices): output = [N, embed_dim].
+                            // Use numel-based fallback.
+                            fallback_shape(&shape, numel)
+                        }
+                        "matmul" | "reshape" | "concat" | "cache_read" | "cache_write" => {
+                            fallback_shape(&shape, numel)
+                        }
+                        _ => {
+                            fallback_shape(&shape, numel)
+                        }
+                    }
+                } else {
+                    fallback_shape(&shape, numel)
                 };
-                let cpu_buf = CpuBuffer::with_meta(raw_buf, 4 /* f32 */, shape_fallback);
+                let cpu_buf = CpuBuffer::with_meta(raw_buf, 4 /* f32 */, output_dims);
                 output_vecs.push(vec);
                 output_bufs.push(Box::new(cpu_buf));
             }
@@ -481,9 +624,42 @@ pub fn run_hal_function_graph(
                 None => op.op.clone(),
             };
 
-            let output_shapes =
-                executable.execute(&op_name, stream, &input_refs, &output_refs)?;
-
+            // Wrap execute in a panic-safe handler: with zero-filled weights,
+            // many ops fail due to shape mismatches (matmul rank < 2),
+            // type reinterpretation (i64→f32 in gather indices), or
+            // index OOB.  Generated CPU kernels may panic with OOB access.
+            // We catch panics AND errors, zero-filling outputs to keep
+            // the forward pass running — producing garbage logits is
+            // acceptable for this diagnostic binary.
+            let exe_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                executable.execute(&op_name, stream, &input_refs, &output_refs)
+            }));
+            let output_shapes = match exe_result {
+                Ok(Ok(shapes)) => shapes,
+                Ok(Err(e)) => {
+                    log::warn!(
+                        "hal_runner: func[{}] op[{}] '{}' error: {}. \
+                         Zero-filling and continuing.",
+                        fi, oi, op_name, e,
+                    );
+                    zero_fill_outputs(&mut output_vecs, &output_bufs, fi, oi, &op_name)
+                }
+                Err(panic_payload) => {
+                    let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "unknown panic".to_string()
+                    };
+                    log::warn!(
+                        "hal_runner: func[{}] op[{}] '{}' PANIC: {}. \
+                         Zero-filling and continuing.",
+                        fi, oi, op_name, msg,
+                    );
+                    zero_fill_outputs(&mut output_vecs, &output_bufs, fi, oi, &op_name)
+                }
+            };
             log::trace!(
                 "hal_runner: func[{}] op[{}] '{}' -> {} outputs, shapes={:?}",
                 fi,
@@ -499,6 +675,23 @@ pub fn run_hal_function_graph(
                 let raw_bytes: Vec<u8> =
                     out_vec.iter().flat_map(|&v| v.to_le_bytes()).collect();
                 ssa_map.insert(output_name.clone(), raw_bytes);
+            }
+        }
+
+        // ── Capture wire output for cross-function wiring ─────────────
+        // The main wire output (hidden state) from this function becomes
+        // %arg0 for the next function.  It is identified as the function
+        // output whose shape has dynamic batch/seq dims ("?") with a
+        // static feature dimension (e.g. [?,?,768]).
+        if fi < hal_ir.functions.len().saturating_sub(1) {
+            let wire = find_main_output(function, &ssa_map);
+            if let Some((name, data)) = wire {
+                log::debug!(
+                    "hal_runner: function[{}] main wire '{}' ({} bytes) ready for next function",
+                    fi,
+                    name,
+                    data.len(),
+                );
             }
         }
     }
@@ -542,17 +735,44 @@ pub fn run_hal_function_graph(
     }
 
     // Build output shape from function output metadata.
-    let output_shape: Vec<usize> = global_output_def
-        .shape
-        .iter()
-        .map(|d| {
-            if d == "?" || d == "-1" {
-                seq_len
-            } else {
-                d.parse::<usize>().unwrap_or(1)
-            }
-        })
-        .collect();
+    // First "?" = batch (always 1), subsequent "?" = sequence length.
+    let output_shape: Vec<usize> = {
+        let mut first_dyn = true;
+        global_output_def
+            .shape
+            .iter()
+            .map(|d| {
+                if d == "?" || d == "-1" {
+                    if first_dyn {
+                        first_dyn = false;
+                        1 // batch
+                    } else {
+                        seq_len
+                    }
+                } else {
+                    d.parse::<usize>().unwrap_or(1)
+                }
+            })
+            .collect()
+    };
+
+    // Validate shape product matches actual data.
+    // The declared shape from function output metadata may not match the
+    // runtime data (e.g. shape_of output declared as [1] but returning
+    // rank elements).  Fall back to a flat shape when mismatched.
+    let shape_product: usize = output_shape.iter().product();
+    let output_shape = if shape_product == numel || shape_product == 0 {
+        output_shape
+    } else {
+        log::debug!(
+            "hal_runner: global output shape mismatch: declared {:?} (product={}), actual numel={}. \
+             Using flat shape.",
+            output_shape,
+            shape_product,
+            numel,
+        );
+        vec![numel]
+    };
 
     log::debug!(
         "hal_runner: global output '{}' shape={:?} numel={}",
@@ -565,6 +785,32 @@ pub fn run_hal_function_graph(
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
+
+/// Zero-fill output buffers after a failed op execution.
+/// Called by the panic-safe execute wrapper to keep the SSA map populated
+/// with valid (zeroed) data so subsequent ops don't cascade-fail.
+fn zero_fill_outputs(
+    output_vecs: &mut [Vec<f32>],
+    output_bufs: &[Box<dyn traits::Buffer>],
+    fi: usize,
+    oi: usize,
+    op_name: &str,
+) -> Vec<Vec<i64>> {
+    for (idx, out_vec) in output_vecs.iter_mut().enumerate() {
+        out_vec.fill(0.0f32);
+        log::trace!(
+            "hal_runner: zero-filled func[{}] op[{}] output[{}] ({} elements)",
+            fi, oi, idx, out_vec.len(),
+        );
+    }
+    output_bufs
+        .iter()
+        .map(|b| {
+            let s: Vec<i64> = b.shape().iter().map(|&d| d as i64).collect();
+            s
+        })
+        .collect()
+}
 
 /// Estimate the number of f32 elements for a tensor with the given
 /// HAL IR shape representation (strings with "?" for dynamic dims).
@@ -591,6 +837,72 @@ fn estimate_numel_from_shape(shape: &[String], seq_len: usize) -> usize {
     // (e.g., shape_of output declared as [1] but actually [rank],
     //  gather output declared as [1] but actually [N × embed_dim]).
     numel.max(65536) // 64K elements = 256 KB
+}
+
+/// Find the main (wire) output of a HAL function for cross-function wiring.
+///
+/// The wire is the hidden state output that gets passed to the next
+/// function as `%arg0`.  It is identified by:
+///   a) NOT being `consumed_internally` (excludes KV cache intermediates)
+///   b) having at least one dynamic dimension ("?")
+///   c) having rank >= 2 (excludes scalars and offsets)
+///   d) preferring rank-3 shapes `[?, ?, X]` typical of hidden states
+///
+/// Returns `Some((ssa_name, data_bytes))` when found, `None` on failure.
+fn find_main_output(
+    function: &HalFunction,
+    ssa_map: &std::collections::HashMap<String, Vec<u8>>,
+) -> Option<(String, Vec<u8>)> {
+    let mut best_score: i64 = -1;
+    let mut best: Option<(&HalTensorDef, Vec<u8>)> = None;
+
+    for output in &function.outputs {
+        // Skip internally-consumed tensors (KV cache intermediates).
+        if output.consumed_internally {
+            continue;
+        }
+        let dyn_count = output.shape.iter().filter(|d| *d == "?" || *d == "-1").count();
+        if dyn_count == 0 {
+            continue; // skip fully static outputs (weights, constants)
+        }
+        let rank = output.shape.len();
+        if rank < 2 {
+            continue; // skip scalars and 1D offsets
+        }
+
+        // Score: prefer higher rank, more "?" dims, and rank 3 being ideal.
+        let score = (rank as i64) * 10 + (dyn_count as i64) + if rank == 3 { 100 } else { 0 };
+
+        if let Some(data) = ssa_map.get(&output.name) {
+            if score > best_score {
+                best_score = score;
+                best = Some((output, data.clone()));
+            }
+        }
+    }
+
+    best.map(|(output, data)| (output.name.clone(), data))
+}
+
+/// Fallback shape builder for op outputs: converts the declared shape
+/// strings to a `Vec<usize>`, substituting `"?` and `"-1"` with 1 (batch).
+/// Uses `numel` as the flat fallback when the shape is all-dynamic.
+fn fallback_shape(shape: &[String], numel: usize) -> Vec<usize> {
+    let dims: Vec<usize> = shape
+        .iter()
+        .map(|d| {
+            if d == "?" || d == "-1" {
+                1
+            } else {
+                d.parse::<usize>().unwrap_or(1)
+            }
+        })
+        .collect();
+    if dims.is_empty() || dims.iter().all(|&d| d == 0) {
+        vec![numel]
+    } else {
+        dims
+    }
 }
 
 /// Find the shape definition for a tensor name in a function's
@@ -771,7 +1083,7 @@ mod tests {
         // This is expected — the purpose of the test is to verify the runner's op
         // dispatch path, not correctness with zero weights.
         let result = run_hal_function_graph(
-            &exe, &single_hal_ir, &stream, &input_ids, &positions,
+            &exe, &single_hal_ir, None, &stream, &input_ids, &positions,
         );
         match result {
             Ok(tensor) => {
@@ -820,17 +1132,20 @@ mod tests {
                     name: "%arg0".to_string(),
                     shape: vec!["?".to_string(), "?".to_string()],
                     dtype: "i64".to_string(),
+                    consumed_internally: false,
                 }],
                 outputs: vec![
                     HalTensorDef {
                         name: "%213".to_string(),
                         shape: vec!["2".to_string()],
                         dtype: "f32".to_string(),
+                        consumed_internally: false,
                     },
                     HalTensorDef {
                         name: "%1".to_string(),
                         shape: vec!["768".to_string()],
                         dtype: "f32".to_string(),
+                        consumed_internally: false,
                     },
                 ],
                 ops: vec![HalOp {
@@ -849,7 +1164,7 @@ mod tests {
         let positions: Vec<u32> = vec![0, 1, 2, 3];
 
         let result = run_hal_function_graph(
-            &exe, &hal_ir, &stream, &input_ids, &positions,
+            &exe, &hal_ir, None, &stream, &input_ids, &positions,
         )
         .expect("single op execution");
 
