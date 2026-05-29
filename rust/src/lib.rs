@@ -4,6 +4,8 @@
 
 pub mod error;
 pub mod hal;
+#[cfg(feature = "hal-rust")]
+pub mod hal_runner;
 pub mod sfcf;
 pub mod ciface_high;
 pub mod block_manager;

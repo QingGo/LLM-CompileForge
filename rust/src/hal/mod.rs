@@ -10,5 +10,5 @@ pub mod cpu;
 pub mod rust;
 
 #[cfg(feature = "hal-rust")]
-#[path = "../../../compiled/opt_125m_kv/generated/hal_ops_cpu.rs"]
+#[path = "../../../compiled/opt_125m_fresh/generated/hal_ops_cpu.rs"]
 pub mod hal_ops_cpu;
