@@ -116,7 +116,7 @@ pub fn intercept_consumed_input(
     block_manager: Option<&BlockManager>,
     request_id: Option<&str>,
     positions: &[u32],
-    is_decode: bool,
+    _is_decode: bool,
 ) -> Result<Tensor, anyhow::Error> {
     let new_tensor = kv_new
         .get(&(producer_func, output_idx))

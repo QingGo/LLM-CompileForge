@@ -33,6 +33,7 @@ impl IOTensorDef {
     }
 
     /// Create an IOTensorDef with consumed_internally (used for outputs).
+    #[allow(dead_code)]
     pub fn new(rank: u8, shape: Vec<u64>, consumed_internally: bool) -> Self {
         Self { rank, shape, consumed_internally }
     }
@@ -55,6 +56,7 @@ pub struct FuncDef {
 impl FuncDef {
     /// Number of C ABI arguments for the ciface wrapper:
     /// 1 sret pointer + num_inputs descriptor pointers.
+    #[allow(dead_code)]
     pub fn total_args(&self) -> usize {
         1 + self.num_inputs
     }

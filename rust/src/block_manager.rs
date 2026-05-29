@@ -42,6 +42,7 @@ pub enum BlockEntry {
 }
 
 impl BlockEntry {
+    #[allow(dead_code)]
     pub fn block_id(&self) -> usize {
         match self {
             BlockEntry::Plain(b) => b.block_id,
@@ -88,7 +89,9 @@ impl std::error::Error for OutOfMemoryError {}
 pub struct BlockManager {
     pub block_size: usize,
     pub num_blocks: usize,
+    #[allow(dead_code)]
     pub num_kv_heads: Option<usize>,
+    #[allow(dead_code)]
     pub head_dim: Option<usize>,
     pub blocks: HashMap<usize, BlockEntry>,
     pub free_blocks: Vec<usize>,
@@ -247,6 +250,7 @@ impl BlockManager {
 
     /// Ensure a request has enough blocks to cover `target_tokens`.
     /// Used during prefill when cached blocks do not cover the full prompt.
+    #[allow(dead_code)]
     pub fn ensure_blocks(
         &mut self,
         request_id: &str,
@@ -340,6 +344,7 @@ impl BlockManager {
     }
 
     /// Increment reference count on a block (used by RadixCache on insert).
+    #[allow(dead_code)]
     pub fn increment_ref_count(&mut self, block_id: usize) {
         if let Some(block) = self.blocks.get_mut(&block_id) {
             *block.ref_count_mut() += 1;

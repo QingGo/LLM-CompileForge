@@ -4,6 +4,7 @@
 //! ``weight_loader`` and ``compute_graph`` for parsing the
 //! embedded SFCF blob in compiled .dylib files.
 
+#[allow(dead_code)]
 pub fn read_u8(data: &[u8], pos: &mut usize) -> Result<u8, anyhow::Error> {
     if *pos >= data.len() {
         anyhow::bail!("truncated at pos {} (need u8)", pos);

@@ -9,8 +9,7 @@
 mod e2e_tests {
     use crate::block_manager::BlockManager;
     use crate::executor::ModelExecutor;
-    use crate::runner::{InferenceRunner, RunnerConfig};
-    use crate::tokenizer::Tokenizer;
+
 
     const COMPILED_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../compiled/opt_125m_fresh");
 

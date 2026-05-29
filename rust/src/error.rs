@@ -24,6 +24,7 @@ pub enum ExecutorError {
     #[error("compute graph error: {0}")]
     ComputeGraph(String),
 
+    #[allow(dead_code)]
     #[error("missing compute graph section in SFCF data")]
     MissingComputeGraph,
 

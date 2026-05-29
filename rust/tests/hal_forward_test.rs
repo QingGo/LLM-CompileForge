@@ -153,7 +153,7 @@ fn test_hal_forward_all_functions_in_ir() {
     // Verify each function has ops.
     if let Some(functions) = hal_ir["functions"].as_array() {
         assert!(
-            functions.len() >= 1,
+            !functions.is_empty(),
             "Expected >= 1 function entries in HAL IR, got {}",
             functions.len(),
         );

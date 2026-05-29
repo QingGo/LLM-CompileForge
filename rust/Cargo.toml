@@ -65,5 +65,14 @@ proptest = "1"
 lto = true
 codegen-units = 1
 
+[lints.clippy]
+# Allow common patterns in generated code
+manual_is_multiple_of = "allow"
+excessive_precision = "allow"
+get_first = "allow"
+len_zero = "allow"
+manual_memcpy = "allow"
+needless_range_loop = "allow"
+
 [build-dependencies]
 cc = "1.2.62"

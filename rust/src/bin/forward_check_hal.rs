@@ -31,7 +31,7 @@ mod executor;
 mod global_input;
 #[path = "../hal/mod.rs"]
 mod hal;
-#[path = "../hal_runner.rs"]
+#[path = "../hal_runner/mod.rs"]
 mod hal_runner;
 #[path = "../kernel_catalog.rs"]
 mod kernel_catalog;

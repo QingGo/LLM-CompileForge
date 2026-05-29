@@ -21,11 +21,13 @@ use crate::weight_loader::WeightProvider;
 /// ``function_count`` is the number of functions in the compute graph
 /// (typically 16 for no-cache or 28 for KV-cache models).
 #[cfg(feature = "hal-rust")]
+#[allow(dead_code)]
 pub fn load_hal_rust_executable(function_count: usize) -> Box<dyn traits::Executable> {
     Box::new(crate::hal::rust::executable::HalRustExecutable::new(function_count))
 }
 
 #[cfg(feature = "hal-rust")]
+#[allow(dead_code)]
 fn load_dylib_executable(device: &dyn traits::Device, dylib_path: &str) -> Result<Box<dyn traits::Executable>, anyhow::Error> {
     let dylib_bytes = dylib_path.as_bytes();
     device.compile(dylib_bytes)
@@ -33,6 +35,7 @@ fn load_dylib_executable(device: &dyn traits::Device, dylib_path: &str) -> Resul
 }
 
 #[cfg(feature = "hal-rust")]
+#[allow(dead_code)]
 fn load_hal_rust_executable_from_dir(dylib_dir: &std::path::Path) -> Result<Box<dyn traits::Executable>, anyhow::Error> {
     let constants_path = dylib_dir.join("constants.bin");
     let hal_ir_path = dylib_dir.join("generated").join("hal_ir.json");
@@ -66,6 +69,7 @@ pub struct ModelExecutor {
 
 impl ModelExecutor {
     /// Load a model with the default CPU device.
+    #[allow(dead_code)]
     pub fn load(
         dylib_path: &str,
         safetensors_path: Option<&str>,
@@ -77,6 +81,7 @@ impl ModelExecutor {
     /// Load a model using a specific HAL device.  The device is used for
     /// compiling/loading the executable.
     #[allow(unused_variables)]
+    #[allow(dead_code)]
     pub fn load_with_device(
         device: &dyn traits::Device,
         dylib_path: &str,

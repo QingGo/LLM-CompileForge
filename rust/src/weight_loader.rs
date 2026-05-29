@@ -196,12 +196,14 @@ struct CachedTensorInfo {
 
 pub struct WeightProvider {
     registry: WeightRegistry,
+    #[allow(dead_code)]
     safetensors_mmap: Option<memmap2::Mmap>,
     /// Cached header info: HF key → (start_offset, end_offset, shape).
     /// Parsed once in `new()` to avoid O(n×header_size) on every lookup.
     safetensors_index: HashMap<String, CachedTensorInfo>,
     /// Reverse mapping: HF weight name → compiled SFCF name.
     /// Built once in `new()` from `registry.name_mapping`.
+    #[allow(dead_code)]
     hf_to_compiled: HashMap<String, String>,
 }
 
@@ -270,6 +272,7 @@ impl WeightProvider {
     /// Given an HF-style weight name (e.g. "model.decoder.layers.0.self_attn.q_proj.weight"),
     /// look up the compiled SFCF name from the reverse mapping.
     /// Returns `None` if no match is found.
+    #[allow(dead_code)]
     pub fn resolve_hf_weight_name(&self, hf_name: &str) -> Option<&str> {
         self.hf_to_compiled.get(hf_name).map(|s| s.as_str())
     }
@@ -286,6 +289,7 @@ impl WeightProvider {
 
     /// Check if a compiled name corresponds to an embedded constant
     /// (i64 scalar) rather than a safetensors weight (f16).
+    #[allow(dead_code)]
     pub fn is_constant(&self, compiled_name: &str) -> bool {
         self.registry.constants.contains_key(compiled_name)
     }
@@ -293,6 +297,7 @@ impl WeightProvider {
 
 /// Parse the safetensors JSON header once and build an index of
 /// (start_offset, end_offset, shape) for every tensor.
+#[allow(dead_code)]
 fn build_safetensors_index(
     mmap: &[u8],
 ) -> Result<HashMap<String, CachedTensorInfo>, anyhow::Error> {
@@ -341,6 +346,7 @@ fn build_safetensors_index(
     Ok(index)
 }
 
+#[allow(dead_code)]
 fn constant_as_memref(ct: &ConstantTensor) -> MemRefDesc2 {
     let p = ct.data.as_ptr();
     let rows = *ct.shape.first().unwrap_or(&1);

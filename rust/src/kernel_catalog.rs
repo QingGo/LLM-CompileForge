@@ -6,6 +6,7 @@ use crate::executor::ModelExecutor;
 
 /// Result of kernel selection — which kernel to use for this batch config.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct KernelSelection {
     /// Symbol name in the compiled .dylib
     pub symbol: String,
@@ -19,6 +20,7 @@ pub struct KernelSelection {
 /// Future: multi-shape AOT kernels selected by batch/seq pattern.
 pub trait KernelCatalog: Debug + Send + Sync {
     /// Select the best kernel for a given input configuration.
+    #[allow(dead_code)]
     fn select_kernel(
         &self,
         input_shape: &[usize],
@@ -26,11 +28,13 @@ pub trait KernelCatalog: Debug + Send + Sync {
     ) -> Result<KernelSelection, anyhow::Error>;
 
     /// Number of available kernel variants.
+    #[allow(dead_code)]
     fn num_variants(&self) -> usize;
 }
 
 /// Default implementation: single dynamic dylib that handles all shapes.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct DynamicDylib;
 
 impl KernelCatalog for DynamicDylib {

@@ -13,7 +13,7 @@
 mod integration_tests {
     use crate::block_manager::BlockManager;
     use crate::scheduler::Scheduler;
-    use crate::types::{Batch, PrefixCacheHit, RequestState, ScheduledRequest};
+    use crate::types::{PrefixCacheHit, RequestState};
 
     fn make_bm() -> BlockManager {
         BlockManager::new(1000, 16).unwrap()

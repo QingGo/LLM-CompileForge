@@ -7,8 +7,6 @@
 //!   4. The function is called via the C ABI
 //!   5. Output is read back from the result descriptor
 
-use std::path::Path;
-
 #[cfg(test)]
 #[allow(clippy::module_inception)]
 mod m1_tests {

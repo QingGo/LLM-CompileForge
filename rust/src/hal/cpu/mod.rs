@@ -1,12 +1,15 @@
-//! CPU backend — HAL trait implementations and re-exports.
+//! CPU backend — top-level module.
 //!
-//! ``CpuDevice`` allocates via ``std::alloc``.
-//! ``CpuExecutable`` loads compiled .dylibs via ``libloading``.
-//! ``CpuBuffer`` wraps heap memory with initialization tracking.
-//! ``CpuStream`` is a no-op (CPU is synchronous).
+//! Sub-modules:
+//! - ``device`` — ``CpuDevice`` (HAL Device impl), ``CpuStream``, ``CpuEvent``
+//! - ``buffer`` — ``CpuBuffer`` (raw allocator-backed buffer)
+//! - ``executable`` — ``CpuExecutable`` (dylib loader)
+//! - ``kernel``, ``memref``, ``sret`` — MemRef descriptor helpers
+//!
+//! Re-exports ``CpuDevice``, ``CpuStream``, ``CpuEvent``, ``CpuExecutable``,
+//! ``CpuBuffer``, and MemRef descriptor types for use by the rest of the crate.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::traits;
 
@@ -18,70 +21,8 @@ pub mod memref;
 pub mod sret;
 
 use buffer::CpuBuffer as RawCpuBuffer;
-use device::CpuDevice as RawCpuDevice;
+use device::RawCpuDevice;
 use executable::CpuExecutable as RawCpuExecutable;
-
-// ── CpuDevice ──────────────────────────────────────────────────────────
-
-#[derive(Debug)]
-pub struct CpuDevice {
-    allocated: AtomicUsize,
-}
-
-impl CpuDevice {
-    pub fn new() -> Self {
-        Self { allocated: AtomicUsize::new(0) }
-    }
-
-    #[allow(dead_code)]
-    pub fn total_allocated(&self) -> usize {
-        self.allocated.load(Ordering::Relaxed)
-    }
-}
-
-impl Default for CpuDevice {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl traits::Device for CpuDevice {
-    fn alloc(&self, size: usize) -> Result<Box<dyn traits::Buffer>, anyhow::Error> {
-        let mut d = RawCpuDevice::new();
-        let buf = d.allocate(size);
-        self.allocated.fetch_add(d.total_allocated(), Ordering::Relaxed);
-        Ok(Box::new(CpuBuffer::new(buf)))
-    }
-
-    fn create_stream(&self) -> Result<Box<dyn traits::Stream>, anyhow::Error> {
-        Ok(Box::new(CpuStream))
-    }
-
-    fn create_event(&self) -> Result<Box<dyn traits::Event>, anyhow::Error> {
-        Ok(Box::new(CpuEvent))
-    }
-
-    fn compile(&self, module_data: &[u8]) -> Result<Box<dyn traits::Executable>, anyhow::Error> {
-        let dylib_path = std::str::from_utf8(module_data)
-            .map_err(|e| anyhow::anyhow!("module_data is not valid UTF-8 path: {}", e))?;
-        let inner = RawCpuExecutable::load(dylib_path)?;
-        let constants_data = inner.load_constants()?;
-        // Cache serveforge_free symbol. Load BEFORE moving `inner` into
-        // CpuExecutable to satisfy the borrow checker.
-        let free_fn: unsafe extern "C" fn(*mut std::ffi::c_void) = {
-            let sym: libloading::Symbol<unsafe extern "C" fn(*mut std::ffi::c_void)> =
-                // SAFETY: lib.get() returns a valid symbol pointer if the dylib
-                // was loaded successfully.
-                unsafe { inner.lib().get(b"serveforge_free")? };
-            *sym
-        };
-        Ok(Box::new(CpuExecutable { inner, constants_data, free_fn }))
-    }
-
-    fn name(&self) -> &str {
-        "CPU (Apple Silicon / x86-64)"
-    }
-}
 
 // ── CpuBuffer ─────────────────────────────────────────────────────────
 
@@ -111,6 +52,7 @@ impl CpuBuffer {
     }
 
     /// Access the inner RawCpuBuffer (for HAL-internal use).
+    #[allow(dead_code)]
     pub fn inner(&self) -> &RawCpuBuffer { &self.inner }
 }
 
@@ -162,8 +104,19 @@ impl CpuExecutable {
     pub fn inner(&self) -> &RawCpuExecutable { &self.inner }
 
     /// Access the cached constants data embedded in the dylib.
+    #[allow(dead_code)]
     pub fn module_data(&self) -> &[u8] {
         &self.constants_data
+    }
+
+    /// Construct a CpuExecutable from its raw parts (used by device.rs).
+    #[allow(dead_code)]
+    pub(crate) fn new(
+        inner: RawCpuExecutable,
+        constants_data: Vec<u8>,
+        free_fn: unsafe extern "C" fn(*mut c_void),
+    ) -> Self {
+        Self { inner, constants_data, free_fn }
     }
 }
 
@@ -373,32 +326,11 @@ impl traits::Executable for CpuExecutable {
         &self.constants_data
     }
 }
-// ── CpuEvent ──────────────────────────────────────────────────────────
+// ── Re-exports (used by executor.rs, weight_loader.rs, device.rs) ─
 
-/// CPU event — no-op (CPU is synchronous, all work completes immediately).
-#[derive(Debug)]
-#[allow(dead_code)]
-pub struct CpuEvent;
-
-impl traits::Event for CpuEvent {
-    fn is_complete(&self) -> bool { true }
-    fn synchronize(&self) -> Result<(), anyhow::Error> { Ok(()) }
-}
-
-// ── CpuStream ─────────────────────────────────────────────────────────
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub struct CpuStream;
-
-impl traits::Stream for CpuStream {
-    fn synchronize(&self) -> Result<(), anyhow::Error> { Ok(()) }
-    fn wait_event(&self, _event: &dyn traits::Event) -> Result<(), anyhow::Error> { Ok(()) }
-    fn record_event(&self, _event: &dyn traits::Event) -> Result<(), anyhow::Error> { Ok(()) }
-}
-
-// ── Re-exports (used by executor.rs, weight_loader.rs) ─
-
+#[allow(unused_imports)]
+pub use device::{CpuDevice, CpuEvent, CpuStream};
+#[allow(unused_imports)]
 pub use executable::CpuExecutable as Executable;
 pub use memref::{MemRefDesc2, MemRefDescAny};
 pub use sret::{make_memref_descriptor, read_sret_descriptor};

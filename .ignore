@@ -17,3 +17,4 @@
 !rust/src/bin/
 !repro.mlir
 !*.log
+!docs/tutorial/

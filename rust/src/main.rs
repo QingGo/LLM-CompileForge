@@ -256,6 +256,7 @@ struct CompletionRequest {
     #[serde(default)]
     top_k: usize,
     #[serde(default)]
+    #[allow(dead_code)]
     stream: bool,
 }
 

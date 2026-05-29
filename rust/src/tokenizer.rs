@@ -132,7 +132,7 @@ impl Tokenizer {
             .inner
             .encode(text, true)
             .map_err(|e| anyhow::anyhow!("tokenizer encode error: {}", e))?;
-        let ids: Vec<u32> = encoding.get_ids().iter().copied().collect();
+        let ids: Vec<u32> = encoding.get_ids().to_vec();
         log::debug!("encode text={:?} input_ids={:?}", text, ids);
         Ok(ids)
     }
