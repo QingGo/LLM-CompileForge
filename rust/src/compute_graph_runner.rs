@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use half::f16;
 
 use crate::block_manager::BlockManager;
-use crate::compute_graph::{ComputeGraph, InputBinding, IOTensorDef};
+use crate::compute_graph::{ComputeGraph, FuncDef, InputBinding, IOTensorDef};
 use crate::hal::cpu::buffer::CpuBuffer as InnerCpuBuffer;
 use crate::hal::cpu::CpuBuffer;
 use crate::hal::traits;
@@ -20,6 +20,181 @@ use crate::kv_cache::CachePolicy;
 use crate::kv_cache_intercept::{intercept_consumed_input, intercept_consumed_output};
 use crate::tensor::{Dtype, Tensor};
 use crate::weight_loader::WeightProvider;
+
+// ---- Helper functions shared by run_function_graph and run_function_graph_with_kv_intercept ----
+
+/// Build a HAL buffer for a GlobalInput binding, filling from input_ids/positions.
+fn build_global_input_buffer(
+    input_ids: &[u32],
+    positions: &[u32],
+    io_def: &IOTensorDef,
+    bi: usize,
+    _raw_global: &mut Vec<Vec<u8>>,
+) -> Result<Box<dyn traits::Buffer>, anyhow::Error> {
+    let (_, raw) = crate::global_input::fill_global_input(input_ids, positions, io_def, bi)?;
+    _raw_global.push(raw);
+    let raw_bytes = _raw_global.last().expect("_raw_global last");
+    let raw_buf = InnerCpuBuffer::from_raw_parts(
+        raw_bytes.as_ptr() as *mut u8,
+        raw_bytes.len(),
+        true, // borrowed
+    )
+    .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let rank = io_def.rank as usize;
+    let dims: Vec<usize> = (0..rank)
+        .map(|i| {
+            if io_def.shape[i] <= 0 {
+                if i == 0 {
+                    1
+                } else {
+                    input_ids.len()
+                }
+            } else {
+                io_def.shape[i] as usize
+            }
+        })
+        .collect();
+    let cpu_buf = CpuBuffer::with_meta(raw_buf, 8 /* i64 */, dims);
+    Ok(Box::new(cpu_buf))
+}
+
+/// Look up or load a weight tensor, converting f16→f32 on first load.
+fn load_weight_tensor(
+    key: &str,
+    weight_provider: &WeightProvider,
+    weight_cache: &RefCell<HashMap<String, Tensor>>,
+    io_def: &IOTensorDef,
+) -> Result<Tensor, anyhow::Error> {
+    let mut cache = weight_cache.borrow_mut();
+    if let Some(cached) = cache.get(key) {
+        Ok(cached.to_owned())
+    } else {
+        let desc = weight_provider
+            .get_weight_memref(key)
+            .ok_or_else(|| anyhow::anyhow!("weight not found: {}", key))?;
+        let n = desc.numel();
+        // SAFETY: The pointer comes from a valid MemRefDesc's aligned
+        // field. The f16 data was written by the dylib's execute() call.
+        let data: Vec<f32> = unsafe {
+            let raw = desc.aligned as *const u16;
+            let slice = std::slice::from_raw_parts(raw, n);
+            slice
+                .iter()
+                .map(|&h| f16::from_bits(h).to_f32())
+                .collect()
+        };
+        let shape: Vec<usize> = io_def.shape.iter().map(|&d| d as usize).collect();
+        let t = Tensor::new_owned(shape, data, Dtype::F32);
+        cache.insert(key.to_string(), t.to_owned());
+        Ok(t)
+    }
+}
+
+/// Wrap a Tensor's data as a borrowed HAL buffer (f32).
+fn wrap_tensor_buffer(tensor: &Tensor) -> Result<Box<dyn traits::Buffer>, anyhow::Error> {
+    let raw_buf = InnerCpuBuffer::from_raw_parts(
+        tensor.as_slice().as_ptr() as *mut u8,
+        tensor.as_slice().len() * 4,
+        true, // borrowed
+    )
+    .map_err(|e| anyhow::anyhow!("{}", e))?;
+    Ok(Box::new(CpuBuffer::with_meta(
+        raw_buf,
+        4, /* f32 */
+        tensor.shape.clone(),
+    )))
+}
+
+/// Pre-allocate output buffers sized from the compute graph metadata.
+/// The dims use io_def.shape with 0→1 fallback so that rank() returns
+/// the correct rank for sret descriptor parsing.
+fn allocate_output_buffers(
+    func_def: &FuncDef,
+    seq_len: usize,
+) -> Result<(Vec<Vec<f32>>, Vec<Box<dyn traits::Buffer>>), anyhow::Error> {
+    let mut output_vecs: Vec<Vec<f32>> = Vec::with_capacity(func_def.outputs.len());
+    let mut output_bufs: Vec<Box<dyn traits::Buffer>> =
+        Vec::with_capacity(func_def.outputs.len());
+    for (oi, io_def) in func_def.outputs.iter().enumerate() {
+        let numel = estimate_output_numel(&io_def.shape, seq_len);
+        let mut vec = Vec::with_capacity(numel);
+        // SAFETY: set_len to capacity — the buffer is filled by
+        // execute() before any f32 reads.  execute() checks that
+        // the output does not exceed numel.
+        unsafe {
+            vec.set_len(numel);
+        }
+        log::trace!(
+            "allocate_output_buffers: func[{}] output[{}] estimated numel={} (shape={:?}, seq_len={})",
+            func_def.index,
+            oi,
+            numel,
+            io_def.shape,
+            seq_len,
+        );
+        let raw_buf = InnerCpuBuffer::from_raw_parts(
+            vec.as_mut_ptr() as *mut u8,
+            numel * 4,
+            true, // borrowed
+        )
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let shape_fallback: Vec<usize> = io_def
+            .shape
+            .iter()
+            .map(|&d| if d == 0 { 1 } else { d as usize })
+            .collect();
+        let cpu_buf = CpuBuffer::with_meta(raw_buf, 4 /* f32 */, shape_fallback);
+        output_vecs.push(vec);
+        output_bufs.push(Box::new(cpu_buf));
+    }
+    Ok((output_vecs, output_bufs))
+}
+
+/// Extract a Tensor from the execute() output buffer using returned shapes.
+fn extract_output_tensor(
+    output_shapes: &[Vec<i64>],
+    output_vecs: &mut [Vec<f32>],
+    fi: usize,
+    oi: usize,
+) -> Result<Tensor, anyhow::Error> {
+    let shapes = &output_shapes[oi];
+    let actual_n: usize = crate::hal::cpu::sret::checked_product_from_i64(shapes)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "func[{}] output[{}] sret shapes overflow: {:?}",
+                fi,
+                oi,
+                shapes
+            )
+        })?;
+    let mut out_vec = std::mem::take(&mut output_vecs[oi]);
+    debug_assert!(
+        actual_n <= out_vec.capacity(),
+        "func[{}] output[{}]: sret actual_n={} exceeds pre-allocated capacity={}",
+        fi,
+        oi,
+        actual_n,
+        out_vec.capacity(),
+    );
+    if actual_n < out_vec.len() {
+        // SAFETY: actual_n ≤ out_vec.capacity() (guaranteed by execute's
+        // n_bytes ≤ output_buf.len() check, double-checked by debug_assert above).
+        // Data is written by execute() via copy_nonoverlapping.
+        unsafe {
+            out_vec.set_len(actual_n);
+        }
+    }
+    let shape_usize: Vec<usize> = shapes.iter().map(|&s| std::cmp::max(1, s) as usize).collect();
+    log::trace!(
+        "extract_output_tensor: func[{}] output[{}] actual shapes={:?} actual_n={} final_shape={:?}",
+        fi,
+        oi,
+        shapes,
+        actual_n,
+        shape_usize,
+    );
+    Ok(Tensor::new_owned(shape_usize, out_vec, Dtype::F32))
+}
 
 /// Walk every function in `compute_graph` in order.
 ///
@@ -55,115 +230,31 @@ pub fn run_function_graph(
         for (bi, (binding, io_def)) in func_def.inputs.iter().enumerate() {
             match binding {
                 InputBinding::GlobalInput => {
-                    let (_, raw) =
-                        crate::global_input::fill_global_input(input_ids, positions, io_def, bi)?;
-                    _raw_global.push(raw);
-                    let raw_bytes = _raw_global.last().expect("raw_global last");
-                    let raw_buf = InnerCpuBuffer::from_raw_parts(
-                        raw_bytes.as_ptr() as *mut u8,
-                        raw_bytes.len(),
-                        true,  // borrowed
-                    )
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
-                    let rank = io_def.rank as usize;
-                    let dims: Vec<usize> = (0..rank)
-                        .map(|i| {
-                            if io_def.shape[i] <= 0 {
-                                if i == 0 { 1 } else { input_ids.len() }
-                            } else {
-                                io_def.shape[i] as usize
-                            }
-                        })
-                        .collect();
-                    let cpu_buf = CpuBuffer::with_meta(raw_buf, 8 /* i64 */, dims);
-                    input_bufs.push(Box::new(cpu_buf));
+                    let buf = build_global_input_buffer(
+                        input_ids, positions, io_def, bi, &mut _raw_global,
+                    )?;
+                    input_bufs.push(buf);
                 }
                 InputBinding::Weight(key) => {
-                    let mut cache = weight_cache.borrow_mut();
-                    let tensor: Tensor = if let Some(cached) = cache.get(key) {
-                        cached.to_owned()
-                    } else {
-                        let desc = weight_provider
-                            .get_weight_memref(key)
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("weight not found: {}", key)
-                            })?;
-                        let n = desc.numel();
-                        // SAFETY: The pointer comes from a valid MemRefDesc's aligned
-                        // field. The f16 data was written by the dylib's execute() call.
-                        let data: Vec<f32> = unsafe {
-                            let raw = desc.aligned as *const u16;
-                            let slice = std::slice::from_raw_parts(raw, n);
-                            slice
-                                .iter()
-                                .map(|&h| f16::from_bits(h).to_f32())
-                                .collect()
-                        };
-                        let shape: Vec<usize> =
-                            io_def.shape.iter().map(|&d| d as usize).collect();
-                        let tensor = Tensor::new_owned(shape, data, Dtype::F32);
-                        cache.insert(key.clone(), tensor.to_owned());
-                        tensor
-                    };
-                    let raw_buf = InnerCpuBuffer::from_raw_parts(
-                        tensor.as_slice().as_ptr() as *mut u8,
-                        tensor.as_slice().len() * 4,
-                        true,  // borrowed
-                    )
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
-                    let cpu_buf = CpuBuffer::with_meta(raw_buf, 4 /* f32 */, tensor.shape.clone());
+                    let tensor = load_weight_tensor(key, weight_provider, weight_cache, io_def)?;
+                    let buf = wrap_tensor_buffer(&tensor)?;
                     _tensors.push(tensor);
-                    input_bufs.push(Box::new(cpu_buf));
+                    input_bufs.push(buf);
                 }
                 InputBinding::Ssa {
                     producer_func,
                     output_idx,
                 } => {
                     let ref_tensor = &func_outputs[*producer_func][*output_idx];
-                    let raw_buf = InnerCpuBuffer::from_raw_parts(
-                        ref_tensor.as_slice().as_ptr() as *mut u8,
-                        ref_tensor.as_slice().len() * 4,
-                        true,  // borrowed
-                    )
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
-                    let dims = ref_tensor.shape.clone();
-                    let cpu_buf = CpuBuffer::with_meta(raw_buf, 4 /* f32 */, dims);
-                    input_bufs.push(Box::new(cpu_buf));
+                    let buf = wrap_tensor_buffer(ref_tensor)?;
+                    input_bufs.push(buf);
                 }
             }
         }
 
         // Pre-allocate output buffers sized from the compute graph metadata.
-        // The dims use io_def.shape with 0→1 fallback so that rank() returns
-        // the correct rank for sret descriptor parsing.
         let seq_len = input_ids.len();
-        let mut output_vecs: Vec<Vec<f32>> = Vec::with_capacity(func_def.outputs.len());
-        let mut output_bufs: Vec<Box<dyn traits::Buffer>> =
-            Vec::with_capacity(func_def.outputs.len());
-        for (oi, io_def) in func_def.outputs.iter().enumerate() {
-            let numel = estimate_output_numel(&io_def.shape, seq_len);
-            let mut vec = Vec::with_capacity(numel);
-            // SAFETY: set_len to capacity — the buffer is filled by
-            // execute() before any f32 reads.  execute() checks that
-            // the output does not exceed numel.
-            unsafe { vec.set_len(numel); }
-            log::trace!(
-                "run_function_graph: func[{}] output[{}] estimated numel={} (shape={:?}, seq_len={})",
-                fi, oi, numel, io_def.shape, seq_len,
-            );
-            let raw_buf = InnerCpuBuffer::from_raw_parts(
-                vec.as_mut_ptr() as *mut u8,
-                numel * 4,
-                true,  // borrowed
-            )
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-            let shape_fallback: Vec<usize> = io_def.shape.iter()
-                .map(|&d| if d == 0 { 1 } else { d as usize })
-                .collect();
-            let cpu_buf = CpuBuffer::with_meta(raw_buf, 4 /* f32 */, shape_fallback);
-            output_vecs.push(vec);
-            output_bufs.push(Box::new(cpu_buf));
-        }
+        let (mut output_vecs, output_bufs) = allocate_output_buffers(func_def, seq_len)?;
 
         // Collect trait-object references for the execute call.
         let input_refs: Vec<&dyn traits::Buffer> =
@@ -177,30 +268,9 @@ pub fn run_function_graph(
         let output_shapes = executable.execute(&func_def.symbol, stream, &input_refs, &output_refs)?;
 
         // Extract Tensors from output buffers using the returned shapes.
-        for (oi, shapes) in output_shapes.iter().enumerate() {
-            let actual_n: usize = crate::hal::cpu::sret::checked_product_from_i64(&shapes)
-                .ok_or_else(|| anyhow::anyhow!(
-                    "func[{}] output[{}] sret shapes overflow: {:?}", fi, oi, shapes
-                ))?;
-            let mut out_vec = std::mem::take(&mut output_vecs[oi]);
-            debug_assert!(
-                actual_n <= out_vec.capacity(),
-                "func[{}] output[{}]: sret actual_n={} exceeds pre-allocated capacity={}. \
-                 estimate_output_numel under-estimated: shapes={:?}, estimated={}",
-                fi, oi, actual_n, out_vec.capacity(), shapes, out_vec.capacity(),
-            );
-            if actual_n < out_vec.len() {
-                // SAFETY: actual_n ≤ out_vec.capacity() (guaranteed by execute's
-                // n_bytes ≤ output_buf.len() check, double-checked by debug_assert above).
-                // Data is written by execute() via copy_nonoverlapping.
-                unsafe { out_vec.set_len(actual_n); }
-            }
-            let shape_usize: Vec<usize> = shapes.iter().map(|&s| std::cmp::max(1, s) as usize).collect();
-            log::trace!(
-                "run_function_graph: func[{}] output[{}] actual shapes={:?} actual_n={} final_shape={:?}",
-                fi, oi, shapes, actual_n, shape_usize,
-            );
-            func_outputs[fi].push(Tensor::new_owned(shape_usize, out_vec, Dtype::F32));
+        for (oi, _shapes) in output_shapes.iter().enumerate() {
+            let tensor = extract_output_tensor(&output_shapes, &mut output_vecs, fi, oi)?;
+            func_outputs[fi].push(tensor);
         }
     }
 
@@ -301,60 +371,17 @@ pub fn run_function_graph_with_kv_intercept(
         for (bi, (binding, io_def)) in func_def.inputs.iter().enumerate() {
             // GlobalInput: handle with early continue (consumes `bi`)
             if let InputBinding::GlobalInput = binding {
-                let (_, raw) =
-                    crate::global_input::fill_global_input(input_ids, positions, io_def, bi)?;
-                _raw_global.push(raw);
-                let raw_bytes = _raw_global.last().expect("raw_global last");
-                let raw_buf = InnerCpuBuffer::from_raw_parts(
-                    raw_bytes.as_ptr() as *mut u8,
-                    raw_bytes.len(),
-                    true,  // borrowed
-                )
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-                let rank = io_def.rank as usize;
-                let dims: Vec<usize> = (0..rank)
-                    .map(|i| {
-                        if io_def.shape[i] <= 0 {
-                            if i == 0 { 1 } else { input_ids.len() }
-                        } else {
-                            io_def.shape[i] as usize
-                        }
-                    })
-                    .collect();
-                let cpu_buf = CpuBuffer::with_meta(raw_buf, 8 /* i64 */, dims);
-                input_bufs.push(Box::new(cpu_buf));
+                let buf = build_global_input_buffer(
+                    input_ids, positions, io_def, bi, &mut _raw_global,
+                )?;
+                input_bufs.push(buf);
                 continue;
             }
 
             let tensor: Tensor = match binding {
                 InputBinding::GlobalInput => unreachable!(), // handled above
                 InputBinding::Weight(key) => {
-                    let mut cache = weight_cache.borrow_mut();
-                    if let Some(cached) = cache.get(key) {
-                        cached.to_owned()
-                    } else {
-                        let desc = weight_provider
-                            .get_weight_memref(key)
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("weight not found: {}", key)
-                            })?;
-                        let n = desc.numel();
-                        // SAFETY: The pointer comes from a valid MemRefDesc's aligned
-                        // field. The f16 data was written by the dylib's execute() call.
-                        let data: Vec<f32> = unsafe {
-                            let raw = desc.aligned as *const u16;
-                            let slice = std::slice::from_raw_parts(raw, n);
-                            slice
-                                .iter()
-                                .map(|&h| f16::from_bits(h).to_f32())
-                                .collect()
-                        };
-                        let shape: Vec<usize> =
-                            io_def.shape.iter().map(|&d| d as usize).collect();
-                        let t = Tensor::new_owned(shape, data, Dtype::F32);
-                        cache.insert(key.clone(), t.to_owned());
-                        t
-                    }
+                    load_weight_tensor(key, weight_provider, weight_cache, io_def)?
                 }
                 InputBinding::Ssa {
                     producer_func,
@@ -362,7 +389,8 @@ pub fn run_function_graph_with_kv_intercept(
                 } => {
                     let prod_output_def =
                         &compute_graph.functions[*producer_func].outputs[*output_idx];
-                    if should_intercept_consumed(*producer_func, *output_idx, cache_policy, prod_output_def) {
+                    if should_intercept_consumed(*producer_func, *output_idx, cache_policy, prod_output_def)
+                    {
                         intercept_consumed_input(
                             *producer_func,
                             *output_idx,
@@ -387,46 +415,14 @@ pub fn run_function_graph_with_kv_intercept(
                 }
             };
 
-            let raw_buf = InnerCpuBuffer::from_raw_parts(
-                tensor.as_slice().as_ptr() as *mut u8,
-                tensor.as_slice().len() * 4,
-                true,  // borrowed
-            )
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-            let cpu_buf = CpuBuffer::with_meta(raw_buf, 4 /* f32 */, tensor.shape.clone());
+            let buf = wrap_tensor_buffer(&tensor)?;
             _tensors.push(tensor);
-            input_bufs.push(Box::new(cpu_buf));
+            input_bufs.push(buf);
         }
 
         // Pre-allocate output buffers (same pattern as run_function_graph)
         let seq_len = input_ids.len();
-        let mut output_vecs: Vec<Vec<f32>> = Vec::with_capacity(func_def.outputs.len());
-        let mut output_bufs: Vec<Box<dyn traits::Buffer>> =
-            Vec::with_capacity(func_def.outputs.len());
-        for (oi, io_def) in func_def.outputs.iter().enumerate() {
-            let numel = estimate_output_numel(&io_def.shape, seq_len);
-            let mut vec = Vec::with_capacity(numel);
-            // SAFETY: numel is computed from the function's output shape.
-            // The vec was allocated with Vec::with_capacity(numel).
-            // execute() will fill the buffer before any reads.
-            unsafe { vec.set_len(numel); }
-            log::trace!(
-                "run_function_graph_kv: func[{}] output[{}] estimated numel={} (shape={:?}, seq_len={})",
-                fi, oi, numel, io_def.shape, seq_len,
-            );
-            let raw_buf = InnerCpuBuffer::from_raw_parts(
-                vec.as_mut_ptr() as *mut u8,
-                numel * 4,
-                true,  // borrowed
-            )
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-            let shape_fallback: Vec<usize> = io_def.shape.iter()
-                .map(|&d| if d == 0 { 1 } else { d as usize })
-                .collect();
-            let cpu_buf = CpuBuffer::with_meta(raw_buf, 4 /* f32 */, shape_fallback);
-            output_vecs.push(vec);
-            output_bufs.push(Box::new(cpu_buf));
-        }
+        let (mut output_vecs, output_bufs) = allocate_output_buffers(func_def, seq_len)?;
 
         let input_refs: Vec<&dyn traits::Buffer> =
             input_bufs.iter().map(|b| b.as_ref()).collect();
@@ -436,31 +432,8 @@ pub fn run_function_graph_with_kv_intercept(
         let output_shapes =
             executable.execute(&func_def.symbol, stream, &input_refs, &output_refs)?;
 
-        for (oi, shapes) in output_shapes.iter().enumerate() {
-            let actual_n: usize = crate::hal::cpu::sret::checked_product_from_i64(&shapes)
-                .ok_or_else(|| anyhow::anyhow!(
-                    "func[{}] output[{}] sret shapes overflow: {:?}", fi, oi, shapes
-                ))?;
-            let mut out_vec = std::mem::take(&mut output_vecs[oi]);
-            debug_assert!(
-                actual_n <= out_vec.capacity(),
-                "func[{}] output[{}]: sret actual_n={} exceeds pre-allocated capacity={}",
-                fi, oi, actual_n, out_vec.capacity(),
-            );
-            if actual_n < out_vec.len() {
-                // SAFETY: actual_n <= out_vec.capacity() (guaranteed by execute's
-                // n_bytes check, double-checked by debug_assert above).
-                // Data was written by execute() via copy_nonoverlapping.
-                unsafe { out_vec.set_len(actual_n); }
-            }
-            log::trace!(
-                "run_function_graph_kv: func[{}] output[{}] actual shapes={:?} actual_n={}",
-                fi, oi, shapes, actual_n,
-            );
-            let shape_usize: Vec<usize> =
-                shapes.iter().map(|&s| std::cmp::max(1, s) as usize).collect();
-            let tensor = Tensor::new_owned(shape_usize, out_vec, Dtype::F32);
-
+        for (oi, _shapes) in output_shapes.iter().enumerate() {
+            let tensor = extract_output_tensor(&output_shapes, &mut output_vecs, fi, oi)?;
             let io_def = &func_def.outputs[oi];
             if should_intercept_consumed(fi, oi, cache_policy, io_def) {
                 intercept_consumed_output(
