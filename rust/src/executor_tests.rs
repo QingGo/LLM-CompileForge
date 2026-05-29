@@ -480,3 +480,66 @@ fn test_register_expert_kernel_default() {
     );
 }
 
+// ── function_count validation (hal-rust helper) ──
+
+#[cfg(feature = "hal-rust")]
+#[test]
+fn test_function_count_validation() {
+    let dir = std::env::temp_dir().join("_test_func_count_val");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir.join("generated")).unwrap();
+
+    // Create constants.bin (basic dummy content)
+    std::fs::write(&dir.join("constants.bin"), b"dummy").unwrap();
+
+    // Case 1: hal_ir.json with null num_functions
+    std::fs::write(
+        &dir.join("generated").join("hal_ir.json"),
+        r#"{"num_functions": null}"#,
+    )
+    .unwrap();
+    let result = super::load_hal_rust_executable_from_dir(&dir);
+    assert!(
+        result.is_err(),
+        "should reject null num_functions"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("num_functions") || err.contains("missing") || err.contains("invalid"),
+        "error should mention num_functions or missing/invalid, got: {err}",
+    );
+
+    // Case 2: hal_ir.json with missing num_functions key
+    std::fs::write(
+        &dir.join("generated").join("hal_ir.json"),
+        r#"{"other_key": 42}"#,
+    )
+    .unwrap();
+    let result = super::load_hal_rust_executable_from_dir(&dir);
+    assert!(
+        result.is_err(),
+        "should reject missing num_functions key"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("num_functions") || err.contains("missing"),
+        "error should mention num_functions or missing, got: {err}",
+    );
+
+    // Case 3: hal_ir.json with valid num_functions (should succeed)
+    std::fs::write(
+        &dir.join("generated").join("hal_ir.json"),
+        r#"{"num_functions": 2}"#,
+    )
+    .unwrap();
+    let result = super::load_hal_rust_executable_from_dir(&dir);
+    assert!(
+        result.is_ok(),
+        "should accept valid num_functions, got: {:?}",
+        result.err(),
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
