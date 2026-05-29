@@ -222,6 +222,7 @@ impl ModelExecutor {
         Ok(result)
     }
 
+    #[allow(dead_code)]
     pub fn forward_decode_cached(
         &self,
         input_ids: &[u32],
@@ -292,8 +293,10 @@ fn write_npy(path: &str, data: &[f32], shape: &[usize]) -> std::io::Result<()> {
     file.write_all(&header_len.to_le_bytes())?;
     file.write_all(header_bytes)?;
     for _ in 0..padding { file.write_all(b" ")?; }
+    // SAFETY: `data` is a valid Vec<f32>; `size_of_val(data)` gives the
+    // exact byte count, so the raw pointer cast produces a valid &[u8].
     let byte_slice = unsafe {
-        std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * std::mem::size_of::<f32>())
+        std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
     };
     file.write_all(byte_slice)?;
     Ok(())

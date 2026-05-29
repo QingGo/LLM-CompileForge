@@ -29,9 +29,8 @@ mod compute_graph_test;
 #[path = "tensor.rs"]
 pub mod tensor;
 
-#[cfg(test)]
 #[path = "weight_loader.rs"]
-mod weight_loader;
+pub mod weight_loader;
 
 #[cfg(feature = "python-bindings")]
 mod py_bindings {

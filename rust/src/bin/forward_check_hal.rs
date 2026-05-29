@@ -1,19 +1,19 @@
-/// HAL IR forward-check binary.
-///
-/// Loads the compiled opt-125m HAL IR (`generated/hal_ir.json`), runs
-/// the full 28-function forward pass through `HalRustExecutable`, and
-/// dumps logits to `/tmp/rust_hal_logits.csv`.
-///
-/// Uses `ModelExecutor` (Path A, dylib-based) only for access to the
-/// `WeightProvider` — the actual forward pass runs via `HalRustRunner`
-/// (Path B, pure-Rust).  WeightProvider integration is reserved for
-/// Task 5; currently all weights are zero-filled.
-///
-/// Usage:
-///   cargo run --bin forward_check_hal --features hal-rust
-///
-/// Modules use `#[path]` to reference source files in src/ since this
-/// binary lives under src/bin/.
+//! HAL IR forward-check binary.
+//!
+//! Loads the compiled opt-125m HAL IR (`generated/hal_ir.json`), runs
+//! the full 28-function forward pass through `HalRustExecutable`, and
+//! dumps logits to `/tmp/rust_hal_logits.csv`.
+//!
+//! Uses `ModelExecutor` (Path A, dylib-based) only for access to the
+//! `WeightProvider` — the actual forward pass runs via `HalRustRunner`
+//! (Path B, pure-Rust).  WeightProvider integration is reserved for
+//! Task 5; currently all weights are zero-filled.
+//!
+//! Usage:
+//!   cargo run --bin forward_check_hal --features hal-rust
+//!
+//! Modules use `#[path]` to reference source files in src/ since this
+//! binary lives under src/bin/.
 
 #[path = "../block_manager.rs"]
 mod block_manager;
@@ -119,11 +119,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[forward_check_hal] dylib (for weight access): {}", dylib_path.display());
     println!("[forward_check_hal] safetensors: {}", safetensors_path);
 
-    // Load ModelExecutor (Path A) solely for WeightProvider access.
-    // In Task 5, the WeightProvider will be used to populate weights
-    // in the HAL IR runner.  Currently we discard the provider since
-    // all weights are zero-filled.
-    let _executor = crate::executor::ModelExecutor::load(
+    // Load ModelExecutor (Path A) for WeightProvider access.
+    // The WeightProvider loads real weights from safetensors and is
+    // passed to the HAL IR runner for weight injection.
+    let executor = crate::executor::ModelExecutor::load(
         &dylib_path.to_string_lossy(),
         Some(&safetensors_path),
     )
@@ -165,13 +164,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         input_ids
     );
 
-    // Run the full 28-function forward pass through the HAL IR runner.
-    // We pass None for weight_provider — all weights are zero-filled.
-    // The output logits will be garbage but execution should not panic.
+    // Run the full forward pass through the HAL IR runner with real weights.
     let output = crate::hal_runner::run_hal_function_graph(
         &hal_exe,
         &runner.hal_ir,
-        None, // weight_provider (Task 5)
+        Some(&executor.weight_provider),
         &stream,
         &input_ids,
         &positions,
@@ -196,10 +193,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let has_inf = logits.iter().any(|&v| v.is_infinite());
     if has_nan || has_inf {
         eprintln!(
-            "[forward_check_hal] WARNING: output contains {} NaN, {} Inf — expected with zero weights",
+            "[forward_check_hal] WARNING: output contains {} NaN, {} Inf",
             if has_nan { "some" } else { "no" },
             if has_inf { "some" } else { "no" },
         );
+    } else {
+        println!("[forward_check_hal] All logits are finite ✓");
     }
 
     println!("[forward_check_hal] Done ✓");

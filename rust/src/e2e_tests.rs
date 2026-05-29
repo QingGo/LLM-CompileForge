@@ -5,6 +5,7 @@
 //! This catches Issue #45 (cos=0.525) type regressions.
 
 #[cfg(test)]
+#[allow(clippy::module_inception, clippy::expect_fun_call, clippy::manual_abs_diff)]
 mod e2e_tests {
     use crate::block_manager::BlockManager;
     use crate::executor::ModelExecutor;
@@ -14,6 +15,7 @@ mod e2e_tests {
     const COMPILED_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../compiled/opt_125m_fresh");
 
     // ── KV-cache model constants ──────────────────────────────────────────
+    #[allow(dead_code)]
     const PROMPT_TEXT: &str = "The capital of France is";
     const PROMPT_IDS: &[u32] = &[2, 133, 812, 9, 1470, 16];
     const EXPECTED_TOKENS: &[u32] = &[5, 812, 9, 5, 1515];
@@ -554,7 +556,7 @@ mod e2e_tests {
         let exec = compiled_kv_executor();
         let num_kv_heads = 12usize;
         let head_dim = 64usize;
-        let hidden_dim = num_kv_heads * head_dim;
+        let _hidden_dim = num_kv_heads * head_dim;
         let block_size = 16usize;
         let num_blocks = 64usize;
 

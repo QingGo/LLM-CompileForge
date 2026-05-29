@@ -193,9 +193,10 @@ mod tests {
     #[test]
     fn test_buffer_owned_from_raw_frees() {
         let layout = Layout::array::<u8>(16).expect("valid layout");
+        // SAFETY: layout is valid (verified by `Layout::array` above).
         let ptr = unsafe { alloc::alloc(layout) };
         assert!(!ptr.is_null(), "alloc should succeed");
-        // Write some data
+        // SAFETY: ptr points to valid 16-byte allocation from above.
         unsafe { std::ptr::write_bytes(ptr, 0xAB, 16); }
         let buf = CpuBuffer::from_raw_parts(ptr, 16, false)
             .expect("from_raw_parts with borrowed=false");

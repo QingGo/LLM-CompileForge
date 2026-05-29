@@ -54,7 +54,7 @@ pub fn parse_embedded(data: &[u8]) -> Result<(WeightRegistry, usize, u32), anyho
         )).into());
     }
     let version = u32::from_le_bytes(data[4..8].try_into()?);
-    if version < 2 || version > 4 {
+    if !(2..=4).contains(&version) {
         return Err(ExecutorError::SfcfParse(format!(
             "unsupported binary version: {} (expected 2..=4)", version,
         )).into());
@@ -153,6 +153,7 @@ pub fn load_registry_from_dylib(
     // embedded in the .dylib at compile time. It points to static data
     // in the dylib's read-only data section, valid for the Library lifetime.
     let data_ptr: *const u8 = {
+        // SAFETY: libloading::Symbol::get() is safe for the dylib's lifetime.
         let sym: libloading::Symbol<*const c_void> = unsafe {
             lib.get(b"serveforge_constants_data")
                 .map_err(|e| anyhow::anyhow!("{}", e))?
@@ -161,10 +162,14 @@ pub fn load_registry_from_dylib(
     };
 
     let size_val: u64 = {
+        // SAFETY: libloading::get() looks up a typed symbol from the dylib,
+        // valid for the Library lifetime.
         let sym = unsafe {
             lib.get::<*const u64>(b"serveforge_constants_size")
                 .map_err(|e| anyhow::anyhow!("{}", e))?
         };
+        // SAFETY: The symbol was just successfully looked up; dereferencing
+        // it reads the compile-time constant embedded in the dylib.
         unsafe { *(*sym) }
     };
 
@@ -195,6 +200,9 @@ pub struct WeightProvider {
     /// Cached header info: HF key → (start_offset, end_offset, shape).
     /// Parsed once in `new()` to avoid O(n×header_size) on every lookup.
     safetensors_index: HashMap<String, CachedTensorInfo>,
+    /// Reverse mapping: HF weight name → compiled SFCF name.
+    /// Built once in `new()` from `registry.name_mapping`.
+    hf_to_compiled: HashMap<String, String>,
 }
 
 impl WeightProvider {
@@ -213,10 +221,18 @@ impl WeightProvider {
             } else {
                 (None, HashMap::new())
             };
+        // Build reverse mapping: HF name → compiled SFCF name.
+        let hf_to_compiled: HashMap<String, String> = registry
+            .name_mapping
+            .iter()
+            .map(|(k, v)| (v.clone(), k.clone()))
+            .collect();
+
         Ok(Self {
             registry,
             safetensors_mmap,
             safetensors_index,
+            hf_to_compiled,
         })
     }
 
@@ -251,6 +267,13 @@ impl WeightProvider {
         })
     }
 
+    /// Given an HF-style weight name (e.g. "model.decoder.layers.0.self_attn.q_proj.weight"),
+    /// look up the compiled SFCF name from the reverse mapping.
+    /// Returns `None` if no match is found.
+    pub fn resolve_hf_weight_name(&self, hf_name: &str) -> Option<&str> {
+        self.hf_to_compiled.get(hf_name).map(|s| s.as_str())
+    }
+
     #[allow(dead_code)]
     pub fn name_mapping(&self) -> &HashMap<String, String> {
         &self.registry.name_mapping
@@ -259,6 +282,12 @@ impl WeightProvider {
     #[allow(dead_code)]
     pub fn constants(&self) -> &HashMap<String, ConstantTensor> {
         &self.registry.constants
+    }
+
+    /// Check if a compiled name corresponds to an embedded constant
+    /// (i64 scalar) rather than a safetensors weight (f16).
+    pub fn is_constant(&self, compiled_name: &str) -> bool {
+        self.registry.constants.contains_key(compiled_name)
     }
 }
 

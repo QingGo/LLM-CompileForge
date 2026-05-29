@@ -159,6 +159,8 @@ impl RadixCache {
                         // so the pointer is valid until `self` is dropped.
                         remaining = &remaining[common..];
                         node_ptr = {
+                            // SAFETY: `parent` is just-inserted into `node.children`,
+                            // so the pointer is valid until `self` is dropped.
                             let parent = unsafe { &mut *node_ptr };
                             parent.children.get_mut(&first)
                                 .expect("invariant: just inserted child node above") as *mut RadixTreeNode
@@ -222,7 +224,7 @@ fn common_prefix_len(a: &[u32], b: &[u32]) -> usize {
 }
 
 fn ceil_div(a: usize, b: usize) -> usize {
-    (a + b - 1) / b
+    a.div_ceil(b)
 }
 
 fn add_node(
@@ -275,7 +277,7 @@ fn dfs_evict_child(
         _ => return,
     };
 
-    for bid in node.kv_blocks.iter().copied().collect::<Vec<_>>() {
+    for &bid in &node.kv_blocks {
         bm.free_block(bid);
         *freed += 1;
         if *freed >= target_blocks {

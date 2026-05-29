@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_scalar() {
-        let t = Tensor::scalar(3.14);
+        let t = Tensor::scalar(std::f32::consts::PI);
         assert_eq!(t.rank(), 0);
         assert_eq!(t.numel(), 1);
     }

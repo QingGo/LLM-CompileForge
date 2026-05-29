@@ -35,7 +35,7 @@ pub fn fill_global_input(
     bi: usize,
 ) -> Result<(MemRefDescAny, Vec<u8>), anyhow::Error> {
     let shape: Vec<usize> = io_def.shape.iter().map(|&d| d as usize).collect();
-    let is_dynamic = shape.iter().any(|&d| d == 0);
+    let is_dynamic = shape.contains(&0);
     if is_dynamic {
         let rank = io_def.rank as usize;
         let data_source: &[u32] = if bi == 1 { positions } else { input_ids };

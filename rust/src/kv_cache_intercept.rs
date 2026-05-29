@@ -17,6 +17,7 @@ use crate::tensor::{Dtype, Tensor};
 /// Stores the tensor in `kv_new` for downstream SSA overrides, and
 /// optionally writes it to the [`BlockManager`] KV cache (with BNSD→BNLD
 /// transpose for prefill).
+#[allow(clippy::too_many_arguments)]
 pub fn intercept_consumed_output(
     fi: usize,
     oi: usize,
@@ -38,6 +39,7 @@ pub fn intercept_consumed_output(
         })?;
         let layer_rid = format!("{}_f{}", rid, fi);
         let num_tokens = positions.len();
+        #[allow(clippy::manual_checked_ops)]
         let hidden_dim = if num_tokens > 0 {
             tensor.numel() / num_tokens
         } else {
@@ -105,6 +107,7 @@ pub fn intercept_consumed_output(
 ///     `[0..pos)`, concatenates with the new single-position K/V, and
 ///     transposes BNLD→BNSD.
 ///   - **Prefill** (or no cache): returns the new K/V tensor directly.
+#[allow(clippy::too_many_arguments)]
 pub fn intercept_consumed_input(
     producer_func: usize,
     output_idx: usize,
@@ -126,12 +129,10 @@ pub fn intercept_consumed_input(
             )
         })?;
 
-    if is_decode && block_manager.is_some() {
+    if let Some(bm) = block_manager.as_ref() {
         // Decode: concat cached K/V with new K/V
         let pos = positions[0] as usize;
         let hidden_dim = new_tensor.numel();
-
-        let bm = block_manager.as_ref().unwrap();
         let rid = request_id.ok_or_else(|| {
             anyhow::anyhow!(
                 "intercept_consumed_input: request_id required when block_manager is set"

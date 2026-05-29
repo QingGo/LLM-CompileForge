@@ -223,6 +223,28 @@ class HalIRBuilder:
                     out_entry["consumed_internally"] = True
                 outputs.append(out_entry)
 
+        # ── Build weight input mapping ───────────────────────────
+        # Maps function input SSA names to compiled weight names,
+        # using weight_classification params ordered by function
+        # signature.  We skip dynamic-shaped inputs (wire/sequence),
+        # and rank-1-with-single-element scalars, matching only
+        # actual weight/bias tensors to the ordered param list.
+        weight_inputs: dict[str, str] = {}
+        w_idx = 0
+        for i_def in inputs:
+            shape = i_def["shape"]
+            # Skip dynamic dims (hidden state wires, KV cache).
+            is_dyn = any(d == "?" or d == -1 or d == "-1" for d in shape)
+            # Skip scalar placeholders: [1], [1, 1], etc.
+            is_scalar = bool(shape) and all(
+                (isinstance(d, str) and d in ("1", "?"))
+                or (isinstance(d, int) and d == 1)
+                for d in shape
+            )
+            if not is_dyn and not is_scalar and w_idx < len(param_names):
+                weight_inputs[i_def["name"]] = param_names[w_idx]
+                w_idx += 1
+
         # ── Build function entry ────────────────────────────────
         func_entry: dict[str, Any] = {
             "name": func_name,
@@ -231,6 +253,7 @@ class HalIRBuilder:
             "outputs": outputs,
             "weights": weights,
             "constants": constants,
+            "weight_inputs": weight_inputs,
             "ops": ops,
         }
 

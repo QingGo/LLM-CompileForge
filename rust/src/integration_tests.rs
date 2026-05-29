@@ -9,6 +9,7 @@
 //! These tests only exercise the pure-Rust types, not the pyo3 bindings.
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod integration_tests {
     use crate::block_manager::BlockManager;
     use crate::scheduler::Scheduler;

@@ -1,13 +1,13 @@
 #![allow(unused_imports)]
 
-/// Dump all runtime-loaded weights as .npy files for offline inspection.
-///
-/// Usage:
-///   cargo run --bin dump_weights -- --compiled-dir compiled/tiny_llama_fresh
-///
-/// Loads the compiled .dylib, reads the name_mapping from the embedded
-/// SFCF blob, resolves HF keys in the safetensors file, converts f16→f32,
-/// and writes individual .npy files plus a weights_index.json.
+//! Dump all runtime-loaded weights as .npy files for offline inspection.
+//!
+//! Usage:
+//!   cargo run --bin dump_weights -- --compiled-dir compiled/tiny_llama_fresh
+//!
+//! Loads the compiled .dylib, reads the name_mapping from the embedded
+//! SFCF blob, resolves HF keys in the safetensors file, converts f16→f32,
+//! and writes individual .npy files plus a weights_index.json.
 
 #[path = "../block_manager.rs"]
 mod block_manager;

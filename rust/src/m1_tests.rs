@@ -10,6 +10,7 @@
 use std::path::Path;
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod m1_tests {
     use crate::hal::cpu::kernel::CifaceFn3;
     use crate::hal::cpu::memref::MemRefDesc1;

@@ -387,7 +387,7 @@ mod tests {
         // BUGGY behavior: sample from ALL logits
         let cfg = SamplerConfig { temperature: 0.0, top_p: 1.0, top_k: 0, max_tokens: None };  // greedy
         let mut s = Sampler::new(42);
-        let buggy_token = s.sample(&all_logits, &cfg);
+        let _buggy_token = s.sample(&all_logits, &cfg);
         // Token 0 might not be picked if another position's max is higher
         // (In our setup, position [0,0] has logit[1]=5.0 and last pos has logit[0]=10.0,
         //  so greedy picks 0. But this verifies the wrong position is checked.)

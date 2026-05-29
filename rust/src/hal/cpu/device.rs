@@ -11,7 +11,12 @@ pub struct CpuDevice {
     allocated_bytes: usize,
 }
 
-#[allow(dead_code)]
+impl Default for CpuDevice {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CpuDevice {
     pub fn new() -> Self {
         Self {
@@ -27,6 +32,7 @@ impl CpuDevice {
         // returns Err only on arithmetic overflow, which won't happen for
         // plausible allocations.
         let layout = Layout::from_size_align(size, 16).expect("invalid layout");
+        // SAFETY: layout is valid (checked by from_size_align above) and size > 0.
         let ptr = unsafe { alloc::alloc(layout) };
         let Some(ptr) = NonNull::new(ptr) else {
             alloc::handle_alloc_error(layout);

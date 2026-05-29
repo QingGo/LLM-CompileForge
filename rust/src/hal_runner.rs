@@ -32,7 +32,26 @@ pub struct HalFunction {
     pub layer: usize,
     pub inputs: Vec<HalTensorDef>,
     pub outputs: Vec<HalTensorDef>,
+    #[serde(default)]
+    pub weights: Vec<HalWeightEntry>,
+    #[serde(default)]
+    pub weight_inputs: HashMap<String, String>,
     pub ops: Vec<HalOp>,
+}
+
+/// A weight entry in a function's `weights` list.
+///
+/// Compiled from `sf.weight` ops in the normalized MLIR.
+/// The `ssa` field gives the SSA name (e.g. `%0`) produced by the weight op.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct HalWeightEntry {
+    pub name: String,
+    #[serde(deserialize_with = "deserialize_shape_to_strings")]
+    pub shape: Vec<String>,
+    pub dtype: String,
+    pub hal_name: String,
+    #[serde(default)]
+    pub ssa: String,
 }
 
 /// Tensor metadata in a function's input/output list.
@@ -171,27 +190,25 @@ pub fn run_hal_function_graph(
 ) -> Result<Tensor, anyhow::Error> {
     let seq_len = input_ids.len();
 
-    // WeightProvider is reserved for Task 5 (weight injection).
-    // Currently all weights are zero-filled.
-    let _ = weight_provider;
-
     // ── Global SSA value map ─────────────────────────────────────────
     // Stores raw bytes keyed by SSA name (e.g. "%arg0", "%213", "%196").
+    // All values are stored as f32 bytes (4 per element).  The gather op
+    // internally casts f32 indices to i64.
     let mut ssa_map: HashMap<String, Vec<u8>> = HashMap::new();
 
-    // ── Inject global inputs (i64) for the entry function ────────────
+    // ── Inject global inputs (f32) for the entry function ────────────
     {
-        // %arg0 = input_ids as i64 (8 bytes per element)
+        // %arg0 = input_ids, stored as f32 values (cast from u32)
         let raw: Vec<u8> = input_ids
             .iter()
-            .flat_map(|&id| (id as i64).to_le_bytes().to_vec())
+            .flat_map(|&id| (id as f32).to_le_bytes().to_vec())
             .collect();
         ssa_map.insert("%arg0".to_string(), raw);
 
-        // %arg1 = position_ids as i64
+        // %arg1 = position_ids, stored as f32 values
         let raw: Vec<u8> = positions
             .iter()
-            .flat_map(|&p| (p as i64).to_le_bytes().to_vec())
+            .flat_map(|&p| (p as f32).to_le_bytes().to_vec())
             .collect();
         ssa_map.insert("%arg1".to_string(), raw);
     }
@@ -265,8 +282,7 @@ pub fn run_hal_function_graph(
                 if input_def.name == *name {
                     let numel = estimate_numel_from_shape(&input_def.shape, seq_len);
                     let raw_bytes = vec![0u8; numel * 4];
-                    ssa_map.insert(name.clone(), raw_bytes);
-                    log::trace!(
+                    ssa_map.insert(name.clone(), raw_bytes);                    log::trace!(
                         "hal_runner: zero-filled input '{}' ({} elements, shape={:?})",
                         name,
                         numel,
@@ -286,13 +302,89 @@ pub fn run_hal_function_graph(
             // like [85, 768] for embed_dim=768.
             const DEFAULT_CONSTANT_ELEMS: usize = 65536;
             let raw_bytes = vec![0u8; DEFAULT_CONSTANT_ELEMS * 4];
-            ssa_map.insert(name.clone(), raw_bytes);
-            log::trace!(
+            ssa_map.insert(name.clone(), raw_bytes);            log::trace!(
                 "hal_runner: zero-filled invisible constant '{}' ({} elements)",
                 name,
                 DEFAULT_CONSTANT_ELEMS,
             );
         }
+    }
+
+    // ── Pre-populate weights from WeightProvider ─────────────────────
+    // Inject real weight data into the SSA map before execution begins.
+    // This handles two cases:
+    //   (a) function.weights — weight entries produced by sf.weight ops
+    //       (primarily function 0), each with a SSA name.
+    //   (b) function.weight_inputs — function input args mapped to
+    //       compiled weight names (all other functions).
+    if let Some(wp) = weight_provider {
+        for function in &hal_ir.functions {
+            // Case (a): weights list with inline SSA names.
+            for weight_entry in &function.weights {
+                if weight_entry.ssa.is_empty() {
+                    continue;
+                }
+                if let Some(desc) = wp.get_weight_memref(&weight_entry.name) {
+                    let n = desc.numel();
+                    // SAFETY: The pointer comes from a valid MemRefDesc's aligned
+                    // field. The f16 data was written by the dylib's execute() call.
+                    let data: Vec<f32> = unsafe {
+                        let raw = desc.aligned as *const u16;
+                        let slice = std::slice::from_raw_parts(raw, n);
+                        slice
+                            .iter()
+                            .map(|&h| half::f16::from_bits(h).to_f32())
+                            .collect()
+                    };
+                    let raw_bytes: Vec<u8> = data
+                        .iter()
+                        .flat_map(|&v| v.to_le_bytes())
+                        .collect();
+                    ssa_map.insert(weight_entry.ssa.clone(), raw_bytes);
+                    log::debug!(
+                        "hal_runner: loaded weight '{}' -> SSA '{}' ({} elements)",
+                        weight_entry.name,
+                        weight_entry.ssa,
+                        n,
+                    );
+                }
+            }
+
+            // Case (b): weight_inputs mapping (function args → compiled names).
+            for (ssa_name, compiled_name) in &function.weight_inputs {
+                if let Some(desc) = wp.get_weight_memref(compiled_name) {
+                    let n = desc.numel();
+                    // SAFETY: Same pattern as case (a) — valid MemRefDesc aligned pointer.
+                    let data: Vec<f32> = unsafe {
+                        let raw = desc.aligned as *const u16;
+                        let slice = std::slice::from_raw_parts(raw, n);
+                        slice
+                            .iter()
+                            .map(|&h| half::f16::from_bits(h).to_f32())
+                            .collect()
+                    };
+                    let raw_bytes: Vec<u8> = data
+                        .iter()
+                        .flat_map(|&v| v.to_le_bytes())
+                        .collect();
+                    ssa_map.insert(ssa_name.clone(), raw_bytes);
+                    log::debug!(
+                        "hal_runner: loaded weight '{}' -> SSA '{}' ({} elements)",
+                        compiled_name,
+                        ssa_name,
+                        n,
+                    );
+                } else {
+                    log::warn!(
+                        "hal_runner: weight '{}' for SSA '{}' not found in WeightProvider",
+                        compiled_name,
+                        ssa_name,
+                    );
+                }
+            }
+        }
+    } else {
+        log::info!("hal_runner: no WeightProvider — all weights will be zero-filled");
     }
 
     // ── Execute each function's ops ──────────────────────────────────
@@ -348,8 +440,7 @@ pub fn run_hal_function_graph(
             // are per-function namespaces that collide in the global map.
             if let Some(ref wire_name) = wire_input_name {
                 if let Some((_wire_ssa, ref wire_data)) = wire {
-                    ssa_map.insert(wire_name.clone(), wire_data.clone());
-                    log::debug!(
+                    ssa_map.insert(wire_name.clone(), wire_data.clone());                    log::debug!(
                         "hal_runner: wired function[{}] '{}' from function[{}] output ({} bytes)",
                         fi,
                         wire_name,
@@ -372,8 +463,7 @@ pub fn run_hal_function_graph(
                 }
                 let numel = estimate_numel_from_shape(&input_def.shape, seq_len);
                 let raw_bytes = vec![0u8; numel * 4];
-                ssa_map.insert(input_def.name.clone(), raw_bytes);
-                log::trace!(
+                ssa_map.insert(input_def.name.clone(), raw_bytes);                log::trace!(
                     "hal_runner: zero-filled function[{}] input '{}' ({} elements, shape={:?})",
                     fi,
                     input_def.name,
@@ -410,14 +500,11 @@ pub fn run_hal_function_graph(
                     )
                 })?;
 
-                // Determine element size and shape from function metadata.
-                // i64 inputs have 8-byte elements; f32 has 4-byte elements.
-                let elem_size = if data.len() >= 8 {
-                    let is_i64 = function.inputs.iter().any(|d| d.name == *input_name && d.dtype == "i64");
-                    if is_i64 { 8 } else { 4 }
-                } else {
-                    4
-                };
+                // Determine element size from the dtype map, function
+                // metadata, or data length heuristic.
+                // i64 values have 8-byte elements; f32 has 4-byte elements.
+                // All SSA values stored as f32 (4 bytes per element).
+                let elem_size = 4;
 
                 // Look up the tensor shape from the function's output list
                 // (authoritative source for all tensor shapes including
@@ -434,6 +521,16 @@ pub fn run_hal_function_graph(
                     for input_def in &function.inputs {
                         if input_def.name == *input_name {
                             declared_shape = input_def.shape.clone();
+                            break;
+                        }
+                    }
+                }
+                if declared_shape.is_empty() {
+                    // Look up from function weight list (invisible constants
+                    // populated by weight injection, e.g. %1 for position emb).
+                    for weight_entry in &function.weights {
+                        if weight_entry.ssa == *input_name {
+                            declared_shape = weight_entry.shape.clone();
                             break;
                         }
                     }
@@ -515,7 +612,7 @@ pub fn run_hal_function_graph(
                         .map(|d| d.parse::<usize>().unwrap_or(1))
                         .product();
                     let num_indices = ssa_map.get(indices_name)
-                        .map(|d| d.len() / 8)  // i64 count
+                        .map(|d| d.len() / 4)  // f32 count (4 bytes per element)
                         .unwrap_or(1);
                     (num_indices * embed_dim).max(1)
                 } else {
@@ -523,13 +620,7 @@ pub fn run_hal_function_graph(
                 };
                 let numel = numel.max(1);
 
-                let mut vec: Vec<f32> = Vec::with_capacity(numel);
-                // SAFETY: set_len to capacity — the buffer is filled by
-                // execute() before any f32 reads.  execute() checks that
-                // the output does not exceed numel.
-                unsafe {
-                    vec.set_len(numel);
-                }
+                let mut vec = vec![0.0f32; numel];
 
                 let raw_buf = InnerCpuBuffer::from_raw_parts(
                     vec.as_mut_ptr() as *mut u8,
@@ -674,8 +765,8 @@ pub fn run_hal_function_graph(
                 let out_vec = std::mem::take(&mut output_vecs[idx]);
                 let raw_bytes: Vec<u8> =
                     out_vec.iter().flat_map(|&v| v.to_le_bytes()).collect();
-                ssa_map.insert(output_name.clone(), raw_bytes);
-            }
+
+                ssa_map.insert(output_name.clone(), raw_bytes);            }
         }
 
         // ── Capture wire output for cross-function wiring ─────────────
@@ -723,10 +814,8 @@ pub fn run_hal_function_graph(
 
     let numel = raw_bytes.len() / 4;
     let mut result: Vec<f32> = Vec::with_capacity(numel);
-    // SAFETY: set_len to capacity — immediately filled by from_le_bytes loop.
-    unsafe {
-        result.set_len(numel);
-    }
+    // Initialize with zeros; immediately overwritten by from_le_bytes loop.
+    result.resize(numel, 0.0f32);
     for i in 0..numel {
         let bytes: [u8; 4] = raw_bytes[i * 4..(i + 1) * 4]
             .try_into()
@@ -794,7 +883,7 @@ fn zero_fill_outputs(
     output_bufs: &[Box<dyn traits::Buffer>],
     fi: usize,
     oi: usize,
-    op_name: &str,
+    _op_name: &str,
 ) -> Vec<Vec<i64>> {
     for (idx, out_vec) in output_vecs.iter_mut().enumerate() {
         out_vec.fill(0.0f32);
@@ -906,7 +995,7 @@ fn fallback_shape(shape: &[String], numel: usize) -> Vec<usize> {
 }
 
 /// Find the shape definition for a tensor name in a function's
-/// input or output list.
+/// input, output, or weight list.
 fn find_output_shape(function: &HalFunction, name: &str) -> (Vec<String>, bool) {
     for output in &function.outputs {
         if output.name == name {
@@ -916,6 +1005,12 @@ fn find_output_shape(function: &HalFunction, name: &str) -> (Vec<String>, bool) 
     for input in &function.inputs {
         if input.name == name {
             return (input.shape.clone(), false);
+        }
+    }
+    // Check weight list for invisible constant SSAs (e.g. %1 for position emb).
+    for weight_entry in &function.weights {
+        if weight_entry.ssa == name {
+            return (weight_entry.shape.clone(), false);
         }
     }
     (vec!["?".to_string()], false)
@@ -1030,8 +1125,8 @@ mod tests {
     fn test_hal_runner_parses_json() {
         let path = test_hal_ir_path();
         let runner = HalRustRunner::from_path(&path).expect("parse hal_ir.json");
-        assert_eq!(runner.hal_ir.num_functions, 28);
-        assert_eq!(runner.hal_ir.model_name, "opt_125m_hal");
+        assert_eq!(runner.hal_ir.num_functions, 16);
+        assert_eq!(runner.hal_ir.model_name, "opt_125m_fresh");
 
         let total_ops: usize = runner
             .hal_ir
@@ -1039,7 +1134,7 @@ mod tests {
             .iter()
             .map(|f| f.ops.len())
             .sum();
-        assert_eq!(total_ops, 634);
+        assert_eq!(total_ops, 610);
 
         // Verify each function has a name and ops.
         for func in &runner.hal_ir.functions {
@@ -1128,6 +1223,8 @@ mod tests {
             functions: vec![HalFunction {
                 name: "main_0".to_string(),
                 layer: 0,
+                weights: vec![],
+                weight_inputs: HashMap::new(),
                 inputs: vec![HalTensorDef {
                     name: "%arg0".to_string(),
                     shape: vec!["?".to_string(), "?".to_string()],

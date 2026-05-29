@@ -67,6 +67,7 @@ impl HalRustExecutable {
     /// # Safety
     ///
     /// The buffer must contain f32 data (element_size == 4) and be writable.
+    #[allow(clippy::mut_from_ref)]
     unsafe fn buf_as_f32_mut(buf: &dyn traits::Buffer) -> &mut [f32] {
         let ptr = buf.as_ptr() as *mut f32;
         let len = buf.len() / 4;
@@ -114,8 +115,8 @@ impl HalRustExecutable {
             // SAFETY: buf_as_f32_mut requires f32 data and write access. The output
             // buffer is pre-allocated as f32 by the compute graph runner and valid
             // for the matmul result size.
-            let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::matmul_cpu(&input_slices, &mut out_slice, &meta)
+            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+            crate::hal::hal_ops_cpu::matmul_cpu(&input_slices, out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("matmul_cpu: {}", e))?;
         }
         Ok(output_shapes)
@@ -146,8 +147,8 @@ impl HalRustExecutable {
         if let Some(out_buf) = outputs.first() {
             // SAFETY: buf_as_f32_mut requires f32 data and write access.
             // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::element_wise_cpu(&input_slices, &mut out_slice, &meta)
+            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+            crate::hal::hal_ops_cpu::element_wise_cpu(&input_slices, out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("element_wise_cpu: {}", e))?;
         }
         Ok(output_shapes)
@@ -176,8 +177,8 @@ impl HalRustExecutable {
         if let Some(out_buf) = outputs.first() {
             // SAFETY: buf_as_f32_mut requires f32 data and write access.
             // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::softmax_cpu(&input_slices, &mut out_slice, &meta)
+            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+            crate::hal::hal_ops_cpu::softmax_cpu(&input_slices, out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("softmax_cpu: {}", e))?;
         }
         Ok(output_shapes)
@@ -206,8 +207,8 @@ impl HalRustExecutable {
         if let Some(out_buf) = outputs.first() {
             // SAFETY: buf_as_f32_mut requires f32 data and write access.
             // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::reshape_cpu(&input_slices, &mut out_slice, &meta)
+            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+            crate::hal::hal_ops_cpu::reshape_cpu(&input_slices, out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("reshape_cpu: {}", e))?;
         }
         Ok(output_shapes)
@@ -238,8 +239,8 @@ impl HalRustExecutable {
         if let Some(out_buf) = outputs.first() {
             // SAFETY: buf_as_f32_mut requires f32 data and write access.
             // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::transpose_cpu(&input_slices, &mut out_slice, &meta)
+            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+            crate::hal::hal_ops_cpu::transpose_cpu(&input_slices, out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("transpose_cpu: {}", e))?;
         }
         Ok(output_shapes)
@@ -270,8 +271,8 @@ impl HalRustExecutable {
         if let Some(out_buf) = outputs.first() {
             // SAFETY: buf_as_f32_mut requires f32 data and write access.
             // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::reduce_cpu(&input_slices, &mut out_slice, &meta)
+            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+            crate::hal::hal_ops_cpu::reduce_cpu(&input_slices, out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("reduce_cpu: {}", e))?;
         }
         Ok(output_shapes)
@@ -300,8 +301,8 @@ impl HalRustExecutable {
         if let Some(out_buf) = outputs.first() {
             // SAFETY: buf_as_f32_mut requires f32 data and write access.
             // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::gather_cpu(&input_slices, &mut out_slice, &meta)
+            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+            crate::hal::hal_ops_cpu::gather_cpu(&input_slices, out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("gather_cpu: {}", e))?;
         }
         Ok(output_shapes)
@@ -334,8 +335,8 @@ impl HalRustExecutable {
         if let Some(out_buf) = outputs.first() {
             // SAFETY: buf_as_f32_mut requires f32 data and write access.
             // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::fill_cpu(&input_slices, &mut out_slice, &meta)
+            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+            crate::hal::hal_ops_cpu::fill_cpu(&input_slices, out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("fill_cpu: {}", e))?;
         }
         Ok(output_shapes)
@@ -364,8 +365,8 @@ impl HalRustExecutable {
         if let Some(out_buf) = outputs.first() {
             // SAFETY: buf_as_f32_mut requires f32 data and write access.
             // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::shape_of_cpu(&input_slices, &mut out_slice, &meta)
+            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+            crate::hal::hal_ops_cpu::shape_of_cpu(&input_slices, out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("shape_of_cpu: {}", e))?;
         }
         Ok(output_shapes)
@@ -394,8 +395,8 @@ impl HalRustExecutable {
         if let Some(out_buf) = outputs.first() {
             // SAFETY: buf_as_f32_mut requires f32 data and write access.
             // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::slice_cpu(&input_slices, &mut out_slice, &meta)
+            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+            crate::hal::hal_ops_cpu::slice_cpu(&input_slices, out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("slice_cpu: {}", e))?;
         }
         Ok(output_shapes)
@@ -424,8 +425,8 @@ impl HalRustExecutable {
         if let Some(out_buf) = outputs.first() {
             // SAFETY: buf_as_f32_mut requires f32 data and write access.
             // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::unsqueeze_cpu(&input_slices, &mut out_slice, &meta)
+            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+            crate::hal::hal_ops_cpu::unsqueeze_cpu(&input_slices, out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("unsqueeze_cpu: {}", e))?;
         }
         Ok(output_shapes)
@@ -456,8 +457,8 @@ impl HalRustExecutable {
         if let Some(out_buf) = outputs.first() {
             // SAFETY: buf_as_f32_mut requires f32 data and write access.
             // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::compare_cpu(&input_slices, &mut out_slice, &meta)
+            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+            crate::hal::hal_ops_cpu::compare_cpu(&input_slices, out_slice, &meta)
                 .map_err(|e| anyhow::anyhow!("compare_cpu: {}", e))?;
         }
         Ok(output_shapes)

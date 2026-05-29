@@ -81,21 +81,30 @@ impl CpuExecutable {
                 expected: 300, actual: arity,
             }.into());
         }
-        // SAFETY: libloading::Symbol casts the symbol to the expected type.
-        // For arities 1..8 we use typed CifaceFnN for direct calls.
-        // For arities 9..300 we use a raw fn pointer + C trampoline.
         match arity {
+            // SAFETY: libloading::get() looks up typed symbols valid for self.lib's lifetime.
             1 => { let sym: libloading::Symbol<CifaceFn1> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity1(*sym)) }
+            // SAFETY: Same as above, arity 2.
             2 => { let sym: libloading::Symbol<CifaceFn2> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity2(*sym)) }
+            // SAFETY: Same as above, arity 3.
             3 => { let sym: libloading::Symbol<CifaceFn3> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity3(*sym)) }
+            // SAFETY: Same as above, arity 4.
             4 => { let sym: libloading::Symbol<CifaceFn4> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity4(*sym)) }
+            // SAFETY: Same as above, arity 5.
             5 => { let sym: libloading::Symbol<CifaceFn5> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity5(*sym)) }
+            // SAFETY: Same as above, arity 6.
             6 => { let sym: libloading::Symbol<CifaceFn6> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity6(*sym)) }
+            // SAFETY: Same as above, arity 7.
             7 => { let sym: libloading::Symbol<CifaceFn7> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity7(*sym)) }
+            // SAFETY: Same as above, arity 8.
             8 => { let sym: libloading::Symbol<CifaceFn8> = unsafe { self.lib.get(name.as_bytes()) }?; Ok(KernelFn::Arity8(*sym)) }
               _ => {
+                // SAFETY: libloading::get() looks up a raw symbol; transmute
+                // is safe because the symbol was just successfully resolved.
                 let sym: libloading::Symbol<*const ()> = unsafe { self.lib.get(name.as_bytes()) }?;
                 Ok(KernelFn::HighArity(crate::ciface_high::FnPtr(
+                    // SAFETY: transmute from *const () to fn ptr is safe here
+                    // because *sym was resolved from a valid dylib symbol.
                     unsafe { std::mem::transmute::<*const (), unsafe extern "C" fn()>(*sym) }
                 )))
             }

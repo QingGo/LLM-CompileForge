@@ -89,6 +89,12 @@ impl KernelFn {
     }
 
     /// Call with sret convention: first arg is sret buffer, rest are inputs.
+    ///
+    /// # Safety
+    ///
+    /// - `fn_ptr` must be a valid function pointer to an MLIR ciface entry point.
+    /// - `args` must contain the correct number of arguments matching the callee's arity.
+    /// - All pointer arguments must be valid for the duration of the call.
     #[allow(dead_code)]
     pub unsafe fn call_high_arity_raw(
         &self,
@@ -99,6 +105,13 @@ impl KernelFn {
         crate::ciface_high::call_high_arity(ptr, args);
     }
 
+    /// Call a kernel function with output and input pointers.
+    ///
+    /// # Safety
+    ///
+    /// - The kernel variant must match the number of arguments.
+    /// - All pointers in `outputs` and `inputs` must be valid for the duration
+    ///   of the call.
     #[allow(dead_code)]
     pub unsafe fn call(
         &self,
@@ -115,7 +128,7 @@ impl KernelFn {
             (KernelFn::Arity6(f), 0, 5) => { f(outputs[0], inputs[0], inputs[1], inputs[2], inputs[3], inputs[4]); Ok(()) }
             (KernelFn::Arity7(f), 0, 6) => { f(outputs[0], inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], inputs[5]); Ok(()) }
             (KernelFn::Arity8(f), 0, 7) => { f(outputs[0], inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], inputs[5], inputs[6]); Ok(()) }
-            (KernelFn::HighArity(f), _, _) if total >= 1 && total <= 300 => {
+            (KernelFn::HighArity(f), _, _) if (1..=300).contains(&total) => {
                 let ptr = f.0 as *const ();
                 let mut all_args: Vec<*const c_void> = Vec::with_capacity(total);
                 for o in outputs { all_args.push(*o as *const c_void); }

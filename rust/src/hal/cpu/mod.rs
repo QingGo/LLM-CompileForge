@@ -211,6 +211,7 @@ impl traits::Executable for CpuExecutable {
         // sret_ptr and input_ptrs point to writable/readable buffers.
         // The kernel is a _mlir_ciface_* function that reads input descriptors
         // and writes output descriptors to the sret buffer.
+        // SAFETY: kernel, sret_ptr, and input_ptrs are all verified above.
         unsafe {
             crate::ciface_high::call_high_arity(raw_ptr, &all_args);
         }
@@ -238,7 +239,7 @@ impl traits::Executable for CpuExecutable {
                 }
 
                 let out_rank = output_buf.rank() as usize;
-                if out_rank < 1 || out_rank > 4 {
+                if !(1..=4).contains(&out_rank) {
                     anyhow::bail!(
                         "output {}: unsupported rank {} for sret parsing",
                         oi, out_rank,
@@ -252,6 +253,9 @@ impl traits::Executable for CpuExecutable {
                     );
                 }
                 let slice = &sret[sret_offset..sret_offset + desc_size];
+                // SAFETY: `read_sret_descriptor` validates the slice length
+                // and non-null pointers internally; we already verified the
+                // slice is within bounds above.
                 let (allocated, aligned, sizes) = unsafe {
                     read_sret_descriptor(slice, out_rank)?
                 };
@@ -334,7 +338,7 @@ impl traits::Executable for CpuExecutable {
                 // Skip if this pointer matches an input buffer — it's
                 // a pass-through weight or SSA wire owned by Rust.
                 let addr_u8 = addr as *const u8;
-                if input_data_ptrs.iter().any(|&ip| ip == addr_u8) {
+                if input_data_ptrs.contains(&addr_u8) {
                     log::trace!(
                         "execute: skip free of pass-through input ptr {:p}",
                         addr,
@@ -348,8 +352,14 @@ impl traits::Executable for CpuExecutable {
                 extern "C" {
                     fn malloc_zone_from_ptr(ptr: *const std::ffi::c_void) -> *const std::ffi::c_void;
                 }
+                // SAFETY: `malloc_zone_from_ptr` is an Apple system call that
+                // is thread-safe and accepts any pointer (returns null for
+                // non-zone allocations).
                 let zone = unsafe { malloc_zone_from_ptr(addr) };
                 if !zone.is_null() {
+                    // SAFETY: `self.free_fn` is the dylib's `serveforge_free`
+                    // function pointer, valid for the lifetime of the executable.
+                    // `*ptr` was allocated by the dylib and is safe to free.
                     unsafe { (self.free_fn)(*ptr); }
                 }
             }
@@ -493,8 +503,11 @@ mod tests {
 
     #[test]
     fn test_kernel_fn_arity() {
+        // SAFETY: k3 is only used for arity() test (never called), so a
+        // non-null placeholder is sufficient. `1usize` cast avoids
+        // transmute_null_to_fn UB.
         let k3 = kernel::KernelFn::Arity3(unsafe {
-            std::mem::transmute::<*const std::ffi::c_void, kernel::CifaceFn3>(std::ptr::null())
+            std::mem::transmute::<usize, kernel::CifaceFn3>(1usize)
         });
         assert_eq!(k3.arity(), 3);
     }
@@ -533,6 +546,8 @@ mod tests {
         assert_eq!(desc.sizes, [0i64; 0]);
         assert_eq!(desc.strides, [0i64; 0]);
         assert_eq!(desc.numel(), 1);
+        // SAFETY: `desc.aligned` points to the scalar data of this rank-0
+        // descriptor, initialized by `from_f32_dyn_slice`.
         unsafe {
             let val = *(desc.aligned as *const f32);
             assert!((val - 42.0).abs() < 1e-6);
@@ -556,14 +571,16 @@ mod tests {
 
     #[test]
     fn test_memref_any_from_f32_rank0() {
-        let data = [3.14f32];
+        let data = [std::f32::consts::PI];
         let desc = MemRefDescAny::from_f32(&[], &data).unwrap();
         assert!(!desc.as_input_ptr().is_null());
         match &desc {
             MemRefDescAny::R0(d) => {
+                // SAFETY: `d.aligned` points to valid f32 data initialized
+                // by `from_f32` above.
                 unsafe {
                     let val = *(d.aligned as *const f32);
-                    assert!((val - 3.14).abs() < 1e-6);
+                    assert!((val - std::f32::consts::PI).abs() < 1e-6);
                 }
             }
             _ => panic!("expected R0 variant"),

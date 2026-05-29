@@ -592,7 +592,7 @@ async fn v1_chat_completions(
 }
 
 fn run_serve(model: &str, compiled_dir: &str, port: u16) -> Result<(), anyhow::Error> {
-    let artifact_path = std::path::Path::new(&compiled_dir).join(&model);
+    let artifact_path = std::path::Path::new(&compiled_dir).join(model);
 
     // Scan for any .dylib in the model directory — the actual name
     // depends on --model-name passed to compile_dylib.py, which may

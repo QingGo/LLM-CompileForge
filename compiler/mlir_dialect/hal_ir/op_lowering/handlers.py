@@ -36,11 +36,13 @@ def _handle_weight(op, op_name, input_names, output_names, *context):
         dtype = infer_dtype_from_type(result_type)
         idx = len(weights)
         weight_index[weight_name] = idx
+        ssa_name = output_names[0] if output_names else ""
         weights.append({
             "name": weight_name,
             "shape": shape,
             "dtype": dtype,
             "hal_name": f"w{idx}",
+            "ssa": ssa_name,
         })
     return None
 

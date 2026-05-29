@@ -174,6 +174,8 @@ impl<const RANK: usize> MemRefDesc<RANK> {
         if n == 0 || self.aligned.is_null() {
             return Vec::new();
         }
+        // SAFETY: `self.aligned` is a valid, non-null pointer verified above,
+        // and `n` elements of f32 data are guaranteed by `numel()`.
         let slice = unsafe { std::slice::from_raw_parts(self.aligned as *const f32, n) };
         slice.to_vec()
     }
@@ -241,6 +243,12 @@ impl MemRefDescAny {
         }
     }
 
+    /// Read all f32 values from the memref descriptor.
+    ///
+    /// # Safety
+    ///
+    /// The aligned pointer must point to valid, initialized f32 data
+    /// with at least `numel()` elements.
     pub unsafe fn read_output_f32(&self) -> Vec<f32> {
         match self {
             MemRefDescAny::R0(d) => d.read_output_f32(),

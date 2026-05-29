@@ -373,7 +373,7 @@ impl BlockManager {
     ) -> Result<(), String> {
         let block_ids = self.get_blocks(request_id)?.to_vec();
         let num_tokens = data.len() / hidden_dim;
-        if data.len() % hidden_dim != 0 {
+        if !data.len().is_multiple_of(hidden_dim) {
             return Err(format!(
                 "write_kv: data.len()={} not divisible by hidden_dim={}",
                 data.len(),

@@ -1,4 +1,4 @@
-/// High-arity support for MLIR ciface functions using libffi.
+//! High-arity support for MLIR ciface functions using libffi.
 
 use std::ffi::c_void;
 
@@ -9,6 +9,14 @@ use libffi::middle::{Cif, CodePtr, Type};
 pub struct FnPtr(pub unsafe extern "C" fn());
 
 /// Call an MLIR ciface function with a dynamic number of pointer arguments.
+///
+/// # Safety
+///
+/// - `fn_ptr` must be a valid function pointer to an MLIR ciface entry point.
+/// - `all_args` must contain the correct number and types of arguments for
+///   the function. The first argument must be the sret (struct return) buffer,
+///   and the remaining arguments are input descriptors.
+/// - All pointers in `all_args` must be valid for the duration of the call.
 ///
 /// Uses libffi to push the correct number of args on the stack/registers.
 /// Flat arg list: first arg is sret buffer, remaining are input descriptors.
@@ -25,7 +33,7 @@ pub unsafe fn call_high_arity(
     }
 
     let cif = Cif::new(
-        std::iter::repeat(Type::pointer()).take(n),
+        std::iter::repeat_n(Type::pointer(), n),
         Type::void(),
     );
 

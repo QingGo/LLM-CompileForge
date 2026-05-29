@@ -1,12 +1,12 @@
-/// Minimal forward-check binary for Issue #45 diagnosis.
-///
-/// Loads the compiled opt-125m .dylib, runs forward pass with fixed input,
-/// and dumps logits to /tmp/rust_logits.csv for comparison with Python.
-///
-/// Usage: cargo run --bin forward_check
-///
-/// Modules use #[path] to reference source files in src/ since this
-/// binary lives under src/bin/.
+//! Minimal forward-check binary for Issue #45 diagnosis.
+//!
+//! Loads the compiled opt-125m .dylib, runs forward pass with fixed input,
+//! and dumps logits to /tmp/rust_logits.csv for comparison with Python.
+//!
+//! Usage: cargo run --bin forward_check
+//!
+//! Modules use #[path] to reference source files in src/ since this
+//! binary lives under src/bin/.
 
 #[path = "../block_manager.rs"]
 mod block_manager;

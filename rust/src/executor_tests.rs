@@ -413,7 +413,7 @@ fn test_expert_kernel_trait() {
         }
         .to_vec(),
     );
-    let mut output = MockBuffer(
+    let output = MockBuffer(
         unsafe {
             std::slice::from_raw_parts_mut(
                 output_data.as_mut_ptr() as *mut u8,
@@ -487,14 +487,14 @@ fn test_register_expert_kernel_default() {
 fn test_function_count_validation() {
     let dir = std::env::temp_dir().join("_test_func_count_val");
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir.join("generated")).unwrap();
+    std::fs::create_dir_all(dir.join("generated")).unwrap();
 
     // Create constants.bin (basic dummy content)
-    std::fs::write(&dir.join("constants.bin"), b"dummy").unwrap();
+    std::fs::write(dir.join("constants.bin"), b"dummy").unwrap();
 
     // Case 1: hal_ir.json with null num_functions
     std::fs::write(
-        &dir.join("generated").join("hal_ir.json"),
+        dir.join("generated").join("hal_ir.json"),
         r#"{"num_functions": null}"#,
     )
     .unwrap();
@@ -511,7 +511,7 @@ fn test_function_count_validation() {
 
     // Case 2: hal_ir.json with missing num_functions key
     std::fs::write(
-        &dir.join("generated").join("hal_ir.json"),
+        dir.join("generated").join("hal_ir.json"),
         r#"{"other_key": 42}"#,
     )
     .unwrap();
@@ -528,7 +528,7 @@ fn test_function_count_validation() {
 
     // Case 3: hal_ir.json with valid num_functions (should succeed)
     std::fs::write(
-        &dir.join("generated").join("hal_ir.json"),
+        dir.join("generated").join("hal_ir.json"),
         r#"{"num_functions": 2}"#,
     )
     .unwrap();

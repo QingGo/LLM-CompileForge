@@ -191,13 +191,15 @@ mod tests {
         let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
         let allocated = data.as_ptr() as *mut u8;
         let aligned = data.as_ptr() as *mut u8;
-        let mut sret_buf = Vec::with_capacity(40);
-        sret_buf.resize(24 + 16 * 1, 0u8);
+        let mut sret_buf = vec![0u8; 24 + 16];
+        // SAFETY: `sret_buf` is a properly-sized buffer (24 + 16 bytes)
+        // for a rank-1 sret descriptor. Writes are to aligned offsets.
         unsafe {
             std::ptr::write(sret_buf.as_mut_ptr() as *mut *mut u8, allocated);
             std::ptr::write(sret_buf.as_mut_ptr().add(8) as *mut *mut u8, aligned);
             std::ptr::write(sret_buf.as_mut_ptr().add(24) as *mut i64, 4i64);
         }
+        // SAFETY: `sret_buf` contains a valid rank-1 descriptor written above.
         let (got_alloc, got_aligned, sizes) = unsafe {
             read_sret_descriptor(&sret_buf, 1).expect("valid rank-1 sret")
         };
@@ -209,6 +211,8 @@ mod tests {
     #[test]
     fn test_read_sret_descriptor_slice_too_short() {
         let slice = vec![0u8; 10];
+        // SAFETY: `read_sret_descriptor` validates the slice length internally
+        // and returns Err for short slices.
         let result = unsafe { read_sret_descriptor(&slice, 2) };
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("too short"));
@@ -217,7 +221,8 @@ mod tests {
     #[test]
     fn test_read_sret_descriptor_null_aligned() {
         let sret_buf = vec![0u8; 40];
-        // allocated and aligned are both null (0)
+        // SAFETY: `read_sret_descriptor` validates non-null pointers internally
+        // and returns Err for null aligned pointers.
         let result = unsafe { read_sret_descriptor(&sret_buf, 1) };
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("null"));

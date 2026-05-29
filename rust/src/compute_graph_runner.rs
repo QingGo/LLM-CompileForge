@@ -43,7 +43,7 @@ fn build_global_input_buffer(
     let rank = io_def.rank as usize;
     let dims: Vec<usize> = (0..rank)
         .map(|i| {
-            if io_def.shape[i] <= 0 {
+            if io_def.shape[i] == 0 {
                 if i == 0 {
                     1
                 } else {
@@ -108,6 +108,7 @@ fn wrap_tensor_buffer(tensor: &Tensor) -> Result<Box<dyn traits::Buffer>, anyhow
 /// Pre-allocate output buffers sized from the compute graph metadata.
 /// The dims use io_def.shape with 0→1 fallback so that rank() returns
 /// the correct rank for sret descriptor parsing.
+#[allow(clippy::type_complexity)]
 fn allocate_output_buffers(
     func_def: &FuncDef,
     seq_len: usize,
@@ -117,13 +118,7 @@ fn allocate_output_buffers(
         Vec::with_capacity(func_def.outputs.len());
     for (oi, io_def) in func_def.outputs.iter().enumerate() {
         let numel = estimate_output_numel(&io_def.shape, seq_len);
-        let mut vec = Vec::with_capacity(numel);
-        // SAFETY: set_len to capacity — the buffer is filled by
-        // execute() before any f32 reads.  execute() checks that
-        // the output does not exceed numel.
-        unsafe {
-            vec.set_len(numel);
-        }
+        let mut vec = vec![0.0f32; numel];
         log::trace!(
             "allocate_output_buffers: func[{}] output[{}] estimated numel={} (shape={:?}, seq_len={})",
             func_def.index,
@@ -208,12 +203,13 @@ fn extract_output_tensor(
 ///
 /// Returns the global output tensor specified by
 /// `compute_graph.global_output`.
+#[allow(clippy::too_many_arguments)]
 pub fn run_function_graph(
     compute_graph: &ComputeGraph,
     executable: &dyn traits::Executable,
     weight_provider: &WeightProvider,
     weight_cache: &RefCell<HashMap<String, Tensor>>,
-    func_outputs: &mut Vec<Vec<Tensor>>,
+    func_outputs: &mut [Vec<Tensor>],
     input_ids: &[u32],
     positions: &[u32],
     stream: &dyn traits::Stream,
@@ -344,12 +340,13 @@ fn should_intercept_consumed(
 /// compiler policy to drive cache behavior without recompiling the model.
 ///
 /// Returns the global output tensor (same as `run_function_graph`).
+#[allow(clippy::too_many_arguments)]
 pub fn run_function_graph_with_kv_intercept(
     compute_graph: &ComputeGraph,
     executable: &dyn traits::Executable,
     weight_provider: &WeightProvider,
     weight_cache: &RefCell<HashMap<String, Tensor>>,
-    func_outputs: &mut Vec<Vec<Tensor>>,
+    func_outputs: &mut [Vec<Tensor>],
     input_ids: &[u32],
     positions: &[u32],
     stream: &dyn traits::Stream,

@@ -196,7 +196,7 @@ impl InferenceRunner {
         );
 
         // Try prefix cache match
-        let prompt_tokens: &[u32] = &self.scheduler.running_request(&rid)
+        let prompt_tokens: &[u32] = self.scheduler.running_request(&rid)
             .map(|r| r.prompt_tokens.as_slice())
             .unwrap_or(&[]);
         let (matched_blocks, matched_tokens) =
@@ -413,7 +413,7 @@ mod tests {
             "/../compiled/opt_125m_fresh/libopt_125m.dylib"
         );
         ModelExecutor::load(dylib, None)
-            .expect(&format!(
+            .unwrap_or_else(|_| panic!(
                 "compiled model not found at {dylib}. Run `make test-pipeline-smoke` to compile it first."
             ))
     }
@@ -424,7 +424,7 @@ mod tests {
             "/../tests/data/test_tokenizer.json"
         );
         Tokenizer::from_file(path)
-            .expect(&format!(
+            .unwrap_or_else(|_| panic!(
                 "test tokenizer not found at {path}. Ensure the test data is present."
             ))
     }
@@ -434,7 +434,7 @@ mod tests {
         let exec = compiled_executor();
         let tokenizer = dummy_tokenizer();
         let config = RunnerConfig::default();
-        let mut runner =
+        let runner =
             InferenceRunner::new(exec, tokenizer, config).expect("create runner");
         assert!(!runner.has_work());
     }
