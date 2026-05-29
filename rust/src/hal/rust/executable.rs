@@ -3,6 +3,9 @@
 //! Implements ``traits::Executable`` by dispatching to the generated
 //! ``*_cpu`` functions from ``hal_ops_cpu.rs`` (emitted by EmitRust).
 //!
+//! Dispatch logic lives in the sibling ``dispatch`` module — each
+//! ``dispatch_*`` free function handles one HAL operation type.
+//!
 //! Each input/output Buffer is converted to a ``&[f32]``/``&mut [f32]``
 //! slice, and an ``OpShapeMeta`` is constructed from the buffer shapes.
 //! The generated ``*_cpu`` function is then called inline.
@@ -15,7 +18,7 @@ use crate::hal::traits;
 ///
 /// # Type parameters
 ///
-/// - ``N`` — number of functions (entry points) in the model forward pass.
+/// ``N`` — number of functions (entry points) in the model forward pass.
 ///   Set to the function count from the compute graph.
 #[derive(Debug)]
 pub struct HalRustExecutable {
@@ -53,7 +56,8 @@ impl HalRustExecutable {
     /// # Safety
     ///
     /// The buffer must contain f32 data (element_size == 4).
-    unsafe fn buf_as_f32_slice(buf: &dyn traits::Buffer) -> &[f32] {
+    #[doc(hidden)]
+    pub(crate) unsafe fn buf_as_f32_slice(buf: &dyn traits::Buffer) -> &[f32] {
         let ptr = buf.as_ptr() as *const f32;
         let len = buf.len() / 4; // f32 = 4 bytes
         std::slice::from_raw_parts(ptr, len)
@@ -67,15 +71,17 @@ impl HalRustExecutable {
     /// # Safety
     ///
     /// The buffer must contain f32 data (element_size == 4) and be writable.
+    #[doc(hidden)]
     #[allow(clippy::mut_from_ref)]
-    unsafe fn buf_as_f32_mut(buf: &dyn traits::Buffer) -> &mut [f32] {
+    pub(crate) unsafe fn buf_as_f32_mut(buf: &dyn traits::Buffer) -> &mut [f32] {
         let ptr = buf.as_ptr() as *mut f32;
         let len = buf.len() / 4;
         std::slice::from_raw_parts_mut(ptr, len)
     }
 
     /// Build an ``OpShapeMeta`` from input and output buffers.
-    fn build_shape_meta(
+    #[doc(hidden)]
+    pub(crate) fn build_shape_meta(
         inputs: &[&dyn traits::Buffer],
         outputs: &[&dyn traits::Buffer],
     ) -> crate::hal::hal_ops_cpu::OpShapeMeta {
@@ -89,404 +95,6 @@ impl HalRustExecutable {
             .unwrap_or_default();
         crate::hal::hal_ops_cpu::OpShapeMeta::new(input_shapes, output_shape)
     }
-
-    /// Dispatch a matmul operation.
-    fn dispatch_matmul(
-        &self,
-        inputs: &[&dyn traits::Buffer],
-        outputs: &[&dyn traits::Buffer],
-    ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
-        let input_slices: Vec<&[f32]> = inputs
-            .iter()
-            .map(|b| {
-                // SAFETY: buf_as_f32_slice requires f32 data (element_size == 4).
-                // Matmul inputs are f32 tensors from weights or SSA wires, guaranteed
-                // by the compute graph runner.
-                unsafe { Self::buf_as_f32_slice(*b) }
-            })
-            .collect();
-        let output_shapes: Vec<Vec<i64>> = outputs
-            .iter()
-            .map(|b| b.shape().into_iter().map(|s| s as i64).collect())
-            .collect();
-        let meta = Self::build_shape_meta(inputs, outputs);
-
-        if let Some(out_buf) = outputs.first() {
-            // SAFETY: buf_as_f32_mut requires f32 data and write access. The output
-            // buffer is pre-allocated as f32 by the compute graph runner and valid
-            // for the matmul result size.
-            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::matmul_cpu(&input_slices, out_slice, &meta)
-                .map_err(|e| anyhow::anyhow!("matmul_cpu: {}", e))?;
-        }
-        Ok(output_shapes)
-    }
-
-    /// Dispatch an element_wise operation.
-    fn dispatch_element_wise(
-        &self,
-        inputs: &[&dyn traits::Buffer],
-        outputs: &[&dyn traits::Buffer],
-        kind: &str,
-    ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
-        let input_slices: Vec<&[f32]> = inputs
-            .iter()
-            .map(|b| {
-                // SAFETY: buf_as_f32_slice requires f32 data. Element-wise
-                // inputs are f32 tensors guaranteed by the compute graph runner.
-                unsafe { Self::buf_as_f32_slice(*b) }
-            })
-            .collect();
-        let output_shapes: Vec<Vec<i64>> = outputs
-            .iter()
-            .map(|b| b.shape().into_iter().map(|s| s as i64).collect())
-            .collect();
-        let mut meta = Self::build_shape_meta(inputs, outputs);
-        meta.kind = Some(kind.to_string());
-
-        if let Some(out_buf) = outputs.first() {
-            // SAFETY: buf_as_f32_mut requires f32 data and write access.
-            // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::element_wise_cpu(&input_slices, out_slice, &meta)
-                .map_err(|e| anyhow::anyhow!("element_wise_cpu: {}", e))?;
-        }
-        Ok(output_shapes)
-    }
-
-    /// Dispatch a softmax operation.
-    fn dispatch_softmax(
-        &self,
-        inputs: &[&dyn traits::Buffer],
-        outputs: &[&dyn traits::Buffer],
-    ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
-        let input_slices: Vec<&[f32]> = inputs
-            .iter()
-            .map(|b| {
-                // SAFETY: buf_as_f32_slice requires f32 data. Softmax inputs
-                // are f32 tensors guaranteed by the compute graph runner.
-                unsafe { Self::buf_as_f32_slice(*b) }
-            })
-            .collect();
-        let output_shapes: Vec<Vec<i64>> = outputs
-            .iter()
-            .map(|b| b.shape().into_iter().map(|s| s as i64).collect())
-            .collect();
-        let meta = Self::build_shape_meta(inputs, outputs);
-
-        if let Some(out_buf) = outputs.first() {
-            // SAFETY: buf_as_f32_mut requires f32 data and write access.
-            // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::softmax_cpu(&input_slices, out_slice, &meta)
-                .map_err(|e| anyhow::anyhow!("softmax_cpu: {}", e))?;
-        }
-        Ok(output_shapes)
-    }
-
-    /// Dispatch a reshape operation.
-    fn dispatch_reshape(
-        &self,
-        inputs: &[&dyn traits::Buffer],
-        outputs: &[&dyn traits::Buffer],
-    ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
-        let input_slices: Vec<&[f32]> = inputs
-            .iter()
-            .map(|b| {
-                // SAFETY: buf_as_f32_slice requires f32 data. Reshape inputs
-                // are f32 tensors guaranteed by the compute graph runner.
-                unsafe { Self::buf_as_f32_slice(*b) }
-            })
-            .collect();
-        let output_shapes: Vec<Vec<i64>> = outputs
-            .iter()
-            .map(|b| b.shape().into_iter().map(|s| s as i64).collect())
-            .collect();
-        let meta = Self::build_shape_meta(inputs, outputs);
-
-        if let Some(out_buf) = outputs.first() {
-            // SAFETY: buf_as_f32_mut requires f32 data and write access.
-            // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::reshape_cpu(&input_slices, out_slice, &meta)
-                .map_err(|e| anyhow::anyhow!("reshape_cpu: {}", e))?;
-        }
-        Ok(output_shapes)
-    }
-
-    /// Dispatch a transpose operation.
-    fn dispatch_transpose(
-        &self,
-        inputs: &[&dyn traits::Buffer],
-        outputs: &[&dyn traits::Buffer],
-        perm: Option<&str>,
-    ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
-        let input_slices: Vec<&[f32]> = inputs
-            .iter()
-            .map(|b| {
-                // SAFETY: buf_as_f32_slice requires f32 data. Transpose inputs
-                // are f32 tensors guaranteed by the compute graph runner.
-                unsafe { Self::buf_as_f32_slice(*b) }
-            })
-            .collect();
-        let output_shapes: Vec<Vec<i64>> = outputs
-            .iter()
-            .map(|b| b.shape().into_iter().map(|s| s as i64).collect())
-            .collect();
-        let mut meta = Self::build_shape_meta(inputs, outputs);
-        meta.kind = perm.map(|s| s.to_string());
-
-        if let Some(out_buf) = outputs.first() {
-            // SAFETY: buf_as_f32_mut requires f32 data and write access.
-            // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::transpose_cpu(&input_slices, out_slice, &meta)
-                .map_err(|e| anyhow::anyhow!("transpose_cpu: {}", e))?;
-        }
-        Ok(output_shapes)
-    }
-
-    /// Dispatch a reduce operation.
-    fn dispatch_reduce(
-        &self,
-        inputs: &[&dyn traits::Buffer],
-        outputs: &[&dyn traits::Buffer],
-        kind: &str,
-    ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
-        let input_slices: Vec<&[f32]> = inputs
-            .iter()
-            .map(|b| {
-                // SAFETY: buf_as_f32_slice requires f32 data. Reduce inputs
-                // are f32 tensors guaranteed by the compute graph runner.
-                unsafe { Self::buf_as_f32_slice(*b) }
-            })
-            .collect();
-        let output_shapes: Vec<Vec<i64>> = outputs
-            .iter()
-            .map(|b| b.shape().into_iter().map(|s| s as i64).collect())
-            .collect();
-        let mut meta = Self::build_shape_meta(inputs, outputs);
-        meta.kind = Some(kind.to_string());
-
-        if let Some(out_buf) = outputs.first() {
-            // SAFETY: buf_as_f32_mut requires f32 data and write access.
-            // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::reduce_cpu(&input_slices, out_slice, &meta)
-                .map_err(|e| anyhow::anyhow!("reduce_cpu: {}", e))?;
-        }
-        Ok(output_shapes)
-    }
-
-    /// Dispatch a gather operation.
-    fn dispatch_gather(
-        &self,
-        inputs: &[&dyn traits::Buffer],
-        outputs: &[&dyn traits::Buffer],
-    ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
-        let input_slices: Vec<&[f32]> = inputs
-            .iter()
-            .map(|b| {
-                // SAFETY: buf_as_f32_slice requires f32 data. Gather inputs
-                // are f32 tensors guaranteed by the compute graph runner.
-                unsafe { Self::buf_as_f32_slice(*b) }
-            })
-            .collect();
-        let output_shapes: Vec<Vec<i64>> = outputs
-            .iter()
-            .map(|b| b.shape().into_iter().map(|s| s as i64).collect())
-            .collect();
-        let meta = Self::build_shape_meta(inputs, outputs);
-
-        if let Some(out_buf) = outputs.first() {
-            // SAFETY: buf_as_f32_mut requires f32 data and write access.
-            // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::gather_cpu(&input_slices, out_slice, &meta)
-                .map_err(|e| anyhow::anyhow!("gather_cpu: {}", e))?;
-        }
-        Ok(output_shapes)
-    }
-
-    /// Dispatch a fill operation.
-    fn dispatch_fill(
-        &self,
-        inputs: &[&dyn traits::Buffer],
-        outputs: &[&dyn traits::Buffer],
-        kind: Option<&str>,
-        value: Option<f64>,
-    ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
-        let input_slices: Vec<&[f32]> = inputs
-            .iter()
-            .map(|b| {
-                // SAFETY: buf_as_f32_slice requires f32 data. Fill inputs
-                // are f32 tensors guaranteed by the compute graph runner.
-                unsafe { Self::buf_as_f32_slice(*b) }
-            })
-            .collect();
-        let output_shapes: Vec<Vec<i64>> = outputs
-            .iter()
-            .map(|b| b.shape().into_iter().map(|s| s as i64).collect())
-            .collect();
-        let mut meta = Self::build_shape_meta(inputs, outputs);
-        meta.kind = kind.map(|s| s.to_string());
-        meta.value = value;
-
-        if let Some(out_buf) = outputs.first() {
-            // SAFETY: buf_as_f32_mut requires f32 data and write access.
-            // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::fill_cpu(&input_slices, out_slice, &meta)
-                .map_err(|e| anyhow::anyhow!("fill_cpu: {}", e))?;
-        }
-        Ok(output_shapes)
-    }
-
-    /// Dispatch a shape_of operation.
-    fn dispatch_shape_of(
-        &self,
-        inputs: &[&dyn traits::Buffer],
-        outputs: &[&dyn traits::Buffer],
-    ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
-        let input_slices: Vec<&[f32]> = inputs
-            .iter()
-            .map(|b| {
-                // SAFETY: buf_as_f32_slice requires f32 data. Shape-of inputs
-                // are f32 tensors guaranteed by the compute graph runner.
-                unsafe { Self::buf_as_f32_slice(*b) }
-            })
-            .collect();
-        let output_shapes: Vec<Vec<i64>> = outputs
-            .iter()
-            .map(|b| b.shape().into_iter().map(|s| s as i64).collect())
-            .collect();
-        let meta = Self::build_shape_meta(inputs, outputs);
-
-        if let Some(out_buf) = outputs.first() {
-            // SAFETY: buf_as_f32_mut requires f32 data and write access.
-            // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::shape_of_cpu(&input_slices, out_slice, &meta)
-                .map_err(|e| anyhow::anyhow!("shape_of_cpu: {}", e))?;
-        }
-        Ok(output_shapes)
-    }
-
-    /// Dispatch a slice operation.
-    fn dispatch_slice(
-        &self,
-        inputs: &[&dyn traits::Buffer],
-        outputs: &[&dyn traits::Buffer],
-    ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
-        let input_slices: Vec<&[f32]> = inputs
-            .iter()
-            .map(|b| {
-                // SAFETY: buf_as_f32_slice requires f32 data. Slice inputs
-                // are f32 tensors guaranteed by the compute graph runner.
-                unsafe { Self::buf_as_f32_slice(*b) }
-            })
-            .collect();
-        let output_shapes: Vec<Vec<i64>> = outputs
-            .iter()
-            .map(|b| b.shape().into_iter().map(|s| s as i64).collect())
-            .collect();
-        let meta = Self::build_shape_meta(inputs, outputs);
-
-        if let Some(out_buf) = outputs.first() {
-            // SAFETY: buf_as_f32_mut requires f32 data and write access.
-            // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::slice_cpu(&input_slices, out_slice, &meta)
-                .map_err(|e| anyhow::anyhow!("slice_cpu: {}", e))?;
-        }
-        Ok(output_shapes)
-    }
-
-    /// Dispatch an unsqueeze operation.
-    fn dispatch_unsqueeze(
-        &self,
-        inputs: &[&dyn traits::Buffer],
-        outputs: &[&dyn traits::Buffer],
-    ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
-        let input_slices: Vec<&[f32]> = inputs
-            .iter()
-            .map(|b| {
-                // SAFETY: buf_as_f32_slice requires f32 data. Unsqueeze inputs
-                // are f32 tensors guaranteed by the compute graph runner.
-                unsafe { Self::buf_as_f32_slice(*b) }
-            })
-            .collect();
-        let output_shapes: Vec<Vec<i64>> = outputs
-            .iter()
-            .map(|b| b.shape().into_iter().map(|s| s as i64).collect())
-            .collect();
-        let meta = Self::build_shape_meta(inputs, outputs);
-
-        if let Some(out_buf) = outputs.first() {
-            // SAFETY: buf_as_f32_mut requires f32 data and write access.
-            // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::unsqueeze_cpu(&input_slices, out_slice, &meta)
-                .map_err(|e| anyhow::anyhow!("unsqueeze_cpu: {}", e))?;
-        }
-        Ok(output_shapes)
-    }
-
-    /// Dispatch a compare operation.
-    fn dispatch_compare(
-        &self,
-        inputs: &[&dyn traits::Buffer],
-        outputs: &[&dyn traits::Buffer],
-        kind: &str,
-    ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
-        let input_slices: Vec<&[f32]> = inputs
-            .iter()
-            .map(|b| {
-                // SAFETY: buf_as_f32_slice requires f32 data. Compare inputs
-                // are f32 tensors guaranteed by the compute graph runner.
-                unsafe { Self::buf_as_f32_slice(*b) }
-            })
-            .collect();
-        let output_shapes: Vec<Vec<i64>> = outputs
-            .iter()
-            .map(|b| b.shape().into_iter().map(|s| s as i64).collect())
-            .collect();
-        let mut meta = Self::build_shape_meta(inputs, outputs);
-        meta.kind = Some(kind.to_string());
-
-        if let Some(out_buf) = outputs.first() {
-            // SAFETY: buf_as_f32_mut requires f32 data and write access.
-            // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            crate::hal::hal_ops_cpu::compare_cpu(&input_slices, out_slice, &meta)
-                .map_err(|e| anyhow::anyhow!("compare_cpu: {}", e))?;
-        }
-        Ok(output_shapes)
-    }
-
-    /// Dispatch a concat operation (not yet implemented in Rust backend).
-    fn dispatch_concat(
-        &self,
-        inputs: &[&dyn traits::Buffer],
-        outputs: &[&dyn traits::Buffer],
-    ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
-        let output_shapes: Vec<Vec<i64>> = outputs
-            .iter()
-            .map(|b| b.shape().into_iter().map(|s| s as i64).collect())
-            .collect();
-        // Simple flat copy (works if no actual concat needed — metadata-only)
-        if let (Some(inp), Some(out)) = (inputs.first(), outputs.first()) {
-            // SAFETY: buf_as_f32_slice requires f32 data. Concat inputs
-            // are f32 tensors guaranteed by the compute graph runner.
-            let in_slice = unsafe { Self::buf_as_f32_slice(*inp) };
-            // SAFETY: buf_as_f32_mut requires f32 data and write access.
-            // The output buffer is pre-allocated as f32 by the compute graph runner.
-            let out_slice = unsafe { Self::buf_as_f32_mut(*out) };
-            let n = in_slice.len().min(out_slice.len());
-            out_slice[..n].copy_from_slice(&in_slice[..n]);
-        }
-        Ok(output_shapes)
-    }
 }
 
 impl traits::Executable for HalRustExecutable {
@@ -497,43 +105,30 @@ impl traits::Executable for HalRustExecutable {
         inputs: &[&dyn traits::Buffer],
         outputs: &[&dyn traits::Buffer],
     ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
-        // Parse optional kind suffix from op_name: "element_wise:add" → kind="add".
-        // This allows the caller to specify the operation variant while keeping
-        // simple names ("element_wise") backward-compatible with defaults.
-        let (base_op, kind) = if let Some(pos) = op_name.find(':') {
-            (&op_name[..pos], Some(&op_name[pos + 1..]))
+        let input_slices: Vec<&[f32]> = inputs
+            .iter()
+            .map(|b| {
+                // SAFETY: buf_as_f32_slice requires f32 data (element_size == 4).
+                unsafe { Self::buf_as_f32_slice(*b) }
+            })
+            .collect();
+        let output_shapes: Vec<Vec<i64>> = outputs
+            .iter()
+            .map(|b| b.shape().into_iter().map(|s| s as i64).collect())
+            .collect();
+        let meta = Self::build_shape_meta(inputs, outputs);
+
+        if let Some(out_buf) = outputs.first() {
+            // SAFETY: buf_as_f32_mut requires f32 data and write access.
+            let mut out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+            crate::hal::hal_ops_cpu::dispatch(op_name, &input_slices, &mut out_slice, &meta)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
         } else {
-            (op_name, None)
-        };
-        match base_op {
-            "matmul" => self.dispatch_matmul(inputs, outputs),
-            "element_wise" | "elementwise" => {
-                self.dispatch_element_wise(inputs, outputs, kind.unwrap_or("add"))
-            }
-            "softmax" => self.dispatch_softmax(inputs, outputs),
-            "reshape" => self.dispatch_reshape(inputs, outputs),
-            "transpose" => self.dispatch_transpose(inputs, outputs, kind),
-            "reduce" => self.dispatch_reduce(inputs, outputs, kind.unwrap_or("sum")),
-            "gather" => self.dispatch_gather(inputs, outputs),
-            "fill" => self.dispatch_fill(inputs, outputs, kind, None),
-            "shape_of" => self.dispatch_shape_of(inputs, outputs),
-            "slice" => self.dispatch_slice(inputs, outputs),
-            "unsqueeze" => self.dispatch_unsqueeze(inputs, outputs),
-            "compare" => self.dispatch_compare(inputs, outputs, kind.unwrap_or("eq")),
-            "concat" => self.dispatch_concat(inputs, outputs),
-            "cache_read" | "cache_write" => {
-                // Cache ops are handled by the runtime (block_manager/kv_cache).
-                // The HAL CPU kernel is a no-op stub.
-                let output_shapes: Vec<Vec<i64>> = outputs
-                    .iter()
-                    .map(|b| b.shape().into_iter().map(|s| s as i64).collect())
-                    .collect();
-                Ok(output_shapes)
-            }
-            other => {
-                anyhow::bail!("HalRustExecutable: unknown op '{}'", other)
-            }
+            // No output buffer — dispatch with empty slice (for cache ops, etc.)
+            crate::hal::hal_ops_cpu::dispatch(op_name, &input_slices, &mut [], &meta)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
         }
+        Ok(output_shapes)
     }
 
     fn function_count(&self) -> usize {
@@ -656,4 +251,3 @@ mod tests {
         }
     }
 }
-
