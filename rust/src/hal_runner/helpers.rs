@@ -236,8 +236,10 @@ pub(super) fn inject_function_weights(
                         let slice = std::slice::from_raw_parts(raw, n);
                         slice.iter().flat_map(|&v| v.to_le_bytes().to_vec()).collect()
                     }
-                } else if weight_dtype == crate::tensor::Dtype::F32 {
-                    // SAFETY: desc.aligned points to valid f32 weight data.
+                } else if weight_dtype == crate::tensor::Dtype::F32
+                    && weight_entry.name.starts_with("_const_") {
+                    // Only _const_* from constants.bin are stored as f32.
+                    // Safetensors weights are always f16 regardless of declared dtype.
                     let data: Vec<f32> = unsafe {
                         let raw = desc.aligned as *const f32;
                         let slice = std::slice::from_raw_parts(raw, n);
@@ -286,8 +288,9 @@ pub(super) fn inject_function_weights(
                         let slice = std::slice::from_raw_parts(raw, n);
                         slice.iter().flat_map(|&v| v.to_le_bytes().to_vec()).collect()
                     }
-                } else if weight_dtype == crate::tensor::Dtype::F32 {
-                    // SAFETY: desc.aligned points to valid f32 weight data.
+                } else if weight_dtype == crate::tensor::Dtype::F32
+                    && compiled_name.starts_with("_const_") {
+                    // Only _const_* from constants.bin are stored as f32.
                     let data: Vec<f32> = unsafe {
                         let raw = desc.aligned as *const f32;
                         let slice = std::slice::from_raw_parts(raw, n);
