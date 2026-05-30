@@ -76,3 +76,7 @@ needless_range_loop = "allow"
 
 [build-dependencies]
 cc = "1.2.62"
+
+[target.x86_64-apple-darwin]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

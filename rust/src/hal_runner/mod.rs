@@ -231,6 +231,7 @@ pub fn run_hal_function_graph(
                 let numel = numel.max(1);
                 let out_elem_size = output_dtype.element_size();
 
+                eprintln!("[alloc] func[{}] op[{}] {} out={} numel={} esize={} size={}", fi, oi, op.op, op.outputs.first().unwrap_or(&String::new()), numel, out_elem_size, numel * out_elem_size);
                 let mut vec = vec![0u8; numel * out_elem_size];
 
                 let raw_buf = InnerCpuBuffer::from_raw_parts(

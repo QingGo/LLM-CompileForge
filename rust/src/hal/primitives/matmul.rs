@@ -52,8 +52,14 @@ pub fn matmul_blas(
     let m = a_shape[a_shape.len() - 2] as i32;
     let k = a_shape[a_shape.len() - 1] as i32;
     let (n, trans_b, ldb) = if transpose_b {
-        // B stored as [N, K], transposed to [K, N]; leading dimension = K.
-        (b_shape[b_shape.len() - 2] as i32, CBLAS_TRANS, k)
+        let k_b = b_shape[b_shape.len() - 1] as i32;
+        if k_b != k {
+            // B's last dim doesn't match A's K — B is already stored as [K, N].
+            // Compute A @ B directly (no BLAS transpose needed).
+            (k_b, CBLAS_NO_TRANS, k_b)
+        } else {
+            (b_shape[b_shape.len() - 2] as i32, CBLAS_TRANS, k)
+        }
     } else {
         (b_shape[b_shape.len() - 1] as i32, CBLAS_NO_TRANS, b_shape[b_shape.len() - 1] as i32)
     };
@@ -64,6 +70,16 @@ pub fn matmul_blas(
 
     let lda = k;
     let ldc = n;
+
+    // Accelerate BLAS requires ldb >= max(k, 1). For narrow matrices
+    // fall back to naive matmul (BLAS can't handle low leading dimension).
+    if ldb < k.max(1) {
+        let m_usize = m as usize;
+        let k_usize = k as usize;
+        let n_usize = n as usize;
+        matmul_naive(a, b, out, m_usize, k_usize, n_usize, false);
+        return Ok(());
+    }
 
     // SAFETY: BLAS FFI call with dimensions computed from validated shapes.
     // All pointer args come from slices with sufficient length.
@@ -86,12 +102,17 @@ pub fn matmul_blas(
 
 /// Pure-Rust matrix multiplication (for testing without BLAS).
 /// `C[M,N] = A[M,K] @ B[K,N]`
-pub fn matmul_naive(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize) {
+pub fn matmul_naive(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize, trans_b: bool) {
     for i in 0..m {
         for j in 0..n {
             let mut sum = 0.0f32;
             for p in 0..k {
-                sum += a[i * k + p] * b[p * n + j];
+                let b_val = if trans_b {
+                    b[j * k + p]  // B is stored as [N, K], access B[j, p]
+                } else {
+                    b[p * n + j]  // B is stored as [K, N]
+                };
+                sum += a[i * k + p] * b_val;
             }
             out[i * n + j] = sum;
         }
@@ -108,7 +129,7 @@ mod tests {
         let a = [1.0, 2.0, 3.0, 4.0];
         let b = [5.0, 6.0, 7.0, 8.0];
         let mut out = [0.0; 4];
-        matmul_naive(&a, &b, &mut out, 2, 2, 2);
+        matmul_naive(&a, &b, &mut out, 2, 2, 2, false);
         assert_eq!(out, [19.0, 22.0, 43.0, 50.0]);
     }
 
@@ -117,7 +138,7 @@ mod tests {
         let a = [1.0, 2.0, 3.0, 4.0];
         let eye = [1.0, 0.0, 0.0, 1.0];
         let mut out = [0.0; 4];
-        matmul_naive(&a, &eye, &mut out, 2, 2, 2);
+        matmul_naive(&a, &eye, &mut out, 2, 2, 2, false);
         assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);
     }
 
@@ -126,7 +147,7 @@ mod tests {
         let a = [1.0, 2.0, 3.0, 4.0];
         let b = [5.0, 6.0, 7.0, 8.0];
         let mut out = [0.0; 1];
-        matmul_naive(&a, &b, &mut out, 1, 4, 1);
+        matmul_naive(&a, &b, &mut out, 1, 4, 1, false);
         assert!((out[0] - 70.0).abs() < 1e-6);
     }
 
@@ -167,6 +188,81 @@ mod tests {
         let expected = [23.0, 29.0, 35.0, 53.0, 67.0, 81.0, 83.0, 105.0, 127.0];
         for (i, (o, e)) in out.iter().zip(expected.iter()).enumerate() {
             assert!((o - e).abs() < 1e-5, "out[{}]={}, expected={}", i, o, e);
+        }
+    }
+
+    #[test]
+    fn test_matmul_blas_attention_narrow() {
+        // Attention matmul: Q[4, 64] @ K^T[4, 64] = [4, 4]
+        // B stored as NxK=[4,64] for transpose_b=true.
+        // A[i,k] = (i+1) as f32, B[j,k] = (j+1) as f32
+        // C[i,j] = 64 * (i+1) * (j+1)
+        let m: usize = 4;
+        let k: usize = 64;
+        let n: usize = 4;
+
+        let mut a = vec![0.0f32; m * k];
+        let mut b = vec![0.0f32; n * k];
+        for i in 0..m {
+            for kk in 0..k {
+                a[i * k + kk] = (i + 1) as f32;
+            }
+        }
+        for j in 0..n {
+            for kk in 0..k {
+                b[j * k + kk] = (j + 1) as f32;
+            }
+        }
+
+        let mut out = vec![0.0f32; m * n];
+        matmul_blas(&a, &b, &mut out, &[4, 64], &[4, 64], true).unwrap();
+
+        // Verify against naive matmul as oracle
+        let mut expected = vec![0.0f32; m * n];
+        matmul_naive(&a, &b, &mut expected, m, k, n, true);
+        for idx in 0..(m * n) {
+            let diff = (out[idx] - expected[idx]).abs();
+            assert!(
+                diff < 1e-4,
+                "out[{}] = {}, expected = {}, diff = {}",
+                idx, out[idx], expected[idx], diff
+            );
+        }
+    }
+
+    #[test]
+    fn test_matmul_blas_transpose_64x4() {
+        // Q[4, 64] @ K[64, 4] — simulates attention with K stored as [head_dim, seq].
+        // K is already in [K=64, N=4] layout, so k_b≠k detection fires.
+        let m: usize = 4;
+        let k: usize = 64;
+        let n: usize = 4;
+
+        let mut q = vec![0.0f32; m * k];
+        let mut k_mat = vec![0.0f32; k * n];
+        for i in 0..m {
+            for kk in 0..k {
+                q[i * k + kk] = (i * k + kk + 1) as f32;
+            }
+        }
+        for kk in 0..k {
+            for j in 0..n {
+                k_mat[kk * n + j] = (kk * n + j + 1) as f32;
+            }
+        }
+
+        let mut out = vec![0.0f32; m * n];
+        matmul_blas(&q, &k_mat, &mut out, &[4, 64], &[64, 4], true).unwrap();
+
+        let mut expected = vec![0.0f32; m * n];
+        matmul_naive(&q, &k_mat, &mut expected, m, k, n, false);
+        for idx in 0..(m * n) {
+            let diff = (out[idx] - expected[idx]).abs();
+            assert!(
+                diff < 1e-4,
+                "out[{}] = {}, expected = {}, diff = {}",
+                idx, out[idx], expected[idx], diff
+            );
         }
     }
 }
