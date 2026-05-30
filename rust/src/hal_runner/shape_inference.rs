@@ -43,7 +43,7 @@ pub(crate) fn compute_output_shape(
         "linear" => shape_of_linear(op, ssa_shapes),
         "element_wise" | "elementwise" | "softmax" | "unsqueeze"
         | "slice" | "compare" | "layer_norm"
-        | "scaled_dot_product_attention" => shape_preserving(op, ssa_shapes),
+        | "scaled_dot_product_attention" | "scan" => shape_preserving(op, ssa_shapes),
         "reduce" => shape_of_reduce(op, ssa_shapes),
         "concat" => shape_of_concat(op, ssa_shapes, ssa_map),
         _ => {

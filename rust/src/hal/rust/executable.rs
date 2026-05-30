@@ -469,6 +469,27 @@ impl traits::Executable for HalRustExecutable {
             return Ok(output_shapes);
         }
 
+        // Special handling for fill:arange op — writes i64 values when
+        // output dtype is i64 (declared in op output_dtypes), f32 otherwise.
+        if op_name == "fill:arange" {
+            let out_buf = outputs.first().ok_or_else(|| anyhow::anyhow!("fill:arange: no output"))?;
+            if out_buf.element_size() == 8 {
+                // SAFETY: Output buffer is pre-allocated as i64 (8 bytes/elem) by runner.
+                let out_bytes = unsafe { Self::buf_as_mut_bytes(*out_buf) };
+                for (i, chunk) in out_bytes.chunks_mut(8).enumerate() {
+                    let val = i as i64;
+                    chunk.copy_from_slice(&val.to_le_bytes());
+                }
+            } else {
+                // SAFETY: Output buffer is f32 (4 bytes/elem).
+                let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+                for (i, o) in out_slice.iter_mut().enumerate() {
+                    *o = i as f32;
+                }
+            }
+            return Ok(output_shapes);
+        }
+
         // Default path: convert all inputs to f32 slices
         let input_slices: Vec<&[f32]> = inputs
             .iter()

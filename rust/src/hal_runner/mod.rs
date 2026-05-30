@@ -34,20 +34,28 @@ use crate::hal_runner::shape_inference::compute_output_shape;
 // ── dtype inference ──────────────────────────────────────────────────
 
 fn infer_output_dtype(
-    op_name: &str,
-    input_names: &[String],
+    op: &HalOp,
     ssa_dtypes: &std::collections::HashMap<String, Dtype>,
 ) -> Dtype {
-    match op_name {
-        "reshape" => input_names.first()
+    let op_name = &op.op;
+    match op_name.as_str() {
+        "reshape" => op.inputs.first()
             .and_then(|n| ssa_dtypes.get(n))
             .copied()
             .unwrap_or(Dtype::F32),
         "gather" => Dtype::F32,
         "shape_of" => Dtype::F32,
-        "fill" => Dtype::F32,
+        "fill" => {
+            // Respect declared output_dtypes (e.g., fill:arange declares ["i64"])
+            if let Some(dtype_str) = op.output_dtypes.first() {
+                if dtype_str == "i64" || dtype_str == "I64" {
+                    return Dtype::I64;
+                }
+            }
+            Dtype::F32
+        }
         "compare" => Dtype::F32,
-        _ => input_names.first()
+        _ => op.inputs.first()
             .and_then(|n| ssa_dtypes.get(n))
             .copied()
             .unwrap_or(Dtype::F32),
@@ -222,7 +230,7 @@ pub fn run_hal_function_graph(
                 Vec::with_capacity(op.outputs.len());
 
             // Infer output dtype from op semantics
-            let output_dtype = infer_output_dtype(&op.op, &op.inputs, &ssa_dtypes);
+            let output_dtype = infer_output_dtype(op, &ssa_dtypes);
 
             for (out_idx, _output_name) in op.outputs.iter().enumerate() {
                 let (numel, output_dims) = compute_output_shape(

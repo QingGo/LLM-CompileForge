@@ -30,7 +30,7 @@ pub fn gather_from_bytes(
                 let bytes: [u8; 4] = indices_bytes[i * 4..(i + 1) * 4]
                     .try_into()
                     .map_err(|_| "gather: invalid f32 bytes")?;
-                f32::from_le_bytes(bytes) as i64
+                (f32::from_le_bytes(bytes) as i32).max(0) as i64
             }
             _ => unreachable!(),
         };
@@ -49,7 +49,10 @@ pub fn gather_from_bytes(
     Ok(())
 }
 
-/// Gather rows from a weight table by i64 indices.
+/// Gather rows from a weight table by f32 indices.
+///
+/// Each f32 index value is cast to i32 then clamped to >= 0 before
+/// being used as a row offset into the weight table.
 pub fn gather_f32(
     weight_table: &[f32],
     indices_f32: &[f32],
@@ -58,8 +61,8 @@ pub fn gather_f32(
 ) -> Result<(), String> {
     let num_indices = indices_f32.len();
     for i in 0..num_indices {
-        let idx = indices_f32[i] as i64;
-        let src_start = (idx as usize) * embed_dim;
+        let idx: usize = (indices_f32[i] as i32).max(0) as usize;
+        let src_start = idx * embed_dim;
         let dst_start = i * embed_dim;
         if src_start + embed_dim > weight_table.len() {
             return Err(format!("gather: index {} out of bounds", idx));
