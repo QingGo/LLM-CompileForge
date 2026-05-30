@@ -1,11 +1,11 @@
-"""HAL IR Builder — builds the HAL IR JSON structure from normalized MLIR.
+"""HAL IR Builder — builds the HAL IR structure from normalized MLIR.
 
 Usage::
 
     builder = HalIRBuilder()
     builder.load_mlir(mlir_text)
     builder.load_metadata(metadata_dict)
-    result = builder.build()
+    result = builder.build()  # returns JSON dict + stores MlirModule internally
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import logging
 import re
 from typing import Any
 
+from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp
 from compiler.mlir_dialect.compile_utils import _setup_mlir_path
 from compiler.mlir_dialect.hal_ir.op_lowering import (
     infer_dtype_from_type,
@@ -45,7 +46,8 @@ class HalIRBuilder:
         self._model_name = "model"
         self._mlir_text: str = ""
         self._metadata: dict[str, Any] = {}
-        self._functions: list[dict[str, Any]] = []
+        self._functions: list[MlirFunction] = []
+        self._mlir_module: MlirModule | None = None
         self._cache_policy: dict[str, Any] = {}
         self._weight_classification: dict[str, Any] = {}
         self._hf_key_map: dict[str, str] = {}
@@ -67,7 +69,9 @@ class HalIRBuilder:
     def build(self) -> dict[str, Any]:
         """Build the complete HAL IR structure.
 
-        Returns a dict ready to be serialized as JSON.
+        Returns a dict ready to be serialized as JSON (backward-compatible
+        with the Rust runtime).  The internal :class:`MlirModule` is also
+        stored as ``self._mlir_module``.
         """
         _setup_mlir_path()
         import sys
@@ -97,11 +101,19 @@ class HalIRBuilder:
             module = ir.Module.parse(self._mlir_text, ctx)
             self._build_from_module(module)
 
-        return {
-            "model_name": self._model_name,
-            "num_functions": len(self._functions),
-            "functions": self._functions,
-        }
+        # Build MlirModule (public for API consumers)
+        self._mlir_module = MlirModule(
+            functions=self._functions,
+            metadata={
+                "model_name": self._model_name,
+                "num_functions": len(self._functions),
+            },
+        )
+
+        # Convert to backward-compatible JSON dict
+        return self._to_json(self._mlir_module)
+
+    # ── Module traversal ─────────────────────────────────────────────
 
     def _build_from_module(self, module: Any) -> None:
         """Walk the module and build function entries."""
@@ -111,7 +123,8 @@ class HalIRBuilder:
                 func_entry = self._build_function(op)
                 self._functions.append(func_entry)
 
-    def _extract_layer(self, func_name: str) -> int | None:
+    @staticmethod
+    def _extract_layer(func_name: str) -> int | None:
         """Extract layer number from function name pattern like main_1a, main_2b."""
         m = re.search(r"main_(\d+)", func_name)
         if m:
@@ -127,14 +140,15 @@ class HalIRBuilder:
             "constants": [],
         })
 
-    def _build_function(self, func_op: Any) -> dict[str, Any]:
-        """Process a single func.func op and return its HAL IR entry."""
+    # ── Function building ────────────────────────────────────────────
+
+    def _build_function(self, func_op: Any) -> MlirFunction:
+        """Process a single func.func op and return its :class:`MlirFunction`."""
         # Get function name (strip MLIR string quotes from StringAttr)
         func_name = strip_mlir_quotes(
             str(func_op.attributes.get("sym_name", "unknown"))
         )
         layer_idx = self._extract_layer(func_name)
-        # func_type unused but available for debugging
         _ = str(func_op.attributes.get("function_type", ""))
 
         # Get operands and results
@@ -142,7 +156,7 @@ class HalIRBuilder:
         func_block = func_region.blocks[0]
 
         # ── Inputs from block args ──────────────────────────────
-        inputs: list[dict[str, Any]] = []
+        inputs: list[tuple[str, str]] = []
         weight_class = self._get_weight_classification(func_name)
         param_names = weight_class.get("params", [])
         const_names = weight_class.get("constants", [])
@@ -152,34 +166,21 @@ class HalIRBuilder:
             arg_name = f"%arg{i}"
             ssa.register_arg(arg, arg_name)
             arg_type = str(arg.type) if hasattr(arg, "type") else "unknown"
-            dtype = infer_dtype_from_type(arg_type)
-            shape = shape_from_type(arg_type)
-            inputs.append({
-                "name": arg_name,
-                "shape": shape,
-                "dtype": dtype,
-            })
+            inputs.append((arg_name, arg_type))
 
         # ── Detect consumed_internally patterns ─────────────────
-        # main_{N}a: Q, K, V outputs — K and V are consumed_internally
-        # main_0: attention mask (14th output at index 13) is consumed_internally
         consumed_internally: list[int] = []
         is_kv_func_a = bool(re.match(r"main_\d+a$", func_name))
         is_kv_func_b = bool(re.match(r"main_\d+b$", func_name))
         is_embed_func = func_name == "main_0"
 
         if is_kv_func_a:
-            # K and V are outputs 1 and 2 (0-indexed: 1, 2)
             consumed_internally = [1, 2]
         elif is_embed_func:
-            # The attention mask (%250) is the 14th returned value (index 13)
             consumed_internally = [13]
 
-        # Determine if block_table is needed (for cache_read)
-        needs_block_table = is_kv_func_a or is_kv_func_b
-
         # ── Walk ops ────────────────────────────────────────────
-        ops: list[dict[str, Any]] = []
+        ops: list[MlirOp] = []
         weights: list[dict[str, Any]] = []
         constants: list[dict[str, Any]] = []
         weight_index: dict[str, int] = {}
@@ -197,7 +198,9 @@ class HalIRBuilder:
 
         # ── Handle consumed_internally: insert cache_write/cache_read ──
         if is_kv_func_a and consumed_internally:
-            self._add_cache_ops(ops, func_name, layer_idx, consumed_internally, is_kv_func_b)
+            self._add_cache_ops(
+                ops, func_name, layer_idx, consumed_internally, is_kv_func_b,
+            )
         if is_kv_func_b:
             self._add_cache_ops(ops, func_name, layer_idx, [], True)
 
@@ -208,68 +211,58 @@ class HalIRBuilder:
                 return_op = inner_op
                 break
 
-        outputs: list[dict[str, Any]] = []
+        outputs: list[tuple[str, str, bool]] = []
         if return_op is not None:
             for i, operand in enumerate(return_op.operands):
                 ot = str(operand.type) if hasattr(operand, "type") else "unknown"
-                dtype = infer_dtype_from_type(ot)
-                shape = shape_from_type(ot)
-                out_entry: dict[str, Any] = {
-                    "name": ssa.lookup(operand),
-                    "shape": shape,
-                    "dtype": dtype,
-                }
-                if i in consumed_internally:
-                    out_entry["consumed_internally"] = True
-                outputs.append(out_entry)
+                is_consumed = i in consumed_internally
+                outputs.append((ssa.lookup(operand), ot, is_consumed))
 
         # ── Build weight input mapping ───────────────────────────
-        # Maps function input SSA names to compiled weight names,
-        # using weight_classification params ordered by function
-        # signature.  We skip dynamic-shaped inputs (wire/sequence),
-        # and rank-1-with-single-element scalars, matching only
-        # actual weight/bias tensors to the ordered param list.
         weight_inputs: dict[str, str] = {}
         w_idx = 0
-        for i_def in inputs:
-            shape = i_def["shape"]
-            # Skip dynamic dims (hidden state wires, KV cache).
+        for arg_name, arg_type in inputs:
+            shape = shape_from_type(arg_type)
             is_dyn = any(d == "?" or d == -1 or d == "-1" for d in shape)
-            # Skip scalar placeholders: [1], [1, 1], etc.
             is_scalar = bool(shape) and all(
                 (isinstance(d, str) and d in ("1", "?"))
                 or (isinstance(d, int) and d == 1)
                 for d in shape
             )
             if not is_dyn and not is_scalar and w_idx < len(param_names):
-                weight_inputs[i_def["name"]] = param_names[w_idx]
+                weight_inputs[arg_name] = param_names[w_idx]
                 w_idx += 1
 
         # ── Inject shape_of ops for wire input dynamic dims ─────
-        self._inject_shape_of_ops(inputs, weight_inputs, ops)
+        input_dicts = [
+            {"name": name, "shape": shape_from_type(tp)}
+            for name, tp in inputs
+        ]
+        self._inject_shape_of_ops(input_dicts, weight_inputs, ops)
 
-        # ── Build function entry ────────────────────────────────
-        func_entry: dict[str, Any] = {
-            "name": func_name,
-            "layer": layer_idx,
-            "inputs": inputs,
-            "outputs": outputs,
-            "weights": weights,
-            "constants": constants,
-            "weight_inputs": weight_inputs,
-            "ops": ops,
-        }
+        # ── Build MlirFunction ──────────────────────────────────
+        func = MlirFunction(
+            name=func_name,
+            inputs=inputs,
+            outputs=outputs,
+            ops=ops,
+            weights={
+                "entries": weights,
+                "weight_inputs": weight_inputs,
+            },
+            param_weight_names=set(param_names),
+            const_weight_names=set(const_names),
+        )
 
-        if needs_block_table:
-            func_entry["block_table"] = True
+        return func
 
-        return func_entry
+    # ── Shape-of injection ───────────────────────────────────────────
 
     def _inject_shape_of_ops(
         self,
         inputs: list[dict[str, Any]],
         weight_inputs: dict[str, str],
-        ops: list[dict[str, Any]],
+        ops: list[MlirOp],
     ) -> None:
         """Inject shape_of ops for wire input dims and wire them to reshape/fill."""
         dyn_set = {"?", -1, "-1"}
@@ -290,19 +283,17 @@ class HalIRBuilder:
         if wire_input is None:
             return
 
-        shape_of_names: list[str] = []
-        shape_of_ops: list[dict[str, Any]] = []
+        shape_of_ops: list[MlirOp] = []
         wire_name = wire_input["name"].replace("%", "")
         for dim_idx, dim_val in enumerate(wire_input["shape"]):
             if dim_val in ("?", -1, "-1"):
                 out_name = f"%shape_of_{wire_name}_dim{dim_idx}"
-                shape_of_ops.append({
-                    "op": "shape_of",
-                    "inputs": [wire_input["name"]],
-                    "outputs": [out_name],
-                    "dim": dim_idx,
-                })
-                shape_of_names.append(out_name)
+                shape_of_ops.append(MlirOp(
+                    name="hal.shape_of", dialect="hal", op_name="shape_of",
+                    operands=[wire_input["name"]],
+                    results=[out_name],
+                    attributes={"dim": dim_idx},
+                ))
 
         if not shape_of_ops:
             return
@@ -310,23 +301,25 @@ class HalIRBuilder:
         for i, sop in enumerate(shape_of_ops):
             ops.insert(i, sop)
 
-        dyn_set = {"?", -1, "-1"}
+        shape_of_names = [op.results[0] for op in shape_of_ops]
         for op in ops:
-            if op["op"] != "reshape":
+            if op.op_name != "reshape":
                 continue
-            shape = op.get("shape")
+            shape = op.attributes.get("shape")
             if shape is None:
                 continue
             if len(shape) <= 2:
                 continue
             num_dyn = sum(1 for d in shape if d in dyn_set)
-            if num_dyn > 0 and len(op["inputs"]) <= 1:
+            if num_dyn > 0 and len(op.operands) <= 1:
                 n = min(num_dyn, len(shape_of_names))
-                op["inputs"].extend(shape_of_names[:n])
+                op.operands.extend(shape_of_names[:n])
+
+    # ── Cache op injection ───────────────────────────────────────────
 
     def _add_cache_ops(
         self,
-        ops: list[dict[str, Any]],
+        ops: list[MlirOp],
         func_name: str,
         layer_idx: int | None,
         consumed_indices: list[int],
@@ -337,18 +330,98 @@ class HalIRBuilder:
             return
 
         if is_b_func:
-            cache_read_entry: dict[str, Any] = {
-                "op": "cache_read",
-                "layer": layer_idx,
-                "inputs": ["%block_table"],
-                "outputs": [f"%cache_k_{layer_idx}", f"%cache_v_{layer_idx}"],
-            }
+            cache_read_entry = MlirOp(
+                name="hal.cache_read", dialect="hal", op_name="cache_read",
+                operands=["%block_table"],
+                results=[f"%cache_k_{layer_idx}", f"%cache_v_{layer_idx}"],
+                attributes={"layer": layer_idx},
+            )
             ops.insert(0, cache_read_entry)
         else:
-            cache_write_entry: dict[str, Any] = {
-                "op": "cache_write",
-                "layer": layer_idx,
-                "inputs": [],
-                "outputs": [],
-            }
+            cache_write_entry = MlirOp(
+                name="hal.cache_write", dialect="hal", op_name="cache_write",
+                operands=[],
+                results=[],
+                attributes={"layer": layer_idx},
+            )
             ops.append(cache_write_entry)
+
+    # ── JSON conversion (backward compat for Rust runtime) ───────────
+
+    def _to_json(self, mlir_module: MlirModule) -> dict[str, Any]:
+        """Convert :class:`MlirModule` to backward-compatible JSON dict."""
+        functions_json = []
+        for func in mlir_module.functions:
+            layer_idx = self._extract_layer(func.name)
+
+            # Convert inputs: (ssa_name, mlir_type) → {name, shape, dtype}
+            inputs_json: list[dict[str, Any]] = []
+            for ssa_name, mlir_type in func.inputs:
+                dtype = infer_dtype_from_type(mlir_type)
+                shape = shape_from_type(mlir_type)
+                inputs_json.append({
+                    "name": ssa_name,
+                    "shape": shape,
+                    "dtype": dtype,
+                })
+
+            # Convert outputs: (ssa_name, mlir_type, consumed) → dict
+            outputs_json: list[dict[str, Any]] = []
+            for ssa_name, mlir_type, consumed in func.outputs:
+                dtype = infer_dtype_from_type(mlir_type)
+                shape = shape_from_type(mlir_type)
+                entry: dict[str, Any] = {
+                    "name": ssa_name,
+                    "shape": shape,
+                    "dtype": dtype,
+                }
+                if consumed:
+                    entry["consumed_internally"] = True
+                outputs_json.append(entry)
+
+            weight_entries = func.weights.get("entries", [])
+            weight_inputs = func.weights.get("weight_inputs", {})
+
+            # Convert ops: MlirOp → dict
+            ops_json: list[dict[str, Any]] = []
+            for op in func.ops:
+                op_dict: dict[str, Any] = {
+                    "op": op.op_name,
+                    "inputs": op.operands,
+                    "outputs": op.results,
+                }
+                op_dict.update(op.attributes)
+                if op.input_types:
+                    op_dict["input_dtypes"] = [
+                        infer_dtype_from_type(t) for t in op.input_types
+                    ]
+                if op.output_types:
+                    op_dict["output_dtypes"] = [
+                        infer_dtype_from_type(t) for t in op.output_types
+                    ]
+                ops_json.append(op_dict)
+
+            # Build function entry
+            func_entry: dict[str, Any] = {
+                "name": func.name,
+                "layer": layer_idx,
+                "inputs": inputs_json,
+                "outputs": outputs_json,
+                "weights": weight_entries,
+                "constants": [],
+                "weight_inputs": weight_inputs,
+                "ops": ops_json,
+            }
+
+            is_kv_a = bool(re.match(r"main_\d+a$", func.name))
+            is_kv_b = bool(re.match(r"main_\d+b$", func.name))
+            if is_kv_a or is_kv_b:
+                func_entry["block_table"] = True
+
+            functions_json.append(func_entry)
+
+        return {
+            "model_name": self._model_name,
+            "num_functions": len(functions_json),
+            "functions": functions_json,
+        }

@@ -17,6 +17,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+from compiler.mlir_artifact import MlirOp
 from compiler.mlir_dialect.hal_ir.ssa_tracker import SSATracker
 
 _log = logging.getLogger(__name__)
@@ -172,7 +173,7 @@ def lower_op(
     weight_index: dict[str, int],
     param_names: list[str],
     const_names: list[str],
-) -> dict[str, Any] | None:
+) -> MlirOp | None:
     """Lower a single sf.* op to a HAL IR entry.
 
     Returns ``None`` for ops that should be skipped (identity, constant, weight).
@@ -203,18 +204,6 @@ def lower_op(
     # Register results and get output %names
     output_names = [ssa.register_result(r) for r in results]
 
-    # Infer dtype for inputs and outputs from MLIR types
-    input_dtypes = [
-        infer_dtype_from_type(str(o.type))
-        for o in operands
-        if hasattr(o, "type")
-    ]
-    output_dtypes = [
-        infer_dtype_from_type(str(r.type))
-        for r in results
-        if hasattr(r, "type")
-    ]
-
     # Look up per-op handler
     handler = _OP_HANDLERS.get(op_name)
     if handler is not None:
@@ -222,27 +211,29 @@ def lower_op(
             op, op_name, input_names, output_names,
             ssa, weights, constants, weight_index, param_names, const_names,
         )
-        # Add dtype annotations to the result
+        # Add MLIR type annotations to the result
         if result is not None:
-            if input_dtypes:
-                result["input_dtypes"] = input_dtypes
-            if output_dtypes:
-                result["output_dtypes"] = output_dtypes
+            result.input_types = [
+                str(o.type) for o in operands if hasattr(o, "type")
+            ]
+            result.output_types = [
+                str(r.type) for r in results if hasattr(r, "type")
+            ]
         return result
 
     # Unknown op — skip non-SF ops silently, warn for unrecognized SF ops
     if op_name in ("func.return", "return"):
         return None
     _log.warning("Unknown SF op %s in function, passing through", op_name)
-    result: dict[str, Any] = {
-        "op": op_name.removeprefix("sf."),
-        "inputs": input_names,
-        "outputs": output_names,
-    }
-    if input_dtypes:
-        result["input_dtypes"] = input_dtypes
-    if output_dtypes:
-        result["output_dtypes"] = output_dtypes
+    result = MlirOp(
+        name=f"hal.{op_name.removeprefix('sf.')}",
+        dialect="hal",
+        op_name=op_name.removeprefix("sf."),
+        operands=input_names,
+        results=output_names,
+    )
+    result.input_types = [str(o.type) for o in operands if hasattr(o, "type")]
+    result.output_types = [str(r.type) for r in results if hasattr(r, "type")]
     return result
 
 
