@@ -412,37 +412,32 @@ pub fn run_hal_function_graph(
             }
         }
 
-            // ── Capture wire output for cross-function wiring ─────────────
-            if fi < hal_ir.functions.len().saturating_sub(1) {
+            // ── PER-FUNCTION DIAGNOSTIC DUMP ────────────────────────────
+            // Use find_main_output() to pick the wire tensor (dynamic 3D)
+            // that flows between functions — skipping weights/constants.
+            // Format: rank(i32) + dims(i32 each) + data(f32 bytes)
+            {
+                let dump_path = format!("/tmp/hal_func_{}.bin", fi);
                 let wire = find_main_output(function, &ssa_map);
                 if let Some((name, data)) = wire {
-                    log::debug!(
-                        "hal_runner: function[{}] main wire '{}' ({} bytes) ready for next function",
-                        fi,
-                        name,
-                        data.len(),
-                    );
-                }
-            }
-
-            // ── Debug: dump func[0] embedding output ──────────────────
-            if fi == 0 {
-                if let Some(output_name) = function.outputs.iter()
-                    .find(|o| o.shape.len() >= 3)
-                    .map(|o| &o.name)
-                {
-                    if let Some(data) = ssa_map.get(output_name) {
-                        let path = "/tmp/func0_embedding.bin";
-                        let shape = ssa_shapes.get(output_name).cloned().unwrap_or_default();
-                        let mut f = std::fs::File::create(path).unwrap();
+                    let shape = ssa_shapes.get(&name).cloned().unwrap_or_else(|| {
+                        let dlen = data.len();
+                        let esize = ssa_dtypes.get(&name)
+                            .map(|d| d.element_size())
+                            .unwrap_or(4);
+                        vec![dlen / esize]
+                    });
+                    if let Ok(mut f) = std::fs::File::create(&dump_path) {
                         use std::io::Write;
                         let rank = shape.len() as i32;
                         f.write_all(&rank.to_le_bytes()).unwrap();
                         for &d in &shape { f.write_all(&(d as i32).to_le_bytes()).unwrap(); }
-                        f.write_all(data).unwrap();
-                        eprintln!("[debug] func[0] output '{}': shape={:?}, {} bytes -> {}",
-                            output_name, shape, data.len(), path);
+                        f.write_all(&data).unwrap();
+                        eprintln!("[diag] func[{}] wire '{}': shape={:?}, {} bytes -> {}",
+                            fi, name, shape, data.len(), dump_path);
                     }
+                } else {
+                    eprintln!("[diag] func[{}] NO WIRE OUTPUT (all static/consumed)", fi);
                 }
             }
     }
