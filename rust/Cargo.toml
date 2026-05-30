@@ -7,7 +7,7 @@ default-run = "serveforge"
 
 [lib]
 name = "llm_serveforge_runtime"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [[bin]]
 name = "serveforge"

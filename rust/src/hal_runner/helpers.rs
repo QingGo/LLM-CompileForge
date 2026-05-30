@@ -236,6 +236,14 @@ pub(super) fn inject_function_weights(
                         let slice = std::slice::from_raw_parts(raw, n);
                         slice.iter().flat_map(|&v| v.to_le_bytes().to_vec()).collect()
                     }
+                } else if weight_dtype == crate::tensor::Dtype::F32 {
+                    // SAFETY: desc.aligned points to valid f32 weight data.
+                    let data: Vec<f32> = unsafe {
+                        let raw = desc.aligned as *const f32;
+                        let slice = std::slice::from_raw_parts(raw, n);
+                        slice.to_vec()
+                    };
+                    data.iter().flat_map(|&v| v.to_le_bytes()).collect()
                 } else {
                     // SAFETY: desc.aligned points to valid f16 weight data.
                     let data: Vec<f32> = unsafe {
@@ -278,6 +286,14 @@ pub(super) fn inject_function_weights(
                         let slice = std::slice::from_raw_parts(raw, n);
                         slice.iter().flat_map(|&v| v.to_le_bytes().to_vec()).collect()
                     }
+                } else if weight_dtype == crate::tensor::Dtype::F32 {
+                    // SAFETY: desc.aligned points to valid f32 weight data.
+                    let data: Vec<f32> = unsafe {
+                        let raw = desc.aligned as *const f32;
+                        let slice = std::slice::from_raw_parts(raw, n);
+                        slice.to_vec()
+                    };
+                    data.iter().flat_map(|&v| v.to_le_bytes()).collect()
                 } else {
                     // SAFETY: desc.aligned points to valid f16 weight data.
                     let data: Vec<f32> = unsafe {

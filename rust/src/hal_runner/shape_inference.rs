@@ -204,7 +204,17 @@ fn shape_of_matmul(
         .and_then(|n| ssa_shapes.get(n))
         .cloned()
         .unwrap_or_else(|| vec![1, 1]);
-    let n = b_shape.last().copied().unwrap_or(1);
+    // matmul_blas with transpose_b=true uses b_shape[-2] as output N
+    // when the K dimensions match (k_b == k). Otherwise b_shape[-1] is used.
+    // Match the logic in matmul_blas: if b_shape[-1] != a_shape[-1],
+    // then n = b_shape[-1]; otherwise n = b_shape[-2].
+    let k = a_shape.last().copied().unwrap_or(1);
+    let k_b = b_shape.last().copied().unwrap_or(1);
+    let n = if k_b != k {
+        b_shape.last().copied().unwrap_or(1)
+    } else {
+        b_shape.get(b_shape.len().saturating_sub(2)).copied().unwrap_or(1)
+    };
     let mut output_shape: Vec<usize> = a_shape[..a_shape.len().saturating_sub(1)].to_vec();
     output_shape.push(n);
     let numel = output_shape.iter().product::<usize>().max(1);
