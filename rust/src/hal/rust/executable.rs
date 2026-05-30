@@ -309,14 +309,16 @@ impl traits::Executable for HalRustExecutable {
             return Ok(output_shapes);
         }
 
-        // Special handling for element_wise ops with i64 inputs
+        // Special handling for element_wise ops with i64 or f32 inputs
         if op_name.starts_with("element_wise:") && inputs.len() >= 2 {
             let a_buf = inputs[0];
             let b_buf = inputs[1];
             let out_buf = outputs.first().ok_or_else(|| anyhow::anyhow!("element_wise: no output buffer"))?;
+            let kind = op_name.strip_prefix("element_wise:").unwrap_or("add");
 
-            // Check if inputs are i64
+            // Check if inputs are i64 or f32
             let is_i64 = a_buf.element_size() == 8 && b_buf.element_size() == 8;
+            let is_f32 = a_buf.element_size() == 4 && b_buf.element_size() == 4;
             if is_i64 {
                 // SAFETY: Buffer is valid for the lifetime of inputs/outputs refs.
                 // Element-wise ops guarantee inputs have the same byte length.
@@ -344,6 +346,34 @@ impl traits::Executable for HalRustExecutable {
                     };
                     let result_bytes = result.to_le_bytes();
                     out_bytes[i*8..(i+1)*8].copy_from_slice(&result_bytes);
+                }
+                return Ok(output_shapes);
+            }
+
+            // Handle f32 element_wise ops with broadcasting
+            if is_f32 {
+                let a_slice = unsafe { Self::buf_as_f32_slice(a_buf) };
+                let b_slice = unsafe { Self::buf_as_f32_slice(b_buf) };
+                let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+                let a_scalar = a_slice.len() == 1;
+                let b_scalar = b_slice.len() == 1;
+                // Use output numel for iteration — shape inference ensures
+                // output size matches.  For non-scalar inputs, wrap-around
+                // indexing supports numpy-style broadcasting.
+                let num_elems = out_slice.len();
+                for i in 0..num_elems {
+                    let a_idx = if a_scalar { 0 } else { i % a_slice.len() };
+                    let b_idx = if b_scalar { 0 } else { i % b_slice.len() };
+                    let a_val = a_slice[a_idx];
+                    let b_val = b_slice[b_idx];
+                    let result = match kind {
+                        "add" => a_val + b_val,
+                        "sub" => a_val - b_val,
+                        "mul" => a_val * b_val,
+                        "div" => a_val / b_val,
+                        _ => a_val,
+                    };
+                    out_slice[i] = result;
                 }
                 return Ok(output_shapes);
             }
@@ -383,6 +413,59 @@ impl traits::Executable for HalRustExecutable {
 
             crate::hal::primitives::transpose_nd(input_slice, out_slice, &input_shape, &output_shape, &perm)
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
+            return Ok(output_shapes);
+        }
+
+        // Special handling for scan:cumsum op (prefix sum)
+        if op_name == "scan:cumsum" {
+            let in_buf = inputs.first().ok_or_else(|| anyhow::anyhow!("scan: no input"))?;
+            let out_buf = outputs.first().ok_or_else(|| anyhow::anyhow!("scan: no output"))?;
+            let input_slice = unsafe { Self::buf_as_f32_slice(*in_buf) };
+            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+            let mut running = 0.0f32;
+            for i in 0..input_slice.len().min(out_slice.len()) {
+                running += input_slice[i];
+                out_slice[i] = running;
+            }
+            return Ok(output_shapes);
+        }
+
+        // Special handling for softmax op
+        if op_name == "softmax" {
+            let in_buf = inputs.first().ok_or_else(|| anyhow::anyhow!("softmax: no input"))?;
+            let out_buf = outputs.first().ok_or_else(|| anyhow::anyhow!("softmax: no output"))?;
+            let input_slice = unsafe { Self::buf_as_f32_slice(*in_buf) };
+            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+            let shape: Vec<usize> = in_buf.shape();
+            let last_dim = *shape.last().unwrap_or(&1);
+            crate::hal::primitives::fused_softmax(input_slice, out_slice, last_dim);
+            return Ok(output_shapes);
+        }
+
+        // Special handling for element_wise:rsqrt op (1/sqrt(x))
+        if op_name == "element_wise:rsqrt" {
+            let in_buf = inputs.first().ok_or_else(|| anyhow::anyhow!("rsqrt: no input"))?;
+            let out_buf = outputs.first().ok_or_else(|| anyhow::anyhow!("rsqrt: no output"))?;
+            let input_slice = unsafe { Self::buf_as_f32_slice(*in_buf) };
+            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+            for i in 0..input_slice.len().min(out_slice.len()) {
+                out_slice[i] = 1.0 / input_slice[i].sqrt();
+            }
+            return Ok(output_shapes);
+        }
+
+        // Special handling for reduce:mean op (mean reduction)
+        if op_name == "reduce:mean" {
+            let in_buf = inputs.first().ok_or_else(|| anyhow::anyhow!("reduce: no input"))?;
+            let out_buf = outputs.first().ok_or_else(|| anyhow::anyhow!("reduce: no output"))?;
+            let input_slice = unsafe { Self::buf_as_f32_slice(*in_buf) };
+            let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
+            let mean = if !input_slice.is_empty() {
+                input_slice.iter().sum::<f32>() / input_slice.len() as f32
+            } else { 0.0 };
+            for i in 0..out_slice.len() {
+                out_slice[i] = mean;
+            }
             return Ok(output_shapes);
         }
 
