@@ -97,6 +97,13 @@ pub fn shape_of(input_shape: &[i64], output: &mut [f32]) {
     }
 }
 
+/// Shape of operation — extracts a single dimension.
+pub fn shape_of_with_dim(input_shape: &[i64], output: &mut [f32], dim: usize) {
+    if dim < input_shape.len() {
+        output[0] = input_shape[dim] as f32;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +175,21 @@ mod tests {
         let mut out = [0.0; 3];
         shape_of(&shape, &mut out);
         assert_eq!(out, [1.0, 4.0, 768.0]);
+    }
+
+    #[test]
+    fn test_shape_of_extracts_single_dim() {
+        let shape = [1i64, 4, 768];
+        let mut out = [0.0; 1];
+        shape_of_with_dim(&shape, &mut out, 0);
+        assert_eq!(out, [1.0]);
+    }
+
+    #[test]
+    fn test_shape_of_extracts_seq_dim() {
+        let shape = [1i64, 4, 768];
+        let mut out = [0.0; 1];
+        shape_of_with_dim(&shape, &mut out, 1);
+        assert_eq!(out, [4.0]);
     }
 }

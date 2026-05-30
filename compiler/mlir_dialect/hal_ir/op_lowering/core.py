@@ -203,23 +203,47 @@ def lower_op(
     # Register results and get output %names
     output_names = [ssa.register_result(r) for r in results]
 
+    # Infer dtype for inputs and outputs from MLIR types
+    input_dtypes = [
+        infer_dtype_from_type(str(o.type))
+        for o in operands
+        if hasattr(o, "type")
+    ]
+    output_dtypes = [
+        infer_dtype_from_type(str(r.type))
+        for r in results
+        if hasattr(r, "type")
+    ]
+
     # Look up per-op handler
     handler = _OP_HANDLERS.get(op_name)
     if handler is not None:
-        return handler(
+        result = handler(
             op, op_name, input_names, output_names,
             ssa, weights, constants, weight_index, param_names, const_names,
         )
+        # Add dtype annotations to the result
+        if result is not None:
+            if input_dtypes:
+                result["input_dtypes"] = input_dtypes
+            if output_dtypes:
+                result["output_dtypes"] = output_dtypes
+        return result
 
     # Unknown op — skip non-SF ops silently, warn for unrecognized SF ops
     if op_name in ("func.return", "return"):
         return None
     _log.warning("Unknown SF op %s in function, passing through", op_name)
-    return {
+    result: dict[str, Any] = {
         "op": op_name.removeprefix("sf."),
         "inputs": input_names,
         "outputs": output_names,
     }
+    if input_dtypes:
+        result["input_dtypes"] = input_dtypes
+    if output_dtypes:
+        result["output_dtypes"] = output_dtypes
+    return result
 
 
 # ── Late import: populate dispatch table ────────────────────────────

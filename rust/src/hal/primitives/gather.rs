@@ -1,35 +1,71 @@
 //! Gather operation — embedding lookup / indexed load.
 
-/// Gather rows from a weight table by i64 indices.
+use crate::tensor::Dtype;
+
+/// Gather rows from a weight table by indices stored as raw bytes.
 ///
-/// `weight_table` shape: `[vocab_size, embed_dim]`
-/// `indices` as f32 bytes (reinterpreted as i64)
-/// `output` shape: `[num_indices, embed_dim]`
+/// Supports both i64 and f32 indices based on dtype parameter.
+pub fn gather_from_bytes(
+    weight_table: &[f32],
+    indices_bytes: &[u8],
+    output: &mut [f32],
+    embed_dim: usize,
+    index_dtype: Dtype,
+) -> Result<(), String> {
+    let num_indices = match index_dtype {
+        Dtype::I64 => indices_bytes.len() / 8,
+        Dtype::F32 => indices_bytes.len() / 4,
+        _ => return Err(format!("gather: unsupported index dtype {:?}", index_dtype)),
+    };
+
+    for i in 0..num_indices {
+        let idx: i64 = match index_dtype {
+            Dtype::I64 => {
+                let bytes: [u8; 8] = indices_bytes[i * 8..(i + 1) * 8]
+                    .try_into()
+                    .map_err(|_| "gather: invalid i64 bytes")?;
+                i64::from_le_bytes(bytes)
+            }
+            Dtype::F32 => {
+                let bytes: [u8; 4] = indices_bytes[i * 4..(i + 1) * 4]
+                    .try_into()
+                    .map_err(|_| "gather: invalid f32 bytes")?;
+                f32::from_le_bytes(bytes) as i64
+            }
+            _ => unreachable!(),
+        };
+
+        let src_start = (idx as usize) * embed_dim;
+        let dst_start = i * embed_dim;
+        if src_start + embed_dim > weight_table.len() {
+            return Err(format!("gather: index {} out of bounds", idx));
+        }
+        if dst_start + embed_dim > output.len() {
+            return Err(format!("gather: output overflow at index {}", i));
+        }
+        output[dst_start..dst_start + embed_dim]
+            .copy_from_slice(&weight_table[src_start..src_start + embed_dim]);
+    }
+    Ok(())
+}
+
+/// Gather rows from a weight table by i64 indices.
 pub fn gather_f32(
     weight_table: &[f32],
     indices_f32: &[f32],
     output: &mut [f32],
     embed_dim: usize,
 ) -> Result<(), String> {
-    // Reinterpret f32 bytes as i64 indices
     let num_indices = indices_f32.len();
     for i in 0..num_indices {
         let idx = indices_f32[i] as i64;
         let src_start = (idx as usize) * embed_dim;
         let dst_start = i * embed_dim;
         if src_start + embed_dim > weight_table.len() {
-            return Err(format!(
-                "gather: index {} out of bounds (vocab_size={})",
-                idx,
-                weight_table.len() / embed_dim,
-            ));
+            return Err(format!("gather: index {} out of bounds", idx));
         }
         if dst_start + embed_dim > output.len() {
-            return Err(format!(
-                "gather: output overflow at index {} (output len={})",
-                i,
-                output.len(),
-            ));
+            return Err(format!("gather: output overflow at index {}", i));
         }
         output[dst_start..dst_start + embed_dim]
             .copy_from_slice(&weight_table[src_start..src_start + embed_dim]);

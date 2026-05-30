@@ -69,20 +69,22 @@ pub fn fused_rms_norm(
     }
     let n = inp.len();
     let num_chunks = n / hidden_dim;
+    let out_n = out.len();
 
     for chunk_idx in 0..num_chunks {
         let start = chunk_idx * hidden_dim;
         let end = start + hidden_dim;
         let chunk = &inp[start..end];
 
-        // Compute mean of squares
         let mean_sq: f32 = chunk.iter().map(|&x| x * x).sum::<f32>() / hidden_dim as f32;
-
-        // Normalize and scale
         let inv_rms = 1.0 / (mean_sq + eps).sqrt();
         for i in 0..hidden_dim {
+            let out_idx = start + i;
+            if out_idx >= out_n {
+                break;
+            }
             let g = if i < gamma.len() { gamma[i] } else { 1.0 };
-            out[start + i] = g * chunk[i] * inv_rms;
+            out[out_idx] = g * chunk[i] * inv_rms;
         }
     }
 }
@@ -161,5 +163,18 @@ mod tests {
         for &v in &out {
             assert!((v - 2.0).abs() < 0.01);
         }
+    }
+
+    #[test]
+    fn test_fused_rms_norm_small_output_clamped() {
+        // Output buffer is only hidden_dim elements, input is batch*seq*hidden_dim.
+        // Kernel should clamp writes to out.len() instead of panicking.
+        let inp = vec![1.0f32; 3072]; // batch=1, seq=4, hidden=768
+        let gamma = vec![1.0f32; 768];
+        let mut out = vec![0.0f32; 768]; // only hidden_dim elements
+        fused_rms_norm(&inp, &mut out, &gamma, 768, 1e-5);
+        // Should not panic, and first chunk should be normalized
+        assert!(out[0].is_finite());
+        assert!(out[767].is_finite());
     }
 }

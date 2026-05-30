@@ -26,17 +26,21 @@ extern "C" {
 
 const CBLAS_ROW_MAJOR: i32 = 101;
 const CBLAS_NO_TRANS: i32 = 111;
+const CBLAS_TRANS: i32 = 112;
 
-/// Matrix multiplication: `C[M,N] = A[M,K] @ B[K,N]`
+/// Matrix multiplication: `C[M,N] = A[M,K] @ B[K,N]` (or `@ B.T[K,N]` when `transpose_b`).
 ///
-/// All matrices are row-major. `a_shape` and `b_shape` are the full
-/// tensor shapes; the last two dims are used for M, K, N.
+/// All matrices are row-major. `a_shape` and `b_shape` are the full tensor shapes.
+///
+/// When `transpose_b` is true, B is stored as `[N, K]` and the computation is
+/// `C[M,N] = A[M,K] @ B.T[K,N]` — i.e., the "N" dimension is read from `b_shape[-2]`.
 pub fn matmul_blas(
     a: &[f32],
     b: &[f32],
     out: &mut [f32],
     a_shape: &[i64],
     b_shape: &[i64],
+    transpose_b: bool,
 ) -> Result<(), String> {
     if a_shape.len() < 2 || b_shape.len() < 2 {
         return Err(format!(
@@ -47,21 +51,27 @@ pub fn matmul_blas(
 
     let m = a_shape[a_shape.len() - 2] as i32;
     let k = a_shape[a_shape.len() - 1] as i32;
-    let n = b_shape[b_shape.len() - 1] as i32;
+    let (n, trans_b, ldb) = if transpose_b {
+        // B stored as [N, K], transposed to [K, N]; leading dimension = K.
+        (b_shape[b_shape.len() - 2] as i32, CBLAS_TRANS, k)
+    } else {
+        (b_shape[b_shape.len() - 1] as i32, CBLAS_NO_TRANS, b_shape[b_shape.len() - 1] as i32)
+    };
 
     if k == 0 || m == 0 || n == 0 {
         return Ok(());
     }
 
     let lda = k;
-    let ldb = n;
     let ldc = n;
 
+    // SAFETY: BLAS FFI call with dimensions computed from validated shapes.
+    // All pointer args come from slices with sufficient length.
     unsafe {
         cblas_sgemm(
             CBLAS_ROW_MAJOR,
             CBLAS_NO_TRANS,
-            CBLAS_NO_TRANS,
+            trans_b,
             m, n, k,
             1.0,
             a.as_ptr(), lda,
@@ -125,7 +135,38 @@ mod tests {
         let a = [1.0, 2.0, 3.0, 4.0];
         let b = [5.0, 6.0, 7.0, 8.0];
         let mut out = [0.0; 4];
-        matmul_blas(&a, &b, &mut out, &[2, 2], &[2, 2]).unwrap();
+        matmul_blas(&a, &b, &mut out, &[2, 2], &[2, 2], false).unwrap();
         assert_eq!(out, [19.0, 22.0, 43.0, 50.0]);
+    }
+
+    #[test]
+    fn test_matmul_blas_transpose_b() {
+        // A = [[1,2],[3,4]], B = [[5,6],[7,8]] stored as [2,2]
+        // C = A @ B^T = [[1*5+2*6, 1*7+2*8],[3*5+4*6, 3*7+4*8]] = [[17,23],[39,53]]
+        let a = [1.0, 2.0, 3.0, 4.0];
+        let b = [5.0, 6.0, 7.0, 8.0];
+        let mut out = [0.0; 4];
+        matmul_blas(&a, &b, &mut out, &[2, 2], &[2, 2], true).unwrap();
+        let expected = [17.0, 23.0, 39.0, 53.0];
+        for (i, (o, e)) in out.iter().zip(expected.iter()).enumerate() {
+            assert!((o - e).abs() < 1e-5, "out[{}]={}, expected={}", i, o, e);
+        }
+    }
+
+    #[test]
+    fn test_matmul_blas_transpose_b_3x2_times_2x3() {
+        // A[3,2] @ B^T[3,2] where B is stored as [3,2]
+        // A = [[1,2],[3,4],[5,6]]  B = [[7,8],[9,10],[11,12]]
+        // B^T = [[7,9,11],[8,10,12]]
+        // C = A @ B^T = [[1*7+2*8, 1*9+2*10, 1*11+2*12], [3*7+4*8, 3*9+4*10, 3*11+4*12], [5*7+6*8, 5*9+6*10, 5*11+6*12]]
+        //   = [[23, 29, 35], [53, 67, 81], [83, 105, 127]]
+        let a = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let b = [7.0, 8.0, 9.0, 10.0, 11.0, 12.0];
+        let mut out = [0.0; 9];
+        matmul_blas(&a, &b, &mut out, &[3, 2], &[3, 2], true).unwrap();
+        let expected = [23.0, 29.0, 35.0, 53.0, 67.0, 81.0, 83.0, 105.0, 127.0];
+        for (i, (o, e)) in out.iter().zip(expected.iter()).enumerate() {
+            assert!((o - e).abs() < 1e-5, "out[{}]={}, expected={}", i, o, e);
+        }
     }
 }

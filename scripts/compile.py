@@ -62,19 +62,16 @@ def compile_opt125m(output_dir: str, apply_lowering: bool = False,
     model.eval()
 
     example_input = torch.randint(0, 50272, (2, 4), dtype=torch.long)
-    position_ids = torch.arange(0, 4, dtype=torch.long).unsqueeze(0).expand(2, -1)
     print(f"Exporting with example input shape: {list(example_input.shape)} (dynamic batch + seq)")
 
     pipeline = compile_mlir
     mlir_mod = pipeline(
         model,
         example_args=(example_input,),
-        example_kwargs={"position_ids": position_ids},
         output_dir=output_dir,
         model_dir=os.path.join(snapshots, snap),
         dynamic_shapes={
-            "input_ids":    {0: Dim("batch"), 1: Dim("seq")},
-            "position_ids": {0: Dim("batch"), 1: Dim("seq")},
+            "input_ids": {0: Dim("batch"), 1: Dim("seq")},
         },
         cache_policy=cache_policy,
     )

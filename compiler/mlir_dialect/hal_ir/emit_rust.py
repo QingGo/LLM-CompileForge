@@ -56,7 +56,7 @@ OP_DISPATCH: dict[tuple[str, str | None], str] = {
     # Softmax (fused)
     ("softmax", None): "dispatch_softmax(inputs, output, shape_meta)",
     # Gather
-    ("gather", None): "{ crate::hal::primitives::gather_f32(inputs[0], inputs[1], output, embed_dim_from_shape(shape_meta)).map_err(|e| e.to_string()) }",
+    ("gather", None): "crate::hal::primitives::gather_f32(inputs[0], inputs[1], output, embed_dim_from_shape(shape_meta)).map_err(|e| e.to_string())",
     # Transpose
     ("transpose", None): "dispatch_transpose(inputs, output, shape_meta)",
     # Memory ops (flat copy)
@@ -117,7 +117,7 @@ fn dispatch_matmul(inputs: &[&[f32]], output: &mut [f32], meta: &OpShapeMeta) ->
         .ok_or_else(|| "matmul: missing input shape 0".to_string())?;
     let b_shape = meta.input_shapes.get(1)
         .ok_or_else(|| "matmul: missing input shape 1".to_string())?;
-    crate::hal::primitives::matmul_blas(inputs[0], inputs[1], output, a_shape, b_shape)
+    crate::hal::primitives::matmul_blas(inputs[0], inputs[1], output, a_shape, b_shape, true)
 }
 
 fn dispatch_softmax(inputs: &[&[f32]], output: &mut [f32], meta: &OpShapeMeta) -> Result<(), String> {
@@ -246,7 +246,7 @@ HEADER = """\
 //! Dispatch layer — maps HAL IR op names to primitives in crate::hal::primitives.
 //! Optimised implementations live in primitives/; this file is the glue.
 
-#![allow(unused_variables, dead_code)]
+#![allow(unused_variables, dead_code, unused_imports)]
 
 use crate::hal::primitives;
 

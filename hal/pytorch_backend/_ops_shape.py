@@ -22,13 +22,13 @@ class _ShapeOps:
                 resolved.append(s)
             else:
                 resolved.append(1)
-        # Use dim_inputs for -1 entries, right-to-left (matching the
-        # original sf.view operand order where SSA refs were always in
-        # the last positions).  Extras are treated as "infer from product"
-        # (PyTorch's standard -1 semantics).
-        for i in range(len(resolved) - 1, -1, -1):
-            if resolved[i] == -1 and dim_inputs:
-                resolved[i] = int(dim_inputs.pop().item())
+        # Use dim_inputs for dynamic-dim sentinels (values < -1).
+        # During FX→MLIR lowering, each dynamic dim (sym_size node) is
+        # replaced by sentinel -(dyn_pos+2) to distinguish it from static
+        # -1 entries.  Static -1 entries remain for inference.
+        for i in range(len(resolved)):
+            if resolved[i] < -1 and dim_inputs:
+                resolved[i] = int(dim_inputs.pop(0).item())
         # All -1 with no dim_inputs → flatten (equivalent to reshape(-1))
         if all(s == -1 for s in resolved) and not dim_inputs:
             resolved = [-1]

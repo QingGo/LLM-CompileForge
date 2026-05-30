@@ -245,6 +245,9 @@ class HalIRBuilder:
                 weight_inputs[i_def["name"]] = param_names[w_idx]
                 w_idx += 1
 
+        # ── Inject shape_of ops for wire input dynamic dims ─────
+        self._inject_shape_of_ops(inputs, weight_inputs, ops)
+
         # ── Build function entry ────────────────────────────────
         func_entry: dict[str, Any] = {
             "name": func_name,
@@ -261,6 +264,65 @@ class HalIRBuilder:
             func_entry["block_table"] = True
 
         return func_entry
+
+    def _inject_shape_of_ops(
+        self,
+        inputs: list[dict[str, Any]],
+        weight_inputs: dict[str, str],
+        ops: list[dict[str, Any]],
+    ) -> None:
+        """Inject shape_of ops for wire input dims and wire them to reshape/fill."""
+        dyn_set = {"?", -1, "-1"}
+        wire_input = None
+        best_score = -999
+        for inp in inputs:
+            shape = inp["shape"]
+            has_dyn = any(d in dyn_set for d in shape)
+            is_weight = inp["name"] in weight_inputs
+            rank = len(shape)
+            if has_dyn and rank >= 2 and not is_weight:
+                dyn_count = sum(1 for d in shape if d in dyn_set)
+                score = -rank * 10 + dyn_count
+                if score > best_score:
+                    best_score = score
+                    wire_input = inp
+
+        if wire_input is None:
+            return
+
+        shape_of_names: list[str] = []
+        shape_of_ops: list[dict[str, Any]] = []
+        wire_name = wire_input["name"].replace("%", "")
+        for dim_idx, dim_val in enumerate(wire_input["shape"]):
+            if dim_val in ("?", -1, "-1"):
+                out_name = f"%shape_of_{wire_name}_dim{dim_idx}"
+                shape_of_ops.append({
+                    "op": "shape_of",
+                    "inputs": [wire_input["name"]],
+                    "outputs": [out_name],
+                    "dim": dim_idx,
+                })
+                shape_of_names.append(out_name)
+
+        if not shape_of_ops:
+            return
+
+        for i, sop in enumerate(shape_of_ops):
+            ops.insert(i, sop)
+
+        dyn_set = {"?", -1, "-1"}
+        for op in ops:
+            if op["op"] != "reshape":
+                continue
+            shape = op.get("shape")
+            if shape is None:
+                continue
+            if len(shape) <= 2:
+                continue
+            num_dyn = sum(1 for d in shape if d in dyn_set)
+            if num_dyn > 0 and len(op["inputs"]) <= 1:
+                n = min(num_dyn, len(shape_of_names))
+                op["inputs"].extend(shape_of_names[:n])
 
     def _add_cache_ops(
         self,

@@ -66,3 +66,25 @@ pub enum TokenizerError {
     #[error("EOS token not found")]
     EosNotFound,
 }
+
+#[derive(Debug, thiserror::Error)]
+pub enum HalExecutionError {
+    #[error("HAL op execution failed: func[{func_idx}] op[{op_idx}] '{op_name}' — {message}")]
+    OpFailed {
+        func_idx: usize,
+        op_idx: usize,
+        op_name: String,
+        message: String,
+    },
+
+    #[error("HAL op PANIC: func[{func_idx}] op[{op_idx}] '{op_name}' — {panic_msg}")]
+    OpPanic {
+        func_idx: usize,
+        op_idx: usize,
+        op_name: String,
+        panic_msg: String,
+    },
+
+    #[error("HAL runner: {0}")]
+    Runner(String),
+}

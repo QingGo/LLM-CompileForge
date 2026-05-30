@@ -10,6 +10,7 @@ pub mod gather;
 pub mod transpose;
 pub mod fused_softmax;
 pub mod fused_layer_norm;
+pub mod fused_sdpa;
 
 pub use vec_ops::*;
 pub use reduce_ops::*;
@@ -18,3 +19,4 @@ pub use gather::*;
 pub use transpose::*;
 pub use fused_softmax::*;
 pub use fused_layer_norm::*;
+pub use fused_sdpa::*;

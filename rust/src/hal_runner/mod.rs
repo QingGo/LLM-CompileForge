@@ -9,6 +9,7 @@
 
 pub mod helpers;
 pub mod prep;
+pub mod shape_inference;
 pub mod types;
 
 #[cfg(test)]
@@ -19,16 +20,39 @@ pub use types::{HalIR, HalFunction, HalOp, HalRustRunner, HalTensorDef, HalWeigh
 use crate::hal::cpu::buffer::CpuBuffer as InnerCpuBuffer;
 use crate::hal::cpu::CpuBuffer;
 use crate::hal::traits;
-use crate::tensor::Tensor;
+use crate::tensor::{Dtype, Tensor};
 use crate::weight_loader::WeightProvider;
 
 use crate::hal_runner::helpers::{
-    compute_output_shape, estimate_numel_from_shape, fallback_shape, find_any_shape,
-    find_main_output, find_output_shape, inject_weights_into_ssa, zero_fill_outputs,
+    find_main_output, inject_function_weights,
 };
 use crate::hal_runner::prep::{
     extract_global_output, prepare_ssa_maps, wire_cross_function_inputs,
 };
+use crate::hal_runner::shape_inference::compute_output_shape;
+
+// ── dtype inference ──────────────────────────────────────────────────
+
+fn infer_output_dtype(
+    op_name: &str,
+    input_names: &[String],
+    ssa_dtypes: &std::collections::HashMap<String, Dtype>,
+) -> Dtype {
+    match op_name {
+        "reshape" => input_names.first()
+            .and_then(|n| ssa_dtypes.get(n))
+            .copied()
+            .unwrap_or(Dtype::F32),
+        "gather" => Dtype::F32,
+        "shape_of" => Dtype::F32,
+        "fill" => Dtype::F32,
+        "compare" => Dtype::F32,
+        _ => input_names.first()
+            .and_then(|n| ssa_dtypes.get(n))
+            .copied()
+            .unwrap_or(Dtype::F32),
+    }
+}
 
 // ── run_hal_function_graph ────────────────────────────────────────────
 
@@ -62,11 +86,8 @@ pub fn run_hal_function_graph(
     let seq_len = input_ids.len();
 
     // ── Build initial SSA maps (global inputs + zero-fill) ────────────
-    let (mut ssa_map, mut ssa_shapes) =
+    let (mut ssa_map, mut ssa_shapes, mut ssa_dtypes) =
         prepare_ssa_maps(hal_ir, seq_len, input_ids, positions);
-
-    // ── Inject weights from WeightProvider ────────────────────────────
-    inject_weights_into_ssa(weight_provider, hal_ir, &mut ssa_map, &mut ssa_shapes);
 
     // ── Execute each function's ops ──────────────────────────────────
     for (fi, function) in hal_ir.functions.iter().enumerate() {
@@ -87,9 +108,13 @@ pub fn run_hal_function_graph(
                 prev_func,
                 &mut ssa_map,
                 &mut ssa_shapes,
+                &mut ssa_dtypes,
                 seq_len,
             );
         }
+
+        // ── Inject weights for this function (AFTER wiring) ─────────
+        inject_function_weights(weight_provider, function, &mut ssa_map, &mut ssa_shapes, &mut ssa_dtypes);
 
         // DEBUG: track time for starting function execution
         for (oi, op) in function.ops.iter().enumerate() {
@@ -113,14 +138,14 @@ pub fn run_hal_function_graph(
                 let data = ssa_map.get(input_name).ok_or_else(|| {
                     anyhow::anyhow!(
                         "hal_runner: SSA value '{}' not found in map (func[{}] op[{}]: {:?})",
-                        input_name,
-                        fi,
-                        oi,
-                        op,
+                        input_name, fi, oi, op,
                     )
                 })?;
 
-                let elem_size = 4;
+                let elem_size = ssa_dtypes
+                    .get(input_name)
+                    .map(|d| d.element_size())
+                    .unwrap_or(4);
 
                 // Look up shape from ssa_shapes FIRST.  This is the critical
                 // fix for cross-function shape propagation: ssa_shapes tracks
@@ -192,38 +217,30 @@ pub fn run_hal_function_graph(
             }
 
             // ── Pre-allocate output buffers ─────────────────────────
-            let mut output_vecs: Vec<Vec<f32>> = Vec::with_capacity(op.outputs.len());
+            let mut output_vecs: Vec<Vec<u8>> = Vec::with_capacity(op.outputs.len());
             let mut output_bufs: Vec<Box<dyn traits::Buffer>> =
                 Vec::with_capacity(op.outputs.len());
 
-            for (out_idx, output_name) in op.outputs.iter().enumerate() {
-                let (numel, output_dims) = if op.op == "reshape" {
-                    // Reshape: output numel = input numel (flat copy)
-                    let inp_numel = op.inputs.first()
-                        .and_then(|n| ssa_map.get(n))
-                        .map(|d| d.len() / 4)
-                        .unwrap_or(1);
-                    let target_shape = op.shape.as_ref()
-                        .map(|s| s.iter().map(|d| d.parse::<usize>().unwrap_or(1)).collect())
-                        .unwrap_or_else(|| vec![inp_numel]);
-                    (inp_numel.max(1), target_shape)
-                } else {
-                    compute_output_shape(
-                        op, out_idx, &ssa_shapes, &ssa_map, function, seq_len,
-                    )
-                };
-                let numel = numel.max(1);
+            // Infer output dtype from op semantics
+            let output_dtype = infer_output_dtype(&op.op, &op.inputs, &ssa_dtypes);
 
-                let mut vec = vec![0.0f32; numel];
+            for (out_idx, _output_name) in op.outputs.iter().enumerate() {
+                let (numel, output_dims) = compute_output_shape(
+                    op, out_idx, &ssa_shapes, &ssa_map, &ssa_dtypes, function, seq_len,
+                );
+                let numel = numel.max(1);
+                let out_elem_size = output_dtype.element_size();
+
+                let mut vec = vec![0u8; numel * out_elem_size];
 
                 let raw_buf = InnerCpuBuffer::from_raw_parts(
-                    vec.as_mut_ptr() as *mut u8,
-                    numel * 4,
-                    true, // borrowed
+                    vec.as_mut_ptr(),
+                    numel * out_elem_size,
+                    true,
                 )
                 .map_err(|e| anyhow::anyhow!("InnerCpuBuffer: {}", e))?;
 
-                let cpu_buf = CpuBuffer::with_meta(raw_buf, 4 /* f32 */, output_dims);
+                let cpu_buf = CpuBuffer::with_meta(raw_buf, out_elem_size, output_dims);
                 output_vecs.push(vec);
                 output_bufs.push(Box::new(cpu_buf));
             }
@@ -234,9 +251,46 @@ pub fn run_hal_function_graph(
             let output_refs: Vec<&dyn traits::Buffer> =
                 output_bufs.iter().map(|b| b.as_ref()).collect();
 
-            let op_name = match &op.kind {
-                Some(kind) => format!("{}:{}", op.op, kind),
-                None => op.op.clone(),
+            // Handle shape_of with dim: compute directly from input shape
+            // instead of calling kernel (output buffer is only 1 element).
+            if op.op == "shape_of" {
+                if let Some(dim) = op.dim {
+                    let input_shape = op.inputs.first()
+                        .and_then(|n| ssa_shapes.get(n))
+                        .cloned()
+                        .unwrap_or_default();
+                    let dim_val = if dim < input_shape.len() {
+                        input_shape[dim]
+                    } else {
+                        1
+                    };
+                    let out_name = op.outputs.first().unwrap().clone();
+                    let out_bytes = (dim_val as f32).to_le_bytes().to_vec();
+                    ssa_map.insert(out_name.clone(), out_bytes);
+                    ssa_dtypes.insert(out_name.clone(), output_dtype);
+                    ssa_shapes.insert(out_name.clone(), vec![1]);
+                    log::debug!(
+                        "hal_runner: func[{}] op[{}] shape_of dim={} -> {} (ssa_shapes={:?})",
+                        fi, oi, dim, dim_val, vec![1usize],
+                    );
+                    continue;
+                }
+            }
+
+            let op_name = if let Some(kind) = &op.kind {
+                format!("{}:{}", op.op, kind)
+            } else if op.op == "transpose" {
+                if let Some(ref dims) = op.dims {
+                    let dims_str = dims.iter()
+                        .map(|d| d.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    format!("transpose:{}", dims_str)
+                } else {
+                    "transpose".to_string()
+                }
+            } else {
+                op.op.clone()
             };
 
             let exe_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -245,12 +299,15 @@ pub fn run_hal_function_graph(
             let output_shapes = match exe_result {
                 Ok(Ok(shapes)) => shapes,
                 Ok(Err(e)) => {
-                    log::warn!(
-                        "hal_runner: func[{}] op[{}] '{}' error: {}. \
-                         Zero-filling and continuing.",
-                        fi, oi, op_name, e,
-                    );
-                    zero_fill_outputs(&mut output_vecs, &output_bufs, fi, oi, &op_name)
+                    return Err(anyhow::anyhow!(
+                        "{}",
+                        crate::error::HalExecutionError::OpFailed {
+                            func_idx: fi,
+                            op_idx: oi,
+                            op_name,
+                            message: e.to_string(),
+                        }
+                    ));
                 }
                 Err(panic_payload) => {
                     let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
@@ -260,24 +317,27 @@ pub fn run_hal_function_graph(
                     } else {
                         "unknown panic".to_string()
                     };
-                    log::warn!(
-                        "hal_runner: func[{}] op[{}] '{}' PANIC: {}. \
-                         Zero-filling and continuing.",
-                        fi, oi, op_name, msg,
-                    );
-                    zero_fill_outputs(&mut output_vecs, &output_bufs, fi, oi, &op_name)
+                    return Err(anyhow::anyhow!(
+                        "{}",
+                        crate::error::HalExecutionError::OpPanic {
+                            func_idx: fi,
+                            op_idx: oi,
+                            op_name,
+                            panic_msg: msg,
+                        }
+                    ));
                 }
             };
             log::info!(
                 "hal_runner: func[{}] op[{}] '{}' DONE ({} outputs, {:?})",
                 fi, oi, op_name, output_shapes.len(), output_shapes,
             );
+            drop(output_bufs);
             for (idx, output_name) in op.outputs.iter().enumerate() {
                 let out_vec = std::mem::take(&mut output_vecs[idx]);
-                let raw_bytes: Vec<u8> =
-                    out_vec.iter().flat_map(|&v| v.to_le_bytes()).collect();
 
-                ssa_map.insert(output_name.clone(), raw_bytes);
+                ssa_map.insert(output_name.clone(), out_vec);
+                ssa_dtypes.insert(output_name.clone(), output_dtype);
 
                 if let Some(shapes) = output_shapes.get(idx) {
                     let shape_usize: Vec<usize> = shapes.iter()
@@ -286,22 +346,106 @@ pub fn run_hal_function_graph(
                     ssa_shapes.insert(output_name.clone(), shape_usize);
                 }
             }
-        }
 
-        // ── Capture wire output for cross-function wiring ─────────────
-        if fi < hal_ir.functions.len().saturating_sub(1) {
-            let wire = find_main_output(function, &ssa_map);
-            if let Some((name, data)) = wire {
-                log::debug!(
-                    "hal_runner: function[{}] main wire '{}' ({} bytes) ready for next function",
-                    fi,
-                    name,
-                    data.len(),
-                );
+            if op.op == "shape_of" {
+                if let Some(out_name) = op.outputs.first() {
+                    if let Some(data) = ssa_map.get(out_name) {
+                        let dims: Vec<usize> = data.chunks(4)
+                            .map(|b| {
+                                let bytes: [u8; 4] = b.try_into().unwrap_or([0; 4]);
+                                f32::from_le_bytes(bytes) as usize
+                            })
+                            .collect();
+                        if !dims.is_empty() {
+                            log::debug!(
+                                "hal_runner: shape_of '{}' updated ssa_shapes {:?} -> {:?}",
+                                out_name,
+                                ssa_shapes.get(out_name),
+                                dims,
+                            );
+                            ssa_shapes.insert(out_name.clone(), dims);
+                        }
+                    }
+                }
+            }
+
+            // ── Debug: dump func[0] gather outputs ──────────────────
+            if fi == 0 && op.op == "gather" {
+                if let Some(out_name) = op.outputs.first() {
+                    if let Some(data) = ssa_map.get(out_name) {
+                        use std::io::Write;
+                        let path = format!("/tmp/func0_gather_{}.bin", out_name.trim_start_matches('%'));
+                        let shape = ssa_shapes.get(out_name).cloned().unwrap_or_default();
+                        let mut f = std::fs::File::create(&path).unwrap();
+                        let rank = shape.len() as i32;
+                        f.write_all(&rank.to_le_bytes()).unwrap();
+                        for &d in &shape { f.write_all(&(d as i32).to_le_bytes()).unwrap(); }
+                        f.write_all(data).unwrap();
+                        let dtype = ssa_dtypes.get(out_name).copied().unwrap_or(Dtype::F32);
+                        let indices_name = op.inputs.get(1).cloned().unwrap_or_default();
+                        let indices_dtype = ssa_dtypes.get(&indices_name).copied().unwrap_or(Dtype::F32);
+                        eprintln!("[debug] func[0] gather '{}': shape={:?}, dtype={:?}, indices={}, indices_dtype={:?}, {} bytes -> {}",
+                            out_name, shape, dtype, indices_name, indices_dtype, data.len(), path);
+                    }
+                }
+            }
+            // Debug: dump func[0] position indices %251
+            if fi == 0 && op.op == "element_wise" && op.outputs.first().map(|n| n.as_str()) == Some("%251") {
+                if let Some(data) = ssa_map.get("%251") {
+                    let vals: Vec<i64> = data.chunks(8).map(|b| {
+                        let arr: [u8; 8] = b.try_into().unwrap_or([0; 8]);
+                        i64::from_le_bytes(arr)
+                    }).collect();
+                    eprintln!("[debug] position indices %251: I64 values = {:?}", vals);
+                }
+            }
+            // Also dump %200 value  
+            if fi == 0 && op.op == "element_wise" && op.outputs.first().map(|n| n.as_str()) == Some("%251") {
+                if let Some(data) = ssa_map.get("%200") {
+                    let vals: Vec<i64> = data.chunks(8).map(|b| {
+                        let arr: [u8; 8] = b.try_into().unwrap_or([0; 8]);
+                        i64::from_le_bytes(arr)
+                    }).collect();
+                    eprintln!("[debug] constant %200: I64 values = {:?}", vals);
+                }
             }
         }
+
+            // ── Capture wire output for cross-function wiring ─────────────
+            if fi < hal_ir.functions.len().saturating_sub(1) {
+                let wire = find_main_output(function, &ssa_map);
+                if let Some((name, data)) = wire {
+                    log::debug!(
+                        "hal_runner: function[{}] main wire '{}' ({} bytes) ready for next function",
+                        fi,
+                        name,
+                        data.len(),
+                    );
+                }
+            }
+
+            // ── Debug: dump func[0] embedding output ──────────────────
+            if fi == 0 {
+                if let Some(output_name) = function.outputs.iter()
+                    .find(|o| o.shape.len() >= 3)
+                    .map(|o| &o.name)
+                {
+                    if let Some(data) = ssa_map.get(output_name) {
+                        let path = "/tmp/func0_embedding.bin";
+                        let shape = ssa_shapes.get(output_name).cloned().unwrap_or_default();
+                        let mut f = std::fs::File::create(path).unwrap();
+                        use std::io::Write;
+                        let rank = shape.len() as i32;
+                        f.write_all(&rank.to_le_bytes()).unwrap();
+                        for &d in &shape { f.write_all(&(d as i32).to_le_bytes()).unwrap(); }
+                        f.write_all(data).unwrap();
+                        eprintln!("[debug] func[0] output '{}': shape={:?}, {} bytes -> {}",
+                            output_name, shape, data.len(), path);
+                    }
+                }
+            }
     }
 
     // ── Extract global output ───────────────────────────────────────
-    extract_global_output(hal_ir, &ssa_map, seq_len)
+    extract_global_output(hal_ir, &ssa_map, &ssa_shapes, &ssa_dtypes, seq_len)
 }

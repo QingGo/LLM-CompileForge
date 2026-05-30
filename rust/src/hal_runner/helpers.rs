@@ -12,28 +12,24 @@ use crate::hal_runner::types::{HalFunction, HalIR, HalTensorDef};
 // ── Helpers ────────────────────────────────────────────────────────────
 
 /// Zero-fill output buffers after a failed op execution.
-/// Called by the panic-safe execute wrapper to keep the SSA map populated
-/// with valid (zeroed) data so subsequent ops don't cascade-fail.
+#[allow(dead_code)]
 pub(super) fn zero_fill_outputs(
-    output_vecs: &mut [Vec<f32>],
+    output_vecs: &mut [Vec<u8>],
     output_bufs: &[Box<dyn traits::Buffer>],
     fi: usize,
     oi: usize,
     _op_name: &str,
 ) -> Vec<Vec<i64>> {
     for (idx, out_vec) in output_vecs.iter_mut().enumerate() {
-        out_vec.fill(0.0f32);
+        out_vec.fill(0);
         log::trace!(
-            "hal_runner: zero-filled func[{}] op[{}] output[{}] ({} elements)",
+            "hal_runner: zero-filled func[{}] op[{}] output[{}] ({} bytes)",
             fi, oi, idx, out_vec.len(),
         );
     }
     output_bufs
         .iter()
-        .map(|b| {
-            let s: Vec<i64> = b.shape().iter().map(|&d| d as i64).collect();
-            s
-        })
+        .map(|b| b.shape().iter().map(|&d| d as i64).collect())
         .collect()
 }
 
@@ -112,6 +108,7 @@ pub(super) fn find_main_output(
 /// Fallback shape builder for op outputs: converts the declared shape
 /// strings to a `Vec<usize>`, substituting `"?` and `"-1"` with 1 (batch).
 /// Uses `numel` as the flat fallback when the shape is all-dynamic.
+#[allow(dead_code)]
 pub(super) fn fallback_shape(shape: &[String], numel: usize) -> Vec<usize> {
     let dims: Vec<usize> = shape
         .iter()
@@ -132,6 +129,7 @@ pub(super) fn fallback_shape(shape: &[String], numel: usize) -> Vec<usize> {
 
 /// Find the shape definition for a tensor name in a function's
 /// input, output, or weight list.
+#[allow(dead_code)]
 pub(super) fn find_output_shape(function: &HalFunction, name: &str) -> (Vec<String>, bool) {
     for output in &function.outputs {
         if output.name == name {
@@ -153,6 +151,7 @@ pub(super) fn find_output_shape(function: &HalFunction, name: &str) -> (Vec<Stri
 }
 
 /// Find the shape for any SSA name in a function (inputs + outputs).
+#[allow(dead_code)]
 pub(super) fn find_any_shape(function: &HalFunction, name: &str) -> Vec<String> {
     find_output_shape(function, name).0
 }
@@ -206,205 +205,39 @@ pub(super) fn find_matching_output(
 ///
 /// The cascade starts at the FIRST op with wrong shapes.  By computing
 /// numel/shape from ACTUAL INPUT SHAPES, every op gets the right buffer.
-pub(crate) fn compute_output_shape(
-    op: &crate::hal_runner::types::HalOp,
-    out_idx: usize,
-    ssa_shapes: &HashMap<String, Vec<usize>>,
-    ssa_map: &HashMap<String, Vec<u8>>,
-    function: &crate::hal_runner::types::HalFunction,
-    _seq_len: usize,
-) -> (usize, Vec<usize>) {
-    let result = match op.op.as_str() {
-        "shape_of" => {
-            // Output = input rank (scalar, numel = rank)
-            let rank = op
-                .inputs
-                .first()
-                .and_then(|n| ssa_shapes.get(n))
-                .map(|s| s.len())
-                .unwrap_or(2);
-            (rank, vec![rank])
-        }
-        "reshape" => {
-            // Same numel as input, new shape from op.shape metadata.
-            let input_numel = op
-                .inputs
-                .first()
-                .and_then(|n| ssa_map.get(n))
-                .map(|d| d.len() / 4)
-                .unwrap_or(1);
-            let target_shape = op
-                .shape
-                .as_ref()
-                .map(|s| {
-                    s.iter()
-                        .map(|d| d.parse::<usize>().unwrap_or(1))
-                        .collect()
-                })
-                .unwrap_or_else(|| vec![input_numel]);
-            (input_numel, target_shape)
-        }
-        "gather" => {
-            // output = input_shape[:-1] + [embed_dim]
-            // e.g., input=[1,4], weight=[50272,768] → output=[1,4,768]
-            let embed_dim = op
-                .inputs
-                .get(0)
-                .and_then(|n| ssa_shapes.get(n))
-                .map(|s| s.iter().skip(1).product::<usize>())
-                .unwrap_or(768);
-            let input_shape = op
-                .inputs
-                .get(1)
-                .and_then(|n| ssa_shapes.get(n))
-                .cloned()
-                .unwrap_or_else(|| vec![1]);
-            let mut output_shape = input_shape;
-            output_shape.push(embed_dim);
-            let numel = output_shape.iter().product::<usize>().max(1);
-            (numel, output_shape)
-        }
-        "matmul" => {
-            // C[M,N] = A[M,K] × B[K,N]
-            let a_shape = op
-                .inputs
-                .get(0)
-                .and_then(|n| ssa_shapes.get(n))
-                .cloned()
-                .unwrap_or_else(|| vec![1, 1]);
-            let b_shape = op
-                .inputs
-                .get(1)
-                .and_then(|n| ssa_shapes.get(n))
-                .cloned()
-                .unwrap_or_else(|| vec![1, 1]);
-            let m = a_shape.first().copied().unwrap_or(1);
-            let n = b_shape.get(1).copied().unwrap_or(1);
-            (m * n, vec![m, n])
-        }
-        "element_wise" | "elementwise" | "softmax" | "unsqueeze" | "transpose"
-        | "slice" | "compare" | "fill" => {
-            // Shape-preserving: same shape as first input.
-            let shape = op
-                .inputs
-                .first()
-                .and_then(|n| ssa_shapes.get(n))
-                .cloned()
-                .unwrap_or_else(|| vec![1]);
-            let numel = shape.iter().product::<usize>().max(1);
-            (numel, shape)
-        }
-        "reduce" => {
-            // Same rank as input, all dims except last reduced to 1.
-            // The reduce kernel expects output_shape.len() == input_shape.len().
-            let shape = op
-                .inputs
-                .first()
-                .and_then(|n| ssa_shapes.get(n))
-                .cloned()
-                .unwrap_or_else(|| vec![1]);
-            let mut reduced = vec![1usize; shape.len()];
-            if let Some(last) = shape.last() {
-                reduced[shape.len() - 1] = *last;
-            }
-            let numel = reduced.iter().product::<usize>().max(1);
-            (numel, reduced)
-        }
-        "concat" => {
-            // Sum numels across all inputs; shape from first input.
-            let total_numel: usize = op
-                .inputs
-                .iter()
-                .filter_map(|n| ssa_map.get(n))
-                .map(|d| d.len() / 4)
-                .sum();
-            let shape = ssa_shapes
-                .get(&op.inputs[0])
-                .cloned()
-                .unwrap_or_else(|| vec![total_numel]);
-            (total_numel.max(1), shape)
-        }
-        _ => {
-            // Default: use function output list shape.
-            let shape = function
-                .outputs
-                .get(out_idx)
-                .map(|o| {
-                    o.shape
-                        .iter()
-                        .map(|d| {
-                            if d == "?" || d == "-1" {
-                                1
-                            } else {
-                                d.parse::<usize>().unwrap_or(1)
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_else(|| vec![1]);
-            let numel = shape.iter().product::<usize>().max(1);
-            (numel, shape)
-        }
-    };
-    result
-}
-
 // ── Weight injection ───────────────────────────────────────────────────
 
-/// Inject weight data from WeightProvider into the SSA map.
+/// Inject weight data for a SINGLE function from WeightProvider into the SSA map.
 ///
-/// Handles two cases:
-///   (a) function.weights — weight entries produced by sf.weight ops
-///   (b) function.weight_inputs — function input args mapped to compiled names.
-pub(super) fn inject_weights_into_ssa(
+/// Called per-function inside the execution loop, AFTER cross-function wiring
+/// so that wire data is not overwritten by weight injection.
+pub(super) fn inject_function_weights(
     weight_provider: Option<&WeightProvider>,
-    hal_ir: &HalIR,
+    function: &HalFunction,
     ssa_map: &mut HashMap<String, Vec<u8>>,
     ssa_shapes: &mut HashMap<String, Vec<usize>>,
+    ssa_dtypes: &mut HashMap<String, crate::tensor::Dtype>,
 ) {
     if let Some(wp) = weight_provider {
-        for function in &hal_ir.functions {
-            // Case (a): weights list with inline SSA names.
-            for weight_entry in &function.weights {
-                if weight_entry.ssa.is_empty() {
-                    continue;
-                }
-                if let Some(desc) = wp.get_weight_memref(&weight_entry.name) {
-                    let n = desc.numel();
-                    // SAFETY: The pointer comes from a valid MemRefDesc's aligned
-                    // field. The f16 data was written by the dylib's execute() call.
-                    let data: Vec<f32> = unsafe {
-                        let raw = desc.aligned as *const u16;
-                        let slice = std::slice::from_raw_parts(raw, n);
-                        slice
-                            .iter()
-                            .map(|&h| half::f16::from_bits(h).to_f32())
-                            .collect()
-                    };
-                    let raw_bytes: Vec<u8> = data
-                        .iter()
-                        .flat_map(|&v| v.to_le_bytes())
-                        .collect();
-                    ssa_map.insert(weight_entry.ssa.clone(), raw_bytes);
-                    // Store weight shape from weight entry metadata.
-                    let weight_dims: Vec<usize> = weight_entry.shape.iter().map(|d| {
-                        if d == "?" || d == "-1" { 1 } else { d.parse::<usize>().unwrap_or(1) }
-                    }).collect();
-                    ssa_shapes.insert(weight_entry.ssa.clone(), weight_dims);
-                    log::debug!(
-                        "hal_runner: loaded weight '{}' -> SSA '{}' ({} elements)",
-                        weight_entry.name,
-                        weight_entry.ssa,
-                        n,
-                    );
-                }
+        // Case (a): weights list with inline SSA names.
+        for weight_entry in &function.weights {
+            if weight_entry.ssa.is_empty() {
+                continue;
             }
-
-            // Case (b): weight_inputs mapping (function args → compiled names).
-            for (ssa_name, compiled_name) in &function.weight_inputs {
-                if let Some(desc) = wp.get_weight_memref(compiled_name) {
-                    let n = desc.numel();
-                    // SAFETY: Same pattern as case (a) — valid MemRefDesc aligned pointer.
+            if let Some(desc) = wp.get_weight_memref(&weight_entry.name) {
+                let n = desc.numel();
+                let weight_dtype = crate::tensor::Dtype::from_hal_str(&weight_entry.dtype);
+                // SAFETY: The pointer comes from a valid MemRefDesc's aligned
+                // field. The f16 data was written by the dylib's execute() call.
+                let raw_bytes: Vec<u8> = if weight_dtype == crate::tensor::Dtype::I64 {
+                    // SAFETY: desc.aligned points to valid i64 weight data.
+                    unsafe {
+                        let raw = desc.aligned as *const i64;
+                        let slice = std::slice::from_raw_parts(raw, n);
+                        slice.iter().flat_map(|&v| v.to_le_bytes().to_vec()).collect()
+                    }
+                } else {
+                    // SAFETY: desc.aligned points to valid f16 weight data.
                     let data: Vec<f32> = unsafe {
                         let raw = desc.aligned as *const u16;
                         let slice = std::slice::from_raw_parts(raw, n);
@@ -413,45 +246,71 @@ pub(super) fn inject_weights_into_ssa(
                             .map(|&h| half::f16::from_bits(h).to_f32())
                             .collect()
                     };
-                    let raw_bytes: Vec<u8> = data
-                        .iter()
-                        .flat_map(|&v| v.to_le_bytes())
-                        .collect();
-                    ssa_map.insert(ssa_name.clone(), raw_bytes);
-                    // Look up shape from function input definitions for weight_inputs.
-                    // The weight_inputs SSA names are function input arg names whose
-                    // shapes are declared in the function's input list.
-                    //
-                    // IMPORTANT: Only insert into ssa_shapes if the name is NOT already
-                    // present.  Weight_inputs are processed for ALL functions before any
-                    // ops execute, and some weight_inputs use names like "%arg0" or
-                    // "%arg1" that overlap with global input names (input_ids/position_ids).
-                    // Overwriting global input shapes (e.g. [1, 4] → [50272, 768]) would
-                    // break all downstream shape computation.
-                    if let Some(input_def) = function.inputs.iter().find(|i| i.name == *ssa_name) {
-                        let input_dims: Vec<usize> = input_def.shape.iter().map(|d| {
-                            if d == "?" || d == "-1" { 1 } else { d.parse::<usize>().unwrap_or(1) }
-                        }).collect();
-                        if !ssa_shapes.contains_key(ssa_name) {
-                            ssa_shapes.insert(ssa_name.clone(), input_dims);
-                        }
-                    }
-                    log::debug!(
-                        "hal_runner: loaded weight '{}' -> SSA '{}' ({} elements)",
-                        compiled_name,
-                        ssa_name,
-                        n,
-                    );
-                } else {
-                    log::warn!(
-                        "hal_runner: weight '{}' for SSA '{}' not found in WeightProvider",
-                        compiled_name,
-                        ssa_name,
-                    );
-                }
+                    data.iter().flat_map(|&v| v.to_le_bytes()).collect()
+                };
+                ssa_map.insert(weight_entry.ssa.clone(), raw_bytes);
+                ssa_dtypes.insert(weight_entry.ssa.clone(), weight_dtype);
+                let weight_dims: Vec<usize> = weight_entry.shape.iter().map(|d| {
+                    if d == "?" || d == "-1" { 1 } else { d.parse::<usize>().unwrap_or(1) }
+                }).collect();
+                ssa_shapes.insert(weight_entry.ssa.clone(), weight_dims);
+                log::debug!(
+                    "hal_runner: loaded weight '{}' -> SSA '{}' ({} elements)",
+                    weight_entry.name,
+                    weight_entry.ssa,
+                    n,
+                );
             }
         }
-    } else {
-        log::info!("hal_runner: no WeightProvider — all weights will be zero-filled");
+
+        // Case (b): weight_inputs mapping (function args → compiled names).
+        for (ssa_name, compiled_name) in &function.weight_inputs {
+            if let Some(desc) = wp.get_weight_memref(compiled_name) {
+                let n = desc.numel();
+                let weight_dtype = function.inputs.iter()
+                    .find(|i| i.name == *ssa_name)
+                    .map(|i| crate::tensor::Dtype::from_hal_str(&i.dtype))
+                    .unwrap_or(crate::tensor::Dtype::F32);
+                let raw_bytes: Vec<u8> = if weight_dtype == crate::tensor::Dtype::I64 {
+                    // SAFETY: desc.aligned points to valid i64 weight data.
+                    unsafe {
+                        let raw = desc.aligned as *const i64;
+                        let slice = std::slice::from_raw_parts(raw, n);
+                        slice.iter().flat_map(|&v| v.to_le_bytes().to_vec()).collect()
+                    }
+                } else {
+                    // SAFETY: desc.aligned points to valid f16 weight data.
+                    let data: Vec<f32> = unsafe {
+                        let raw = desc.aligned as *const u16;
+                        let slice = std::slice::from_raw_parts(raw, n);
+                        slice
+                            .iter()
+                            .map(|&h| half::f16::from_bits(h).to_f32())
+                            .collect()
+                    };
+                    data.iter().flat_map(|&v| v.to_le_bytes()).collect()
+                };
+                ssa_map.insert(ssa_name.clone(), raw_bytes);
+                ssa_dtypes.insert(ssa_name.clone(), weight_dtype);
+                if let Some(input_def) = function.inputs.iter().find(|i| i.name == *ssa_name) {
+                    let input_dims: Vec<usize> = input_def.shape.iter().map(|d| {
+                        if d == "?" || d == "-1" { 1 } else { d.parse::<usize>().unwrap_or(1) }
+                    }).collect();
+                    ssa_shapes.insert(ssa_name.clone(), input_dims);
+                }
+                log::debug!(
+                    "hal_runner: loaded weight '{}' -> SSA '{}' ({} elements)",
+                    compiled_name,
+                    ssa_name,
+                    n,
+                );
+            } else {
+                log::warn!(
+                    "hal_runner: weight '{}' for SSA '{}' not found in WeightProvider",
+                    compiled_name,
+                    ssa_name,
+                );
+            }
+        }
     }
 }

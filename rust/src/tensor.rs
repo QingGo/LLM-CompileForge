@@ -42,6 +42,17 @@ impl Dtype {
             _ => None,
         }
     }
+
+    pub fn from_hal_str(s: &str) -> Self {
+        match s {
+            "f32" | "float" => Dtype::F32,
+            "f16" | "bfloat" => Dtype::F16,
+            "i64" => Dtype::I64,
+            "i32" => Dtype::I32,
+            "i8" | "i1" | "bool" => Dtype::I8,
+            _ => Dtype::F32,
+        }
+    }
 }
 
 impl fmt::Display for Dtype {

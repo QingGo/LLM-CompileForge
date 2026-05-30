@@ -102,6 +102,18 @@ pub struct HalOp {
     #[serde(default)]
     #[allow(dead_code)]
     pub value: Option<f64>,
+    /// Dtype annotations for each input tensor (e.g. ["i64", "f32"]).
+    #[serde(default)]
+    pub input_dtypes: Vec<String>,
+    /// Dtype annotations for each output tensor (e.g. ["f32"]).
+    #[serde(default)]
+    pub output_dtypes: Vec<String>,
+    /// Dimension permutation for transpose ops (e.g. [1, 2] means swap axes 1 and 2).
+    #[serde(default)]
+    pub dims: Option<Vec<usize>>,
+    /// Dimension index for shape_of ops (extract a single dim instead of full shape).
+    #[serde(default)]
+    pub dim: Option<usize>,
 }
 
 /// Deserialize optional shape arrays that may contain strings ("?") or integers.

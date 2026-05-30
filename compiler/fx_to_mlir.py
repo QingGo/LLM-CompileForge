@@ -538,12 +538,19 @@ def _collect_input_args(
             elif list_arg_attr not in extra_kwargs:
                 resolved: list[str | int] = []
                 use_view = hal_op in ("view", "ones_like", "full_like", "new_zeros")
+                is_view = hal_op == "view"
+                dyn_pos = 0  # sentinel counter for dynamic dim positions
                 for s in arg:
                     if isinstance(s, torch.fx.Node):
                         ssa_name = ssa_map.get(s.name, s.name)
-                        # Dynamic dim: add as operand but put -1 in shape attr
-                        # (SSA refs are invalid inside MLIR attribute arrays)
-                        if use_view:
+                        # Dynamic dim: add as operand and encode position
+                        # via sentinel -(dyn_pos+2) so the view handler knows
+                        # which -1 was originally a dynamic vs static dim.
+                        if use_view and is_view:
+                            # sentinel: -2 for 1st dynamic, -3 for 2nd, etc.
+                            resolved.append(-(dyn_pos + 2))
+                            dyn_pos += 1
+                        elif use_view:
                             resolved.append(-1)
                         else:
                             resolved.append(ssa_name)

@@ -21,6 +21,7 @@ pub mod memref;
 pub mod sret;
 
 use buffer::CpuBuffer as RawCpuBuffer;
+#[allow(unused_imports)]
 use device::RawCpuDevice;
 use executable::CpuExecutable as RawCpuExecutable;
 

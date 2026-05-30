@@ -4,7 +4,7 @@
 //! Dispatch layer — maps HAL IR op names to primitives in crate::hal::primitives.
 //! Optimised implementations live in primitives/; this file is the glue.
 
-#![allow(unused_variables, dead_code)]
+#![allow(unused_variables, dead_code, unused_imports)]
 
 use crate::hal::primitives;
 
@@ -80,7 +80,7 @@ fn dispatch_matmul(inputs: &[&[f32]], output: &mut [f32], meta: &OpShapeMeta) ->
         .ok_or_else(|| "matmul: missing input shape 0".to_string())?;
     let b_shape = meta.input_shapes.get(1)
         .ok_or_else(|| "matmul: missing input shape 1".to_string())?;
-    crate::hal::primitives::matmul_blas(inputs[0], inputs[1], output, a_shape, b_shape)
+    crate::hal::primitives::matmul_blas(inputs[0], inputs[1], output, a_shape, b_shape, true)
 }
 
 fn dispatch_softmax(inputs: &[&[f32]], output: &mut [f32], meta: &OpShapeMeta) -> Result<(), String> {
@@ -210,17 +210,12 @@ pub fn dispatch(
         "element_wise:add" => { { crate::hal::primitives::vec_add(inputs[0], inputs[1], output); Ok(()) } },
         "element_wise:mul" => { { crate::hal::primitives::vec_mul(inputs[0], inputs[1], output); Ok(()) } },
         "element_wise:relu" => { { crate::hal::primitives::vec_relu(inputs[0], output); Ok(()) } },
-        "element_wise:rsqrt" => { { crate::hal::primitives::vec_rsqrt(inputs[0], output); Ok(()) } },
-        "element_wise:sub" => { { crate::hal::primitives::vec_sub(inputs[0], inputs[1], output); Ok(()) } },
         "fill:arange" => { dispatch_fill(output, shape_meta) },
         "fill" => { dispatch_fill(output, shape_meta) },
-        "gather" => { { crate::hal::primitives::gather_f32(inputs[0], inputs[1], output, embed_dim_from_shape(shape_meta)).map_err(|e| e.to_string()) } },
-        "matmul" => { dispatch_matmul(inputs, output, shape_meta) },
-        "reduce:mean" => { dispatch_reduce_mean(inputs, output, shape_meta) },
+        "gather" => { crate::hal::primitives::gather_f32(inputs[0], inputs[1], output, embed_dim_from_shape(shape_meta)).map_err(|e| e.to_string()) },
         "reshape" => { { output.copy_from_slice(inputs[0]); Ok(()) } },
         "shape_of" => { { crate::hal::primitives::shape_of(shape_meta.input_shapes.get(0).unwrap_or(&vec![]), output); Ok(()) } },
         "slice" => { dispatch_slice(inputs, output, shape_meta) },
-        "softmax" => { dispatch_softmax(inputs, output, shape_meta) },
         "transpose" => { dispatch_transpose(inputs, output, shape_meta) },
         "unsqueeze" => { { output.copy_from_slice(inputs[0]); Ok(()) } },
         "cache_read" => { Ok(()) },

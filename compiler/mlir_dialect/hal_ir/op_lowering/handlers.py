@@ -72,10 +72,46 @@ def _handle_sym_size(op, op_name, input_names, output_names, *context):
     return {"op": "shape_of", "inputs": input_names, "outputs": output_names}
 
 
+def _is_shape_of_output(value: object) -> bool:
+    """Check if an MLIR Value is produced by ``sf.sym_size`` (shape_of).
+
+    Uses ``.owner`` (the MLIR Python API property) rather than
+    ``get_defining_op()`` which does not exist on OpResult in this
+    MLIR version.  Without this fix, ALL operands silently fail the
+    check, causing ``_handle_view_expand`` to drop shape_of inputs
+    from the reshape op — making the causal mask [1,1,1,1] instead
+    of [1,1,seq,seq].
+    """
+    try:
+        owner = value.owner  # type: ignore[attr-defined]
+        if owner is None:
+            return False
+        return str(owner.operation.name) == "sf.sym_size"  # type: ignore[attr-defined]
+    except Exception:
+        return False
+
+
+def _filter_shape_inputs(op: object, input_names: list[str]) -> list[str]:
+    """Keep only shape_of outputs from op operands (drop scalar weights)."""
+    operands = list(op.operands) if hasattr(op, "operands") else []  # type: ignore[union-attr]
+    filtered = []
+    for i, operand in enumerate(operands):
+        if i < len(input_names) and _is_shape_of_output(operand):
+            filtered.append(input_names[i])
+    return filtered
+
+
 def _handle_view_expand(op, op_name, input_names, output_names, *context):
     shape_attr = op.attributes.get("shape")
     shape_val = parse_attr_shape(str(shape_attr)) if shape_attr is not None else []
-    entry = {"op": "reshape", "inputs": input_names, "outputs": output_names}
+
+    filtered_inputs = [input_names[0]]
+    operands = list(op.operands) if hasattr(op, "operands") else []
+    for i in range(1, len(operands)):
+        if i < len(input_names) and _is_shape_of_output(operands[i]):
+            filtered_inputs.append(input_names[i])
+
+    entry = {"op": "reshape", "inputs": filtered_inputs, "outputs": output_names}
     if shape_val:
         entry["shape"] = shape_val
     return entry
@@ -157,7 +193,20 @@ def _handle_sum(op, op_name, input_names, output_names, *context):
 
 
 def _handle_embedding(op, op_name, input_names, output_names, *context):
-    return {"op": "gather", "inputs": input_names, "outputs": output_names}
+    # Look up the weight name from the first input's SSA.
+    # This makes the weight reference explicit in the HAL IR so the
+    # runtime can verify the correct weight table is used for each gather.
+    _, weights, _, _, _, _ = context
+    weight_name = ""
+    if input_names:
+        weight_ssa = input_names[0]
+        weight_entry = next((w for w in weights if w.get("ssa") == weight_ssa), None)
+        if weight_entry is not None:
+            weight_name = weight_entry["name"]
+    return {
+        "op": "gather", "inputs": input_names, "outputs": output_names,
+        "weight_name": weight_name,
+    }
 
 
 def _handle_index(op, op_name, input_names, output_names, *context):
@@ -176,8 +225,9 @@ def _handle_ones_like(op, op_name, input_names, output_names, *context):
     dtype_attr = op.attributes.get("dtype")
     raw_dtype = str(dtype_attr) if dtype_attr is not None else "f32"
     dtype_str = strip_mlir_quotes(raw_dtype)
+    filtered_inputs = _filter_shape_inputs(op, input_names)
     return {
-        "op": "fill", "inputs": input_names, "outputs": output_names,
+        "op": "fill", "inputs": filtered_inputs, "outputs": output_names,
         "value": 1.0, "dtype": dtype_str,
     }
 

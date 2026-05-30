@@ -4,11 +4,14 @@
 ///
 /// `perm` is the permutation of dimensions. For example, `perm = [0, 2, 1]`
 /// swaps dimensions 1 and 2.
+///
+/// `output_shape` is ignored — the correct output shape is computed from
+/// `input_shape` and `perm` to prevent stride mismatches.
 pub fn transpose_nd(
     inp: &[f32],
     out: &mut [f32],
     input_shape: &[i64],
-    output_shape: &[i64],
+    _output_shape: &[i64],
     perm: &[usize],
 ) -> Result<(), String> {
     let rank = input_shape.len();
@@ -23,19 +26,18 @@ pub fn transpose_nd(
         ));
     }
 
-    // Precompute strides for input
+    let correct_output_shape: Vec<i64> = perm.iter().map(|&d| input_shape[d]).collect();
+
     let mut in_strides: Vec<usize> = vec![1; rank];
     for i in (0..rank - 1).rev() {
         in_strides[i] = in_strides[i + 1] * input_shape[i + 1] as usize;
     }
 
-    // Precompute strides for output
     let mut out_strides: Vec<usize> = vec![1; rank];
     for i in (0..rank - 1).rev() {
-        out_strides[i] = out_strides[i + 1] * output_shape[i + 1] as usize;
+        out_strides[i] = out_strides[i + 1] * correct_output_shape[i + 1] as usize;
     }
 
-    // Iterate over flat output and compute source index
     for flat_idx in 0..out.len() {
         let mut idx = flat_idx;
         let mut o_idx = vec![0usize; rank];
@@ -105,5 +107,19 @@ mod tests {
         let mut out = [0.0; 4];
         transpose_nd(&inp, &mut out, &[2, 2], &[2, 2], &[0, 1]).unwrap();
         assert_eq!(out, inp);
+    }
+
+    #[test]
+    fn test_transpose_ignores_wrong_output_shape() {
+        // Even with wrong output_shape, transpose computes correct shape from perm
+        let inp: Vec<f32> = (0..3072).map(|i| i as f32).collect();
+        let mut out = vec![0.0f32; 3072];
+        // perm=[0,2,1,3] swaps dims 1 and 2: [1,4,12,64] → [1,12,4,64]
+        // output_shape is intentionally wrong ([1,4,12,64] instead of [1,12,4,64])
+        transpose_nd(&inp, &mut out, &[1, 4, 12, 64], &[1, 4, 12, 64], &[0, 2, 1, 3]).unwrap();
+        // out[0,0,0,0] = inp[0,0,0,0] = 0
+        assert_eq!(out[0], 0.0);
+        // out[0,1,0,0] = inp[0,0,1,0] = 768 (dim 1=1 maps to dim 2=1 in input)
+        assert_eq!(out[1 * 64], 768.0);
     }
 }

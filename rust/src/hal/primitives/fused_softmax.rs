@@ -41,7 +41,7 @@ pub fn fused_softmax(inp: &[f32], out: &mut [f32], last_dim: usize) {
 /// Fused softmax with explicit output shape (for 3D tensors).
 /// Softmax is applied along the last dimension.
 pub fn fused_softmax_3d(inp: &[f32], out: &mut [f32], batch: usize, seq: usize, vocab: usize) {
-    let last_dim = vocab;
+    let _last_dim = vocab;
     for b in 0..batch {
         for s in 0..seq {
             let offset = (b * seq + s) * vocab;
