@@ -80,8 +80,8 @@ def lower_sf_to_hal_file(
     mlir_path: str | Path,
     output_path: str | Path | None = None,
     metadata_path: str | Path | None = None,
-) -> str:
-    """Lower a normalized MLIR file to a ``hal_ir.json`` file.
+) -> tuple[str, str]:
+    """Lower a normalized MLIR file to ``hal_ir.json`` and ``hal_ir.mlir``.
 
     Args:
         mlir_path: Path to the normalized MLIR file.
@@ -89,7 +89,7 @@ def lower_sf_to_hal_file(
         metadata_path: Optional path to metadata.json.
 
     Returns:
-        The path to the written JSON file.
+        A tuple ``(json_path, mlir_path)`` — paths to the written files.
     """
     mlir_path = Path(mlir_path)
 
@@ -115,12 +115,28 @@ def lower_sf_to_hal_file(
         output_path = model_dir / "generated" / "hal_ir.json"
     output_path = Path(output_path)
 
-    # Build HAL IR
-    result = lower_sf_to_hal(mlir_text, model_name, metadata)
+    # Build HAL IR using builder directly (to access MLIR text)
+    builder = HalIRBuilder()
+    builder.load_mlir(mlir_text)
+    builder.set_model_name(model_name)
+    if metadata:
+        builder.load_metadata(metadata)
+
+    # Get JSON dict
+    result = builder.build()
 
     # Write JSON
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(result, indent=2))
+
+    # Write MLIR text alongside JSON
+    mlir_text_output = builder.mlir_text
+    mlir_out_path = output_path.with_suffix(".mlir")
+    if mlir_text_output:
+        mlir_out_path.write_text(mlir_text_output)
+        print(f"[HAL IR] MLIR text → {mlir_out_path}")
+    else:
+        _log.warning("No MLIR text output generated; hal_ir.mlir not written")
 
     # Summary
     total_ops = sum(len(f["ops"]) for f in result["functions"])
@@ -135,7 +151,7 @@ def lower_sf_to_hal_file(
         f"→ {output_path}"
     )
 
-    return str(output_path)
+    return str(output_path), str(mlir_out_path) if mlir_text_output else str(output_path)
 
 
 # ── Main entry point ─────────────────────────────────────────────────
@@ -171,12 +187,14 @@ def main() -> None:
         format="%(levelname)s | %(message)s",
     )
 
-    result_path = lower_sf_to_hal_file(
+    json_path, mlir_path_out = lower_sf_to_hal_file(
         args.mlir_path,
         output_path=args.output,
         metadata_path=args.metadata,
     )
-    print(f"Done: {result_path}")
+    print(f"Done: {json_path}")
+    if mlir_path_out:
+        print(f"MLIR: {mlir_path_out}")
 
 
 if __name__ == "__main__":
