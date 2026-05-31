@@ -448,6 +448,7 @@ pub fn run_hal_function_graph(
                     eprintln!("[diag] func[{}] NO WIRE OUTPUT (all static/consumed)", fi);
                 }
             }
+
     }
 
     // ── Extract global output ───────────────────────────────────────
