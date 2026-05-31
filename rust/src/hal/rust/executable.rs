@@ -357,21 +357,81 @@ impl traits::Executable for HalRustExecutable {
                 let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
                 let a_scalar = a_slice.len() == 1;
                 let b_scalar = b_slice.len() == 1;
-                // Use output numel for iteration — shape inference ensures
-                // output size matches.  For non-scalar inputs, wrap-around
-                // indexing supports numpy-style broadcasting.
+                // Numpy-style broadcasting: i % len only works when the
+                // smaller shape is a suffix of the output shape (e.g.
+                // [768] broadcast to [1,4,768]).  When it is a prefix
+                // (e.g. [1,4] → [1,4,768]), each element repeats
+                // contiguously, needing floor division: i / group_size.
+                //
+                // Detect by checking whether the smaller shape equals
+                // the tail of the output shape (ignoring leading-1
+                // broadcasting).  For exact-division cases:
+                //   suffix → b_idx = i % b_len  (repeats wrap around)
+                //   prefix → b_idx = i / group  (contiguous repeat)
                 let num_elems = out_slice.len();
+                let a_len = a_slice.len();
+                let b_len = b_slice.len();
+                let out_shape: Vec<usize> = out_buf.shape();
+                // precompute broadcast index function for each input
+                let b_idx_of = {
+                    if b_scalar {
+                        None
+                    } else if b_len == num_elems {
+                        None
+                    } else if b_len >= num_elems {
+                        // Safety: b is larger than output — shouldn't happen
+                        // with correct numpy broadcasting.  Fall back to
+                        // wrap-around indexing (old behaviour).
+                        Some(Box::new(move |i: usize| i % b_len) as Box<dyn Fn(usize) -> usize>)
+                    } else {
+                        let b_shape: Vec<usize> = b_buf.shape();
+                        let group = num_elems / b_len;
+                        let is_suffix = {
+                            let b_ndim = b_shape.len();
+                            let out_ndim = out_shape.len();
+                            b_ndim <= out_ndim && (0..b_ndim).all(|d| {
+                                let od = out_ndim - b_ndim + d;
+                                b_shape[d] == 1 || b_shape[d] == out_shape[od]
+                            })
+                        };
+                        if is_suffix { Some(Box::new(move |i: usize| i % b_len) as Box<dyn Fn(usize) -> usize>) }
+                        else { Some(Box::new(move |i: usize| i / group) as Box<dyn Fn(usize) -> usize>) }
+                    }
+                };
+                let a_idx_of = {
+                    if a_scalar || a_len == num_elems {
+                        None
+                    } else if a_len >= num_elems {
+                        Some(Box::new(move |i: usize| i % a_len) as Box<dyn Fn(usize) -> usize>)
+                    } else {
+                        let a_shape: Vec<usize> = a_buf.shape();
+                        let group = num_elems / a_len;
+                        let is_suffix = {
+                            let a_ndim = a_shape.len();
+                            let out_ndim = out_shape.len();
+                            a_ndim <= out_ndim && (0..a_ndim).all(|d| {
+                                let od = out_ndim - a_ndim + d;
+                                a_shape[d] == 1 || a_shape[d] == out_shape[od]
+                            })
+                        };
+                        if is_suffix { Some(Box::new(move |i: usize| i % a_len) as Box<dyn Fn(usize) -> usize>) }
+                        else { Some(Box::new(move |i: usize| i / group) as Box<dyn Fn(usize) -> usize>) }
+                    }
+                };
+
                 for i in 0..num_elems {
-                    let a_idx = if a_scalar { 0 } else { i % a_slice.len() };
-                    let b_idx = if b_scalar { 0 } else { i % b_slice.len() };
-                    let a_val = a_slice[a_idx];
-                    let b_val = b_slice[b_idx];
+                    let a_idx = if a_scalar { 0 }
+                        else if let Some(ref f) = a_idx_of { f(i) }
+                        else { i };
+                    let b_idx = if b_scalar { 0 }
+                        else if let Some(ref f) = b_idx_of { f(i) }
+                        else { i };
                     let result = match kind {
-                        "add" => a_val + b_val,
-                        "sub" => a_val - b_val,
-                        "mul" => a_val * b_val,
-                        "div" => a_val / b_val,
-                        _ => a_val,
+                        "add" => a_slice[a_idx] + b_slice[b_idx],
+                        "sub" => a_slice[a_idx] - b_slice[b_idx],
+                        "mul" => a_slice[a_idx] * b_slice[b_idx],
+                        "div" => a_slice[a_idx] / b_slice[b_idx],
+                        _ => a_slice[a_idx],
                     };
                     out_slice[i] = result;
                 }
