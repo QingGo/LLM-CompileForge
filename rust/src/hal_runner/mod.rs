@@ -240,13 +240,6 @@ pub fn run_hal_function_graph(
                 let out_elem_size = output_dtype.element_size();
 
                 let mut vec = vec![0u8; numel * out_elem_size];
-                if fi == 1 && op.op == "reduce" {
-                    eprintln!("[dbg-reduce] func[1] op[{}] {} out={} numel={} esize={} shape={:?}",
-                        oi, op.op, op.outputs.first().unwrap_or(&String::new()), numel, out_elem_size, output_dims);
-                }
-                if fi == 1 && oi == 9 {
-                    eprintln!("[dbg-ln] func[1] op[9] elem_add out={} — layer_norm done", op.outputs.first().unwrap_or(&String::new()));
-                }
 
                 let raw_buf = InnerCpuBuffer::from_raw_parts(
                     vec.as_mut_ptr(),
