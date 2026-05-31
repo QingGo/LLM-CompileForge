@@ -9,12 +9,9 @@ Based on SGLang's RadixAttention design (§2.6.2 of design-phase2.md).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Any
 
 from utils.logging import get_logger
-
-if TYPE_CHECKING:
-    from hal.protocols import BlockManagerLike
 
 _log = get_logger("cache.radix")
 
@@ -62,7 +59,7 @@ class RadixCache:
         cache.evict(target_blocks)
     """
 
-    def __init__(self, block_manager: BlockManagerLike) -> None:
+    def __init__(self, block_manager: Any) -> None:
         self._bm = block_manager
         self.root = RadixTreeNode(())
 

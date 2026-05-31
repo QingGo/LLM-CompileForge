@@ -21,7 +21,6 @@ import torch
 
 from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp
 from engine._kv_cache import _KVCacheMixin, _normalize_kv_for_cache
-from hal.interface import OpExecutor
 
 _WEIGHT_OPS = frozenset({"sf.weight", "sf.constant", "constant"})
 
@@ -48,7 +47,7 @@ class MlirExecutor(_KVCacheMixin):
     def __init__(
         self,
         module: MlirModule,
-        hal_backend: OpExecutor,
+        hal_backend: Any,
         dump_dir: str | None = None,
     ) -> None:
         self._module = module

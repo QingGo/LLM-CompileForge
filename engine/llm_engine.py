@@ -31,8 +31,6 @@ from engine._constants import (
 from engine._inference_loop import InferenceLoop
 from engine._scheduling_bridge import SchedulingBridge
 from engine.batch import GenerationResult, SamplingParams
-from hal.interface import OpExecutor
-from hal.protocols import Tokenizer
 from utils.logging import get_logger, log_request_lifecycle
 
 _log = get_logger("engine")
@@ -82,7 +80,7 @@ class LLMEngine:
     def __init__(
         self,
         module: MlirModule,
-        hal_backend: OpExecutor,
+        hal_backend: Any,
         executor: Any = None,
         **kwargs: Any,
     ) -> None:
@@ -120,7 +118,7 @@ class LLMEngine:
         )
 
         # ── Tokenizer ────────────────────────────────────
-        self._tokenizer: Tokenizer | None = None
+        self._tokenizer: Any = None
         self._eos_token_id: int | None = None
 
         # ── Observability ─────────────────────────────────
@@ -279,6 +277,6 @@ class LLMEngine:
             return str(self._tokenizer.decode(output_tokens))
         return " ".join(str(t) for t in output_tokens)
 
-    def set_tokenizer(self, tokenizer: Tokenizer, eos_token_id: int | None = None) -> None:
+    def set_tokenizer(self, tokenizer: Any, eos_token_id: int | None = None) -> None:
         self._tokenizer = tokenizer
         self._eos_token_id = eos_token_id

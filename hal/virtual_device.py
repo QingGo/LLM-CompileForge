@@ -1,8 +1,8 @@
 """VirtualDevice — simulated HAL backend for hardware-independent verification.
 
-Implements the OpExecutor interface with hardware-spec-based latency simulation
-instead of actual computation.  Each operation returns a correctly-shaped
-random tensor and sleeps for the predicted execution time.
+Hardware-spec-based latency simulation instead of actual computation.
+Each operation returns a correctly-shaped random tensor and sleeps for
+the predicted execution time.
 
 Multiple VirtualDevice instances with different hardware specs can be combined
 to simulate heterogeneous (CPU+GPU+NPU) deployments.
@@ -18,10 +18,9 @@ from typing import Any
 import torch
 
 from hal.hardware_spec import HardwareSpec
-from hal.interface import OpExecutor
 
 
-class VirtualDevice(OpExecutor):
+class VirtualDevice:
     """Simulated hardware device.
 
     Args:
