@@ -431,7 +431,7 @@ fn test_reshape_uses_shape_of_when_op_shape_incomplete() {
 
     use crate::hal_runner::shape_inference::compute_output_shape;
     for op in &hal_ir.functions[0].ops {
-        let output_dtype = crate::hal_runner::infer_output_dtype(&op.op, &op.inputs, &ssa_dtypes);
+        let output_dtype = crate::hal_runner::infer_output_dtype(op, &ssa_dtypes);
         for (out_idx, output_name) in op.outputs.iter().enumerate() {
             let (numel, output_dims) = compute_output_shape(
                 op, out_idx, &ssa_shapes, &ssa_map, &ssa_dtypes, &hal_ir.functions[0], 4,

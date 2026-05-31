@@ -76,31 +76,23 @@ pub fn fused_sdpa(
     }
 
     // ── Step 2: scale and apply mask ──────────────────────────────────
-    // If the mask is degenerate (too few elements for a full [seq, seq]
-    // causal mask), generate a lower-triangular causal mask on the fly.
-    let use_builtin_causal = mask.len() < seq * seq;
     for h in 0..total {
         let scores_slice = &mut scores[h * chunk_scores..(h + 1) * chunk_scores];
         for i in 0..seq {
             for j in 0..seq {
                 let idx = i * seq + j;
                 let mut val = scores_slice[idx] * scale;
-                if use_builtin_causal {
-                    // Built-in causal: position i attends to positions j ≤ i
-                    val = if i >= j { val } else { f32::NEG_INFINITY };
+                let mask_idx = if mask_shape[mask_shape.len() - 1] as usize == seq
+                    && mask_shape[mask_shape.len() - 2] as usize == seq
+                {
+                    i * seq + j
+                } else if mask_shape.len() >= 3 && mask_shape[1] as usize == 1 {
+                    i * seq + j
                 } else {
-                    let mask_idx = if mask_shape[mask_shape.len() - 1] as usize == seq
-                        && mask_shape[mask_shape.len() - 2] as usize == seq
-                    {
-                        i * seq + j
-                    } else if mask_shape.len() >= 3 && mask_shape[1] as usize == 1 {
-                        i * seq + j
-                    } else {
-                        0
-                    };
-                    if mask_idx < mask.len() {
-                        val += mask[mask_idx];
-                    }
+                    0
+                };
+                if mask_idx < mask.len() {
+                    val += mask[mask_idx];
                 }
                 scores_slice[idx] = val;
             }

@@ -24,7 +24,7 @@ use crate::tensor::{Dtype, Tensor};
 use crate::weight_loader::WeightProvider;
 
 use crate::hal_runner::helpers::{
-    find_main_output, inject_function_weights,
+    inject_function_weights,
 };
 use crate::hal_runner::prep::{
     extract_global_output, prepare_ssa_maps, wire_cross_function_inputs,
@@ -239,7 +239,6 @@ pub fn run_hal_function_graph(
                 let numel = numel.max(1);
                 let out_elem_size = output_dtype.element_size();
 
-                eprintln!("[alloc] func[{}] op[{}] {} out={} numel={} esize={} size={}", fi, oi, op.op, op.outputs.first().unwrap_or(&String::new()), numel, out_elem_size, numel * out_elem_size);
                 let mut vec = vec![0u8; numel * out_elem_size];
 
                 let raw_buf = InnerCpuBuffer::from_raw_parts(
@@ -378,76 +377,7 @@ pub fn run_hal_function_graph(
                 }
             }
 
-            // ── Debug: dump func[0] gather outputs ──────────────────
-            if fi == 0 && op.op == "gather" {
-                if let Some(out_name) = op.outputs.first() {
-                    if let Some(data) = ssa_map.get(out_name) {
-                        use std::io::Write;
-                        let path = format!("/tmp/func0_gather_{}.bin", out_name.trim_start_matches('%'));
-                        let shape = ssa_shapes.get(out_name).cloned().unwrap_or_default();
-                        let mut f = std::fs::File::create(&path).unwrap();
-                        let rank = shape.len() as i32;
-                        f.write_all(&rank.to_le_bytes()).unwrap();
-                        for &d in &shape { f.write_all(&(d as i32).to_le_bytes()).unwrap(); }
-                        f.write_all(data).unwrap();
-                        let dtype = ssa_dtypes.get(out_name).copied().unwrap_or(Dtype::F32);
-                        let indices_name = op.inputs.get(1).cloned().unwrap_or_default();
-                        let indices_dtype = ssa_dtypes.get(&indices_name).copied().unwrap_or(Dtype::F32);
-                        eprintln!("[debug] func[0] gather '{}': shape={:?}, dtype={:?}, indices={}, indices_dtype={:?}, {} bytes -> {}",
-                            out_name, shape, dtype, indices_name, indices_dtype, data.len(), path);
-                    }
-                }
-            }
-            // Debug: dump func[0] position indices %251
-            if fi == 0 && op.op == "element_wise" && op.outputs.first().map(|n| n.as_str()) == Some("%251") {
-                if let Some(data) = ssa_map.get("%251") {
-                    let vals: Vec<i64> = data.chunks(8).map(|b| {
-                        let arr: [u8; 8] = b.try_into().unwrap_or([0; 8]);
-                        i64::from_le_bytes(arr)
-                    }).collect();
-                    eprintln!("[debug] position indices %251: I64 values = {:?}", vals);
-                }
-            }
-            // Also dump %200 value  
-            if fi == 0 && op.op == "element_wise" && op.outputs.first().map(|n| n.as_str()) == Some("%251") {
-                if let Some(data) = ssa_map.get("%200") {
-                    let vals: Vec<i64> = data.chunks(8).map(|b| {
-                        let arr: [u8; 8] = b.try_into().unwrap_or([0; 8]);
-                        i64::from_le_bytes(arr)
-                    }).collect();
-                    eprintln!("[debug] constant %200: I64 values = {:?}", vals);
-                }
-            }
         }
-
-            // ── PER-FUNCTION DIAGNOSTIC DUMP ────────────────────────────
-            // Use find_main_output() to pick the wire tensor (dynamic 3D)
-            // that flows between functions — skipping weights/constants.
-            // Format: rank(i32) + dims(i32 each) + data(f32 bytes)
-            {
-                let dump_path = format!("/tmp/hal_func_{}.bin", fi);
-                let wire = find_main_output(function, &ssa_map);
-                if let Some((name, data)) = wire {
-                    let shape = ssa_shapes.get(&name).cloned().unwrap_or_else(|| {
-                        let dlen = data.len();
-                        let esize = ssa_dtypes.get(&name)
-                            .map(|d| d.element_size())
-                            .unwrap_or(4);
-                        vec![dlen / esize]
-                    });
-                    if let Ok(mut f) = std::fs::File::create(&dump_path) {
-                        use std::io::Write;
-                        let rank = shape.len() as i32;
-                        f.write_all(&rank.to_le_bytes()).unwrap();
-                        for &d in &shape { f.write_all(&(d as i32).to_le_bytes()).unwrap(); }
-                        f.write_all(&data).unwrap();
-                        eprintln!("[diag] func[{}] wire '{}': shape={:?}, {} bytes -> {}",
-                            fi, name, shape, data.len(), dump_path);
-                    }
-                } else {
-                    eprintln!("[diag] func[{}] NO WIRE OUTPUT (all static/consumed)", fi);
-                }
-            }
 
     }
 

@@ -76,7 +76,7 @@ fn shape_of_reshape(
     ssa_shapes: &HashMap<String, Vec<usize>>,
     ssa_map: &HashMap<String, Vec<u8>>,
     ssa_dtypes: &HashMap<String, crate::tensor::Dtype>,
-    function: &HalFunction,
+    _function: &HalFunction,
 ) -> (usize, Vec<usize>) {
     let input_dtype = op.inputs.first()
         .and_then(|n| ssa_dtypes.get(n))
@@ -108,12 +108,6 @@ fn shape_of_reshape(
         .collect();
 
     let target_shape = if let Some(shape_strs) = &op.shape {
-        // Look up the output shape hint BEFORE consuming shape_of_vals.
-        let out_shape_hint = op.outputs.first()
-            .and_then(|out_name| {
-                function.outputs.iter().find(|o| o.name == *out_name)
-            })
-            .map(|o| &o.shape);
         let mut so_iter = shape_of_vals.iter();
         let mut result: Vec<usize> = shape_strs.iter().map(|d| {
             if d == "?" || d == "-1" {
@@ -122,19 +116,6 @@ fn shape_of_reshape(
                 d.parse::<usize>().unwrap_or(1)
             }
         }).collect();
-        // Override with static dims from function output hint.
-        // The op.shape may have "?" where the output metadata has a
-        // static value (e.g. op.shape=["?", "?", "?", "?"] but
-        // output=["?", "1", "?", "?"] for a [batch, 1, seq, seq] mask).
-        if let Some(hint) = out_shape_hint {
-            for (i, d) in result.iter_mut().enumerate() {
-                if let Some(hint_dim) = hint.get(i) {
-                    if let Ok(parsed) = hint_dim.parse::<usize>() {
-                        *d = parsed;
-                    }
-                }
-            }
-        }
         let known: usize = result.iter().filter(|&&d| d > 0).product();
         let zeros = result.iter().filter(|&&d| d == 0).count();
         if zeros == 1 && known > 0 {

@@ -191,9 +191,6 @@ pub(super) fn wire_cross_function_inputs(
         fi, function.inputs.len(), prev_func.outputs.len(),
     );
     for input_def in &function.inputs {
-        // Wire dynamic-shape inputs AND scalar constants (rank 1, non-dynamic).
-        // Scalar inputs like shape [1] need wiring too — they carry scale factors,
-        // dropout constants, etc. from earlier functions.
         let has_dyn = input_def.shape.iter().any(|d| d == "?" || d == "-1");
         let is_scalar_constant = input_def.shape.len() == 1
             && input_def.shape[0] != "?"
