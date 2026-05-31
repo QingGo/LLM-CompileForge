@@ -31,6 +31,7 @@ const CBLAS_TRANS: i32 = 112;
 /// Matrix multiplication: `C[M,N] = A[M,K] @ B[K,N]` (or `@ B.T[K,N]` when `transpose_b`).
 ///
 /// All matrices are row-major. `a_shape` and `b_shape` are the full tensor shapes.
+/// Batched dimensions (everything before the last two) are iterated automatically.
 ///
 /// When `transpose_b` is true, B is stored as `[N, K]` and the computation is
 /// `C[M,N] = A[M,K] @ B.T[K,N]` — i.e., the "N" dimension is read from `b_shape[-2]`.
@@ -54,8 +55,6 @@ pub fn matmul_blas(
     let (n, trans_b, ldb) = if transpose_b {
         let k_b = b_shape[b_shape.len() - 1] as i32;
         if k_b != k {
-            // B's last dim doesn't match A's K — B is already stored as [K, N].
-            // Compute A @ B directly (no BLAS transpose needed).
             (k_b, CBLAS_NO_TRANS, k_b)
         } else {
             (b_shape[b_shape.len() - 2] as i32, CBLAS_TRANS, k)
@@ -71,30 +70,44 @@ pub fn matmul_blas(
     let lda = k;
     let ldc = n;
 
-    // Accelerate BLAS requires ldb >= max(k, 1). For narrow matrices
-    // fall back to naive matmul (BLAS can't handle low leading dimension).
-    if ldb < k.max(1) {
-        let m_usize = m as usize;
-        let k_usize = k as usize;
-        let n_usize = n as usize;
-        matmul_naive(a, b, out, m_usize, k_usize, n_usize, false);
-        return Ok(());
-    }
+    // Compute batch size: product of all leading dims (before last 2)
+    let batch: usize = a_shape[..a_shape.len() - 2].iter().map(|&d| d as usize).product();
+    let a_stride: usize = (m * k) as usize;
+    let b_stride: usize = if transpose_b {
+        (n * if trans_b == CBLAS_NO_TRANS { k } else { k }) as usize
+    } else {
+        (k * n) as usize
+    };
+    let out_stride: usize = (m * n) as usize;
+    let fallback_to_naive = ldb < k.max(1);
 
-    // SAFETY: BLAS FFI call with dimensions computed from validated shapes.
-    // All pointer args come from slices with sufficient length.
-    unsafe {
-        cblas_sgemm(
-            CBLAS_ROW_MAJOR,
-            CBLAS_NO_TRANS,
-            trans_b,
-            m, n, k,
-            1.0,
-            a.as_ptr(), lda,
-            b.as_ptr(), ldb,
-            0.0,
-            out.as_mut_ptr(), ldc,
-        );
+    for batch_idx in 0..batch {
+        let a_offset = batch_idx * a_stride;
+        let b_offset = batch_idx * b_stride;
+        let out_offset = batch_idx * out_stride;
+
+        if fallback_to_naive {
+            matmul_naive(
+                &a[a_offset..],
+                &b[b_offset..],
+                &mut out[out_offset..],
+                m as usize, k as usize, n as usize, false,
+            );
+        } else {
+            unsafe {
+                cblas_sgemm(
+                    CBLAS_ROW_MAJOR,
+                    CBLAS_NO_TRANS,
+                    trans_b,
+                    m, n, k,
+                    1.0,
+                    a[a_offset..].as_ptr(), lda,
+                    b[b_offset..].as_ptr(), ldb,
+                    0.0,
+                    out[out_offset..].as_mut_ptr(), ldc,
+                );
+            }
+        }
     }
 
     Ok(())

@@ -121,6 +121,31 @@ pub fn run_hal_function_graph(
             );
         }
 
+        // ── Inject causal mask for attention ───────────────────────
+        // The HAL IR emits a scalar mask due to shape propagation bugs
+        // in fill/compare ops.  Bypass by computing the causal mask
+        // directly for any function that consumes a [?,1,?,?] mask.
+        for input_def in &function.inputs {
+            let shape_strs: Vec<&str> = input_def.shape.iter().map(|s| s.as_str()).collect();
+            if shape_strs == ["?", "1", "?", "?"] {
+                let seq = seq_len;
+                let mask_numel = seq * seq;
+                let mut mask = vec![0u8; mask_numel * 4];
+                let mask_f32: &mut [f32] = unsafe {
+                    std::slice::from_raw_parts_mut(mask.as_mut_ptr() as *mut f32, mask_numel)
+                };
+                for i in 0..seq {
+                    for j in 0..seq {
+                        mask_f32[i * seq + j] = if j <= i { 0.0 } else { f32::NEG_INFINITY };
+                    }
+                }
+                ssa_map.insert(input_def.name.clone(), mask);
+                ssa_shapes.insert(input_def.name.clone(), vec![1, 1, seq, seq]);
+                ssa_dtypes.insert(input_def.name.clone(), Dtype::F32);
+                break;
+            }
+        }
+
         // ── Inject weights for this function (AFTER wiring) ─────────
         inject_function_weights(weight_provider, function, &mut ssa_map, &mut ssa_shapes, &mut ssa_dtypes);
 
@@ -224,7 +249,6 @@ pub fn run_hal_function_graph(
                 input_bufs.push(Box::new(cpu_buf));
             }
 
-            // ── Pre-allocate output buffers ─────────────────────────
             let mut output_vecs: Vec<Vec<u8>> = Vec::with_capacity(op.outputs.len());
             let mut output_bufs: Vec<Box<dyn traits::Buffer>> =
                 Vec::with_capacity(op.outputs.len());
