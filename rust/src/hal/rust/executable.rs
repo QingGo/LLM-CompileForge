@@ -454,17 +454,23 @@ impl traits::Executable for HalRustExecutable {
             return Ok(output_shapes);
         }
 
-        // Special handling for reduce:mean op (mean reduction)
         if op_name == "reduce:mean" {
             let in_buf = inputs.first().ok_or_else(|| anyhow::anyhow!("reduce: no input"))?;
             let out_buf = outputs.first().ok_or_else(|| anyhow::anyhow!("reduce: no output"))?;
             let input_slice = unsafe { Self::buf_as_f32_slice(*in_buf) };
             let out_slice = unsafe { Self::buf_as_f32_mut(*out_buf) };
-            let mean = if !input_slice.is_empty() {
-                input_slice.iter().sum::<f32>() / input_slice.len() as f32
-            } else { 0.0 };
-            for i in 0..out_slice.len() {
-                out_slice[i] = mean;
+            let in_shape = meta.input_shapes.first().cloned().unwrap_or_else(|| vec![1]);
+            let last_dim = *in_shape.last().unwrap_or(&1) as usize;
+            if last_dim > 0 {
+                let num_groups = input_slice.len() / last_dim;
+                for g in 0..num_groups.min(out_slice.len()) {
+                    let start = g * last_dim;
+                    let end = (start + last_dim).min(input_slice.len());
+                    let group = &input_slice[start..end];
+                    if !group.is_empty() {
+                        out_slice[g] = group.iter().sum::<f32>() / group.len() as f32;
+                    }
+                }
             }
             return Ok(output_shapes);
         }

@@ -283,10 +283,11 @@ fn shape_of_reduce(
         .and_then(|n| ssa_shapes.get(n))
         .cloned()
         .unwrap_or_else(|| vec![1]);
-    let mut reduced = vec![1usize; shape.len()];
-    if let Some(last) = shape.last() {
-        reduced[shape.len() - 1] = *last;
-    }
+    let reduced: Vec<usize> = if shape.len() > 1 {
+        shape[..shape.len() - 1].to_vec()
+    } else {
+        vec![1]
+    };
     let numel = reduced.iter().product::<usize>().max(1);
     (numel, reduced)
 }
