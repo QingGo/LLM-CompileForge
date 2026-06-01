@@ -420,12 +420,13 @@ fn test_reshape_uses_shape_of_when_op_shape_incomplete() {
     let input_ids: Vec<u32> = vec![2, 32826, 85, 4129];
     let positions: Vec<u32> = vec![0, 1, 2, 3];
 
-    let mut ssa_map: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
+    let mut ssa_map: std::collections::HashMap<String, SFATensor> = std::collections::HashMap::new();
     let mut ssa_shapes: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
     let mut ssa_dtypes: std::collections::HashMap<String, Dtype> = std::collections::HashMap::new();
 
     let arg0_numel = 1 * 4 * 768;
-    ssa_map.insert("%arg0".to_string(), vec![0u8; arg0_numel * 4]);
+    let t = SFATensor::from_vec_f32(vec![0f32; arg0_numel], vec![1, 4, 768]);
+    ssa_map.insert("%arg0".to_string(), t);
     ssa_shapes.insert("%arg0".to_string(), vec![1, 4, 768]);
     ssa_dtypes.insert("%arg0".to_string(), Dtype::F32);
 
@@ -437,36 +438,45 @@ fn test_reshape_uses_shape_of_when_op_shape_incomplete() {
                 op, out_idx, &ssa_shapes, &ssa_map, &ssa_dtypes, &hal_ir.functions[0], 4,
             );
             let out_elem_size = output_dtype.element_size();
-            let mut vec = vec![0u8; numel * out_elem_size];
+            let mut out_tensor = if out_elem_size == 8 {
+                SFATensor::from_vec_i64(vec![0i64; numel], vec![numel])
+            } else {
+                SFATensor::from_vec_f32(vec![0f32; numel], vec![numel])
+            };
 
             if op.op == "reshape" {
-                if let Some(in_data) = op.inputs.first().and_then(|n| ssa_map.get(n)) {
-                    let copy_len = in_data.len().min(vec.len());
-                    vec[..copy_len].copy_from_slice(&in_data[..copy_len]);
+                if let Some(in_tensor) = op.inputs.first().and_then(|n| ssa_map.get(n)) {
+                    let copy_count = in_tensor.numel().min(numel);
+                    let src = in_tensor.data_ptr();
+                    let dst = out_tensor.data_ptr();
+                    let copy_bytes = copy_count * out_elem_size;
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(src, dst, copy_bytes);
+                    }
                 }
             }
             if op.op == "shape_of" {
                 if let Some(in_shape) = op.inputs.first().and_then(|n| ssa_shapes.get(n)) {
+                    let ptr = out_tensor.data_ptr() as *mut f32;
+                    let f32_slice = unsafe { std::slice::from_raw_parts_mut(ptr, out_tensor.numel().min(in_shape.len())) };
                     for (i, &dim) in in_shape.iter().enumerate() {
-                        if i * 4 + 4 <= vec.len() {
-                            vec[i*4..(i+1)*4].copy_from_slice(&(dim as f32).to_le_bytes());
+                        if i < f32_slice.len() {
+                            f32_slice[i] = dim as f32;
                         }
                     }
                 }
             }
 
-            ssa_map.insert(output_name.clone(), vec);
+            ssa_map.insert(output_name.clone(), out_tensor);
             ssa_dtypes.insert(output_name.clone(), output_dtype);
             ssa_shapes.insert(output_name.clone(), output_dims.clone());
 
             if op.op == "shape_of" {
-                if let Some(data) = ssa_map.get(output_name) {
-                    let dims: Vec<usize> = data.chunks(4)
-                        .map(|b| {
-                            let bytes: [u8; 4] = b.try_into().unwrap_or([0; 4]);
-                            f32::from_le_bytes(bytes) as usize
-                        })
-                        .collect();
+                if let Some(t) = ssa_map.get(output_name) {
+                    let numel = t.numel();
+                    let ptr = t.data_ptr() as *const f32;
+                    let f32_vals = unsafe { std::slice::from_raw_parts(ptr, numel) };
+                    let dims: Vec<usize> = f32_vals.iter().map(|&v| v as usize).collect();
                     if !dims.is_empty() {
                         ssa_shapes.insert(output_name.clone(), dims);
                     }
@@ -558,15 +568,15 @@ fn test_wire_passes_data_through_unchanged() {
         ],
     };
 
-    let mut ssa_map: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
+    let mut ssa_map: std::collections::HashMap<String, SFATensor> = std::collections::HashMap::new();
     let mut ssa_shapes: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
     let mut ssa_dtypes: std::collections::HashMap<String, Dtype> = std::collections::HashMap::new();
 
-    ssa_map.insert("%arg0".to_string(), vec![0u8; 8 * 4]);
+    ssa_map.insert("%arg0".to_string(), SFATensor::from_vec_i64(vec![0i64; 4], vec![1, 4]));
     ssa_shapes.insert("%arg0".to_string(), vec![1, 4]);
     ssa_dtypes.insert("%arg0".to_string(), Dtype::I64);
 
-    ssa_map.insert("%out0".to_string(), vec![0u8; 1 * 4 * 768 * 4]);
+    ssa_map.insert("%out0".to_string(), SFATensor::from_vec_f32(vec![0f32; 1 * 4 * 768], vec![1, 4, 768]));
     ssa_shapes.insert("%out0".to_string(), vec![1, 4, 768]);
     ssa_dtypes.insert("%out0".to_string(), Dtype::F32);
 
@@ -608,7 +618,7 @@ fn test_transpose_output_shape_permuted() {
 
     let mut ssa_shapes: HashMap<String, Vec<usize>> = HashMap::new();
     ssa_shapes.insert("%inp".to_string(), vec![1, 4, 12, 64]);
-    let ssa_map: HashMap<String, Vec<u8>> = HashMap::new();
+    let ssa_map: std::collections::HashMap<String, SFATensor> = std::collections::HashMap::new();
     let ssa_dtypes: HashMap<String, Dtype> = HashMap::new();
 
     let function = HalFunction {
@@ -658,7 +668,7 @@ fn test_transpose_output_shape_no_dims() {
 
     let mut ssa_shapes: HashMap<String, Vec<usize>> = HashMap::new();
     ssa_shapes.insert("%inp".to_string(), vec![1, 4, 12, 64]);
-    let ssa_map: HashMap<String, Vec<u8>> = HashMap::new();
+    let ssa_map: std::collections::HashMap<String, SFATensor> = HashMap::new();
     let ssa_dtypes: HashMap<String, Dtype> = HashMap::new();
 
     let function = HalFunction {
@@ -728,7 +738,7 @@ fn make_shape_preserving_test_case(
 
     let mut ssa_shapes: HashMap<String, Vec<usize>> = HashMap::new();
     ssa_shapes.insert("%inp".to_string(), input_shape);
-    let ssa_map: HashMap<String, Vec<u8>> = HashMap::new();
+    let ssa_map: std::collections::HashMap<String, SFATensor> = HashMap::new();
     let ssa_dtypes: HashMap<String, Dtype> = HashMap::new();
 
     let function = HalFunction {
@@ -793,7 +803,7 @@ fn test_linear_output_shape_lm_head() {
         ops: vec![],
     };
 
-    let ssa_map: HashMap<String, Vec<u8>> = HashMap::new();
+    let ssa_map: std::collections::HashMap<String, SFATensor> = HashMap::new();
     let ssa_dtypes: HashMap<String, crate::tensor::Dtype> = HashMap::new();
 
     let (numel, shape) = compute_output_shape(
@@ -838,7 +848,7 @@ fn test_linear_output_shape_ffn_fc2() {
         ops: vec![],
     };
 
-    let ssa_map: HashMap<String, Vec<u8>> = HashMap::new();
+    let ssa_map: std::collections::HashMap<String, SFATensor> = HashMap::new();
     let ssa_dtypes: HashMap<String, crate::tensor::Dtype> = HashMap::new();
 
     let (numel, shape) = compute_output_shape(
@@ -871,7 +881,7 @@ fn test_attention_pipeline_shape_propagation() {
         inputs: vec![], outputs: vec![], weights: vec![],
         weight_inputs: HashMap::new(), ops: vec![],
     };
-    let mut ssa_map: HashMap<String, Vec<u8>> = HashMap::new();
+    let mut ssa_map: std::collections::HashMap<String, SFATensor> = HashMap::new();
     let mut ssa_dtypes: HashMap<String, crate::tensor::Dtype> = HashMap::new();
     let mut ssa_shapes: HashMap<String, Vec<usize>> = HashMap::new();
 
@@ -905,9 +915,9 @@ fn test_attention_pipeline_shape_propagation() {
         output_dtypes: vec!["f32".to_string()],
         dims: None, dim: None,
     };
-    // Simulate shape_of values in ssa_map (as f32 bytes)
-    ssa_map.insert("%dim0".to_string(), 1.0f32.to_le_bytes().to_vec());
-    ssa_map.insert("%dim1".to_string(), 4.0f32.to_le_bytes().to_vec());
+    // Simulate shape_of values in ssa_map (as f32 tensors)
+    ssa_map.insert("%dim0".to_string(), SFATensor::from_vec_f32(vec![1.0f32], vec![1]));
+    ssa_map.insert("%dim1".to_string(), SFATensor::from_vec_f32(vec![4.0f32], vec![1]));
     ssa_shapes.insert("%dim0".to_string(), vec![1]);
     ssa_shapes.insert("%dim1".to_string(), vec![1]);
     ssa_dtypes.insert("%dim0".to_string(), crate::tensor::Dtype::F32);
@@ -976,4 +986,114 @@ fn test_attention_pipeline_shape_propagation() {
     };
     let (_, attn_out_shape) = compute_output_shape(&attn_reshape, 0, &ssa_shapes, &ssa_map, &ssa_dtypes, &function, 4);
     assert_eq!(attn_out_shape, vec![1, 4, 768], "attention reshape back shape mismatch");
+}
+
+// ── TDD: SSA map SFATensor roundtrip ──────────────────────────────────
+
+/// Verify that SFATensor can be stored in and retrieved from the SSA map,
+/// and that as_buffer_ref() provides correct metadata and data access.
+#[test]
+fn test_ssa_map_sfa_tensor_roundtrip() {
+    use crate::sfa_tensor::SFATensor;
+
+    let mut ssa_map: std::collections::HashMap<String, SFATensor> =
+        std::collections::HashMap::new();
+
+    // ── Roundtrip f32 tensor ──────────────────────────────────────
+    {
+        let t_f32 = SFATensor::from_vec_f32(vec![1.0f32, 2.0, 3.0, 4.0], vec![2, 2]);
+        let buf = t_f32.as_buffer_ref();
+        assert_eq!(buf.element_size(), 4);
+        assert_eq!(buf.shape(), vec![2, 2]);
+        assert_eq!(buf.len(), 16);
+        assert_eq!(buf.rank(), 2);
+        let ptr = buf.as_ptr() as *const f32;
+        let data = unsafe { std::slice::from_raw_parts(ptr, 4) };
+        assert_eq!(data, &[1.0f32, 2.0, 3.0, 4.0]);
+        drop(buf);
+        ssa_map.insert("%f32".to_string(), t_f32);
+    }
+
+    // Retrieve and verify metadata survived.
+    {
+        let retrieved = ssa_map.get("%f32").expect("retrieve f32 tensor");
+        assert_eq!(retrieved.rank(), 2);
+        assert_eq!(retrieved.shape(), vec![2, 2]);
+        assert_eq!(retrieved.numel(), 4);
+        assert_eq!(retrieved.elem_size, 4);
+
+        let buf2 = retrieved.as_buffer_ref();
+        assert_eq!(buf2.len(), 16);
+        let ptr2 = buf2.as_ptr() as *const f32;
+        let data2 = unsafe { std::slice::from_raw_parts(ptr2, 4) };
+        assert_eq!(data2, &[1.0f32, 2.0, 3.0, 4.0]);
+    }
+
+    // ── Roundtrip i64 tensor ──────────────────────────────────────
+    {
+        let t_i64 = SFATensor::from_vec_i64(vec![10i64, 20, 30], vec![3]);
+        let buf3 = t_i64.as_buffer_ref();
+        assert_eq!(buf3.element_size(), 8);
+        assert_eq!(buf3.shape(), vec![3]);
+        assert_eq!(buf3.len(), 24);
+        drop(buf3);
+        ssa_map.insert("%i64".to_string(), t_i64);
+    }
+
+    {
+        let retrieved_i64 = ssa_map.get("%i64").expect("retrieve i64 tensor");
+        assert_eq!(retrieved_i64.rank(), 1);
+        assert_eq!(retrieved_i64.shape(), vec![3]);
+        assert_eq!(retrieved_i64.numel(), 3);
+        assert_eq!(retrieved_i64.elem_size, 8);
+
+        let buf4 = retrieved_i64.as_buffer_ref();
+        let ptr4 = buf4.as_ptr() as *const i64;
+        let data4 = unsafe { std::slice::from_raw_parts(ptr4, 3) };
+        assert_eq!(data4, &[10i64, 20, 30]);
+
+        // ── Clone data roundtrip ──────────────────────────────────────
+        let cloned = retrieved_i64.clone_data();
+        assert_eq!(cloned.rank(), 1);
+        assert_eq!(cloned.shape(), vec![3]);
+        assert_eq!(cloned.numel(), 3);
+        let buf5 = cloned.as_buffer_ref();
+        let ptr5 = buf5.as_ptr() as *const i64;
+        let data5 = unsafe { std::slice::from_raw_parts(ptr5, 3) };
+        assert_eq!(data5, &[10i64, 20, 30]);
+
+        // Clone should produce a separate allocation.
+        let buf_orig = retrieved_i64.as_buffer_ref();
+        assert_ne!(
+            buf_orig.as_ptr(), buf5.as_ptr(),
+            "clone_data should allocate new memory"
+        );
+    }
+}
+
+/// Verify SFATensor scalar (rank-0) works in SSA map.
+#[test]
+fn test_ssa_map_sfa_tensor_scalar() {
+    use crate::sfa_tensor::SFATensor;
+
+    let mut ssa_map: std::collections::HashMap<String, SFATensor> =
+        std::collections::HashMap::new();
+
+    {
+        let t = SFATensor::scalar_f32(0.125f32);
+        assert_eq!(t.rank(), 0);
+        assert_eq!(t.numel(), 1);
+        assert!(t.shape().is_empty());
+        assert_eq!(t.elem_size, 4);
+
+        let buf = t.as_buffer_ref();
+        let ptr = buf.as_ptr() as *const f32;
+        let val = unsafe { *ptr };
+        assert!((val - 0.125).abs() < 1e-7);
+        drop(buf);
+        ssa_map.insert("%scalar".to_string(), t);
+    }
+
+    let retrieved = ssa_map.get("%scalar").unwrap();
+    assert_eq!(retrieved.rank(), 0);
 }

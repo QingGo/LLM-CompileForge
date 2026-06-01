@@ -7,11 +7,12 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::sfa_tensor::SFATensor;
 use crate::tensor::{Dtype, Tensor};
 use crate::hal_runner::helpers::estimate_numel_from_shape;
 use crate::hal_runner::types::{HalFunction, HalIR};
 
-type SsaMaps = (HashMap<String, Vec<u8>>, HashMap<String, Vec<usize>>, HashMap<String, Dtype>);
+type SsaMaps = (HashMap<String, SFATensor>, HashMap<String, Vec<usize>>, HashMap<String, Dtype>);
 
 // ── SSA map preparation ───────────────────────────────────────────────
 
@@ -26,27 +27,23 @@ pub(super) fn prepare_ssa_maps(
     input_ids: &[u32],
     positions: &[u32],
 ) -> SsaMaps {
-    let mut ssa_map: HashMap<String, Vec<u8>> = HashMap::new();
+    let mut ssa_map: HashMap<String, SFATensor> = HashMap::new();
     let mut ssa_shapes: HashMap<String, Vec<usize>> = HashMap::new();
     let mut ssa_dtypes: HashMap<String, Dtype> = HashMap::new();
 
     // ── Inject global inputs (i64) for the entry function ────────────
     {
-        // %arg0 = input_ids, stored as i64 bytes (8 bytes per element)
-        let raw: Vec<u8> = input_ids
-            .iter()
-            .flat_map(|&id| (id as i64).to_le_bytes().to_vec())
-            .collect();
-        ssa_map.insert("%arg0".to_string(), raw);
+        // %arg0 = input_ids, stored as i64
+        let ids_i64: Vec<i64> = input_ids.iter().map(|&id| id as i64).collect();
+        let t = SFATensor::from_vec_i64(ids_i64, vec![1, seq_len]);
+        ssa_map.insert("%arg0".to_string(), t);
         ssa_shapes.insert("%arg0".to_string(), vec![1, seq_len]);
         ssa_dtypes.insert("%arg0".to_string(), Dtype::I64);
 
-        // %arg1 = position_ids, stored as i64 bytes (8 bytes per element)
-        let raw: Vec<u8> = positions
-            .iter()
-            .flat_map(|&p| (p as i64).to_le_bytes().to_vec())
-            .collect();
-        ssa_map.insert("%arg1".to_string(), raw);
+        // %arg1 = position_ids, stored as i64
+        let pos_i64: Vec<i64> = positions.iter().map(|&p| p as i64).collect();
+        let t = SFATensor::from_vec_i64(pos_i64, vec![1, seq_len]);
+        ssa_map.insert("%arg1".to_string(), t);
         ssa_shapes.insert("%arg1".to_string(), vec![1, seq_len]);
         ssa_dtypes.insert("%arg1".to_string(), Dtype::I64);
     }
@@ -73,8 +70,16 @@ pub(super) fn prepare_ssa_maps(
             if !ssa_map.contains_key(&output.name) {
                 let numel = estimate_numel_from_shape(&output.shape, seq_len);
                 let dtype = Dtype::from_hal_str(&output.dtype);
-                let raw_bytes = vec![0u8; numel * dtype.element_size()];
-                ssa_map.insert(output.name.clone(), raw_bytes);
+                let elem_size = dtype.element_size();
+                let raw_bytes = vec![0u8; numel * elem_size];
+                let t = if elem_size == 8 {
+                    let numel_i64 = raw_bytes.len() / 8;
+                    SFATensor::from_vec_i64(vec![0i64; numel_i64], vec![numel_i64])
+                } else {
+                    let numel_f32 = raw_bytes.len() / 4;
+                    SFATensor::from_vec_f32(vec![0f32; numel_f32], vec![numel_f32])
+                };
+                ssa_map.insert(output.name.clone(), t);
             }
             if !ssa_shapes.contains_key(&output.name) {
                 let shape_dims: Vec<usize> = output.shape.iter().map(|d| {
@@ -99,8 +104,13 @@ pub(super) fn prepare_ssa_maps(
                 if output.name == *name {
                     let numel = estimate_numel_from_shape(&output.shape, seq_len);
                     let dtype = Dtype::from_hal_str(&output.dtype);
-                    let raw_bytes = vec![0u8; numel * dtype.element_size()];
-                    ssa_map.insert(name.clone(), raw_bytes);
+                    let elem_size = dtype.element_size();
+                    let t = if elem_size == 8 {
+                        SFATensor::from_vec_i64(vec![0i64; numel], vec![numel])
+                    } else {
+                        SFATensor::from_vec_f32(vec![0f32; numel], vec![numel])
+                    };
+                    ssa_map.insert(name.clone(), t);
                     let shape_dims: Vec<usize> = output.shape.iter().map(|d| {
                         if d == "?" || d == "-1" { 1 } else { d.parse::<usize>().unwrap_or(1) }
                     }).collect();
@@ -122,8 +132,13 @@ pub(super) fn prepare_ssa_maps(
                 if input_def.name == *name {
                     let numel = estimate_numel_from_shape(&input_def.shape, seq_len);
                     let dtype = Dtype::from_hal_str(&input_def.dtype);
-                    let raw_bytes = vec![0u8; numel * dtype.element_size()];
-                    ssa_map.insert(name.clone(), raw_bytes);
+                    let elem_size = dtype.element_size();
+                    let t = if elem_size == 8 {
+                        SFATensor::from_vec_i64(vec![0i64; numel], vec![numel])
+                    } else {
+                        SFATensor::from_vec_f32(vec![0f32; numel], vec![numel])
+                    };
+                    ssa_map.insert(name.clone(), t);
                     let shape_dims: Vec<usize> = input_def.shape.iter().map(|d| {
                         if d == "?" || d == "-1" { 1 } else { d.parse::<usize>().unwrap_or(1) }
                     }).collect();
@@ -141,8 +156,8 @@ pub(super) fn prepare_ssa_maps(
         }
         if !found {
             const DEFAULT_CONSTANT_ELEMS: usize = 65536;
-            let raw_bytes = vec![0u8; DEFAULT_CONSTANT_ELEMS * 4];
-            ssa_map.insert(name.clone(), raw_bytes);
+            let t = SFATensor::from_vec_f32(vec![0f32; DEFAULT_CONSTANT_ELEMS], vec![DEFAULT_CONSTANT_ELEMS]);
+            ssa_map.insert(name.clone(), t);
             ssa_dtypes.insert(name.clone(), Dtype::F32);
             log::trace!(
                 "hal_runner: zero-filled invisible constant '{}' ({} elements)",
@@ -164,7 +179,7 @@ pub(super) fn wire_cross_function_inputs(
     fi: usize,
     function: &HalFunction,
     prev_func: &HalFunction,
-    ssa_map: &mut HashMap<String, Vec<u8>>,
+    ssa_map: &mut HashMap<String, SFATensor>,
     ssa_shapes: &mut HashMap<String, Vec<usize>>,
     ssa_dtypes: &mut HashMap<String, Dtype>,
     seq_len: usize,
@@ -175,12 +190,12 @@ pub(super) fn wire_cross_function_inputs(
     // We wire ALL dynamic-shape inputs from the previous function's
     // outputs to this function's inputs, matching by shape pattern.
     // Build a map of previous function's output shapes for matching.
-    let mut prev_outputs_by_shape: HashMap<Vec<String>, (String, Vec<u8>)> =
+    let mut prev_outputs_by_shape: HashMap<Vec<String>, (String, SFATensor)> =
         HashMap::new();
     for output in &prev_func.outputs {
         if let Some(data) = ssa_map.get(&output.name) {
             prev_outputs_by_shape
-                .insert(output.shape.clone(), (output.name.clone(), data.clone()));
+                .insert(output.shape.clone(), (output.name.clone(), data.clone_data()));
         }
     }
 
@@ -205,22 +220,31 @@ pub(super) fn wire_cross_function_inputs(
         // is position_ids in func[0] but hidden state in func[2]).
         if fi > 0 {
             if let Some(prev_output) = prev_func.outputs.iter().find(|o| o.name == input_def.name) {
-                let prev_data_opt = ssa_map.get(&prev_output.name).cloned();
-                if let Some(prev_data) = prev_data_opt {
-                    if prev_data.iter().any(|&b| b != 0) {
-                        ssa_map.insert(input_def.name.clone(), prev_data.clone());
-                        if let Some(prev_shape) = ssa_shapes.get(&prev_output.name) {
-                            ssa_shapes.insert(input_def.name.clone(), prev_shape.clone());
-                        }
-                        if let Some(prev_dtype) = ssa_dtypes.get(&prev_output.name) {
-                            ssa_dtypes.insert(input_def.name.clone(), *prev_dtype);
-                        }
-                        log::debug!(
-                            "hal_runner: wired function[{}] '{}' from same-name output ({} bytes)",
-                            fi, input_def.name, prev_data.len(),
-                        );
-                        continue;
+                let is_nonzero = ssa_map.get(&prev_output.name).map(|t| {
+                    t.numel() > 0
+                        && (t.read_f32(0).abs() > 0.0
+                            || unsafe {
+                                let ptr = t.data_ptr() as *const u8;
+                                let slice = std::slice::from_raw_parts(
+                                    ptr, (t.numel() * t.elem_size).min(128),
+                                );
+                                slice.iter().any(|&b| b != 0)
+                            })
+                }).unwrap_or(false);
+                if is_nonzero {
+                    let cloned = ssa_map.get(&prev_output.name).unwrap().clone_data();
+                    ssa_map.insert(input_def.name.clone(), cloned);
+                    if let Some(prev_shape) = ssa_shapes.get(&prev_output.name).cloned() {
+                        ssa_shapes.insert(input_def.name.clone(), prev_shape);
                     }
+                    if let Some(prev_dtype) = ssa_dtypes.get(&prev_output.name) {
+                        ssa_dtypes.insert(input_def.name.clone(), *prev_dtype);
+                    }
+                    log::debug!(
+                        "hal_runner: wired function[{}] '{}' from same-name output (non-zero)",
+                        fi, input_def.name,
+                    );
+                    continue;
                 }
             }
         }
@@ -231,10 +255,10 @@ pub(super) fn wire_cross_function_inputs(
             fi, input_def.name, input_def.shape,
             prev_outputs_by_shape.keys().collect::<Vec<_>>(),
         );
-        if let Some((prev_name, prev_data)) =
+        if let Some((prev_name, prev_tensor)) =
             prev_outputs_by_shape.get(&input_def.shape)
         {
-            ssa_map.insert(input_def.name.clone(), prev_data.clone());
+            ssa_map.insert(input_def.name.clone(), prev_tensor.clone_data());
             if let Some(prev_shape) = ssa_shapes.get(prev_name) {
                 ssa_shapes.insert(input_def.name.clone(), prev_shape.clone());
             }
@@ -242,8 +266,8 @@ pub(super) fn wire_cross_function_inputs(
                 ssa_dtypes.insert(input_def.name.clone(), *prev_dtype);
             }
             log::debug!(
-                "hal_runner: wired function[{}] '{}' from function[{}] '{}' (shape={:?}, {} bytes)",
-                fi, input_def.name, fi - 1, prev_name, input_def.shape, prev_data.len(),
+                "hal_runner: wired function[{}] '{}' from function[{}] '{}' (shape={:?}, {} elements)",
+                fi, input_def.name, fi - 1, prev_name, input_def.shape, prev_tensor.numel(),
             );
         } else {
             // Try fuzzy matching: find any output with same number of
@@ -274,8 +298,8 @@ pub(super) fn wire_cross_function_inputs(
                     .collect();
 
                 if dyn_count == out_dyn_count && input_static == out_static {
-                    if let Some(prev_data) = ssa_map.get(&output.name) {
-                        ssa_map.insert(input_def.name.clone(), prev_data.clone());
+                    if let Some(prev_tensor) = ssa_map.get(&output.name) {
+                        ssa_map.insert(input_def.name.clone(), prev_tensor.clone_data());
                         if let Some(prev_shape) = ssa_shapes.get(&output.name) {
                             ssa_shapes.insert(input_def.name.clone(), prev_shape.clone());
                         }
@@ -300,8 +324,13 @@ pub(super) fn wire_cross_function_inputs(
         }
         let numel = estimate_numel_from_shape(&input_def.shape, seq_len);
         let dtype = Dtype::from_hal_str(&input_def.dtype);
-        let raw_bytes = vec![0u8; numel * dtype.element_size()];
-        ssa_map.insert(input_def.name.clone(), raw_bytes);
+        let elem_size = dtype.element_size();
+        let t = if elem_size == 8 {
+            SFATensor::from_vec_i64(vec![0i64; numel], vec![numel])
+        } else {
+            SFATensor::from_vec_f32(vec![0f32; numel], vec![numel])
+        };
+        ssa_map.insert(input_def.name.clone(), t);
         let shape_dims: Vec<usize> = input_def.shape.iter().map(|d| {
             if d == "?" || d == "-1" { 1 } else { d.parse::<usize>().unwrap_or(1) }
         }).collect();
@@ -323,7 +352,7 @@ pub(super) fn wire_cross_function_inputs(
 /// from function output metadata, falling back to flat shape on mismatch.
 pub(super) fn extract_global_output(
     hal_ir: &HalIR,
-    ssa_map: &HashMap<String, Vec<u8>>,
+    ssa_map: &HashMap<String, SFATensor>,
     ssa_shapes: &HashMap<String, Vec<usize>>,
     ssa_dtypes: &HashMap<String, Dtype>,
     seq_len: usize,
@@ -342,7 +371,7 @@ pub(super) fn extract_global_output(
         .unwrap_or(0);
     let global_output_def = &last_func.outputs[global_output_idx];
 
-    let raw_bytes = ssa_map
+    let tensor = ssa_map
         .get(&global_output_def.name)
         .ok_or_else(|| {
             anyhow::anyhow!(
@@ -351,18 +380,12 @@ pub(super) fn extract_global_output(
             )
         })?;
 
-    let output_elem_size = ssa_dtypes
-        .get(&global_output_def.name)
-        .map(|d| d.element_size())
-        .unwrap_or(4);
-    let numel = raw_bytes.len() / output_elem_size;
+    let numel = tensor.numel();
     let mut result: Vec<f32> = Vec::with_capacity(numel);
     result.resize(numel, 0.0f32);
-    for i in 0..numel {
-        let bytes: [u8; 4] = raw_bytes[i * output_elem_size..i * output_elem_size + 4]
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("hal_runner: invalid output byte slice"))?;
-        result[i] = f32::from_le_bytes(bytes);
+    let ptr = tensor.data_ptr() as *const f32;
+    unsafe {
+        std::ptr::copy_nonoverlapping(ptr, result.as_mut_ptr(), numel);
     }
 
     // Prefer runtime shape from ssa_shapes (updated during execution).

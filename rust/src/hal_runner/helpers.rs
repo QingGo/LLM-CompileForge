@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use crate::hal::traits;
+use crate::sfa_tensor::SFATensor;
 use crate::weight_loader::WeightProvider;
 use crate::hal_runner::types::{HalFunction, HalIR, HalTensorDef};
 
@@ -72,10 +73,10 @@ pub(super) fn estimate_numel_from_shape(shape: &[String], seq_len: usize) -> usi
 /// Returns `Some((ssa_name, data_bytes))` when found, `None` on failure.
 pub(super) fn find_main_output(
     function: &HalFunction,
-    ssa_map: &std::collections::HashMap<String, Vec<u8>>,
-) -> Option<(String, Vec<u8>)> {
+    ssa_map: &HashMap<String, SFATensor>,
+) -> Option<(String, SFATensor)> {
     let mut best_score: i64 = -1;
-    let mut best: Option<(&HalTensorDef, Vec<u8>)> = None;
+    let mut best: Option<(&HalTensorDef, &SFATensor)> = None;
 
     for output in &function.outputs {
         // Skip internally-consumed tensors (KV cache intermediates).
@@ -94,15 +95,15 @@ pub(super) fn find_main_output(
         // Score: prefer higher rank, more "?" dims, and rank 3 being ideal.
         let score = (rank as i64) * 10 + (dyn_count as i64) + if rank == 3 { 100 } else { 0 };
 
-        if let Some(data) = ssa_map.get(&output.name) {
+        if let Some(tensor) = ssa_map.get(&output.name) {
             if score > best_score {
                 best_score = score;
-                best = Some((output, data.clone()));
+                best = Some((output, tensor));
             }
         }
     }
 
-    best.map(|(output, data)| (output.name.clone(), data))
+    best.map(|(output, tensor)| (output.name.clone(), tensor.clone_data()))
 }
 
 /// Fallback shape builder for op outputs: converts the declared shape
@@ -164,9 +165,9 @@ pub(super) fn find_matching_output(
     hal_ir: &HalIR,
     _current_func: &HalFunction,
     input_def: &HalTensorDef,
-    ssa_map: &HashMap<String, Vec<u8>>,
+    ssa_map: &HashMap<String, SFATensor>,
     seq_len: usize,
-) -> Option<Vec<u8>> {
+) -> Option<SFATensor> {
     let input_numel = estimate_numel_from_shape(&input_def.shape, seq_len);
 
     // Search all prior functions' outputs for a tensor with matching
@@ -175,7 +176,7 @@ pub(super) fn find_matching_output(
         for output in &func.outputs {
             if output.name == input_def.name {
                 // Same name — direct match (should already be in map).
-                return ssa_map.get(&output.name).cloned();
+                return ssa_map.get(&output.name).map(|t| t.clone_data());
             }
 
             let output_numel = estimate_numel_from_shape(&output.shape, seq_len);
@@ -184,7 +185,7 @@ pub(super) fn find_matching_output(
             if output_numel == input_numel && ssa_map.contains_key(&output.name) {
                 // Also check shape compatibility (same rank, or both 1D).
                 if output.shape.len() == input_def.shape.len() {
-                    return ssa_map.get(&output.name).cloned();
+                    return ssa_map.get(&output.name).map(|t| t.clone_data());
                 }
             }
         }
@@ -214,7 +215,7 @@ pub(super) fn find_matching_output(
 pub(super) fn inject_function_weights(
     weight_provider: Option<&WeightProvider>,
     function: &HalFunction,
-    ssa_map: &mut HashMap<String, Vec<u8>>,
+    ssa_map: &mut HashMap<String, SFATensor>,
     ssa_shapes: &mut HashMap<String, Vec<usize>>,
     ssa_dtypes: &mut HashMap<String, crate::tensor::Dtype>,
 ) {
@@ -227,25 +228,25 @@ pub(super) fn inject_function_weights(
             if let Some(desc) = wp.get_weight_memref(&weight_entry.name) {
                 let n = desc.numel();
                 let weight_dtype = crate::tensor::Dtype::from_hal_str(&weight_entry.dtype);
-                // SAFETY: The pointer comes from a valid MemRefDesc's aligned
-                // field. The f16 data was written by the dylib's execute() call.
-                let raw_bytes: Vec<u8> = if weight_dtype == crate::tensor::Dtype::I64 {
+                let weight_dims: Vec<usize> = weight_entry.shape.iter().map(|d| {
+                    if d == "?" || d == "-1" { 1 } else { d.parse::<usize>().unwrap_or(1) }
+                }).collect();
+                let t = if weight_dtype == crate::tensor::Dtype::I64 {
                     // SAFETY: desc.aligned points to valid i64 weight data.
-                    unsafe {
+                    let data: Vec<i64> = unsafe {
                         let raw = desc.aligned as *const i64;
                         let slice = std::slice::from_raw_parts(raw, n);
-                        slice.iter().flat_map(|&v| v.to_le_bytes().to_vec()).collect()
-                    }
+                        slice.to_vec()
+                    };
+                    SFATensor::from_vec_i64(data, weight_dims.clone())
                 } else if weight_dtype == crate::tensor::Dtype::F32
                     && weight_entry.name.starts_with("_const_") {
-                    // Only _const_* from constants.bin are stored as f32.
-                    // Safetensors weights are always f16 regardless of declared dtype.
                     let data: Vec<f32> = unsafe {
                         let raw = desc.aligned as *const f32;
                         let slice = std::slice::from_raw_parts(raw, n);
                         slice.to_vec()
                     };
-                    data.iter().flat_map(|&v| v.to_le_bytes()).collect()
+                    SFATensor::from_vec_f32(data, weight_dims.clone())
                 } else {
                     // SAFETY: desc.aligned points to valid f16 weight data.
                     let data: Vec<f32> = unsafe {
@@ -256,13 +257,10 @@ pub(super) fn inject_function_weights(
                             .map(|&h| half::f16::from_bits(h).to_f32())
                             .collect()
                     };
-                    data.iter().flat_map(|&v| v.to_le_bytes()).collect()
+                    SFATensor::from_vec_f32(data, weight_dims.clone())
                 };
-                ssa_map.insert(weight_entry.ssa.clone(), raw_bytes);
+                ssa_map.insert(weight_entry.ssa.clone(), t);
                 ssa_dtypes.insert(weight_entry.ssa.clone(), weight_dtype);
-                let weight_dims: Vec<usize> = weight_entry.shape.iter().map(|d| {
-                    if d == "?" || d == "-1" { 1 } else { d.parse::<usize>().unwrap_or(1) }
-                }).collect();
                 ssa_shapes.insert(weight_entry.ssa.clone(), weight_dims);
                 log::debug!(
                     "hal_runner: loaded weight '{}' -> SSA '{}' ({} elements)",
@@ -281,22 +279,30 @@ pub(super) fn inject_function_weights(
                     .find(|i| i.name == *ssa_name)
                     .map(|i| crate::tensor::Dtype::from_hal_str(&i.dtype))
                     .unwrap_or(crate::tensor::Dtype::F32);
-                let raw_bytes: Vec<u8> = if weight_dtype == crate::tensor::Dtype::I64 {
+                let input_dims: Vec<usize> = function.inputs.iter()
+                    .find(|i| i.name == *ssa_name)
+                    .map(|input_def| {
+                        input_def.shape.iter().map(|d| {
+                            if d == "?" || d == "-1" { 1 } else { d.parse::<usize>().unwrap_or(1) }
+                        }).collect()
+                    })
+                    .unwrap_or_else(|| vec![n]);
+                let t = if weight_dtype == crate::tensor::Dtype::I64 {
                     // SAFETY: desc.aligned points to valid i64 weight data.
-                    unsafe {
+                    let data: Vec<i64> = unsafe {
                         let raw = desc.aligned as *const i64;
                         let slice = std::slice::from_raw_parts(raw, n);
-                        slice.iter().flat_map(|&v| v.to_le_bytes().to_vec()).collect()
-                    }
+                        slice.to_vec()
+                    };
+                    SFATensor::from_vec_i64(data, input_dims.clone())
                 } else if weight_dtype == crate::tensor::Dtype::F32
                     && compiled_name.starts_with("_const_") {
-                    // Only _const_* from constants.bin are stored as f32.
                     let data: Vec<f32> = unsafe {
                         let raw = desc.aligned as *const f32;
                         let slice = std::slice::from_raw_parts(raw, n);
                         slice.to_vec()
                     };
-                    data.iter().flat_map(|&v| v.to_le_bytes()).collect()
+                    SFATensor::from_vec_f32(data, input_dims.clone())
                 } else {
                     // SAFETY: desc.aligned points to valid f16 weight data.
                     let data: Vec<f32> = unsafe {
@@ -307,16 +313,11 @@ pub(super) fn inject_function_weights(
                             .map(|&h| half::f16::from_bits(h).to_f32())
                             .collect()
                     };
-                    data.iter().flat_map(|&v| v.to_le_bytes()).collect()
+                    SFATensor::from_vec_f32(data, input_dims.clone())
                 };
-                ssa_map.insert(ssa_name.clone(), raw_bytes);
+                ssa_map.insert(ssa_name.clone(), t);
                 ssa_dtypes.insert(ssa_name.clone(), weight_dtype);
-                if let Some(input_def) = function.inputs.iter().find(|i| i.name == *ssa_name) {
-                    let input_dims: Vec<usize> = input_def.shape.iter().map(|d| {
-                        if d == "?" || d == "-1" { 1 } else { d.parse::<usize>().unwrap_or(1) }
-                    }).collect();
-                    ssa_shapes.insert(ssa_name.clone(), input_dims);
-                }
+                ssa_shapes.insert(ssa_name.clone(), input_dims);
                 log::debug!(
                     "hal_runner: loaded weight '{}' -> SSA '{}' ({} elements)",
                     compiled_name,

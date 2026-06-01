@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use crate::sfa_tensor::SFATensor;
 use crate::hal_runner::types::HalFunction;
 use crate::hal_runner::types::HalOp;
 
@@ -16,7 +17,7 @@ pub(crate) fn compute_output_shape(
     op: &HalOp,
     out_idx: usize,
     ssa_shapes: &HashMap<String, Vec<usize>>,
-    ssa_map: &HashMap<String, Vec<u8>>,
+    ssa_map: &HashMap<String, SFATensor>,
     ssa_dtypes: &HashMap<String, crate::tensor::Dtype>,
     function: &HalFunction,
     _seq_len: usize,
@@ -74,19 +75,15 @@ fn shape_of_reshape(
     op: &HalOp,
     _out_idx: usize,
     ssa_shapes: &HashMap<String, Vec<usize>>,
-    ssa_map: &HashMap<String, Vec<u8>>,
+    ssa_map: &HashMap<String, SFATensor>,
     ssa_dtypes: &HashMap<String, crate::tensor::Dtype>,
     _function: &HalFunction,
 ) -> (usize, Vec<usize>) {
-    let input_dtype = op.inputs.first()
-        .and_then(|n| ssa_dtypes.get(n))
-        .copied()
-        .unwrap_or(crate::tensor::Dtype::F32);
     let input_numel = op
         .inputs
         .first()
         .and_then(|n| ssa_map.get(n))
-        .map(|d| d.len() / input_dtype.element_size())
+        .map(|t| t.numel())
         .unwrap_or(1);
     let input_shape = op.inputs.first()
         .and_then(|n| ssa_shapes.get(n))
@@ -96,12 +93,11 @@ fn shape_of_reshape(
     let shape_of_vals: Vec<usize> = op.inputs[1..]
         .iter()
         .filter_map(|n| {
-            ssa_map.get(n).and_then(|data| {
-                if data.len() >= 4 {
-                    let bytes: [u8; 4] = data[..4].try_into().ok()?;
-                    Some(f32::from_le_bytes(bytes) as usize)
+            ssa_map.get(n).map(|t| {
+                if t.numel() > 0 && t.elem_size == 4 {
+                    t.read_f32(0) as usize
                 } else {
-                    None
+                    1
                 }
             })
         })
@@ -295,13 +291,13 @@ fn shape_of_reduce(
 fn shape_of_concat(
     op: &HalOp,
     ssa_shapes: &HashMap<String, Vec<usize>>,
-    ssa_map: &HashMap<String, Vec<u8>>,
+    ssa_map: &HashMap<String, SFATensor>,
 ) -> (usize, Vec<usize>) {
     let total_numel: usize = op
         .inputs
         .iter()
         .filter_map(|n| ssa_map.get(n))
-        .map(|d| d.len() / 4)
+        .map(|t| t.numel())
         .sum();
     let shape = ssa_shapes
         .get(&op.inputs[0])
@@ -340,7 +336,7 @@ mod tests {
             weight_inputs: std::collections::HashMap::new(),
             ops: vec![],
         };
-        let ssa_map: HashMap<String, Vec<u8>> = HashMap::new();
+        let ssa_map: HashMap<String, SFATensor> = HashMap::new();
         let ssa_dtypes: HashMap<String, crate::tensor::Dtype> = HashMap::new();
         compute_output_shape(&op, 0, &ssa_shapes, &ssa_map, &ssa_dtypes, &function, 4)
     }
@@ -378,7 +374,7 @@ mod tests {
             name: "test".to_string(), layer: 0, inputs: vec![], outputs: vec![],
             weights: vec![], weight_inputs: std::collections::HashMap::new(), ops: vec![],
         };
-        let ssa_map: HashMap<String, Vec<u8>> = HashMap::new();
+        let ssa_map: HashMap<String, SFATensor> = HashMap::new();
         let ssa_dtypes: HashMap<String, crate::tensor::Dtype> = HashMap::new();
         let (numel, shape) = compute_output_shape(&op, 0, &ssa_shapes, &ssa_map, &ssa_dtypes, &function, 4);
         assert_eq!(shape, vec![1, 1, 50272]);
@@ -403,7 +399,7 @@ mod tests {
             name: "test".to_string(), layer: 0, inputs: vec![], outputs: vec![],
             weights: vec![], weight_inputs: std::collections::HashMap::new(), ops: vec![],
         };
-        let ssa_map: HashMap<String, Vec<u8>> = HashMap::new();
+        let ssa_map: HashMap<String, SFATensor> = HashMap::new();
         let ssa_dtypes: HashMap<String, crate::tensor::Dtype> = HashMap::new();
         let (numel, shape) = compute_output_shape(&op, 0, &ssa_shapes, &ssa_map, &ssa_dtypes, &function, 4);
         assert_eq!(shape, vec![4, 768]);

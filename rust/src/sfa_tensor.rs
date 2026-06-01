@@ -406,9 +406,47 @@ impl SFATensor {
     }
 
     /// Get a raw pointer to the tensor data.
-    #[allow(dead_code)]
-    fn data_ptr(&self) -> *mut u8 {
+    pub(crate) fn data_ptr(&self) -> *mut u8 {
         self.raw.data_ptr()
+    }
+
+    /// Deep-clone the tensor data into a new owned SFATensor.
+    ///
+    /// Creates a fresh heap allocation with identical contents, shape,
+    /// and element type. The new tensor owns its memory independently.
+    pub fn clone_data(&self) -> Self {
+        let numel = self.numel();
+        let shape = self.shape();
+        let total_bytes = numel * self.elem_size;
+
+        if self.elem_size == 8 {
+            let mut new_data = vec![0i64; numel];
+            let src = self.data_ptr() as *const i64;
+            let dst = new_data.as_mut_ptr();
+            unsafe {
+                std::ptr::copy_nonoverlapping(src, dst, numel);
+            }
+            SFATensor::from_vec_i64(new_data, shape)
+        } else {
+            let mut new_data = vec![0f32; numel];
+            let src = self.data_ptr() as *const f32;
+            let dst = new_data.as_mut_ptr();
+            unsafe {
+                std::ptr::copy_nonoverlapping(src, dst, numel);
+            }
+            SFATensor::from_vec_f32(new_data, shape)
+        }
+    }
+
+    /// Read a single f32 element at the given index.
+    ///
+    /// # Panics
+    /// Panics if index >= numel() or if elem_size != 4.
+    pub(crate) fn read_f32(&self, index: usize) -> f32 {
+        assert!(self.elem_size == 4, "read_f32 requires elem_size=4");
+        assert!(index < self.numel(), "read_f32 index out of bounds");
+        let ptr = self.data_ptr() as *const f32;
+        unsafe { *ptr.add(index) }
     }
 
     /// Return a HAL `Buffer` trait object wrapping this tensor.
