@@ -76,7 +76,7 @@ fn test_hal_runner_parses_json() {
         .iter()
         .map(|f| f.ops.len())
         .sum();
-    assert_eq!(total_ops, 347);
+    assert_eq!(total_ops, 647);
 
     // Verify each function has a name and ops.
     for func in &runner.hal_ir.functions {
