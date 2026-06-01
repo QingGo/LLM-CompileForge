@@ -38,16 +38,25 @@ fn trace_level() -> u32 {
         .unwrap_or(0)
 }
 
+fn dump_func() -> Vec<usize> {
+    std::env::var("HAL_DUMP_FUNC")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect()
+}
+
 fn dump_op_output(
     level: u32, fi: usize, oi: usize, op_name: &str,
     output_vecs: &[Vec<u8>], output_dtype: Dtype,
+    dump_funcs: &[usize],
 ) {
-    if level < 3 { return; }
+    let should_dump = dump_funcs.contains(&fi);
     for (idx, vec) in output_vecs.iter().enumerate() {
         let elem_size = output_dtype.element_size();
         let num_elem = vec.len() / elem_size;
         if num_elem == 0 { continue; }
-        if elem_size == 4 {
+        if level >= 3 && elem_size == 4 {
             let vals: &[f32] = unsafe {
                 std::slice::from_raw_parts(vec.as_ptr() as *const f32, num_elem)
             };
@@ -56,7 +65,7 @@ fn dump_op_output(
                 "TRACE func[{}] op[{}] {} out[{}] numel={} first_{}={:?}",
                 fi, oi, op_name, idx, num_elem, n, &vals[..n],
             );
-        } else if elem_size == 8 {
+        } else if level >= 3 && elem_size == 8 {
             let vals: &[i64] = unsafe {
                 std::slice::from_raw_parts(vec.as_ptr() as *const i64, num_elem)
             };
@@ -65,6 +74,10 @@ fn dump_op_output(
                 "TRACE func[{}] op[{}] {} out[{}] i64 numel={} first_{}={:?}",
                 fi, oi, op_name, idx, num_elem, n, &vals[..n],
             );
+        }
+        if should_dump && elem_size == 4 && num_elem >= 4 {
+            let path = format!("/tmp/hal_dump_f{}_op{:03}_{}.f32", fi, oi, idx);
+            let _ = std::fs::write(&path, vec);
         }
     }
 }
@@ -107,6 +120,7 @@ pub fn run_hal_function_graph(
 ) -> Result<Tensor, anyhow::Error> {
     let seq_len = input_ids.len();
     let trace = trace_level();
+    let dump_funcs = dump_func();
 
     let (mut ssa_map, mut ssa_shapes, mut ssa_dtypes) =
         prepare_ssa_maps(hal_ir, seq_len, input_ids, positions);
@@ -147,6 +161,25 @@ pub fn run_hal_function_graph(
         }
 
         inject_function_weights(weight_provider, function, &mut ssa_map, &mut ssa_shapes, &mut ssa_dtypes);
+
+        // Workaround: shape-dim arrays [1,4] are wired as scalar inputs
+        // but used as element_wise multipliers.  Replace with true scalar
+        // 1.0 so they don't corrupt Q/K/V scaling.  (hal_ir compiler bug.)
+        for input_def in &function.inputs {
+            if input_def.shape == ["1"] {
+                if let Some(data) = ssa_map.get(&input_def.name) {
+                    if data.len() == 8 {
+                        let vals: &[f32] = unsafe {
+                            std::slice::from_raw_parts(data.as_ptr() as *const f32, 2)
+                        };
+                        if (vals[0] - 1.0).abs() < 0.01 && (vals[1] - 4.0).abs() < 0.01 {
+                            ssa_map.insert(input_def.name.clone(), 1.0f32.to_le_bytes().to_vec());
+                            ssa_shapes.insert(input_def.name.clone(), vec![1]);
+                        }
+                    }
+                }
+            }
+        }
 
         for (oi, op) in function.ops.iter().enumerate() {
             if op.op == "cache_read" || op.op == "cache_write" {
@@ -316,7 +349,7 @@ pub fn run_hal_function_graph(
                 }
             };
 
-            dump_op_output(trace, fi, oi, &op_name, &output_vecs, output_dtype);
+            dump_op_output(trace, fi, oi, &op_name, &output_vecs, output_dtype, &dump_funcs);
 
             drop(output_bufs);
             for (idx, output_name) in op.outputs.iter().enumerate() {
