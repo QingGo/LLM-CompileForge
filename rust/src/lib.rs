@@ -17,7 +17,6 @@ pub mod types;
 #[cfg(test)]
 mod integration_tests;
 
-#[cfg(test)]
 #[path = "sfa_tensor.rs"]
 mod sfa_tensor;
 
@@ -25,12 +24,10 @@ mod sfa_tensor;
 #[path = "kv_cache_tests.rs"]
 mod kv_cache_tests;
 
-// Include compute_graph module for testing (normally only in main.rs bin).
-#[cfg(test)]
+// Include compute_graph module (normally only in main.rs bin).
 #[path = "compute_graph.rs"]
 mod compute_graph;
 
-#[cfg(test)]
 #[path = "global_input.rs"]
 mod global_input;
 

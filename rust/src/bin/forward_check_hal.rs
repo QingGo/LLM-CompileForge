@@ -41,6 +41,8 @@ mod kv_cache;
 mod kv_cache_intercept;
 #[path = "../sfcf.rs"]
 mod sfcf;
+#[path = "../sfa_tensor.rs"]
+mod sfa_tensor;
 #[path = "../tensor.rs"]
 mod tensor;
 #[path = "../weight_loader.rs"]

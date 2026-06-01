@@ -18,26 +18,38 @@ use crate::hal::cpu::CpuBuffer;
 use crate::hal::traits;
 use crate::kv_cache::CachePolicy;
 use crate::kv_cache_intercept::{intercept_consumed_input, intercept_consumed_output};
+use crate::sfa_tensor::{SFATensor, SFATensorRawAny};
 use crate::tensor::{Dtype, Tensor};
 use crate::weight_loader::WeightProvider;
 
 // ---- Helper functions shared by run_function_graph and run_function_graph_with_kv_intercept ----
 
 /// Build a HAL buffer for a GlobalInput binding, filling from input_ids/positions.
+///
+/// The returned buffer borrows its data from the SFATensor. The caller must ensure
+/// the SFATensor (stored in `sfa_tensors`) outlives the buffer.
 fn build_global_input_buffer(
     input_ids: &[u32],
     positions: &[u32],
     io_def: &IOTensorDef,
     bi: usize,
-    _raw_global: &mut Vec<Vec<u8>>,
+    sfa_tensors: &mut Vec<SFATensor>,
 ) -> Result<Box<dyn traits::Buffer>, anyhow::Error> {
-    let (_, raw) = crate::global_input::fill_global_input(input_ids, positions, io_def, bi)?;
-    _raw_global.push(raw);
-    let raw_bytes = _raw_global.last().expect("_raw_global last");
+    let tensor = crate::global_input::fill_global_input(input_ids, positions, io_def, bi)?;
+
+    // Extract data pointer from the SFATensor's raw descriptor.
+    let data_ptr: *mut u8 = match &tensor.raw {
+        SFATensorRawAny::R1(r) => r.allocated as *mut u8,
+        SFATensorRawAny::R2(r) => r.allocated as *mut u8,
+        SFATensorRawAny::R3(r) => r.allocated as *mut u8,
+        SFATensorRawAny::R4(r) => r.allocated as *mut u8,
+    };
+    let byte_len = tensor.numel() * tensor.elem_size;
+
     let raw_buf = InnerCpuBuffer::from_raw_parts(
-        raw_bytes.as_ptr() as *mut u8,
-        raw_bytes.len(),
-        true, // borrowed
+        data_ptr,
+        byte_len,
+        true, // borrowed — SFATensor owns the data
     )
     .map_err(|e| anyhow::anyhow!("{}", e))?;
     let rank = io_def.rank as usize;
@@ -55,6 +67,9 @@ fn build_global_input_buffer(
         })
         .collect();
     let cpu_buf = CpuBuffer::with_meta(raw_buf, 8 /* i64 */, dims);
+
+    // SFATensor owns the data; must outlive the CpuBuffer.
+    sfa_tensors.push(tensor);
     Ok(Box::new(cpu_buf))
 }
 
@@ -146,47 +161,65 @@ fn allocate_output_buffers(
 }
 
 /// Extract a Tensor from the execute() output buffer using returned shapes.
+///
+/// When the dylib returns unresolved dynamic dimension markers (negative
+/// values, e.g. `[-2, -3, 768]`), both the element count and the shape
+/// are reconstructed from `io_def` (the compute graph's output metadata)
+/// and the actual `seq_len`.
 fn extract_output_tensor(
     output_shapes: &[Vec<i64>],
     output_vecs: &mut [Vec<f32>],
     fi: usize,
     oi: usize,
+    io_def: &IOTensorDef,
+    seq_len: usize,
 ) -> Result<Tensor, anyhow::Error> {
     let shapes = &output_shapes[oi];
+    let has_negative = shapes.iter().any(|&s| s < 0);
     let actual_n: usize = crate::hal::cpu::sret::checked_product_from_i64(shapes)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "func[{}] output[{}] sret shapes overflow: {:?}",
-                fi,
-                oi,
-                shapes
-            )
-        })?;
+        .unwrap_or(0);
     let mut out_vec = std::mem::take(&mut output_vecs[oi]);
+
+    let (effective_n, shape_usize) = if has_negative {
+        let mut first_zero = true;
+        let resolved: Vec<usize> = io_def.shape.iter().map(|&d| {
+            if d == 0 {
+                if first_zero {
+                    first_zero = false;
+                    1 // batch
+                } else {
+                    seq_len
+                }
+            } else {
+                std::cmp::max(1, d) as usize
+            }
+        }).collect();
+        let numel: usize = resolved.iter().product();
+        log::warn!(
+            "func[{}] output[{}] sret returned unresolved shapes {:?}; \
+             resolving via io_def={:?} seq_len={} → shape={:?} numel={}",
+            fi, oi, shapes, io_def.shape, seq_len, resolved, numel,
+        );
+        (numel, resolved)
+    } else {
+        let shape_usize: Vec<usize> = shapes.iter().map(|&s| std::cmp::max(1, s) as usize).collect();
+        (actual_n, shape_usize)
+    };
+
     debug_assert!(
-        actual_n <= out_vec.capacity(),
-        "func[{}] output[{}]: sret actual_n={} exceeds pre-allocated capacity={}",
-        fi,
-        oi,
-        actual_n,
-        out_vec.capacity(),
+        effective_n <= out_vec.capacity(),
+        "func[{}] output[{}]: effective_n={} exceeds pre-allocated capacity={}",
+        fi, oi, effective_n, out_vec.capacity(),
     );
-    if actual_n < out_vec.len() {
-        // SAFETY: actual_n ≤ out_vec.capacity() (guaranteed by execute's
-        // n_bytes ≤ output_buf.len() check, double-checked by debug_assert above).
-        // Data is written by execute() via copy_nonoverlapping.
+    if effective_n < out_vec.len() {
         unsafe {
-            out_vec.set_len(actual_n);
+            out_vec.set_len(effective_n);
         }
     }
-    let shape_usize: Vec<usize> = shapes.iter().map(|&s| std::cmp::max(1, s) as usize).collect();
+
     log::trace!(
-        "extract_output_tensor: func[{}] output[{}] actual shapes={:?} actual_n={} final_shape={:?}",
-        fi,
-        oi,
-        shapes,
-        actual_n,
-        shape_usize,
+        "extract_output_tensor: func[{}] output[{}] sret shapes={:?} effective_n={} final_shape={:?}",
+        fi, oi, shapes, effective_n, shape_usize,
     );
     Ok(Tensor::new_owned(shape_usize, out_vec, Dtype::F32))
 }
@@ -220,14 +253,14 @@ pub fn run_function_graph(
 
         let mut input_bufs: Vec<Box<dyn traits::Buffer>> =
             Vec::with_capacity(func_def.num_inputs);
-        let mut _raw_global: Vec<Vec<u8>> = Vec::new();
+        let mut _sfa_tensors: Vec<SFATensor> = Vec::new();
         let mut _tensors: Vec<Tensor> = Vec::with_capacity(func_def.num_inputs);
 
         for (bi, (binding, io_def)) in func_def.inputs.iter().enumerate() {
             match binding {
                 InputBinding::GlobalInput => {
                     let buf = build_global_input_buffer(
-                        input_ids, positions, io_def, bi, &mut _raw_global,
+                        input_ids, positions, io_def, bi, &mut _sfa_tensors,
                     )?;
                     input_bufs.push(buf);
                 }
@@ -265,7 +298,10 @@ pub fn run_function_graph(
 
         // Extract Tensors from output buffers using the returned shapes.
         for (oi, _shapes) in output_shapes.iter().enumerate() {
-            let tensor = extract_output_tensor(&output_shapes, &mut output_vecs, fi, oi)?;
+            let io_def = &func_def.outputs[oi];
+            let tensor = extract_output_tensor(
+                &output_shapes, &mut output_vecs, fi, oi, io_def, seq_len,
+            )?;
             func_outputs[fi].push(tensor);
         }
     }
@@ -362,14 +398,14 @@ pub fn run_function_graph_with_kv_intercept(
 
         let mut input_bufs: Vec<Box<dyn traits::Buffer>> =
             Vec::with_capacity(func_def.num_inputs);
-        let mut _raw_global: Vec<Vec<u8>> = Vec::new();
+        let mut _sfa_tensors: Vec<SFATensor> = Vec::new();
         let mut _tensors: Vec<Tensor> = Vec::with_capacity(func_def.num_inputs);
 
         for (bi, (binding, io_def)) in func_def.inputs.iter().enumerate() {
             // GlobalInput: handle with early continue (consumes `bi`)
             if let InputBinding::GlobalInput = binding {
                 let buf = build_global_input_buffer(
-                    input_ids, positions, io_def, bi, &mut _raw_global,
+                    input_ids, positions, io_def, bi, &mut _sfa_tensors,
                 )?;
                 input_bufs.push(buf);
                 continue;
@@ -430,7 +466,8 @@ pub fn run_function_graph_with_kv_intercept(
             executable.execute(&func_def.symbol, stream, &input_refs, &output_refs)?;
 
         for (oi, _shapes) in output_shapes.iter().enumerate() {
-            let tensor = extract_output_tensor(&output_shapes, &mut output_vecs, fi, oi)?;
+            let io_def = &func_def.outputs[oi];
+            let tensor = extract_output_tensor(&output_shapes, &mut output_vecs, fi, oi, io_def, seq_len)?;
             let io_def = &func_def.outputs[oi];
             if should_intercept_consumed(fi, oi, cache_policy, io_def) {
                 intercept_consumed_output(

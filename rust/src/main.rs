@@ -19,6 +19,7 @@ mod runner;
 mod sampler;
 mod scheduler;
 mod sfcf;
+mod sfa_tensor;
 mod tensor;
 mod tokenizer;
 mod types;

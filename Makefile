@@ -247,7 +247,7 @@ test-rust-unit: $(VENV)
 	cd rust && cargo test --lib > ../logs/rust/test_unit_$$(date +%Y%m%d_%H%M%S).log 2>&1
 test-rust: test-rust-unit test-rust-integ
 test-e2e-forward:
-	cargo test --test integration_tests
+	cd rust && cargo test --test integration_tests --features hal-rust
 
 test-e2e-forward-hal:
 	cd rust && cargo build --bin forward_check_hal --features hal-rust

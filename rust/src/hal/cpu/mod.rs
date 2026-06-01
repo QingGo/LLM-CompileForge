@@ -219,7 +219,24 @@ impl traits::Executable for CpuExecutable {
                     .ok_or_else(|| anyhow::anyhow!(
                         "output {} sret sizes overflow: {:?}", oi, sizes
                     ))?;
-                let n_bytes = n * 4;
+                // When the dylib returns unresolved dynamic dimension
+                // markers (negative values like -2, -3 in the sizes
+                // array), checked_product clamps to 0 → n_bytes=0 →
+                // no data would be copied.  Fall back to the pre-allocated
+                // output buffer capacity: the dylib wrote actual data
+                // there regardless of the metadata glitch.
+                let has_negative = sizes.iter().any(|&s| s < 0);
+                let n_bytes = if has_negative && n == 0 {
+                    let fallback = output_buf.len();
+                    log::trace!(
+                        "execute: output[{}] sret has negative sizes {:?}, \
+                         falling back to buf len={}",
+                        oi, sizes, fallback,
+                    );
+                    fallback
+                } else {
+                    n * 4
+                };
 
                 log::trace!(
                     "execute: output[{}] sret rank={} sizes={:?} n={} n_bytes={} buf_cap={} \

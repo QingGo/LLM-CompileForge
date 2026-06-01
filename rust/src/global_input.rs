@@ -4,11 +4,7 @@
 //! Extracted from `compute_graph_runner.rs` and `executor.rs` to eliminate
 //! ~80 lines of duplicate code that was identical in both files.
 
-use std::ffi::c_void;
-
 use crate::compute_graph::IOTensorDef;
-use crate::hal::cpu::memref::MemRefDesc1;
-use crate::hal::cpu::{MemRefDescAny, MemRefDesc2};
 use crate::sfa_tensor::SFATensor;
 
 /// Build a MemRef descriptor and raw buffer for a GlobalInput binding.
