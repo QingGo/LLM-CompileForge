@@ -9,7 +9,7 @@ import torch
 import torch.fx
 
 from compiler.mlir_dialect._op_defs import _ATEN_TO_HAL
-from compiler.mlir_dialect.shape_inference import infer_output_shape
+from compiler.mlir_dialect.shape_inference import infer_output_shape  # type: ignore[attr-defined]
 
 _log = logging.getLogger(__name__)
 
@@ -448,7 +448,7 @@ def _fake_to_shape_tuple(fake: torch.Tensor) -> tuple[tuple[int | None, ...], st
     return shape, elt
 
 
-def _shape_to_mlir_type(shape: tuple, elt: str) -> str:
+def _shape_to_mlir_type(shape: tuple[Any, ...], elt: str) -> str:
     """Convert (shape, element_type) to MLIR type string like tensor<1x64xf32>."""
     def _dim_str(d: Any) -> str:
         if d is None:

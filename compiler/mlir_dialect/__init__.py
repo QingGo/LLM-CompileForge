@@ -18,7 +18,7 @@ Usage::
 
 from compiler.mlir_dialect.builder import SfModule
 from compiler.mlir_dialect.sf import get_op_class
-from compiler.mlir_dialect.shape_inference import infer_output_shape, infer_output_type
+from compiler.mlir_dialect.shape_inference import infer_output_shape, infer_output_type  # type: ignore[attr-defined]
 
 __all__ = [
     "SfModule",

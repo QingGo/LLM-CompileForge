@@ -20,7 +20,7 @@ from typing import Any
 
 import torch
 
-from compiler.mlir_artifact import MlirModule
+from compiler.mlir_artifact import MlirModule  # type: ignore[attr-defined]
 from engine._constants import (
     DEFAULT_BLOCK_SIZE,
     DEFAULT_CHUNK_SIZE,
@@ -128,7 +128,7 @@ class LLMEngine:
 
     @property
     def _loop(self) -> InferenceLoop:
-        return self.__loop  # type: ignore[has-type]
+        return self.__loop
 
     @_loop.setter
     def _loop(self, loop: InferenceLoop) -> None:

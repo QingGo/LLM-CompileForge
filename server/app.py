@@ -117,7 +117,7 @@ def create_engine(
     """
     from compiler.serialize import load_artifact
     from engine.llm_engine import LLMEngine  # concrete import for mypy
-    from hal import PyTorchBackend
+    from hal import PyTorchBackend  # type: ignore[attr-defined]
 
     backend = PyTorchBackend(device)
     module = load_artifact(artifact_dir)

@@ -19,7 +19,7 @@ from typing import Any
 
 import torch
 
-from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp
+from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp  # type: ignore[attr-defined]
 from engine._kv_cache import _KVCacheMixin, _normalize_kv_for_cache
 
 _WEIGHT_OPS = frozenset({"sf.weight", "sf.constant", "constant"})
@@ -256,7 +256,7 @@ class MlirExecutor(_KVCacheMixin):
             if wname in self._weights:
                 return self._weights[wname]
             if wname in self._function.weights:
-                return self._function.weights[wname]
+                return self._function.weights[wname]  # type: ignore[no-any-return]
             return None
 
         # ── Cache Manager path ─────────────────────────
@@ -307,7 +307,7 @@ class MlirExecutor(_KVCacheMixin):
             if dst_name in ssa_values and result is not None:
                 ssa_values[dst_name] = result
 
-        return result
+        return result  # type: ignore[no-any-return]
 
     # ── Cache Manager intercept ───────────────────────────
 

@@ -39,7 +39,7 @@ class _DeadStageTracker:
     def _load_state(cls) -> dict[str, int]:
         if cls.STATE_FILE.exists():
             try:
-                return json.loads(cls.STATE_FILE.read_text())
+                return json.loads(cls.STATE_FILE.read_text())  # type: ignore[no-any-return]
             except (json.JSONDecodeError, OSError):
                 return {}
         return {}
@@ -383,7 +383,7 @@ class StageResult:
     ir_lines: int
     ir_snapshot_path: str | None = None
     error: str | None = None
-    context: dict = field(default_factory=dict)
+    context: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

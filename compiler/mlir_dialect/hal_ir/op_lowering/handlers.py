@@ -11,8 +11,9 @@ Handlers return :class:`MlirOp` or ``None`` (for ops that should be skipped).
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
-from compiler.mlir_artifact import MlirOp
+from compiler.mlir_artifact import MlirOp  # type: ignore[attr-defined]
 from compiler.mlir_dialect.hal_ir.op_lowering.core import (
     _BINARY_ARITH_MAP,
     _COMPARE_MAP,
@@ -27,7 +28,7 @@ from compiler.mlir_dialect.hal_ir.op_lowering.core import (
 # ── Ops that produce no HAL entry ─────────────────────────────────────
 
 
-def _handle_weight(op, op_name, input_names, output_names, *context):
+def _handle_weight(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
     """Record weight — no hal op. Mutates *context* lists/dicts."""
     ssa, weights, constants, weight_index, param_names, const_names = context  # noqa: F841
     name_attr = op.attributes.get("name", "")
@@ -50,12 +51,12 @@ def _handle_weight(op, op_name, input_names, output_names, *context):
     return None
 
 
-def _handle_constant(op, op_name, input_names, output_names, *context):
+def _handle_constant(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
     """Inline constant — no hal op."""
     return None
 
 
-def _handle_identity(op, op_name, input_names, output_names, *context):
+def _handle_identity(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
     """Skip — map result to same name as input operand."""
     ssa = context[0]
     operands = list(op.operands) if hasattr(op, "operands") else []
@@ -71,7 +72,7 @@ def _handle_identity(op, op_name, input_names, output_names, *context):
 # ── Shape / metadata ops ────────────────────────────────────────────
 
 
-def _handle_sym_size(op, op_name, input_names, output_names, *context):
+def _handle_sym_size(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
     return MlirOp(
         name="hal.shape_of", dialect="hal", op_name="shape_of",
         operands=input_names, results=output_names,
@@ -92,14 +93,14 @@ def _is_shape_of_output(value: object) -> bool:
         owner = value.owner  # type: ignore[attr-defined]
         if owner is None:
             return False
-        return str(owner.operation.name) == "sf.sym_size"  # type: ignore[attr-defined]
+        return str(owner.operation.name) == "sf.sym_size"
     except Exception:
         return False
 
 
 def _filter_shape_inputs(op: object, input_names: list[str]) -> list[str]:
     """Keep only shape_of outputs from op operands (drop scalar weights)."""
-    operands = list(op.operands) if hasattr(op, "operands") else []  # type: ignore[union-attr]
+    operands = list(op.operands) if hasattr(op, "operands") else []
     filtered = []
     for i, operand in enumerate(operands):
         if i < len(input_names) and _is_shape_of_output(operand):
@@ -107,7 +108,7 @@ def _filter_shape_inputs(op: object, input_names: list[str]) -> list[str]:
     return filtered
 
 
-def _handle_view_expand(op, op_name, input_names, output_names, *context):
+def _handle_view_expand(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
     shape_attr = op.attributes.get("shape")
     shape_val = parse_attr_shape(str(shape_attr)) if shape_attr is not None else []
 
@@ -127,7 +128,7 @@ def _handle_view_expand(op, op_name, input_names, output_names, *context):
     )
 
 
-def _handle_unsqueeze(op, op_name, input_names, output_names, *context):
+def _handle_unsqueeze(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
     dim = (
         parse_mlir_int_attr(
             str(op.attributes.get("dim")) if op.attributes.get("dim") is not None else None
@@ -141,7 +142,7 @@ def _handle_unsqueeze(op, op_name, input_names, output_names, *context):
     )
 
 
-def _handle_transpose(op, op_name, input_names, output_names, *context):
+def _handle_transpose(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
     dim0 = (
         parse_mlir_int_attr(
             str(op.attributes.get("dim0")) if op.attributes.get("dim0") is not None else None
@@ -161,7 +162,7 @@ def _handle_transpose(op, op_name, input_names, output_names, *context):
     )
 
 
-def _handle_slice(op, op_name, input_names, output_names, *context):
+def _handle_slice(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
     dim = (
         parse_mlir_int_attr(
             str(op.attributes.get("dim")) if op.attributes.get("dim") is not None else None
@@ -186,7 +187,7 @@ def _handle_slice(op, op_name, input_names, output_names, *context):
     )
 
 
-def _handle_cat(op, op_name, input_names, output_names, *context):
+def _handle_cat(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:
     dim = (
         parse_mlir_int_attr(
             str(op.attributes.get("dim")) if op.attributes.get("dim") is not None else None
@@ -200,7 +201,7 @@ def _handle_cat(op, op_name, input_names, output_names, *context):
     )
 
 
-def _handle_mean(op, op_name, input_names, output_names, *context):
+def _handle_mean(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
     return MlirOp(
         name="hal.reduce", dialect="hal", op_name="reduce",
         operands=input_names, results=output_names,
@@ -208,7 +209,7 @@ def _handle_mean(op, op_name, input_names, output_names, *context):
     )
 
 
-def _handle_sum(op, op_name, input_names, output_names, *context):
+def _handle_sum(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:
     return MlirOp(
         name="hal.reduce", dialect="hal", op_name="reduce",
         operands=input_names, results=output_names,
@@ -219,7 +220,7 @@ def _handle_sum(op, op_name, input_names, output_names, *context):
 # ── Named ops ────────────────────────────────────────────────────────
 
 
-def _handle_embedding(op, op_name, input_names, output_names, *context):
+def _handle_embedding(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
     # Look up the weight name from the first input's SSA.
     _, weights, _, _, _, _ = context
     weight_name = ""
@@ -235,7 +236,7 @@ def _handle_embedding(op, op_name, input_names, output_names, *context):
     )
 
 
-def _handle_index(op, op_name, input_names, output_names, *context):
+def _handle_index(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
     return MlirOp(
         name="hal.gather", dialect="hal", op_name="gather",
         operands=input_names, results=output_names,
@@ -243,21 +244,21 @@ def _handle_index(op, op_name, input_names, output_names, *context):
     )
 
 
-def _handle_matmul(op, op_name, input_names, output_names, *context):
+def _handle_matmul(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
     return MlirOp(
         name="hal.matmul", dialect="hal", op_name="matmul",
         operands=input_names, results=output_names,
     )
 
 
-def _handle_softmax(op, op_name, input_names, output_names, *context):
+def _handle_softmax(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
     return MlirOp(
         name="hal.softmax", dialect="hal", op_name="softmax",
         operands=input_names, results=output_names,
     )
 
 
-def _handle_ones_like(op, op_name, input_names, output_names, *context):
+def _handle_ones_like(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
     dtype_attr = op.attributes.get("dtype")
     raw_dtype = str(dtype_attr) if dtype_attr is not None else "f32"
     dtype_str = strip_mlir_quotes(raw_dtype)
@@ -269,7 +270,7 @@ def _handle_ones_like(op, op_name, input_names, output_names, *context):
     )
 
 
-def _handle_arange(op, op_name, input_names, output_names, *context):
+def _handle_arange(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
     return MlirOp(
         name="hal.fill", dialect="hal", op_name="fill",
         operands=input_names, results=output_names,
@@ -277,21 +278,21 @@ def _handle_arange(op, op_name, input_names, output_names, *context):
     )
 
 
-def _handle_rms_norm(op, op_name, input_names, output_names, *context):
+def _handle_rms_norm(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
     return MlirOp(
         name="hal.rms_norm", dialect="hal", op_name="rms_norm",
         operands=input_names, results=output_names,
     )
 
 
-def _handle_layer_norm(op, op_name, input_names, output_names, *context):
+def _handle_layer_norm(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
     return MlirOp(
         name="hal.layer_norm", dialect="hal", op_name="layer_norm",
         operands=input_names, results=output_names,
     )
 
 
-def _handle_cumsum(op, op_name, input_names, output_names, *context):
+def _handle_cumsum(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
     return MlirOp(
         name="hal.scan", dialect="hal", op_name="scan",
         operands=input_names, results=output_names,
@@ -302,7 +303,7 @@ def _handle_cumsum(op, op_name, input_names, output_names, *context):
 # ── Dispatch table builder ──────────────────────────────────────────
 
 
-def register_handlers(dispatch: dict[str, Callable]) -> None:
+def register_handlers(dispatch: dict[str, Callable[..., Any]]) -> None:
     """Populate *dispatch* with op-name → handler mappings."""
     # Ops that produce no HAL entry
     dispatch["sf.weight"] = _handle_weight

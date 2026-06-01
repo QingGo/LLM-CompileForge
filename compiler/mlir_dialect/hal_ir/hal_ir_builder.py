@@ -14,7 +14,7 @@ import logging
 import re
 from typing import Any
 
-from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp
+from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp  # type: ignore[attr-defined]
 from compiler.mlir_dialect.compile_utils import _setup_mlir_path
 from compiler.mlir_dialect.hal_ir.op_lowering import (
     infer_dtype_from_type,
@@ -149,7 +149,7 @@ class HalIRBuilder:
         self, func_name: str
     ) -> dict[str, list[str]]:
         """Return the weight classification for a function (empty if missing)."""
-        return self._weight_classification.get(func_name, {
+        return self._weight_classification.get(func_name, {  # type: ignore[no-any-return]
             "params": [],
             "constants": [],
         })

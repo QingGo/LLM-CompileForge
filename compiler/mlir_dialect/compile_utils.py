@@ -470,16 +470,16 @@ def _patch_transformers_torch() -> None:
     import torch
     import transformers.utils.generic as _generic
     import transformers.utils.import_utils as _iu
-    _iu._torch_available = True
-    _iu._torch_version = torch.__version__
-    _generic._torch_pytree = torch.utils._pytree
-    def _flatten(output):
+    _iu._torch_available = True  # type: ignore[attr-defined]
+    _iu._torch_version = torch.__version__  # type: ignore[attr-defined]
+    _generic._torch_pytree = torch.utils._pytree  # type: ignore[attr-defined]
+    def _flatten(output: Any) -> tuple[list[Any], list[Any]]:
         return list(output.values()), list(output.keys())
-    def _unflatten(values, context, output_type=None):
+    def _unflatten(values: list[Any], context: Any, output_type: Any = None) -> Any:
         return (output_type or type(context[0]))(**dict(zip(context, values, strict=False)))
     _generic._model_output_flatten = _flatten
-    _generic._model_output_unflatten = _unflatten
+    _generic._model_output_unflatten = _unflatten  # type: ignore[assignment]
 
 
-def _short_shape(shape):
+def _short_shape(shape: Any) -> str:
     return "[" + ", ".join(str(s) for s in shape) + "]"

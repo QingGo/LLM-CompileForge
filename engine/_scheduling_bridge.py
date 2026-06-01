@@ -64,10 +64,10 @@ class SchedulingBridge:
 
     @property
     def num_free_blocks(self) -> int:
-        return self._bm.num_free_blocks()
+        return self._bm.num_free_blocks()  # type: ignore[no-any-return]
 
     def get_blocks(self, request_id: str) -> list[int]:
-        return self._bm.get_blocks(request_id)
+        return self._bm.get_blocks(request_id)  # type: ignore[no-any-return]
 
     def free_request(self, request_id: str) -> None:
         self._bm.free(request_id)
@@ -76,7 +76,7 @@ class SchedulingBridge:
 
     def schedule(self, cache_hits: list[tuple[str, list[int], int]]) -> dict[str, Any]:
         """Run the scheduler, returning a batch dict from Rust PyScheduler."""
-        return self._scheduler.schedule(self._bm, cache_hits)
+        return self._scheduler.schedule(self._bm, cache_hits)  # type: ignore[no-any-return]
 
     def add_request(
         self,
@@ -88,18 +88,18 @@ class SchedulingBridge:
 
     def record_output(self, request_id: str, token_id: int) -> bool:
         """Notify scheduler of an output token. Returns True if request is finished."""
-        return self._scheduler.record_output(request_id, token_id)
+        return self._scheduler.record_output(request_id, token_id)  # type: ignore[no-any-return]
 
     @property
     def waiting_count(self) -> int:
-        return self._scheduler.waiting_count()
+        return self._scheduler.waiting_count()  # type: ignore[no-any-return]
 
     @property
     def running_count(self) -> int:
-        return self._scheduler.running_count()
+        return self._scheduler.running_count()  # type: ignore[no-any-return]
 
     def has_work(self) -> bool:
-        return self._scheduler.has_work()
+        return self._scheduler.has_work()  # type: ignore[no-any-return]
 
     # ── Prefix Cache API ──
 

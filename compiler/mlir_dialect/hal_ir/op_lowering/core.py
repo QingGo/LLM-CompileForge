@@ -17,7 +17,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from compiler.mlir_artifact import MlirOp
+from compiler.mlir_artifact import MlirOp  # type: ignore[attr-defined]
 from compiler.mlir_dialect.hal_ir.ssa_tracker import SSATracker
 
 _log = logging.getLogger(__name__)
@@ -158,7 +158,7 @@ def parse_attr_shape(shape_str: str) -> list[int | str]:
 
 # ── Dispatch table ──────────────────────────────────────────────────
 
-_OP_HANDLERS: dict[str, Callable] = {}
+_OP_HANDLERS: dict[str, Callable[..., Any]] = {}
 
 
 # ── Main lowering dispatch ──────────────────────────────────────────
@@ -219,7 +219,7 @@ def lower_op(
             result.output_types = [
                 str(r.type) for r in results if hasattr(r, "type")
             ]
-        return result
+        return result  # type: ignore[no-any-return]
 
     # Unknown op — skip non-SF ops silently, warn for unrecognized SF ops
     if op_name in ("func.return", "return"):

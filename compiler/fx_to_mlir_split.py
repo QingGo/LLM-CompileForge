@@ -3,10 +3,11 @@ from __future__ import annotations
 import logging
 import re
 import sys
+from typing import Any
 
 import torch
 
-from compiler.mlir_artifact import MlirFunction, MlirOp
+from compiler.mlir_artifact import MlirFunction, MlirOp  # type: ignore[attr-defined]
 
 _log = logging.getLogger(__name__)
 
@@ -108,22 +109,22 @@ def _split_into_functions(
     if len(mlir_ops) <= ops_per_func:
         return mlir_ops, 1
 
-    result: list[MlirOp] = []
+    result_ops: list[MlirOp] = []
     for i, op in enumerate(mlir_ops):
         if i > 0 and i % ops_per_func == 0:
-            result.append(MlirOp(
+            result_ops.append(MlirOp(
                 name="_sentinel", dialect="_sentinel", op_name="_func_boundary",
                 operands=[], results=[], attributes={},
                 input_types=[], output_types=[],
             ))
-        result.append(op)
-    return result, (len(mlir_ops) + ops_per_func - 1) // ops_per_func
+        result_ops.append(op)
+    return result_ops, (len(mlir_ops) + ops_per_func - 1) // ops_per_func
 
 
 # ── Layer detection helpers ─────────────────────────────
 
 
-def _detect_layer(nn_module_stack: dict, prev_layer: str) -> str:
+def _detect_layer(nn_module_stack: dict[str, Any], prev_layer: str) -> str:
     """Extract layer identifier from ``nn_module_stack`` dict.
 
     Returns one of:
@@ -158,7 +159,7 @@ def _detect_layer(nn_module_stack: dict, prev_layer: str) -> str:
     return "embed_prefix"
 
 
-def _log_split_plan(mlir_ops: list, boundaries: list[int]) -> None:
+def _log_split_plan(mlir_ops: list[Any], boundaries: list[int]) -> None:
     """Log layer-based split plan to stderr."""
     segments: list[tuple[str, int]] = []
     prev = 0

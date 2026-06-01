@@ -147,7 +147,7 @@ def _build_ssa_map(func: MlirFunction, arg_values: list[ir.Value]) -> dict[str, 
 
 
 def _emit_weight_op(op: MlirOp, ctx: Any, ssa_map: dict[str, ir.Value], body_blk: Any,
-                     weights: dict | None = None) -> None:
+                     weights: dict[str, Any] | None = None) -> None:
     """Emit a weight/constant op into the IR builder.
 
     For scalar constants (_const_*) with known values, emits ``arith.constant``

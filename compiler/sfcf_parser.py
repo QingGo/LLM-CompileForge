@@ -12,6 +12,7 @@ embedded in compiled .dylib files, including:
 
 import ctypes
 import struct
+from typing import Any
 
 import numpy as np
 
@@ -41,9 +42,9 @@ def _read_str(data: bytes, pos: int) -> tuple[str, int]:
 # Top-level SFCF blob parser
 # =====================================================================
 
-def parse_sfcf_blob(blob: bytes):
+def parse_sfcf_blob(blob: bytes) -> tuple[dict[str, str], dict[str, np.ndarray[Any, Any]], int, int]:
     """Parse SFCF v2/v3 blob → (name_mapping, constants_dict, graph_start_pos, version)."""
-    assert blob[:4] == b'SFCF', f"Bad magic: {blob[:4]}"
+    assert blob[:4] == b'SFCF', f"Bad magic: {blob[:4]}"  # type: ignore[str-bytes-safe]
     v, pos = _read_u32(blob, 4)
     assert 2 <= v <= 4, f"Unsupported SFCF version: {v}"
 
@@ -57,7 +58,7 @@ def parse_sfcf_blob(blob: bytes):
 
     # Constants (compiler-synthesized tensors)
     const_count, pos = _read_u32(blob, pos)
-    constants: dict[str, np.ndarray] = {}
+    constants: dict[str, np.ndarray[Any, Any]] = {}
     for _ in range(const_count):
         name, pos = _read_str(blob, pos)
         dtype_code = blob[pos]
@@ -113,7 +114,7 @@ def parse_contract_section(data: bytes, pos: int) -> dict[str, str]:
     return contract
 
 
-def parse_compute_graph(data: bytes, pos: int, version: int = 3):
+def parse_compute_graph(data: bytes, pos: int, version: int = 3) -> tuple[dict[str, Any], int]:
     """Parse compute graph → list of func dicts + global I/O indices.
 
     Args:
@@ -140,9 +141,9 @@ def parse_compute_graph(data: bytes, pos: int, version: int = 3):
             elif bt == 1:      # Ssa
                 pf, pos = _read_u32(data, pos)
                 oi, pos = _read_u32(data, pos)
-                binding = ('ssa', pf, oi)
+                binding = ('ssa', pf, oi)  # type: ignore[assignment]
             elif bt == 2:      # GlobalInput
-                binding = ('global_input',)
+                binding = ('global_input',)  # type: ignore[assignment]
             else:
                 raise ValueError(f"Unknown binding type {bt}")
             rank = data[pos]
@@ -198,7 +199,7 @@ def parse_compute_graph(data: bytes, pos: int, version: int = 3):
 # MemRef descriptor construction
 # =====================================================================
 
-def make_memref_descriptor(arr: np.ndarray):
+def make_memref_descriptor(arr: np.ndarray[Any, Any]) -> Any:
     """Build a ctypes MemRef descriptor for a numpy array.
 
     The descriptor is a packed struct:
@@ -236,7 +237,7 @@ def make_memref_descriptor(arr: np.ndarray):
 # SRET output parsing
 # =====================================================================
 
-def parse_sret_outputs(sret_bytes: bytes, output_defs: list[dict]) -> list[np.ndarray]:
+def parse_sret_outputs(sret_bytes: bytes, output_defs: list[dict[str, Any]]) -> list[np.ndarray[Any, Any]]:
     """Parse output tensors from the sret buffer written by the ciface kernel.
 
     Each output descriptor in the sret buffer has layout:
@@ -283,8 +284,8 @@ def parse_sret_outputs(sret_bytes: bytes, output_defs: list[dict]) -> list[np.nd
 # =====================================================================
 
 def verify_output_shapes(
-    func_outputs: list[list[np.ndarray]],
-    compute_graph_functions: list[dict],
+    func_outputs: list[list[np.ndarray[Any, Any]]],
+    compute_graph_functions: list[dict[str, Any]],
 ) -> list[str]:
     """Verify parsed sret output tensors match compute graph declarations.
 
