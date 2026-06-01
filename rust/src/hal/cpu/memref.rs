@@ -187,7 +187,7 @@ unsafe impl<const RANK: usize> Send for MemRefDesc<RANK> {}
 
 // ── Rank-erased descriptor enum ───────────────────────────────────
 
-pub enum MemRefDescAny {
+pub(crate) enum MemRefDescAny {
     R0(MemRefDesc0),
     R1(MemRefDesc1),
     R2(MemRefDesc2),

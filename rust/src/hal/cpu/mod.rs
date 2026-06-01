@@ -29,7 +29,7 @@ use executable::CpuExecutable as RawCpuExecutable;
 
 #[derive(Debug)]
 #[allow(dead_code)]
-pub struct CpuBuffer {
+pub(crate) struct CpuBuffer {
     inner: RawCpuBuffer,
     /// Element size in bytes (4 for f32, 8 for i64).
     elem_size: usize,
@@ -350,7 +350,8 @@ impl traits::Executable for CpuExecutable {
 pub use device::{CpuDevice, CpuEvent, CpuStream};
 #[allow(unused_imports)]
 pub use executable::CpuExecutable as Executable;
-pub use memref::{MemRefDesc2, MemRefDescAny};
+pub use memref::MemRefDesc2;
+pub(crate) use memref::MemRefDescAny;
 pub use sret::{make_memref_descriptor, read_sret_descriptor};
 
 // ── Tests ─────────────────────────────────────────────────────────────
