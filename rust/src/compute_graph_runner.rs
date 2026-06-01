@@ -131,7 +131,10 @@ fn allocate_output_buffers(
 ) -> Result<Vec<SFATensor>, anyhow::Error> {
     let mut output_tensors: Vec<SFATensor> = Vec::with_capacity(func_def.outputs.len());
     for (oi, io_def) in func_def.outputs.iter().enumerate() {
-        let numel = estimate_output_numel(&io_def.shape, seq_len);
+        // Compute resolved shape and numel consistently (same logic as
+        // estimate_output_numel so that SFATensor::from_vec_f32 doesn't
+        // panic with mismatched data length vs numel).
+        let (shape_usize, numel) = resolve_output_shape_and_numel(&io_def.shape, seq_len);
         let vec = vec![0.0f32; numel];
         log::trace!(
             "allocate_output_buffers: func[{}] output[{}] estimated numel={} (shape={:?}, seq_len={})",
@@ -141,12 +144,7 @@ fn allocate_output_buffers(
             io_def.shape,
             seq_len,
         );
-        let shape_fallback: Vec<usize> = io_def
-            .shape
-            .iter()
-            .map(|&d| if d == 0 { 1 } else { d as usize })
-            .collect();
-        let tensor = SFATensor::from_vec_f32(vec, shape_fallback);
+        let tensor = SFATensor::from_vec_f32(vec, shape_usize);
         output_tensors.push(tensor);
     }
     Ok(output_tensors)
@@ -327,6 +325,32 @@ fn estimate_output_numel(shape: &[u64], seq_len: usize) -> usize {
     }
     // Minimum sensible size: 16 elements (avoids empty-output issues).
     numel.max(16)
+}
+
+/// Resolve both the shape (as Vec<usize>) and element count from the compute
+/// graph's output shape metadata, using the same dynamic-dimension logic.
+fn resolve_output_shape_and_numel(
+    shape: &[u64],
+    seq_len: usize,
+) -> (Vec<usize>, usize) {
+    let mut first_zero = true;
+    let shape_usize: Vec<usize> = shape
+        .iter()
+        .map(|&d| {
+            if d == 0 {
+                if first_zero {
+                    first_zero = false;
+                    1 // batch
+                } else {
+                    seq_len
+                }
+            } else {
+                d as usize
+            }
+        })
+        .collect();
+    let numel: usize = shape_usize.iter().product();
+    (shape_usize, numel)
 }
 
 /// Determine whether a given output should be intercepted (consumed internally

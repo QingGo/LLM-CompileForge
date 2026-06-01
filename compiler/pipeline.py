@@ -278,10 +278,10 @@ def _apply_mlir_passes(
     # Phase 2 fallback: Python fusion passes
     if not _cpp_fusion_available:
         from compiler.mlir_passes.fusion import (
-            fuse_silu_pass,
-            fuse_rms_norm_pass,
-            fuse_qkv_pass,
             fuse_attention_pass,
+            fuse_qkv_pass,
+            fuse_rms_norm_pass,
+            fuse_silu_pass,
         )
         fusion_pipeline = [
             ("fuse_silu", fuse_silu_pass),

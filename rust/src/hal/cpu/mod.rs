@@ -240,7 +240,7 @@ impl traits::Executable for CpuExecutable {
 
                 log::trace!(
                     "execute: output[{}] sret rank={} sizes={:?} n={} n_bytes={} buf_cap={} \
-                     allocated={:p} aligned={:p}",
+                      allocated={:p} aligned={:p}",
                     oi, out_rank, sizes, n, n_bytes, output_buf.len(),
                     allocated, aligned,
                 );

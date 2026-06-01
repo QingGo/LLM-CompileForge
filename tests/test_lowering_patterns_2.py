@@ -163,8 +163,8 @@ def test_index_idxcoords_mapping():
     #   extract should use outCoords[3] for dim3, constant 0 for dims 0-2
 
     # Find tensor.extract lines involving %arg1 (idx0) and %arg2 (idx1)
-    arg1_extracts = [l for l in lowered.split('\n') if 'tensor.extract' in l and '%arg1' in l]
-    arg2_extracts = [l for l in lowered.split('\n') if 'tensor.extract' in l and '%arg2' in l]
+    arg1_extracts = [line for line in lowered.split('\n') if 'tensor.extract' in line and '%arg1' in line]
+    arg2_extracts = [line for line in lowered.split('\n') if 'tensor.extract' in line and '%arg2' in line]
 
     assert arg1_extracts, "No tensor.extract from idx0 (arg1)"
     assert arg2_extracts, "No tensor.extract from idx1 (arg2)"

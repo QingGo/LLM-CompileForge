@@ -64,7 +64,7 @@ def _infer_new_ones_pure(
     **kwargs: Any,
 ) -> list[tuple[tuple[int | None, ...], str]]:
     """new_ones: create tensor of ones with given shape, defaulting to f32.
-    
+
     PyTorch's torch.ones() defaults to float32. The input is the shape
     tensor (from sym_size → i64) — we use its shape but NOT its element type.
     """

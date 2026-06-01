@@ -1,10 +1,10 @@
 import pytest
 import torch
 import torch.nn.functional as F  # noqa: N812
+from hal.registry import create, get, list_backends, register
 
 from hal.interface import Buffer, Device, OpExecutor
 from hal.pytorch_backend import PyTorchBackend, PyTorchBuffer, PyTorchDevice
-from hal.registry import create, get, list_backends, register
 
 # ═══════════════════════════════════════════════════════════
 # Helpers

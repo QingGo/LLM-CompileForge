@@ -72,7 +72,7 @@ def _resolve_dtype(
     kwargs: dict[str, Any], input_elts: list[str]
 ) -> str | None:
     """Look up dtype from kwargs using torch.dtype keys in _DTYPE_MAP.
-    
+
     Supports both torch.dtype values (torch.int64 → "i64") and integer
     dtype codes (3 → "i64") for backward compat with dtype function tests.
     """
@@ -260,7 +260,7 @@ def _resolve_op_types(
     # and _fake_to_shape_tuple may produce PyTorch-format type strings
     # (e.g. "float32", "int64") while type checks and downstream ops
     # expect MLIR format (e.g. "f32", "i64").
-    _PYTORCH_TO_MLIR = {
+    _pytorch_to_mlir = {
         "float32": "f32", "float": "f32",
         "float16": "f16", "half": "f16",
         "bfloat16": "bf16",
@@ -271,7 +271,7 @@ def _resolve_op_types(
         "uint8": "ui8",
         "bool": "i1",
     }
-    input_elts = [_PYTORCH_TO_MLIR.get(e, e) for e in input_elts]
+    input_elts = [_pytorch_to_mlir.get(e, e) for e in input_elts]
 
     # ── Type validation: fail fast on mismatched operand types ──
 
