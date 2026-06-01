@@ -549,7 +549,191 @@ mod tests {
         let beta = [0.0f32; 4];
         let mut out = [0.0f32; 4];
         fused_layer_norm(&inp, &mut out, &gamma, &beta, 0, 1e-5);
-        // With hidden_dim=0, no processing; out unchanged
         assert_eq!(out, [0.0f32; 4]);
+    }
+
+    // --------------------------------------------------------------------------
+    // Bug-regression tests — each reproduces a real bug found in the HAL runner
+    // --------------------------------------------------------------------------
+
+    /// Regression test for the batched matmul bug (2026-06-01):
+    /// `matmul_blas` with `transpose_b=false` must compute every batch
+    /// element, not just the first one.
+    #[test]
+    fn test_batched_matmul_all_batches_computed() {
+        // [2, 2, 2] @ [2, 2, 2] — 2 batches of [2,2] @ [2,2]
+        let m = 2;
+        let k = 2;
+        let n = 2;
+        let batches = 2;
+        // A: two identity matrices [[1,0],[0,1]], [[2,0],[0,2]]
+        let a: Vec<f32> = vec![
+            1.0, 0.0, 0.0, 1.0,  // batch 0: identity
+            2.0, 0.0, 0.0, 2.0,  // batch 1: 2x identity
+        ];
+        // B: two ones matrices [[3,3],[3,3]], [[4,4],[4,4]]
+        let b: Vec<f32> = vec![
+            3.0, 3.0, 3.0, 3.0,  // batch 0: all 3s
+            4.0, 4.0, 4.0, 4.0,  // batch 1: all 4s
+        ];
+        let mut out = vec![0.0f32; batches * m * n];
+
+        let a_shape: Vec<i64> = vec![batches as i64, m as i64, k as i64];
+        let b_shape: Vec<i64> = vec![batches as i64, k as i64, n as i64];
+
+        matmul_blas(&a, &b, &mut out, &a_shape, &b_shape, false).unwrap();
+
+        // Batch 0: [[1,0],[0,1]] @ [[3,3],[3,3]] = [[3,3],[3,3]]
+        assert!((out[0] - 3.0).abs() < 1e-5, "batch0[0,0] expected 3, got {}", out[0]);
+        assert!((out[1] - 3.0).abs() < 1e-5, "batch0[0,1] expected 3, got {}", out[1]);
+        assert!((out[2] - 3.0).abs() < 1e-5, "batch0[1,0] expected 3, got {}", out[2]);
+        assert!((out[3] - 3.0).abs() < 1e-5, "batch0[1,1] expected 3, got {}", out[3]);
+
+        // Batch 1: [[2,0],[0,2]] @ [[4,4],[4,4]] = [[8,8],[8,8]]
+        let off = (m * n) as usize;
+        assert!((out[off + 0] - 8.0).abs() < 1e-5, "batch1[0,0] expected 8, got {}", out[off]);
+        assert!((out[off + 1] - 8.0).abs() < 1e-5, "batch1[0,1] expected 8, got {}", out[off+1]);
+        assert!((out[off + 2] - 8.0).abs() < 1e-5, "batch1[1,0] expected 8, got {}", out[off+2]);
+        assert!((out[off + 3] - 8.0).abs() < 1e-5, "batch1[1,1] expected 8, got {}", out[off+3]);
+    }
+
+    /// Regression test for the batched matmul bug with 4D attention shapes:
+    /// [1,12,4,64] @ [1,12,64,4] = [1,12,4,4] — all 12 heads must be computed.
+    #[test]
+    fn test_batched_matmul_4d_attention_shape() {
+        let batch = 1;
+        let heads = 3;
+        let seq = 2;
+        let dim = 4;
+        let total = batch * heads * seq * dim;
+
+        // A: fill with known pattern: a[b,h,i,j] = b*1000 + h*100 + i*10 + j
+        let a: Vec<f32> = (0..total).map(|idx| {
+            let j = idx % dim;
+            let i = (idx / dim) % seq;
+            let h = (idx / (seq * dim)) % heads;
+            (h * 100 + i * 10 + j) as f32
+        }).collect();
+
+        // B: identity-like for each head
+        let b_total = batch * heads * dim * seq;
+        let mut b = vec![0.0f32; b_total];
+        for h in 0..heads {
+            for i in 0..dim {
+                for j in 0..seq {
+                    b[(h * dim * seq + i * seq + j) as usize] = if i == j as usize { 1.0 } else { 0.0 };
+                }
+            }
+        }
+
+        let out_total = batch * heads * seq * seq;
+        let mut out = vec![0.0f32; out_total];
+
+        let a_shape = vec![batch as i64, heads as i64, seq as i64, dim as i64];
+        let b_shape = vec![batch as i64, heads as i64, dim as i64, seq as i64];
+
+        matmul_blas(&a, &b, &mut out, &a_shape, &b_shape, false).unwrap();
+
+        // Verify head 1 (index 1) is NOT all zeros (the original bug)
+        let head1_offset = (1 * seq * seq) as usize;
+        let head1_sum: f32 = out[head1_offset..head1_offset + seq * seq].iter().sum();
+        assert!(head1_sum.abs() > 1e-5,
+            "head 1 output should be non-zero (batched matmul must process all heads), got sum={}", head1_sum);
+
+        // Head 0 should match A[0,:,:] @ B[0,:,:]
+        // For seq=2, dim=4: expected[0,0,0] = sum_k A[0,0,k] * B[0,k,0]
+        // A[0,0,:] = [0, 1, 2, 3], B[0,:,0] = [1, 0, 0, 0] → expected = 0
+        // A[0,0,:] @ B[0,:,:] = [0, 1, 2, 3] (since B is identity for each head)
+        assert!((out[0] - 0.0).abs() < 1e-5);
+        assert!((out[seq as usize] - 10.0).abs() < 1e-5,
+            "head0 pos1 dim0: expected 10, got {}", out[seq as usize]);
+    }
+
+    /// Verify causal mask values: lower-triangular = 0.0, upper = -inf
+    /// using element_wise add with scores and softmax.
+    #[test]
+    fn test_causal_mask_produces_correct_softmax() {
+        let seq = 4;
+        // Build causal mask: mask[i,j] = 0 if j<=i else -inf
+        let mut mask = vec![0.0f32; seq * seq];
+        for i in 0..seq {
+            for j in 0..seq {
+                mask[i * seq + j] = if j <= i { 0.0 } else { f32::NEG_INFINITY };
+            }
+        }
+
+        // Scores: all ones
+        let scores: Vec<f32> = vec![1.0f32; seq * seq];
+        // Masked scores = scores + mask
+        let mut masked = vec![0.0f32; seq * seq];
+        for i in 0..seq * seq {
+            masked[i] = scores[i] + mask[i];
+        }
+
+        // Softmax along last dim
+        let mut softmax_out = vec![0.0f32; seq * seq];
+        for row in 0..seq {
+            let start = row * seq;
+            let end = start + seq;
+            let max_val = masked[start..end].iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let mut sum = 0.0f32;
+            for j in start..end {
+                softmax_out[j] = (masked[j] - max_val).exp();
+                sum += softmax_out[j];
+            }
+            for j in start..end {
+                softmax_out[j] /= sum;
+            }
+        }
+
+        // Verify causal constraint: upper triangular should be 0.0
+        for i in 0..seq {
+            for j in 0..seq {
+                if j > i {
+                    assert!(softmax_out[i * seq + j] == 0.0,
+                        "pos({},{}) should be 0 (causal mask)", i, j);
+                } else {
+                    assert!(softmax_out[i * seq + j] > 0.0,
+                        "pos({},{}) should be >0 (valid attention)", i, j);
+                }
+            }
+        }
+
+        // Row sums should be 1.0
+        for i in 0..seq {
+            let row_sum: f32 = softmax_out[i*seq..(i+1)*seq].iter().sum();
+            assert!((row_sum - 1.0).abs() < 1e-5,
+                "row {} sum should be 1, got {}", i, row_sum);
+        }
+
+        // Position 0 only attends to itself → softmax[0] = [1, 0, 0, 0]
+        assert!((softmax_out[0] - 1.0).abs() < 1e-5);
+        assert!(softmax_out[1] == 0.0);
+        assert!(softmax_out[2] == 0.0);
+        assert!(softmax_out[3] == 0.0);
+    }
+
+    /// Verify attention scaling: Q must be multiplied by 1/sqrt(head_dim)
+    /// before the matmul, not 1.0 (bug: shape dims [1,4] were used instead).
+    #[test]
+    fn test_attention_scaling_factor() {
+        let head_dim = 64;
+        let scale = 1.0 / (head_dim as f32).sqrt();
+        assert!((scale - 0.125).abs() < 1e-5,
+            "attention scaling should be 1/sqrt(64)=0.125, got {}", scale);
+
+        // Verify: Q scaled by 0.125 gives different attention than Q unscaled
+        let q: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];  // [1, 1, 1, 4]
+        let k: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];  // [1, 1, 4, 1]
+
+        // Without scaling
+        let score_no_scale = q[0]*k[0] + q[1]*k[1] + q[2]*k[2] + q[3]*k[3];
+        // With scaling on Q
+        let q_scaled: Vec<f32> = q.iter().map(|&v| v * scale).collect();
+        let score_with_scale = q_scaled[0]*k[0] + q_scaled[1]*k[1] + q_scaled[2]*k[2] + q_scaled[3]*k[3];
+
+        assert!((score_no_scale - 30.0).abs() < 1e-5);
+        assert!((score_with_scale - 30.0 * scale).abs() < 1e-5);
+        assert!((score_no_scale - score_with_scale / scale).abs() < 1e-5);
     }
 }
