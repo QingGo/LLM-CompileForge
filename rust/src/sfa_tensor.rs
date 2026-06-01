@@ -14,6 +14,8 @@ use std::ffi::c_void;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::hal::cpu::memref::{MemRefDescAny, MemRefDesc1, MemRefDesc2, MemRefDesc3, MemRefDesc4};
+
 // ── Drop tracking for tests ────────────────────────────────────────
 
 /// Global counter: total number of Owned SFATensor drops across all threads.
@@ -332,6 +334,53 @@ impl SFATensor {
     fn data_ptr(&self) -> *mut u8 {
         self.raw.data_ptr()
     }
+
+    /// Convert to a rank-erased MLIR MemRef descriptor for dylib ciface calls.
+    ///
+    /// Constructs a `MemRefDesc<RANK>` on the stack via field-by-field copy from
+    /// the binary-compatible `SFATensorRaw<RANK>` descriptor, then wraps it in
+    /// `MemRefDescAny`.  This produces a proper `MemRefDesc<RANK>*` pointer that
+    /// compiled dylib functions expect.
+    pub fn as_memref_descriptor_any(&self) -> MemRefDescAny {
+        match &self.raw {
+            SFATensorRawAny::R1(r) => {
+                MemRefDescAny::R1(MemRefDesc1 {
+                    allocated: r.allocated,
+                    aligned: r.aligned,
+                    offset: r.offset,
+                    sizes: r.sizes,
+                    strides: r.strides,
+                })
+            }
+            SFATensorRawAny::R2(r) => {
+                MemRefDescAny::R2(MemRefDesc2 {
+                    allocated: r.allocated,
+                    aligned: r.aligned,
+                    offset: r.offset,
+                    sizes: r.sizes,
+                    strides: r.strides,
+                })
+            }
+            SFATensorRawAny::R3(r) => {
+                MemRefDescAny::R3(MemRefDesc3 {
+                    allocated: r.allocated,
+                    aligned: r.aligned,
+                    offset: r.offset,
+                    sizes: r.sizes,
+                    strides: r.strides,
+                })
+            }
+            SFATensorRawAny::R4(r) => {
+                MemRefDescAny::R4(MemRefDesc4 {
+                    allocated: r.allocated,
+                    aligned: r.aligned,
+                    offset: r.offset,
+                    sizes: r.sizes,
+                    strides: r.strides,
+                })
+            }
+        }
+    }
 }
 
 // ── Drop ───────────────────────────────────────────────────────────
@@ -575,5 +624,73 @@ mod tests {
             std::mem::offset_of!(SFATensorRaw2, offset), 16,
             "offset field must be at byte 16 for C ABI compatibility"
         );
+    }
+
+    // ── as_memref_descriptor_any() roundtrip tests ──────────────────
+
+    #[test]
+    fn test_as_memref_descriptor_any_from_rank1() {
+        let t = SFATensor::from_vec_f32(vec![1.0f32, 2.0, 3.0], vec![3]);
+        let desc = t.as_memref_descriptor_any();
+        match desc {
+            MemRefDescAny::R1(d) => {
+                assert_eq!(d.sizes, [3i64]);
+                assert_eq!(d.strides, [1i64]);
+                // allocated pointer must match source tensor's allocated
+                let raw_allocated = match &t.raw {
+                    SFATensorRawAny::R1(r) => r.allocated,
+                    _ => unreachable!(),
+                };
+                assert_eq!(d.allocated, raw_allocated);
+                assert_eq!(d.aligned, raw_allocated);
+                assert_eq!(d.offset, 0);
+            }
+            _ => panic!("expected MemRefDescAny::R1 variant"),
+        }
+    }
+
+    #[test]
+    fn test_as_memref_descriptor_any_from_rank2() {
+        let t = SFATensor::from_vec_f32(vec![0.0f32; 8], vec![2, 4]);
+        let desc = t.as_memref_descriptor_any();
+        match desc {
+            MemRefDescAny::R2(d) => {
+                assert_eq!(d.sizes, [2i64, 4i64]);
+                assert_eq!(d.strides, [4i64, 1i64]);
+                assert!(!d.allocated.is_null());
+                assert_eq!(d.offset, 0);
+            }
+            _ => panic!("expected MemRefDescAny::R2 variant"),
+        }
+    }
+
+    #[test]
+    fn test_as_memref_descriptor_any_from_rank3() {
+        let data = vec![0.0f32; 24]; // 2 * 3 * 4
+        let t = SFATensor::from_vec_f32(data, vec![2, 3, 4]);
+        let desc = t.as_memref_descriptor_any();
+        match desc {
+            MemRefDescAny::R3(d) => {
+                assert_eq!(d.sizes, [2i64, 3i64, 4i64]);
+                assert_eq!(d.strides, [12i64, 4i64, 1i64]);
+                assert!(!d.allocated.is_null());
+            }
+            _ => panic!("expected MemRefDescAny::R3 variant"),
+        }
+    }
+
+    #[test]
+    fn test_as_memref_descriptor_any_from_rank4() {
+        let data = vec![0.0f32; 120]; // 2 * 3 * 4 * 5
+        let t = SFATensor::from_vec_f32(data, vec![2, 3, 4, 5]);
+        let desc = t.as_memref_descriptor_any();
+        match desc {
+            MemRefDescAny::R4(d) => {
+                assert_eq!(d.sizes, [2i64, 3i64, 4i64, 5i64]);
+                assert_eq!(d.strides, [60i64, 20i64, 5i64, 1i64]);
+                assert!(!d.allocated.is_null());
+            }
+            _ => panic!("expected MemRefDescAny::R4 variant"),
+        }
     }
 }

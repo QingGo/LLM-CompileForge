@@ -28,7 +28,11 @@ mod kv_cache_tests;
 // Include compute_graph module for testing (normally only in main.rs bin).
 #[cfg(test)]
 #[path = "compute_graph.rs"]
-mod compute_graph_test;
+mod compute_graph;
+
+#[cfg(test)]
+#[path = "global_input.rs"]
+mod global_input;
 
 #[path = "tensor.rs"]
 pub mod tensor;

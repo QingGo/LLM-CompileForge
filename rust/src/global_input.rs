@@ -9,6 +9,7 @@ use std::ffi::c_void;
 use crate::compute_graph::IOTensorDef;
 use crate::hal::cpu::memref::MemRefDesc1;
 use crate::hal::cpu::{MemRefDescAny, MemRefDesc2};
+use crate::sfa_tensor::SFATensor;
 
 /// Build a MemRef descriptor and raw buffer for a GlobalInput binding.
 ///
@@ -33,7 +34,7 @@ pub fn fill_global_input(
     positions: &[u32],
     io_def: &IOTensorDef,
     bi: usize,
-) -> Result<(MemRefDescAny, Vec<u8>), anyhow::Error> {
+) -> Result<SFATensor, anyhow::Error> {
     let shape: Vec<usize> = io_def.shape.iter().map(|&d| d as usize).collect();
     let is_dynamic = shape.contains(&0);
     if is_dynamic {
@@ -42,35 +43,13 @@ pub fn fill_global_input(
         match rank {
             1 => {
                 let n_tokens = data_source.len();
-                let raw: Vec<u8> = data_source
-                    .iter()
-                    .flat_map(|&v| (v as i64).to_ne_bytes())
-                    .collect();
-                let p = raw.as_ptr();
-                let memref = MemRefDesc1 {
-                    allocated: p as *mut c_void,
-                    aligned: p as *mut c_void,
-                    offset: 0,
-                    sizes: [n_tokens as i64],
-                    strides: [1],
-                };
-                return Ok((MemRefDescAny::R1(memref), raw));
+                let data: Vec<i64> = data_source.iter().map(|&v| v as i64).collect();
+                return Ok(SFATensor::from_vec_i64(data, vec![n_tokens]));
             }
             2 => {
-                let n_tokens = data_source.len() as i64;
-                let raw: Vec<u8> = data_source
-                    .iter()
-                    .flat_map(|&v| (v as i64).to_ne_bytes())
-                    .collect();
-                let p = raw.as_ptr();
-                let memref = MemRefDesc2 {
-                    allocated: p as *mut c_void,
-                    aligned: p as *mut c_void,
-                    offset: 0,
-                    sizes: [1, n_tokens],
-                    strides: [n_tokens, 1],
-                };
-                return Ok((MemRefDescAny::R2(memref), raw));
+                let n_tokens = data_source.len();
+                let data: Vec<i64> = data_source.iter().map(|&v| v as i64).collect();
+                return Ok(SFATensor::from_vec_i64(data, vec![1, n_tokens]));
             }
             r => anyhow::bail!(
                 "fill_global_input: unsupported rank {} for dynamic \
@@ -95,14 +74,67 @@ pub fn fill_global_input(
             }
         })
         .collect();
-    let raw: Vec<u8> = padded.iter().flat_map(|&v| v.to_ne_bytes()).collect();
-    let p = raw.as_ptr();
-    let memref = MemRefDesc2 {
-        allocated: p as *mut c_void,
-        aligned: p as *mut c_void,
-        offset: 0,
-        sizes: [shape[0] as i64, shape.get(1).copied().unwrap_or(1) as i64],
-        strides: [shape.get(1).copied().unwrap_or(1) as i64, 1],
-    };
-    Ok((MemRefDescAny::R2(memref), raw))
+    let static_shape: Vec<usize> = vec![
+        shape[0],
+        shape.get(1).copied().unwrap_or(1),
+    ];
+    Ok(SFATensor::from_vec_i64(padded, static_shape))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compute_graph::IOTensorDef;
+    use crate::sfa_tensor::SFATensorRawAny;
+
+    #[test]
+    fn test_fill_global_input_returns_sfa_tensor() {
+        let io_def = IOTensorDef {
+            rank: 1,
+            shape: vec![3],
+            consumed_internally: false,
+        };
+        let result = fill_global_input(&[1u32, 2, 3], &[0u32, 1, 2], &io_def, 0);
+        assert!(result.is_ok());
+        let tensor = result.unwrap();
+        // Static path always uses rank 2 (matching old MemRefDesc2 behavior):
+        // sizes=[shape[0], max(shape[1], 1)] for dylib compatibility.
+        assert_eq!(tensor.rank(), 2);
+        assert_eq!(tensor.elem_size, 8);
+        assert_eq!(tensor.shape(), vec![3, 1]);
+    }
+
+    #[test]
+    fn test_fill_global_input_i64_data() {
+        let io_def = IOTensorDef {
+            rank: 1,
+            shape: vec![3],
+            consumed_internally: false,
+        };
+        let result = fill_global_input(&[1u32, 2, 3], &[0u32, 1, 2], &io_def, 0);
+        assert!(result.is_ok());
+        let tensor = result.unwrap();
+        match &tensor.raw {
+            SFATensorRawAny::R2(r) => {
+                let ptr = r.allocated as *const i64;
+                let data = unsafe { std::slice::from_raw_parts(ptr, 3) };
+                assert_eq!(data, &[1i64, 2, 3]);
+            }
+            _ => panic!("expected R2 tensor"),
+        }
+    }
+
+    #[test]
+    fn test_fill_global_input_dynamic_shape() {
+        let io_def = IOTensorDef {
+            rank: 1,
+            shape: vec![0], // dynamic sentinel
+            consumed_internally: false,
+        };
+        let result = fill_global_input(&[1u32, 2, 3, 4], &[0u32, 1, 2, 3], &io_def, 0);
+        assert!(result.is_ok());
+        let tensor = result.unwrap();
+        assert_eq!(tensor.rank(), 1);
+        assert_eq!(tensor.shape(), vec![4]);
+    }
 }
