@@ -18,6 +18,10 @@ pub mod types;
 mod integration_tests;
 
 #[cfg(test)]
+#[path = "sfa_tensor.rs"]
+mod sfa_tensor;
+
+#[cfg(test)]
 #[path = "kv_cache_tests.rs"]
 mod kv_cache_tests;
 
