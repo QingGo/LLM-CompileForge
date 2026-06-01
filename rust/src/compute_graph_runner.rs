@@ -166,45 +166,37 @@ fn extract_output_tensor(
 ) -> Result<Tensor, anyhow::Error> {
     let shapes = &output_shapes[oi];
     let has_negative = shapes.iter().any(|&s| s < 0);
-    let actual_n: usize = crate::hal::cpu::sret::checked_product_from_i64(shapes)
-        .unwrap_or(0);
 
-    let (effective_n, shape_usize) = if has_negative {
-        let mut first_zero = true;
-        let resolved: Vec<usize> = io_def.shape.iter().map(|&d| {
-            if d == 0 {
-                if first_zero {
-                    first_zero = false;
-                    1 // batch
-                } else {
-                    seq_len
-                }
-            } else {
-                std::cmp::max(1, d) as usize
-            }
-        }).collect();
-        let numel: usize = resolved.iter().product();
-        log::warn!(
-            "func[{}] output[{}] sret returned unresolved shapes {:?}; \
-             resolving via io_def={:?} seq_len={} → shape={:?} numel={}",
-            fi, oi, shapes, io_def.shape, seq_len, resolved, numel,
-        );
-        (numel, resolved)
-    } else {
-        let shape_usize: Vec<usize> = shapes.iter().map(|&s| std::cmp::max(1, s) as usize).collect();
-        (actual_n, shape_usize)
-    };
+    // Per-dimension fallback from io_def.shape (restored from 9fd2dd2).
+    // When the dylib returns unresolved dynamic dimension markers
+    // (negative values like -2, -3 in the sret sizes array), replace
+    // each negative/unbounded dimension with the io_def fallback.
+    // This preserves the correct element count (product of fallback
+    // dims) rather than clamping ALL dims to 0 via checked_product.
+    let fallback: Vec<i64> = io_def
+        .shape
+        .iter()
+        .map(|&d| if d == 0 { 1 } else { d as i64 })
+        .collect();
+    let sizes: Vec<i64> = shapes
+        .iter()
+        .zip(fallback.iter())
+        .map(|(&r, &f)| if r <= 0 || r > 1_000_000_000 { f } else { r })
+        .collect();
+    let actual_n: usize = sizes.iter().map(|&s| s as usize).product();
+
+    let shape_usize: Vec<usize> = sizes.iter().map(|&s| s as usize).collect();
 
     let tensor = &output_tensors[oi];
     let buf = tensor.as_buffer_ref();
     let data_slice = unsafe {
-        std::slice::from_raw_parts(buf.as_ptr() as *const f32, effective_n)
+        std::slice::from_raw_parts(buf.as_ptr() as *const f32, actual_n)
     };
     let out_vec = data_slice.to_vec();
 
     log::trace!(
-        "extract_output_tensor: func[{}] output[{}] sret shapes={:?} effective_n={} final_shape={:?}",
-        fi, oi, shapes, effective_n, shape_usize,
+        "extract_output_tensor: func[{}] output[{}] sret shapes={:?} actual_n={} final_shape={:?}",
+        fi, oi, shapes, actual_n, shape_usize,
     );
     Ok(Tensor::new_owned(shape_usize, out_vec, Dtype::F32))
 }
