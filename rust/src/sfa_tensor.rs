@@ -15,6 +15,7 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::hal::cpu::memref::{MemRefDescAny, MemRefDesc1, MemRefDesc2, MemRefDesc3, MemRefDesc4};
+use crate::hal::traits;
 
 // ── Drop tracking for tests ────────────────────────────────────────
 
@@ -141,6 +142,81 @@ impl Drop for OwnedBuf {
         if self.layout.size() > 0 {
             unsafe { alloc::dealloc(self.ptr, self.layout) };
         }
+    }
+}
+
+// ── Buffer adapter ─────────────────────────────────────────────────
+
+/// Adapts an `SFATensor` reference into a HAL `Buffer` trait object.
+struct SfaTensorBuffer<'a> {
+    inner: *const SFATensor,
+    _phantom: std::marker::PhantomData<&'a SFATensor>,
+}
+
+impl std::fmt::Debug for SfaTensorBuffer<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SfaTensorBuffer").finish_non_exhaustive()
+    }
+}
+
+// SAFETY: SfaTensorBuffer provides read-only access to the underlying
+// SFATensor data. All Buffer operations either read metadata or copy data
+// through raw pointers. The lifetime phantom ensures the tensor outlives
+// the buffer. No interior mutability on shared state.
+unsafe impl Send for SfaTensorBuffer<'_> {}
+unsafe impl Sync for SfaTensorBuffer<'_> {}
+
+impl traits::Buffer for SfaTensorBuffer<'_> {
+    fn as_ptr(&self) -> *const u8 {
+        // SAFETY: inner pointer is valid for the lifetime of this buffer,
+        // guaranteed by PhantomData and construction in as_buffer_ref().
+        let t = unsafe { &*self.inner };
+        t.data_ptr() as *const u8
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        let t = unsafe { &*self.inner };
+        t.data_ptr()
+    }
+
+    fn len(&self) -> usize {
+        let t = unsafe { &*self.inner };
+        t.numel() * t.elem_size
+    }
+
+    fn element_size(&self) -> usize {
+        let t = unsafe { &*self.inner };
+        t.elem_size
+    }
+
+    fn shape(&self) -> Vec<usize> {
+        let t = unsafe { &*self.inner };
+        t.shape()
+    }
+
+    fn rank(&self) -> u8 {
+        let t = unsafe { &*self.inner };
+        t.rank() as u8
+    }
+
+    fn copy_from_host(&mut self, src: &[u8], _stream: &dyn traits::Stream) -> Result<(), anyhow::Error> {
+        let t = unsafe { &*self.inner };
+        let ptr = t.data_ptr();
+        let n = (t.numel() * t.elem_size).min(src.len());
+        // SAFETY: ptr is a valid mutable pointer to owned/allowed tensor data.
+        // src lives for the duration of this call. Regions are disjoint.
+        unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), ptr, n); }
+        Ok(())
+    }
+
+    fn copy_to_host(&self, dst: &mut [u8], _stream: &dyn traits::Stream) -> Result<(), anyhow::Error> {
+        let t = unsafe { &*self.inner };
+        let src_ptr = t.data_ptr() as *const u8;
+        let n = (t.numel() * t.elem_size).min(dst.len());
+        // SAFETY: src_ptr points to valid tensor data. dst is a mutable
+        // slice owned by the caller. Regions are disjoint.
+        unsafe { std::ptr::copy_nonoverlapping(src_ptr, dst.as_mut_ptr(), n); }
+        Ok(())
     }
 }
 
@@ -333,6 +409,14 @@ impl SFATensor {
     #[allow(dead_code)]
     fn data_ptr(&self) -> *mut u8 {
         self.raw.data_ptr()
+    }
+
+    /// Return a HAL `Buffer` trait object wrapping this tensor.
+    pub fn as_buffer_ref(&self) -> Box<dyn traits::Buffer + '_> {
+        Box::new(SfaTensorBuffer {
+            inner: self as *const SFATensor,
+            _phantom: std::marker::PhantomData,
+        })
     }
 
     /// Convert to a rank-erased MLIR MemRef descriptor for dylib ciface calls.
@@ -692,5 +776,18 @@ mod tests {
             }
             _ => panic!("expected MemRefDescAny::R4 variant"),
         }
+    }
+
+    /// as_buffer_ref() returns a valid HAL Buffer trait object that
+    /// correctly reports tensor metadata and data access pointers.
+    #[test]
+    fn test_sfa_tensor_as_buffer_ref() {
+        let t = SFATensor::from_vec_f32(vec![1.0f32, 2.0, 3.0, 4.0], vec![2, 2]);
+        let buffer = t.as_buffer_ref();
+        assert!(!buffer.as_ptr().is_null());
+        assert_eq!(buffer.len(), 16); // 4 elems * 4 bytes each (f32)
+        assert_eq!(buffer.element_size(), 4);
+        assert_eq!(buffer.shape(), vec![2, 2]);
+        assert_eq!(buffer.rank(), 2);
     }
 }

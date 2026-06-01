@@ -121,19 +121,18 @@ fn wrap_tensor_buffer(tensor: &Tensor) -> Result<Box<dyn traits::Buffer>, anyhow
 }
 
 /// Pre-allocate output buffers sized from the compute graph metadata.
+/// Returns SFATensors that own the data and provide HAL Buffer access
+/// via `as_buffer_ref()`.
 /// The dims use io_def.shape with 0→1 fallback so that rank() returns
 /// the correct rank for sret descriptor parsing.
-#[allow(clippy::type_complexity)]
 fn allocate_output_buffers(
     func_def: &FuncDef,
     seq_len: usize,
-) -> Result<(Vec<Vec<f32>>, Vec<Box<dyn traits::Buffer>>), anyhow::Error> {
-    let mut output_vecs: Vec<Vec<f32>> = Vec::with_capacity(func_def.outputs.len());
-    let mut output_bufs: Vec<Box<dyn traits::Buffer>> =
-        Vec::with_capacity(func_def.outputs.len());
+) -> Result<Vec<SFATensor>, anyhow::Error> {
+    let mut output_tensors: Vec<SFATensor> = Vec::with_capacity(func_def.outputs.len());
     for (oi, io_def) in func_def.outputs.iter().enumerate() {
         let numel = estimate_output_numel(&io_def.shape, seq_len);
-        let mut vec = vec![0.0f32; numel];
+        let vec = vec![0.0f32; numel];
         log::trace!(
             "allocate_output_buffers: func[{}] output[{}] estimated numel={} (shape={:?}, seq_len={})",
             func_def.index,
@@ -142,22 +141,15 @@ fn allocate_output_buffers(
             io_def.shape,
             seq_len,
         );
-        let raw_buf = InnerCpuBuffer::from_raw_parts(
-            vec.as_mut_ptr() as *mut u8,
-            numel * 4,
-            true, // borrowed
-        )
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
         let shape_fallback: Vec<usize> = io_def
             .shape
             .iter()
             .map(|&d| if d == 0 { 1 } else { d as usize })
             .collect();
-        let cpu_buf = CpuBuffer::with_meta(raw_buf, 4 /* f32 */, shape_fallback);
-        output_vecs.push(vec);
-        output_bufs.push(Box::new(cpu_buf));
+        let tensor = SFATensor::from_vec_f32(vec, shape_fallback);
+        output_tensors.push(tensor);
     }
-    Ok((output_vecs, output_bufs))
+    Ok(output_tensors)
 }
 
 /// Extract a Tensor from the execute() output buffer using returned shapes.
@@ -168,7 +160,7 @@ fn allocate_output_buffers(
 /// and the actual `seq_len`.
 fn extract_output_tensor(
     output_shapes: &[Vec<i64>],
-    output_vecs: &mut [Vec<f32>],
+    output_tensors: &[SFATensor],
     fi: usize,
     oi: usize,
     io_def: &IOTensorDef,
@@ -178,7 +170,6 @@ fn extract_output_tensor(
     let has_negative = shapes.iter().any(|&s| s < 0);
     let actual_n: usize = crate::hal::cpu::sret::checked_product_from_i64(shapes)
         .unwrap_or(0);
-    let mut out_vec = std::mem::take(&mut output_vecs[oi]);
 
     let (effective_n, shape_usize) = if has_negative {
         let mut first_zero = true;
@@ -206,16 +197,12 @@ fn extract_output_tensor(
         (actual_n, shape_usize)
     };
 
-    debug_assert!(
-        effective_n <= out_vec.capacity(),
-        "func[{}] output[{}]: effective_n={} exceeds pre-allocated capacity={}",
-        fi, oi, effective_n, out_vec.capacity(),
-    );
-    if effective_n < out_vec.len() {
-        unsafe {
-            out_vec.set_len(effective_n);
-        }
-    }
+    let tensor = &output_tensors[oi];
+    let buf = tensor.as_buffer_ref();
+    let data_slice = unsafe {
+        std::slice::from_raw_parts(buf.as_ptr() as *const f32, effective_n)
+    };
+    let out_vec = data_slice.to_vec();
 
     log::trace!(
         "extract_output_tensor: func[{}] output[{}] sret shapes={:?} effective_n={} final_shape={:?}",
@@ -283,7 +270,13 @@ pub fn run_function_graph(
 
         // Pre-allocate output buffers sized from the compute graph metadata.
         let seq_len = input_ids.len();
-        let (mut output_vecs, output_bufs) = allocate_output_buffers(func_def, seq_len)?;
+        let output_tensors = allocate_output_buffers(func_def, seq_len)?;
+
+        // Build boxed buffer refs from SFATensors (held alive for output_refs lifetime).
+        let output_bufs: Vec<_> = output_tensors
+            .iter()
+            .map(|t| t.as_buffer_ref())
+            .collect();
 
         // Collect trait-object references for the execute call.
         let input_refs: Vec<&dyn traits::Buffer> =
@@ -300,7 +293,7 @@ pub fn run_function_graph(
         for (oi, _shapes) in output_shapes.iter().enumerate() {
             let io_def = &func_def.outputs[oi];
             let tensor = extract_output_tensor(
-                &output_shapes, &mut output_vecs, fi, oi, io_def, seq_len,
+                &output_shapes, &output_tensors, fi, oi, io_def, seq_len,
             )?;
             func_outputs[fi].push(tensor);
         }
@@ -455,7 +448,12 @@ pub fn run_function_graph_with_kv_intercept(
 
         // Pre-allocate output buffers (same pattern as run_function_graph)
         let seq_len = input_ids.len();
-        let (mut output_vecs, output_bufs) = allocate_output_buffers(func_def, seq_len)?;
+        let output_tensors = allocate_output_buffers(func_def, seq_len)?;
+
+        let output_bufs: Vec<_> = output_tensors
+            .iter()
+            .map(|t| t.as_buffer_ref())
+            .collect();
 
         let input_refs: Vec<&dyn traits::Buffer> =
             input_bufs.iter().map(|b| b.as_ref()).collect();
@@ -467,7 +465,7 @@ pub fn run_function_graph_with_kv_intercept(
 
         for (oi, _shapes) in output_shapes.iter().enumerate() {
             let io_def = &func_def.outputs[oi];
-            let tensor = extract_output_tensor(&output_shapes, &mut output_vecs, fi, oi, io_def, seq_len)?;
+            let tensor = extract_output_tensor(&output_shapes, &output_tensors, fi, oi, io_def, seq_len)?;
             let io_def = &func_def.outputs[oi];
             if should_intercept_consumed(fi, oi, cache_policy, io_def) {
                 intercept_consumed_output(
@@ -572,6 +570,45 @@ mod tests {
         let io_def = IOTensorDef::new(1, vec![64], false);
         assert!(should_intercept_consumed(0, 0, &policy, &io_def),
             "intercepts list should take priority over consumed_internally=false");
+    }
+
+    /// extract_output_tensor must truncate data from the pre-allocated
+    /// SFATensor to the actual size reported by sret output shapes.
+    /// When sret reports 50 elements but the SFATensor was pre-allocated
+    /// with 100 (conservative sizing), the returned Tensor must have
+    /// exactly 50 elements and correct data.
+    #[test]
+    fn test_extract_output_tensor_sfa_truncation() {
+        let data: Vec<f32> = (0..100).map(|i| i as f32).collect();
+        let sfa = SFATensor::from_vec_f32(data, vec![100]);
+
+        let io_def = IOTensorDef::new(1, vec![100], false);
+
+        let output_shapes: Vec<Vec<i64>> = vec![vec![50i64]];
+
+        let result = extract_output_tensor(
+            &output_shapes,
+            &[sfa],
+            0,
+            0,
+            &io_def,
+            1,
+        )
+        .expect("extract_output_tensor should succeed");
+
+        assert_eq!(
+            result.as_slice().len(),
+            50,
+            "output tensor should have 50 elements (truncated from 100)"
+        );
+        assert_eq!(result.shape, vec![50], "output tensor shape should be [50]");
+
+        let expected: Vec<f32> = (0..50).map(|i| i as f32).collect();
+        assert_eq!(
+            result.as_slice(),
+            expected.as_slice(),
+            "first 50 elements should match original pre-allocated data"
+        );
     }
 }
 
