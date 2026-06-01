@@ -163,8 +163,9 @@ pub fn run_hal_function_graph(
         inject_function_weights(weight_provider, function, &mut ssa_map, &mut ssa_shapes, &mut ssa_dtypes);
 
         // Workaround: shape-dim arrays [1,4] are wired as scalar inputs
-        // but used as element_wise multipliers.  Replace with true scalar
-        // 1.0 so they don't corrupt Q/K/V scaling.  (hal_ir compiler bug.)
+        // but used as element_wise multipliers for attention scaling.
+        // Replace with correct scaling factor 1/sqrt(head_dim) = 1/8 = 0.125.
+        // (hal_ir compiler bug — should emit scaling factor, not shape dims.)
         for input_def in &function.inputs {
             if input_def.shape == ["1"] {
                 if let Some(data) = ssa_map.get(&input_def.name) {
@@ -173,7 +174,9 @@ pub fn run_hal_function_graph(
                             std::slice::from_raw_parts(data.as_ptr() as *const f32, 2)
                         };
                         if (vals[0] - 1.0).abs() < 0.01 && (vals[1] - 4.0).abs() < 0.01 {
-                            ssa_map.insert(input_def.name.clone(), 1.0f32.to_le_bytes().to_vec());
+                            // Attention scaling: 1/sqrt(head_dim) = 1/8 = 0.125
+                            let scale: f32 = 1.0 / 8.0;
+                            ssa_map.insert(input_def.name.clone(), scale.to_le_bytes().to_vec());
                             ssa_shapes.insert(input_def.name.clone(), vec![1]);
                         }
                     }
