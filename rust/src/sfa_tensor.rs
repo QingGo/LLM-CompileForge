@@ -499,4 +499,81 @@ mod tests {
         let val = unsafe { *ptr };
         assert!((val - std::f32::consts::PI).abs() < 1e-7);
     }
+
+    // ── ABI-compatibility: size_of assertions ────────────────────────
+    //
+    // These guard against silent ABI drift between Rust SFATensorRaw<RANK>
+    // and C sfa.h / MLIR MemRefDesc<RANK>. The binary layout is:
+    //   struct<(ptr, ptr, i64, array<RANK x i64>, array<RANK x i64>)>
+    //
+    // Header (3 fields × 8 bytes):              24 bytes
+    // Size/strides arrays:                       2 × RANK × 8 bytes
+    //
+    // R1: 24 + 8 + 8  = 40   R2: 24 + 16 + 16 = 56
+    // R3: 24 + 24 + 24 = 72   R4: 24 + 32 + 32 = 88
+
+    /// SFATensorRaw1 must match MemRefDesc<1> — the C/MLIR ABI contract
+    /// for rank-1 memref descriptors (e.g., shape [L] tensors in
+    /// prefill logits slicing).
+    #[test]
+    fn test_sfa_tensor_raw1_size() {
+        assert_eq!(std::mem::size_of::<SFATensorRaw1>(), 40);
+    }
+
+    /// SFATensorRaw2 must match MemRefDesc<2> — used for most 2D tensors
+    /// (weight matrices, KV-cache blocks, attention scores).
+    #[test]
+    fn test_sfa_tensor_raw2_size() {
+        assert_eq!(std::mem::size_of::<SFATensorRaw2>(), 56);
+    }
+
+    /// SFATensorRaw3 must match MemRefDesc<3> — batched operations
+    /// (e.g., [batch, heads, seq]).
+    #[test]
+    fn test_sfa_tensor_raw3_size() {
+        assert_eq!(std::mem::size_of::<SFATensorRaw3>(), 72);
+    }
+
+    /// SFATensorRaw4 must match MemRefDesc<4> — multi-dimensional tensors
+    /// (e.g., [batch, heads, seq, dim]).
+    #[test]
+    fn test_sfa_tensor_raw4_size() {
+        assert_eq!(std::mem::size_of::<SFATensorRaw4>(), 88);
+    }
+
+    // ── ABI-compatibility: field offset assertions ───────────────────
+    //
+    // Field offsets are the ONLY guard against silent ABI drift when
+    // padding or alignment rules differ between C and Rust. A mismatched
+    // aligned/offset field corrupts every memref-bridge call.
+
+    /// allocated pointer must be at offset 0 — the base pointer of the
+    /// memref descriptor, read first by MLIR-generated functions.
+    #[test]
+    fn test_sfa_field_offset_allocated() {
+        assert_eq!(
+            std::mem::offset_of!(SFATensorRaw2, allocated), 0,
+            "allocated pointer must be at byte 0 for C ABI compatibility"
+        );
+    }
+
+    /// aligned pointer must be at offset 8 — the data-aligned pointer
+    /// used for vectorized memref accesses.
+    #[test]
+    fn test_sfa_field_offset_aligned() {
+        assert_eq!(
+            std::mem::offset_of!(SFATensorRaw2, aligned), 8,
+            "aligned pointer must be at byte 8 for C ABI compatibility"
+        );
+    }
+
+    /// offset field must be at offset 16 — the element offset within the
+    /// aligned allocation, part of the 24-byte memref header.
+    #[test]
+    fn test_sfa_field_offset_offset() {
+        assert_eq!(
+            std::mem::offset_of!(SFATensorRaw2, offset), 16,
+            "offset field must be at byte 16 for C ABI compatibility"
+        );
+    }
 }
