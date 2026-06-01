@@ -173,11 +173,25 @@ fn extract_output_tensor(
     // each negative/unbounded dimension with the io_def fallback.
     // This preserves the correct element count (product of fallback
     // dims) rather than clamping ALL dims to 0 via checked_product.
-    let fallback: Vec<i64> = io_def
-        .shape
-        .iter()
-        .map(|&d| if d == 0 { 1 } else { d as i64 })
-        .collect();
+    let fallback: Vec<i64> = {
+        let mut first_zero = true;
+        io_def
+            .shape
+            .iter()
+            .map(|&d| {
+                if d == 0 {
+                    if first_zero {
+                        first_zero = false;
+                        1 // batch is always 1
+                    } else {
+                        seq_len as i64 // subsequent dynamic dims = seq_len
+                    }
+                } else {
+                    d as i64
+                }
+            })
+            .collect()
+    };
     let sizes: Vec<i64> = shapes
         .iter()
         .zip(fallback.iter())

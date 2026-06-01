@@ -238,15 +238,30 @@ impl traits::Executable for CpuExecutable {
                 // malloc calls that used sentinel values in arithmetic.
                 let has_negative = sizes.iter().any(|&s| s < 0);
                 if has_negative {
-                    // Push resolved shape from buffer metadata (matches
-                    // compute graph's io_def.shape + seq_len resolution).
+                    // For negative sentinel outputs: copy dylib data
+                    // using the correct byte count from the resolved
+                    // shape (buffer metadata), NOT the entire pre-alloc
+                    // buffer which may be over-sized.
+                    // Push resolved shape, skip dylib free.
                     let resolved_sizes: Vec<i64> =
                         output_buf.shape().iter().map(|&d| d as i64).collect();
-                    log::trace!(
-                        "execute: output[{}] sret has negative sizes {:?}, \
-                         using resolved shape {:?} from output buffer metadata",
-                        oi, sizes, resolved_sizes,
-                    );
+                    let resolved_n: usize =
+                        resolved_sizes.iter().map(|&s| s as usize).product();
+                    let n_bytes = resolved_n
+                        * output_buf.element_size();
+                    if n_bytes > 0 && n_bytes <= output_buf.len() {
+                        let dst = output_buf.as_ptr() as *mut u8;
+                        log::trace!(
+                            "execute: output[{}] sret neg sizes {:?}, \
+                             resolved={:?} n_bytes={}",
+                            oi, sizes, resolved_sizes, n_bytes,
+                        );
+                        // SAFETY: aligned from dylib sret, dst is
+                        // pre-allocated Rust buffer.
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(aligned, dst, n_bytes);
+                        }
+                    }
                     output_shapes.push(resolved_sizes);
                     continue;
                 }
