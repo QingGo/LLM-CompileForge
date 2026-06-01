@@ -231,16 +231,28 @@ pub fn run_hal_function_graph(
                     Vec::with_capacity(op.outputs.len());
 
                 for (out_idx, _output_name) in op.outputs.iter().enumerate() {
-                    let (numel, _output_dims) = compute_output_shape(
+                    let (numel, output_dims) = compute_output_shape(
                         op, out_idx, &ssa_shapes, &ssa_map, &ssa_dtypes, function, seq_len,
                     );
                     let numel = numel.max(1);
                     let out_elem_size = output_dtype.element_size();
 
-                    let t = if out_elem_size == 8 {
-                        SFATensor::from_vec_i64(vec![0i64; numel], vec![numel])
+                    // Use inferred multi-dimensional shape instead of collapsing to 1D.
+                    // Downstream ops (matmul, sdpa) require correct rank for BLAS dispatch.
+                    let tensor_dims = if output_dims.is_empty() {
+                        vec![numel]
                     } else {
-                        SFATensor::from_vec_f32(vec![0f32; numel], vec![numel])
+                        let product: usize = output_dims.iter().product();
+                        if product == numel {
+                            output_dims
+                        } else {
+                            vec![numel]
+                        }
+                    };
+                    let t = if out_elem_size == 8 {
+                        SFATensor::from_vec_i64(vec![0i64; numel], tensor_dims.clone())
+                    } else {
+                        SFATensor::from_vec_f32(vec![0f32; numel], tensor_dims.clone())
                     };
                     output_tensors.push(t);
                 }
