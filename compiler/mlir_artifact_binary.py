@@ -89,7 +89,9 @@ def _build_name_mapping(module: MlirModule) -> dict[str, str]:
     return mapping
 
 
-def _build_constants_binary(module: MlirModule, name_mapping: dict[str, str]) -> bytes:
+def _build_constants_binary(
+    module: MlirModule, name_mapping: dict[str, str], skip_compute_graph: bool = False,
+) -> bytes:
     """Build a self-contained binary blob with name mapping + constants + compute graph.
 
     Format (all integers little-endian):
@@ -112,7 +114,7 @@ def _build_constants_binary(module: MlirModule, name_mapping: dict[str, str]) ->
             shape[ndim]: u64 repeated
             data_len:   u64
             data:       raw bytes
-        ── compute graph ──
+        ── compute graph ──  (skipped when skip_compute_graph=True)
         num_functions: u32
         For each function:
             symbol: string
@@ -179,7 +181,8 @@ def _build_constants_binary(module: MlirModule, name_mapping: dict[str, str]) ->
         parts.append(data)
 
     # ── Compute graph section ──
-    _emit_compute_graph_section(parts, module, name_mapping)
+    if not skip_compute_graph:
+        _emit_compute_graph_section(parts, module, name_mapping)
 
     # ── Contract section (v4+) — appended after compute graph trailer ──
     # Count global inputs using same logic as _emit_compute_graph_section
@@ -227,9 +230,11 @@ def _emit_compute_graph_section(
         all_weight_names |= set(func.weights.keys())
 
     for fi, func in enumerate(module.functions):
-        for oi, (out_name, _out_type, _consumed_internally) in enumerate(func.outputs):
+        for _oi, (out_name, _out_type, _consumed_internally) in enumerate(func.outputs):
             clean = out_name.lstrip("%")
-            producer[clean] = (fi, oi)
+            # All outputs packed into single rank-3 memref by bufferization.
+            # Map every output name to index 0 so SSA consumers get the packed buffer.
+            producer[clean] = (fi, 0)
 
     # Determine global input: first input of first function
     global_input_func: int = 0
@@ -255,7 +260,9 @@ def _emit_compute_graph_section(
         weight_ops_with_names = [op for op in weight_ops if op.attributes.get("name", "")]
 
         num_inputs = len(func.inputs) + len(weight_ops_with_names)
-        num_outputs = len(func.outputs)
+        # Bufferization packs all function results into a single rank-3 memref.
+        # The dylib produces one sret descriptor, not one per original output.
+        num_outputs = 1
         parts.append(struct.pack("<I", num_inputs))
         parts.append(struct.pack("<I", num_outputs))
 
@@ -297,13 +304,12 @@ def _emit_compute_graph_section(
             for d in shape_dims:
                 parts.append(struct.pack("<Q", d))
 
-        for _out_idx, (_out_name, out_type_str, consumed_internally) in enumerate(func.outputs):
-            rank, shape_dims = _parse_type_shape(out_type_str)
-            parts.append(struct.pack("<B", 1 if consumed_internally else 0))
-            parts.append(struct.pack("<B", rank))
-            parts.append(struct.pack("<I", len(shape_dims)))
-            for d in shape_dims:
-                parts.append(struct.pack("<Q", d))
+        # Single packed output: rank-3, fully dynamic (dylib provides real sizes via sret).
+        parts.append(struct.pack("<B", 0))  # consumed_internally = false
+        parts.append(struct.pack("<B", 3))  # rank = 3
+        parts.append(struct.pack("<I", 3))  # num_dims = 3
+        for _ in range(3):
+            parts.append(struct.pack("<Q", 0))  # dynamic dims
 
     parts.append(struct.pack("<I", global_input_func))
     parts.append(struct.pack("<I", global_input_arg))

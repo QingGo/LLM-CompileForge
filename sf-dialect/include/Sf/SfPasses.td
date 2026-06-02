@@ -93,4 +93,28 @@ def SfFuseAttentionPass : Pass<"sf-fuse-attention", "mlir::func::FuncOp"> {
   let dependentDialects = ["mlir::sf::SfDialect"];
 }
 
+//===----------------------------------------------------------------------===//
+// Verification passes
+//===----------------------------------------------------------------------===//
+
+def SfaContractVerify : Pass<"sfa-contract-verify", "mlir::ModuleOp"> {
+  let summary = "Verify lowered IR satisfies SFA ABI constraints";
+  let description = [{
+    Post-lowering verification pass that checks the IR satisfies SFA ABI
+    constraints. Validates that all func.func inputs/outputs are MemRefType
+    (or RankedTensorType) with rank 1-4 (SfaMemRef compatible), verifies
+    no residual sf.weight/constant ops remain, and warns if
+    llvm.emit_c_interface attribute is missing.
+
+    Records per-function input semantics as module-level attributes
+    (sfa.func_metadata) for downstream ABI generation.
+
+    This pass serves as the CONTRACT boundary between sf-dialect lowering
+    and the compiler ABI generation.
+  }];
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+  ];
+}
+
 #endif // SF_PASSES

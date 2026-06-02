@@ -1,7 +1,7 @@
 !models/
 !mlir_binding/
 !.agent_memory.md
-!rust/target/
+!runtime/target/
 !.venv/
 !compiled/
 !llvm-project/
@@ -14,7 +14,8 @@
 !.omo/
 !*.dylib
 !*.bin
-!rust/src/bin/
+!runtime/src/bin/
 !repro.mlir
 !*.log
 !docs/tutorial/
+!gen/

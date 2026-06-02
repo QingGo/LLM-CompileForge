@@ -10,7 +10,7 @@ compiled/
 .cache/
 models/
 mlir_binding/
-rust/target/
+runtime/target/
 .profile_baseline.txt
 benchmark_results.json
 llvm-project/
@@ -24,8 +24,9 @@ logs/
 *.dylib
 *.bin
 compile_commands.json
-rust/src/bin/
+runtime/src/bin/
 repro.mlir
 *.log
 docs/tutorial/
+gen/
 .DS_Store

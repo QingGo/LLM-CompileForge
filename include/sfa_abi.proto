@@ -1,0 +1,71 @@
+syntax = "proto3";
+
+package sfa;
+
+// Top-level ABI header embedded in compiled dylib as "sfa_abi" symbol.
+// Contains function metadata and input field bindings for all ciface wrappers.
+message SfaAbiHeader {
+  uint32 magic = 1;     // 0x41464253 ("SFBA" LE) — sentinel to verify protobuf format
+  uint32 version = 2;   // 1
+  repeated SfaFuncMeta funcs = 3;
+}
+
+// Metadata for a single ciface function wrapper (e.g. _mlir_ciface_main_0).
+message SfaFuncMeta {
+  string symbol = 1;            // "_mlir_ciface_main_0"
+  uint32 num_inputs = 2;        // total number of ptr arguments (incl. sret)
+  uint32 output_rank = 3;       // packed output memref rank (0-4) — max rank across all outputs
+  repeated SfaInputField input_fields = 4;
+  repeated OutputDescriptor outputs = 5;  // per-output descriptor (rank + dims)
+}
+
+// Describes a single output tensor from a ciface function.
+message OutputDescriptor {
+  uint32 rank = 1;
+  repeated uint64 dims = 2;     // 0 = dynamic dimension
+}
+
+// Describes the kind and binding of each function input argument.
+message SfaInputField {
+  SfaInputKind kind = 1;
+  oneof binding {
+    string weight_name = 2;     // SFA_INPUT_WEIGHT — compiled weight/constant name
+    SfaSsaRef ssa = 3;          // SFA_INPUT_SSA — reference to producer function output
+  }
+}
+
+// Discriminated input source: global (model input), weight (compiled weight),
+// or SSA (dataflow edge from another function).
+enum SfaInputKind {
+  SFA_INPUT_GLOBAL = 0;
+  SFA_INPUT_WEIGHT = 1;
+  SFA_INPUT_SSA = 2;
+}
+
+// Reference to a producer function's output for SSA dataflow edges.
+message SfaSsaRef {
+  uint32 producer_func = 1;  // index into SfaAbiHeader.funcs
+  uint32 producer_out = 2;   // output index of the producer function
+}
+
+// Weight data embedded in compiled dylib as "sfa_weights" symbol.
+// Contains weight name mapping (compiled_name → safetensors key) and
+// embedded constant tensors (compiler-synthesized, e.g. attention masks).
+message SfaWeightData {
+  repeated SfaWeightEntry weight_entries = 1;
+  repeated SfaConstant constant_entries = 2;
+}
+
+// Maps a compiled weight name to its HuggingFace safetensors key.
+message SfaWeightEntry {
+  string compiled_name = 1;  // e.g. "wte_weight"
+  string hf_key = 2;         // e.g. "model.decoder.embed_tokens.weight"
+}
+
+// An embedded constant tensor (compiler-synthesized, not from model weights).
+message SfaConstant {
+  string name = 1;            // e.g. "_const_causal_mask"
+  uint32 dtype_code = 2;      // 0=f32, 1=f16, 2=bf16, 3=i64, 4=i32, 5=i8, 6=u8
+  repeated uint64 shape = 3;  // tensor dimensions
+  bytes data = 4;             // raw element bytes
+}

@@ -13,5 +13,12 @@ MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(Sf, sf, mlir::sf::SfDialect)
 __attribute__((used))
 static void *_sf_force_pass_linkage() {
   (void)mlir::sf::createSfLowerToLinalg();
+  (void)mlir::sf::createSfPromoteWeights();
+  (void)mlir::sf::createSfStripGEPNuw();
+  (void)mlir::sf::createSfaContractVerify();
+  (void)mlir::sf::createSfFuseSiluPass();
+  (void)mlir::sf::createSfFuseRmsNormPass();
+  (void)mlir::sf::createSfFuseQKVPass();
+  (void)mlir::sf::createSfFuseAttentionPass();
   return nullptr;
 }

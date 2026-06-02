@@ -88,7 +88,7 @@ def run_ctypes(
     Args:
         artifact_dir: Path to compiled artifact directory (default:
             ``./compiled/opt_125m_fresh``).
-        dylib_path: Path to the .dylib (default: ``<artifact_dir>/libopt_125m.dylib``).
+        dylib_path: Path to the .dylib (default: ``<artifact_dir>/libopt_125m_fresh.dylib``).
         input_ids: Input token IDs (default: batch=2, seq=4 sample).
 
     Returns:
@@ -100,7 +100,7 @@ def run_ctypes(
             [[2, 32826, 85, 4129], [0, 0, 0, 0]], dtype=np.int64
         )
     if dylib_path is None:
-        dylib_path = os.path.join(artifact_dir, "libopt_125m.dylib")
+        dylib_path = os.path.join(artifact_dir, "libopt_125m_fresh.dylib")
 
     # Load artifact weights
     from compiler.serialize import load_artifact

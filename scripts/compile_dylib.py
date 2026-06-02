@@ -10,17 +10,22 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import sys
+import textwrap
 import traceback
 from datetime import datetime
 from pathlib import Path
 
+from compiler.mlir_dialect.compile_utils import (
+    _compile_serveforge_free,
+    _find_cc,
+    _setup_mlir_path,
+)
+
 faulthandler.enable()
 
 DEBUG: bool = False
-
-
-from compiler.mlir_dialect.compile_utils import _setup_mlir_path
 
 
 def _verify_lowered_ir(lowered_text: str) -> None:
@@ -179,6 +184,91 @@ def _check_sf_dialect_freshness(compiled_dir: str) -> None:
         _sys.exit(1)
 
 
+def _compile_blob_to_o(
+    data: bytes,
+    symbol_name: str,
+    size_symbol_name: str,
+    work_dir: str,
+) -> str:
+    """Compile a binary blob to a .o file exporting named symbols.
+
+    Follows the same pattern as ``_compile_embedded_data`` in compile_utils.py,
+    but allows custom symbol names (instead of hardcoded ``serveforge_constants_*``).
+
+    Returns the path to the generated .o file.
+    """
+    hex_lines: list[str] = []
+    for i in range(0, len(data), 12):
+        chunk = data[i : i + 12]
+        hex_lines.append(", ".join(f"0x{b:02X}" for b in chunk))
+
+    c_source = textwrap.dedent(f"""\
+    #include <stdint.h>
+    const uint8_t {symbol_name}[{len(data)}] = {{
+        {",".join(hex_lines)}
+    }};
+    const uint64_t {size_symbol_name} = {len(data)};
+    """)
+
+    c_path = os.path.join(work_dir, f"{symbol_name}.c")
+    o_path = os.path.join(work_dir, f"{symbol_name}.o")
+    with open(c_path, "w") as f:
+        f.write(c_source)
+
+    cc_bin = _find_cc()
+    result = subprocess.run(
+        [cc_bin, "-c", c_path, "-o", o_path],
+        capture_output=True, text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to compile {symbol_name} object (exit {result.returncode}):\n"
+            f"{result.stderr[:2000]}"
+        )
+    return o_path
+
+
+def _sfa_relink_dylib(
+    compiled_path: Path,
+    model_name: str,
+    sfa_abi_data: bytes,
+    sfa_weights_data: bytes,
+) -> None:
+    """Re-link the dylib with SFA ABI and weights object files embedded.
+
+    model.ll is recompiled to .o (via llc), constants.bin is recompiled to .o,
+    and SFA data is compiled to .o files using ``_compile_blob_to_o``.
+    All .o files are linked into the final dylib.
+    """
+    from compiler.mlir_dialect.llvm_backend import (
+        _compile_embedded_data,
+        link_dylib,
+        llc_compile,
+    )
+
+    work_dir = str(compiled_path)
+
+    sfa_abi_o = _compile_blob_to_o(
+        sfa_abi_data, "sfa_abi", "sfa_abi_size", work_dir,
+    )
+    sfa_weights_o = _compile_blob_to_o(
+        sfa_weights_data, "sfa_weights", "sfa_weights_size", work_dir,
+    )
+
+    model_ll = os.path.join(work_dir, "model.ll")
+    model_o = llc_compile(model_ll, arch="native", opt_level=0)
+
+    const_bin = os.path.join(work_dir, "constants.bin")
+    const_o = _compile_embedded_data(const_bin, work_dir)
+
+    free_o = _compile_serveforge_free(work_dir)
+
+    dylib_path = os.path.join(work_dir, f"lib{model_name}.dylib")
+    obj_files = [model_o, const_o, free_o, sfa_abi_o, sfa_weights_o]
+    link_dylib(obj_files, dylib_path)
+
+
 def main() -> None:
     from utils.logging import init_logging
     init_logging()
@@ -223,6 +313,8 @@ def main() -> None:
         compile_module_to_dylib,
         lower_linalg_to_llvm_ir,
     )
+    import compiler.sfa_abi as sfa_abi
+    import compiler.sfa_weights as sfa_weights
     # Step 1: Load model.mlir → MlirModule
     if DEBUG:
         print(f"  [debug] Step [1/5] starting: parse {mlir_path}")
@@ -367,13 +459,20 @@ def main() -> None:
             # If restoration fails, proceed without it (no cache support)
             pass
 
-    print("[3/5] Generating constants.bin ...")
+    print("[3/5] Generating constants.bin (weights only, no compute graph) ...")
     name_mapping = _build_name_mapping(module)
     if name_mapping:
         print(f"   Name mapping: {len(name_mapping)} entries")
     else:
         print("   WARNING: No name mapping built")
-    const_bin = _build_constants_binary(module, name_mapping or {})
+
+    sfa_constants: dict = {}
+    for func in module.functions:
+        for wname in func.const_weight_names:
+            if wname in func.weights:
+                sfa_constants[wname] = func.weights[wname]
+
+    const_bin = _build_constants_binary(module, name_mapping or {}, skip_compute_graph=True)
     bin_path = compiled_path / "constants.bin"
     bin_path.write_bytes(const_bin)
     print(f"   Written {len(const_bin)} bytes to {bin_path}")
@@ -588,7 +687,51 @@ def main() -> None:
         model_name=model_name,
     )
 
+    # Step 6: Embed SFA ABI + weights symbols into dylib
+    if DEBUG:
+        print("  [debug] Step [6/6] starting: embed SFA ABI + weights")
+    print("[6/6] Embedding SFA ABI + weights symbols into dylib ...")
+
+    model_ll_path = str(compiled_path / "model.ll")
+    sigs = sfa_abi.parse_ciface_signatures(model_ll_path)
+    print(f"   Parsed {len(sigs)} ciface signatures from model.ll")
+
+    pre_lowering = {
+        "functions": [
+            {
+                "name": func.name,
+                "inputs": func.inputs,
+                "outputs": func.outputs,
+                "weight_ops": [
+                    {"name": op.attributes.get("name", "")}
+                    for op in func.ops
+                    if op.op_name == "weight"
+                ],
+            }
+            for func in module.functions
+        ],
+    }
+    func_metas = sfa_abi.merge_with_semantics(sigs, pre_lowering)
+    print(f"   Built {len(func_metas)} SfaFuncMeta entries")
+
+    sfa_abi_bytes = sfa_abi.serialize_abi(func_metas)
+    print(f"   SFA ABI: {len(sfa_abi_bytes)} bytes")
+
+    sfa_weights_bytes = sfa_weights.build_weight_data(
+        name_mapping or {}, sfa_constants
+    )
+    print(f"   SFA weights: {len(sfa_weights_bytes)} bytes")
+
+    _sfa_relink_dylib(
+        compiled_path,
+        model_name,
+        sfa_abi_bytes,
+        sfa_weights_bytes,
+    )
+    print("   ✓ SFA symbols embedded in dylib")
+
     print(f"\nCompilation complete: {dylib_path}")
+
     for fname in [f"lib{model_name}.dylib", "constants.bin"]:
         fpath = compiled_path / fname
         if fpath.exists():

@@ -27,6 +27,19 @@ $(VENV):
 #  3. compile_dylib.py —— model.mlir → .dylib (lowering + llc + link)
 # ═══════════════════════════════════════════════════════════════
 
+# ---- proto 代码生成 ----
+PROTO_DIR := $(PROJECT_ROOT)/include
+GEN_DIR := $(PROJECT_ROOT)/gen/proto
+
+proto-gen:
+	mkdir -p $(GEN_DIR)/python $(GEN_DIR)/rust
+	# Python
+	protoc --proto_path=$(PROTO_DIR) --python_out=$(GEN_DIR)/python $(PROTO_DIR)/sfa_abi.proto
+	# Rust (prost: package sfa → sfa/sfa.rs)
+	protoc --proto_path=$(PROTO_DIR) --prost_out=$(GEN_DIR)/rust $(PROTO_DIR)/sfa_abi.proto
+	# init for Python import
+	touch $(GEN_DIR)/python/__init__.py
+
 # ---- step 0: sf-dialect 构建 ----
 .PHONY: doctor configure-sf-dialect build-sf build-so
 
@@ -77,7 +90,7 @@ build-sf: sf-dialect/build/lib/Sf/libSfDialect.a
 # clang++ 编译 SfExtensionNanobind.cpp + Dialects.cpp + libSfDialect.a + libSfCAPI.a
 # 用 -undefined dynamic_lookup 使 MLIR 符号在运行时解析
 # 触发条件: C++/tablegen 代码变更 → 需要重新 build-so
-build-so: build-sf
+build-so: build-sf proto-gen
 	@mkdir -p sf-dialect/build/python_packages/sf/mlir_sf/_mlir_libs && \
 	ln -sf $(PROJECT_ROOT)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs/_sfDialectsNanobind.cpython-310-darwin.so \
 		sf-dialect/build/python_packages/sf/mlir_sf/_mlir_libs/_sfDialectsNanobind.cpython-310-darwin.so && \
@@ -112,7 +125,7 @@ rebuild-clean:
 	rm -rf compiled/opt_125m_fresh
 
 rebuild-test:
-	cd rust && cargo test test_opt_125m_forward_runs -- --nocapture 2>&1 | tail -5
+	cd runtime && cargo test test_opt_125m_forward_runs -- --nocapture 2>&1 | tail -5
 
 # ---- 从头完整构建 (新机器适用) ----
 # Usage: make build-all                    # 编译 opt-125m → compiled/opt_125m_fresh
@@ -138,7 +151,12 @@ build-all: $(VENV) build-so build-plugin
 	rm -f compiled/$(MODEL_FRESH)/model.lowered.mlir
 	PATH="$(LLVM_BUILD_BIN):$(PATH)" $(DYLIB_ENV) $(PYTHON) scripts/compile_dylib.py compiled/$(MODEL_FRESH) --model-name $(MODEL_FRESH)
 	@echo ""
-	@echo "Step 3: Rust 二进制"
+	@echo "Step 3: tokenizer files"
+	$(DYLIB_ENV) $(PYTHON) -c "from transformers import AutoTokenizer; tok = AutoTokenizer.from_pretrained('facebook/opt-125m' if '$(MODEL)' == 'opt-125m' else '$(MODEL)'); tok.backend_tokenizer.save('compiled/$(MODEL_FRESH)/tokenizer.json')"
+	@if [ "$(MODEL)" = "opt-125m" ]; then \
+		cp $$(python3 -c "from pathlib import Path; p = Path.home() / '.cache/huggingface/hub/models--facebook--opt-125m/snapshots'; print(sorted(p.glob('*/tokenizer_config.json'))[0])") compiled/$(MODEL_FRESH)/tokenizer_config.json; \
+	fi
+	@echo "Step 4: Rust 二进制"
 	$(MAKE) build
 	@echo ""
 	@echo "✅ build-all complete"
@@ -178,23 +196,22 @@ clean-compiled:
 # ═══════════════════════════════════════════════════════════════
 .PHONY: build build-rust install-rust serve serve-py run-prompt
 
-build:
-	cd rust && cargo build --release
+build: proto-gen
+	cd runtime && cargo build --release
 
 build-rust: $(VENV)
 	@echo "  🔧 构建 Python 绑定 (maturin develop --uv --features python-bindings)..."
 	@if [ -n "$$CONDA_PREFIX" ]; then echo "  ⚠️  检测到 CONDA_PREFIX，自动 unset..."; fi
-	cd rust && source ../.venv/bin/activate && unset CONDA_PREFIX && maturin develop --features python-bindings --uv 2>&1
+	cd runtime && source ../.venv/bin/activate && unset CONDA_PREFIX && maturin develop --features python-bindings --uv 2>&1
 
 install-rust: build-rust
 
-MODEL ?= opt_125m_fresh
 PORT ?= 8000
-serve: build
-	./rust/target/release/serveforge serve $(MODEL) --port $(PORT)
+serve: build-all
+	./runtime/target/release/serveforge serve $(MODEL_FRESH) --port $(PORT)
 
 serve-py:
-	@echo "Python 后端需要 rust/ 的 python-bindings feature 成功编译。"
+	@echo "Python 后端需要 runtime/ 的 python-bindings feature 成功编译。"
 	python -c "from server.app import create_app,create_engine; import uvicorn; \
 	  uvicorn.run(create_app(create_engine()), port=$(PORT))" 2>&1 || \
 	  echo "❌ Python 后端不可用 (llm_serveforge_runtime import 失败)"
@@ -203,7 +220,7 @@ PROMPT ?= "Hello"
 MAX_TOKENS ?= 8
 TEMPERATURE ?= 0.0
 run-prompt: build
-	$(DYLIB_ENV) ./rust/target/release/serveforge run $(MODEL) \
+	$(DYLIB_ENV) ./runtime/target/release/serveforge run $(MODEL) \
 	  --prompt "$(PROMPT)" --max-tokens $(MAX_TOKENS) --temperature $(TEMPERATURE) --no-chat-template
 
 # ═══════════════════════════════════════════════════════════════
@@ -244,14 +261,14 @@ test-ctypes-oracle: $(VENV)
 	$(PYTEST) tests/test_ctypes_oracle.py -v --tb=short --timeout=30
 test-rust-unit: $(VENV)
 	mkdir -p logs/rust
-	cd rust && cargo test --lib > ../logs/rust/test_unit_$$(date +%Y%m%d_%H%M%S).log 2>&1
+	cd runtime && cargo test --lib > ../logs/rust/test_unit_$$(date +%Y%m%d_%H%M%S).log 2>&1
 test-rust: test-rust-unit test-rust-integ
 test-e2e-forward:
-	cd rust && cargo test --test integration_tests --features hal-rust
+	cd runtime && cargo test --test integration_tests --features hal-rust
 
 test-e2e-forward-hal:
-	cd rust && cargo build --bin forward_check_hal --features hal-rust
-	cd rust && cargo test --test hal_forward_test --features hal-rust
+	cd runtime && cargo build --bin forward_check_hal --features hal-rust
+	cd runtime && cargo test --test hal_forward_test --features hal-rust
 test-rust-cov:
 	cargo llvm-cov --lib --summary-only
 test-pipeline-timing: $(VENV)
@@ -275,15 +292,15 @@ test-forward-smoke: $(VENV)
 
 # L1.5: Rust forward smoke (uses forward_check binary)
 test-forward-smoke-rust: verify-dylib-fresh
-	cargo build --bin forward_check
+	cd runtime && cargo build --bin forward_check
 	@echo "[forward_check] Running Rust forward pass..."
-	$(DYLIB_ENV) ./rust/target/debug/forward_check
+	$(DYLIB_ENV) ./runtime/target/debug/forward_check
 
 # L1.5: HAL IR forward smoke (uses forward_check_hal binary, Path B)
 test-forward-smoke-rust-hal:
-	cd rust && cargo build --bin forward_check_hal --features hal-rust
+	cd runtime && cargo build --bin forward_check_hal --features hal-rust
 	@echo "[forward_check_hal] Running Rust HAL forward pass (zero weights)..."
-	./rust/target/debug/forward_check_hal
+	./runtime/target/debug/forward_check_hal
 
 test-forward-cos: test-forward-smoke
 	@for model in compiled/opt_125m_fresh; do \
@@ -329,7 +346,7 @@ verify-preflight: verify-consistency verify-diag
 test-kv-compiler:
 	$(PYTEST) tests/test_kv_cache_compiler.py -x -v
 test-kv-rust:
-	cd rust && cargo test --lib kv_cache
+	cd runtime && cargo test --lib kv_cache
 test-kv-python-e2e:
 	$(PYTEST) tests/test_kv_cache_correctness.py -x -v --timeout=300
 test-kv-all: test-kv-compiler test-kv-rust test-kv-python-e2e
@@ -340,7 +357,7 @@ test-integration: $(VENV)
 	-$(PYTEST) tests/ -m integration -v --tb=short --timeout=300
 test-rust-integ: $(VENV)
 	mkdir -p logs/rust
-	cd rust && cargo test --bin serveforge > ../logs/rust/test_integ_$$(date +%Y%m%d_%H%M%S).log 2>&1
+	cd runtime && cargo test --bin serveforge > ../logs/rust/test_integ_$$(date +%Y%m%d_%H%M%S).log 2>&1
 test-pipeline-smoke: $(VENV)
 	$(PYTHON) scripts/test_pipeline_smoke.py compiled/opt_125m_fresh --timeout 120
 test-pipeline-validate: $(VENV)

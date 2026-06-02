@@ -1,8 +1,14 @@
 /**
  * sfa.h — Stable Function ABI header for LLM-CompileForge
  *
- * Phase 0: C-level struct definitions for tensor descriptors.
- * Binary layout matches MLIR LLVM dialect memref descriptor:
+ * SINGLE SOURCE OF TRUTH for tensor descriptor cross-component interfaces:
+ *   compiler → dylib → runtime (Python, C, Rust)
+ *
+ * Sections:
+ *   1. Tensor descriptors       — SFATensorRaw1-4, SFATensor, SFADevice
+ *   2. SFA ABI metadata         — protobuf schema (see include/sfa_abi.proto)
+ *
+ * Binary layout of Section 1 matches MLIR LLVM dialect memref descriptor:
  *
  *   struct<(ptr, ptr, i64, array<RANK x i64>, array<RANK x i64>)>
  *
@@ -15,6 +21,10 @@
  *   SFATensorRaw2: 24 + 16 + 16 = 56 bytes
  *   SFATensorRaw3: 24 + 24 + 24 = 72 bytes
  *   SFATensorRaw4: 24 + 32 + 32 = 88 bytes
+ *
+ * Function metadata and weight data (Sections 2-4) are now defined
+ * as protobuf in include/sfa_abi.proto and serialized via protoc.
+ * No hand-rolled C structs — the proto schema is the sole source of truth.
  */
 
 #ifndef SFA_H
@@ -87,6 +97,21 @@ typedef struct {
         SFATensorRaw4 r4;
     };
 } SFATensor;
+
+/* ── Section 2: SFA ABI metadata ─────────────────────────────────────
+ *
+ * Function metadata, input bindings, and weight data are encoded as
+ * protobuf (see include/sfa_abi.proto) and embedded in the compiled
+ * dylib as exported symbols:
+ *
+ *   sfa_abi      — SfaAbiHeader protobuf binary
+ *   sfa_abi_size  — u64 byte length
+ *   sfa_weights  — SfaWeightData protobuf binary
+ *   sfa_weights_size — u64 byte length
+ *
+ * The runtime decodes these with prost::Message::decode().
+ * No hand-rolled C structs — the proto schema is the sole source of truth.
+ */
 
 #ifdef __cplusplus
 }

@@ -12,10 +12,7 @@
 using namespace mlir;
 using namespace llvm;
 
-using mlir::sf::createSfLowerToLinalg;
-using mlir::sf::createSfPromoteWeights;
-using mlir::sf::createSfStripGEPNuw;
-
+#define GEN_PASS_DECL
 #define GEN_PASS_REGISTRATION
 #include "Sf/SfPasses.h.inc"
 
