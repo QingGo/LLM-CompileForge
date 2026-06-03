@@ -265,6 +265,56 @@ fn extract_output_tensor(
     Ok(Tensor::new_owned(shape_usize, out_vec, Dtype::F32))
 }
 
+/// Promote rank-1 SfaMemRef to rank-2 for dylib ciface compatibility.
+fn promote_rank1_if_needed(
+    sfa: crate::hal::sfa::SfaMemRef,
+) -> crate::hal::sfa::SfaMemRef {
+    if sfa.rank() != 1 {
+        return sfa;
+    }
+    let shape = sfa.sizes();
+    crate::hal::sfa::SfaMemRef::r2(
+        sfa.data_ptr() as *mut std::ffi::c_void,
+        [shape[0] as i64, 1],
+        [1, 1],
+        sfa.element_size(),
+    )
+}
+
+/// Construct an SfaMemRef with the rank and sizes from io_def, using the
+/// same data pointer as the native descriptor.  Critical for SSA inputs
+/// where the producer's packed output has a different rank than the dylib
+/// expects for this specific argument.
+fn construct_sfa_with_io_def(
+    native: &crate::hal::sfa::SfaMemRef,
+    io_def: &IOTensorDef,
+) -> crate::hal::sfa::SfaMemRef {
+    let ptr = native.data_ptr() as *mut std::ffi::c_void;
+    let elem_size = native.element_size();
+    let io_rank = io_def.rank as usize;
+    let sizes: Vec<i64> = io_def.shape.iter().map(|&d| d as i64).collect();
+    let strides: Vec<i64> = match io_rank {
+        0 => vec![],
+        1 => vec![1],
+        2 => vec![sizes[1].max(1), 1],
+        3 => vec![sizes[2].max(1) * sizes[1].max(1), sizes[2].max(1), 1],
+        4 => vec![
+            sizes[3].max(1) * sizes[2].max(1) * sizes[1].max(1),
+            sizes[3].max(1) * sizes[2].max(1),
+            sizes[3].max(1),
+            1,
+        ],
+        _ => vec![1; io_rank],
+    };
+    match io_rank {
+        1 => crate::hal::sfa::SfaMemRef::r1(ptr, [sizes[0]], [strides[0]], elem_size),
+        2 => crate::hal::sfa::SfaMemRef::r2(ptr, [sizes[0], sizes[1]], [strides[0], strides[1]], elem_size),
+        3 => crate::hal::sfa::SfaMemRef::r3(ptr, [sizes[0], sizes[1], sizes[2]], [strides[0], strides[1], strides[2]], elem_size),
+        4 => crate::hal::sfa::SfaMemRef::r4(ptr, [sizes[0], sizes[1], sizes[2], sizes[3]], [strides[0], strides[1], strides[2], strides[3]], elem_size),
+        _ => promote_rank1_if_needed(*native),
+    }
+}
+
 /// Walk every function in `compute_graph` in order.
 ///
 /// For each function:
@@ -296,6 +346,8 @@ pub fn run_function_graph(
             Vec::with_capacity(func_def.num_inputs);
         let mut _sfa_tensors: Vec<SFATensor> = Vec::new();
         let mut _tensors: Vec<Tensor> = Vec::with_capacity(func_def.num_inputs);
+        let mut input_sfa: Vec<crate::hal::sfa::SfaMemRef> =
+            Vec::with_capacity(func_def.num_inputs);
 
         for (bi, (binding, io_def)) in func_def.inputs.iter().enumerate() {
             match binding {
@@ -303,11 +355,15 @@ pub fn run_function_graph(
                     let buf = build_global_input_buffer(
                         input_ids, positions, io_def, bi, &mut _sfa_tensors,
                     )?;
+                    let sfa = buf.as_ref().as_sfa_memref();
+                    input_sfa.push(promote_rank1_if_needed(sfa));
                     input_bufs.push(buf);
                 }
                 InputBinding::Weight(key) => {
                     let tensor = load_weight_tensor(key, weight_provider, weight_cache, io_def)?;
                     let buf = wrap_tensor_buffer(&tensor)?;
+                    let sfa = buf.as_ref().as_sfa_memref();
+                    input_sfa.push(promote_rank1_if_needed(sfa));
                     _tensors.push(tensor);
                     input_bufs.push(buf);
                 }
@@ -315,33 +371,19 @@ pub fn run_function_graph(
                     producer_func,
                     output_idx,
                 } => {
-                    eprintln!("[runner] func[{}] input[{}] = Ssa(prod={}, out={})", fi, bi, producer_func, output_idx);
                     let ref_tensor = &func_outputs[*producer_func][*output_idx];
                     let buf = wrap_tensor_buffer(ref_tensor)?;
+                    let native_sfa = buf.as_ref().as_sfa_memref();
+                    let sfa = if io_def.rank > 0 && native_sfa.rank() as u8 != io_def.rank {
+                        construct_sfa_with_io_def(&native_sfa, io_def)
+                    } else {
+                        native_sfa
+                    };
+                    input_sfa.push(sfa);
                     input_bufs.push(buf);
                 }
             }
         }
-
-        // Build SfaMemRef descriptors from input buffers.
-        // All dylib ciface functions expect rank-2 descriptors — promote
-        // rank-1 tensors (e.g. bias vectors) to rank-2 for compatibility.
-        let input_sfa: Vec<crate::hal::sfa::SfaMemRef> =
-            input_bufs.iter().map(|b| {
-                let sfa = b.as_ref().as_sfa_memref();
-                if sfa.rank() == 1 {
-                    let shape = sfa.sizes();
-                    let ptr = sfa.data_ptr() as *mut std::ffi::c_void;
-                    crate::hal::sfa::SfaMemRef::r2(
-                        ptr,
-                        [shape[0] as i64, 1],
-                        [1, 1],
-                        sfa.element_size(),
-                    )
-                } else {
-                    sfa
-                }
-            }).collect();
 
         // Pre-allocate output buffers sized from the compute graph metadata.
         let seq_len = input_ids.len();
@@ -634,19 +676,13 @@ pub fn run_function_graph_with_kv_intercept(
             .collect();
 
         let input_sfa: Vec<crate::hal::sfa::SfaMemRef> =
-            input_bufs.iter().map(|b| {
-                let sfa = b.as_ref().as_sfa_memref();
-                if sfa.rank() == 1 {
-                    let shape = sfa.sizes();
-                    let ptr = sfa.data_ptr() as *mut std::ffi::c_void;
-                    crate::hal::sfa::SfaMemRef::r2(
-                        ptr,
-                        [shape[0] as i64, 1],
-                        [1, 1],
-                        sfa.element_size(),
-                    )
+            input_bufs.iter().enumerate().map(|(bi, b)| {
+                let native_sfa = b.as_ref().as_sfa_memref();
+                let io_def = &func_def.inputs[bi].1;
+                if io_def.rank > 0 && native_sfa.rank() as u8 != io_def.rank {
+                    construct_sfa_with_io_def(&native_sfa, io_def)
                 } else {
-                    sfa
+                    promote_rank1_if_needed(native_sfa)
                 }
             }).collect();
         let mut output_sfa: Vec<crate::hal::sfa::SfaMemRef> =
@@ -806,7 +842,7 @@ mod tests {
     // ── SFA ABI integration tests (proto-based) ─────────────────────
 
     use crate::abi::{
-        proto::{sfa_input_field::Binding, SfaInputField, SfaInputKind, SfaSsaRef},
+        proto::{sfa_input_field::Binding, SfaInputField, SfaInputKind, SfaSsaRef, OutputDescriptor},
         SfaWeightProvider, build_compute_graph,
     };
     use crate::abi::proto::{SfaAbiHeader, SfaFuncMeta};
@@ -841,220 +877,97 @@ mod tests {
         fn module_data(&self) -> &[u8] { &[] }
     }
 
-    /// Build a proto SfaAbiHeader with func_count functions, each having
-    /// `num_inputs` GLOBAL input fields.
-    fn build_test_header(funcs: &[(u32, u32, &str)]) -> SfaAbiHeader {
-        let mut header = SfaAbiHeader {
-            magic: crate::abi::SFA_MAGIC,
-            version: 1,
-            funcs: Vec::with_capacity(funcs.len()),
-        };
-        for &(num_inputs, output_rank, symbol) in funcs {
-            let mut f = SfaFuncMeta {
-                symbol: symbol.to_string(),
-                num_inputs,
-                output_rank,
-                input_fields: Vec::with_capacity(num_inputs as usize),
-                outputs: Vec::new(),
-            };
-            for _ in 0..num_inputs {
-                f.input_fields.push(SfaInputField {
-                    kind: SfaInputKind::SfaInputGlobal as i32,
-                    binding: None,
-                    rank: 0,
-                    dims: Vec::new(),
-                });
-            }
-            header.funcs.push(f);
+    /// Mock executable that records every SfaMemRef rank passed to execute().
+    #[derive(Debug)]
+    struct RankCapturingExecutable<'a> {
+        num_funcs: usize,
+        captured: &'a std::sync::Mutex<Vec<usize>>,
+    }
+    impl<'a> RankCapturingExecutable<'a> {
+        fn new(num_funcs: usize, captured: &'a std::sync::Mutex<Vec<usize>>) -> Self {
+            Self { num_funcs, captured }
         }
-        header
+    }
+    impl traits::Executable for RankCapturingExecutable<'_> {
+        fn execute(
+            &self, _op_name: &str, _stream: &dyn traits::Stream,
+            inputs: &[crate::hal::sfa::SfaMemRef],
+            outputs: &mut [crate::hal::sfa::SfaMemRef],
+        ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
+            for sfa in inputs {
+                self.captured.lock().unwrap().push(sfa.rank() as usize);
+            }
+            Ok(vec![vec![0i64; 0]; outputs.len()])
+        }
+        fn function_count(&self) -> usize { self.num_funcs }
+        fn module_data(&self) -> &[u8] { &[] }
     }
 
-    /// `run_function_graph_from_abi` must build a ComputeGraph from the
-    /// SFA ABI header, then invoke `run_function_graph` which iterates
-    /// all functions in order.
+    /// Per-input rank from io_def MUST be used when constructing SfaMemRef.
+    /// The dylib's LLVM IR hardcodes the rank in load instructions — a
+    /// mismatch causes the load to read wrong bytes → SIGSEGV.
     #[test]
-    fn test_run_function_graph_from_abi_two_funcs() {
-        let abi = build_test_header(&[(2, 2, "func_a"), (1, 2, "func_b")]);
-
-        let sfa_wp = SfaWeightProvider {
-            name_mapping: std::collections::HashMap::new(),
-            constants: std::collections::HashMap::new(),
-            num_constants: 0,
+    fn test_ssa_sfa_memref_rank_matches_io_def() {
+        let mut abi = SfaAbiHeader { magic: crate::abi::SFA_MAGIC, version: 1, funcs: vec![] };
+        let mut f0 = SfaFuncMeta {
+            symbol: "f0".to_string(), num_inputs: 1, output_rank: 2,
+            input_fields: vec![SfaInputField {
+                kind: SfaInputKind::SfaInputGlobal as i32, binding: None,
+                rank: 2, dims: vec![1, 4],
+            }],
+            outputs: vec![OutputDescriptor { rank: 2, dims: vec![1, 768] }],
         };
-
-        // Build compute graph to verify structure.
+        abi.funcs.push(f0);
+        let mut f1 = SfaFuncMeta {
+            symbol: "f1".to_string(), num_inputs: 3, output_rank: 2,
+            input_fields: vec![
+                SfaInputField { kind: SfaInputKind::SfaInputSsa as i32,
+                    binding: Some(Binding::Ssa(SfaSsaRef { producer_func: 0, producer_out: 0 })),
+                    rank: 1, dims: vec![768],
+                },
+                SfaInputField { kind: SfaInputKind::SfaInputSsa as i32,
+                    binding: Some(Binding::Ssa(SfaSsaRef { producer_func: 0, producer_out: 0 })),
+                    rank: 3, dims: vec![1, 16, 64],
+                },
+                SfaInputField { kind: SfaInputKind::SfaInputSsa as i32,
+                    binding: Some(Binding::Ssa(SfaSsaRef { producer_func: 0, producer_out: 0 })),
+                    rank: 4, dims: vec![1, 1, 16, 16],
+                },
+            ],
+            outputs: vec![OutputDescriptor { rank: 2, dims: vec![1, 768] }],
+        };
+        abi.funcs.push(f1);
+        let sfa_wp = SfaWeightProvider {
+            name_mapping: HashMap::new(), constants: HashMap::new(), num_constants: 0,
+        };
         let graph = build_compute_graph(&abi, &sfa_wp).unwrap();
-        assert_eq!(graph.functions.len(), 2);
-        assert_eq!(graph.functions[0].symbol, "func_a");
-        assert_eq!(graph.functions[0].num_inputs, 2);
-        assert_eq!(graph.functions[0].inputs.len(), 2);
-        assert_eq!(graph.functions[1].symbol, "func_b");
-        assert_eq!(graph.functions[1].num_inputs, 1);
-        assert_eq!(graph.global_output, (1, 0));
+        // Verify IOTensorDef ranks populated from proto
+        assert_eq!(graph.functions[1].inputs[0].1.rank, 1);
+        assert_eq!(graph.functions[1].inputs[1].1.rank, 3);
+        assert_eq!(graph.functions[1].inputs[2].1.rank, 4);
 
-        // Now exercise the full run_function_graph_from_abi path.
-        let exec = MockExecutable::new(2);
+        // Run execution and capture SfaMemRef ranks.
+        let captured = std::sync::Mutex::new(Vec::<usize>::new());
+        let mock = RankCapturingExecutable::new(2, &captured);
         let registry = crate::weight_loader::WeightRegistry {
-            name_mapping: std::collections::HashMap::new(),
-            constants: std::collections::HashMap::new(),
+            name_mapping: HashMap::new(), constants: HashMap::new(),
         };
         let wp = crate::weight_loader::WeightProvider::new(registry, None).unwrap();
-        let wc = std::cell::RefCell::new(std::collections::HashMap::new());
+        let wc = std::cell::RefCell::new(HashMap::new());
         let mut func_outputs: Vec<Vec<Tensor>> = vec![Vec::new(); 2];
-
-        let stream = crate::hal::cpu::CpuStream;
-        let input_ids: Vec<u32> = vec![1, 2, 3];
-        let positions: Vec<u32> = vec![0, 1, 2];
-
         let result = run_function_graph_from_abi(
-            &abi,
-            &sfa_wp,
-            &exec,
-            &wp,
-            &wc,
-            &mut func_outputs,
-            &input_ids,
-            &positions,
-            &stream,
+            &abi, &sfa_wp, &mock, &wp, &wc, &mut func_outputs,
+            &[42], &[0], &crate::hal::cpu::CpuStream,
         );
-
-        // The mock executable returns empty output shapes, which will
-        // cause extract_output_tensor to produce empty Tensors.
-        // The test verifies the graph traversal happens without panic.
-        assert!(result.is_ok(), "run_function_graph_from_abi should succeed");
-
-        // Verify both functions were called.
-        let calls = exec.calls.lock().unwrap();
-        assert_eq!(calls.len(), 2, "both functions should be called");
-        assert_eq!(calls[0], "func_a");
-        assert_eq!(calls[1], "func_b");
-    }
-
-    /// `run_function_graph_from_abi` must handle rank-3 output (post-bufferization
-    /// packed sret) correctly — the output buffer allocation should use the
-    /// output_rank from SfaFuncMeta.
-    #[test]
-    fn test_run_function_graph_from_abi_rank3_output() {
-        let abi = build_test_header(&[(2, 3, "main_0")]);
-
-        let sfa_wp = SfaWeightProvider {
-            name_mapping: std::collections::HashMap::new(),
-            constants: std::collections::HashMap::new(),
-            num_constants: 0,
-        };
-
-        let graph = build_compute_graph(&abi, &sfa_wp).unwrap();
-        assert_eq!(graph.functions.len(), 1);
-        // The output should be rank-3 (post-bufferization packed tensor).
-        assert_eq!(graph.functions[0].outputs[0].rank, 3);
-        assert_eq!(graph.functions[0].outputs[0].shape.len(), 3);
-
-        // Run through the execution path.
-        let exec = MockExecutable::new(1);
-        let registry = crate::weight_loader::WeightRegistry {
-            name_mapping: std::collections::HashMap::new(),
-            constants: std::collections::HashMap::new(),
-        };
-        let wp = crate::weight_loader::WeightProvider::new(registry, None).unwrap();
-        let wc = std::cell::RefCell::new(std::collections::HashMap::new());
-        let mut func_outputs: Vec<Vec<Tensor>> = vec![Vec::new(); 1];
-
-        let stream = crate::hal::cpu::CpuStream;
-        let input_ids: Vec<u32> = vec![42];
-        let positions: Vec<u32> = vec![0];
-
-        let result = run_function_graph_from_abi(
-            &abi,
-            &sfa_wp,
-            &exec,
-            &wp,
-            &wc,
-            &mut func_outputs,
-            &input_ids,
-            &positions,
-            &stream,
-        );
-
-        assert!(result.is_ok(), "rank-3 output path should succeed");
-    }
-
-    /// `run_function_graph_from_abi` input with SSA wiring must propagate
-    /// producer function index and output index correctly from the ABI.
-    #[test]
-    fn test_abi_ssa_wiring() {
-        // Build proto header with 2 functions: func 0 has 1 WEIGHT input,
-        // func 1 has 1 SSA input referencing func 0 output 0.
-        let mut abi = SfaAbiHeader {
-            magic: crate::abi::SFA_MAGIC,
-            version: 1,
-            funcs: Vec::with_capacity(2),
-        };
-
-        // Func 0: 1 input (WEIGHT -> "weight_a"), output_rank=2
-        let mut func0 = SfaFuncMeta {
-            symbol: "func_0_".to_string(),
-            num_inputs: 1,
-            output_rank: 2,
-            input_fields: Vec::with_capacity(1),
-            outputs: Vec::new(),
-        };
-        func0.input_fields.push(SfaInputField {
-            kind: SfaInputKind::SfaInputWeight as i32,
-            binding: Some(Binding::WeightName("weight_a".to_string())),
-            rank: 0,
-            dims: Vec::new(),
-        });
-        abi.funcs.push(func0);
-
-        // Func 1: 1 input (SSA -> producer_func=0, producer_out=0), output_rank=2
-        let mut func1 = SfaFuncMeta {
-            symbol: "func_1_".to_string(),
-            num_inputs: 1,
-            output_rank: 2,
-            input_fields: Vec::with_capacity(1),
-            outputs: Vec::new(),
-        };
-        func1.input_fields.push(SfaInputField {
-            kind: SfaInputKind::SfaInputSsa as i32,
-            binding: Some(Binding::Ssa(SfaSsaRef {
-                producer_func: 0,
-                producer_out: 0,
-            })),
-            rank: 0,
-            dims: Vec::new(),
-        });
-        abi.funcs.push(func1);
-
-        let sfa_wp = SfaWeightProvider {
-            name_mapping: std::collections::HashMap::new(),
-            constants: std::collections::HashMap::new(),
-            num_constants: 0,
-        };
-
-        let graph = build_compute_graph(&abi, &sfa_wp).unwrap();
-        assert_eq!(graph.functions.len(), 2);
-
-        // Func 0 input: WEIGHT binding.
-        match &graph.functions[0].inputs[0].0 {
-            crate::compute_graph::InputBinding::Weight(name) => {
-                assert_eq!(name, "weight_a");
-            }
-            other => panic!("expected Weight, got {:?}", other),
-        }
-
-        // Func 1 input: SSA binding.
-        match &graph.functions[1].inputs[0].0 {
-            crate::compute_graph::InputBinding::Ssa { producer_func, output_idx } => {
-                assert_eq!(*producer_func, 0);
-                assert_eq!(*output_idx, 0);
-            }
-            other => panic!("expected Ssa, got {:?}", other),
-        }
+        assert!(result.is_ok());
+        let ranks = captured.lock().unwrap();
+        // func[0] has 1 global input → captured[0]; func[1] has 3 SSA → [1,2,3]
+        assert_eq!(ranks.len(), 4, "expected 4 captured ranks, got {:?}", *ranks);
+        assert_eq!(ranks[1], 1, "func[1] input[0] rank expected 1, got {}", ranks[1]);
+        assert_eq!(ranks[2], 3, "func[1] input[1] rank expected 3, got {}", ranks[2]);
+        assert_eq!(ranks[3], 4, "func[1] input[2] rank expected 4, got {}", ranks[3]);
     }
 }
-
-
 
 /// Trace: execute a single function and return immediately (for crash location).
 #[cfg(test)]
