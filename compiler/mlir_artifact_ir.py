@@ -306,13 +306,42 @@ def _map_op_results(op: MlirOp, ir_op: Any, ssa_map: dict[str, ir.Value]) -> Non
 
 
 def _resolve_output_values(func: MlirFunction, ssa_map: dict[str, ir.Value]) -> list[ir.Value]:
-    """Resolve function output values from SSA map."""
+    """Resolve function output values from SSA map.
+
+    Two modes:
+    1. Explicit: output names match keys in ssa_map — use them directly.
+    2. Implicit (pre-lowering): output names are empty — match outputs
+       to op results by type in declaration order.
+    """
+    # Mode 1: explicit return operands
     output_values: list[ir.Value] = []
     for out_name, _, _ in func.outputs:
-        if out_name in ssa_map:
+        clean = out_name.lstrip("%")
+        if clean and clean in ssa_map:
+            output_values.append(ssa_map[clean])
+        elif out_name and out_name in ssa_map:
             output_values.append(ssa_map[out_name])
-        elif out_name.lstrip("%") in ssa_map:
-            output_values.append(ssa_map[out_name.lstrip("%")])
+    if output_values:
+        return output_values
+
+    # Mode 2: implicit return — match by type in definition order.
+    # Pre-lowering MlirModule has empty output names because the text-format
+    # func.return uses implicit operands (no SSA references).
+    # Group op results by output type string, then consume them in order.
+    type_to_results: dict[str, list[str]] = {}
+    for op in func.ops:
+        for j, r in enumerate(op.results):
+            if j < len(op.output_types) and r in ssa_map:
+                tp = op.output_types[j]
+                type_to_results.setdefault(tp, []).append(r)
+
+    type_positions: dict[str, int] = {}
+    for out_name, out_tp, _ in func.outputs:
+        results = type_to_results.get(out_tp, [])
+        pos = type_positions.get(out_tp, 0)
+        if pos < len(results):
+            output_values.append(ssa_map[results[pos]])
+            type_positions[out_tp] = pos + 1
 
     if not output_values and func.ops:
         last_op = func.ops[-1]

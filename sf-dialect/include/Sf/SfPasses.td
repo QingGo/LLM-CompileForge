@@ -32,6 +32,20 @@ def SfLowerToLinalg : Pass<"sf-lower-to-linalg", "mlir::ModuleOp"> {
   ];
 }
 
+def SfExplicitReturn : Pass<"sf-explicit-return", "mlir::ModuleOp"> {
+  let summary = "Convert implicit func.return to explicit operands";
+  let description = [{
+    Converts `func.return` ops with no operands (implicit return) to
+    explicit operands by scanning backward to find the last N SSA values
+    defined in the function body. Must run before `sf-lower-to-linalg`
+    to prevent the greedy rewriter from DCE'ing multi-output return values
+    that are implicitly referenced.
+  }];
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+  ];
+}
+
 def SfStripGEPNuw : Pass<"sf-strip-gep-nuw", "mlir::ModuleOp"> {
   let summary = "Strip nuw flag from llvm.getelementptr operations";
   let description = [{
