@@ -113,6 +113,19 @@ def _parse_mlir_text(text: str) -> MlirModule:
     if current_func is not None:
         functions.append(current_func)
 
+    # Post-parse validation: every function with outputs must have explicit
+    # SSA names for those outputs. Implicit returns (func.return , , , ...)
+    # are a serialization bug in the upstream MlirModule construction.
+    # Void functions (0 outputs) are fine.
+    for f in functions:
+        if f.outputs and all(not name for name, _, _ in f.outputs):
+            raise ValueError(
+                f"func '{f.name}' has {len(f.outputs)} outputs but no SSA names "
+                f"in func.return — implicit returns are not supported. "
+                f"Fix the upstream MlirModule construction to use explicit "
+                f"SSA names (check fx_to_mlir.py output handling)."
+            )
+
     return MlirModule(functions=functions)
 
 
