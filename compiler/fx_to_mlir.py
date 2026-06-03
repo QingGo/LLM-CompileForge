@@ -620,7 +620,7 @@ def _fixup_output_names(
     for i, (name, tp, consumed) in enumerate(func_outputs):
         if name and name.startswith("%"):
             clean = name.lstrip("%")
-            if any(clean in op.results for op in mlir_ops):
+            if any(r == name or r.lstrip("%") == clean for op in mlir_ops for r in op.results):
                 continue
         results = type_to_results.get(tp, [])
         pos = type_positions.get(tp, 0)

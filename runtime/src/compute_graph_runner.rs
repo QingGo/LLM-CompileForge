@@ -318,6 +318,10 @@ pub fn run_function_graph(
                     eprintln!("[runner] func[{}] input[{}] = Ssa(prod={}, out={})", fi, bi, producer_func, output_idx);
                     let ref_tensor = &func_outputs[*producer_func][*output_idx];
                     let buf = wrap_tensor_buffer(ref_tensor)?;
+                    let native_sfa = buf.as_ref().as_sfa_memref();
+                    eprintln!("[rank-verify] func[{}] input[{}] native_rank={} io_rank={} match={}",
+                        fi, bi, native_sfa.rank(), io_def.rank,
+                        native_sfa.rank() as u8 == io_def.rank);
                     input_bufs.push(buf);
                 }
             }
