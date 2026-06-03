@@ -711,7 +711,8 @@ def main() -> None:
             for func in module.functions
         ],
     }
-    func_metas = sfa_abi.merge_with_semantics(sigs, pre_lowering)
+    lowered_arg_types = sfa_abi.parse_lowered_argument_types(str(lowered_path))
+    func_metas = sfa_abi.merge_with_semantics(sigs, pre_lowering, lowered_arg_types)
     print(f"   Built {len(func_metas)} SfaFuncMeta entries")
 
     sfa_abi_bytes = sfa_abi.serialize_abi(func_metas)

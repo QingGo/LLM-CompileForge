@@ -2,13 +2,18 @@
 sfa_abi.py — Stable Function ABI header generation from LLVM IR.
 
 Parses LLVM IR text to extract ciface function signatures, merges with
-pre-lowering input semantics, and serializes to protobuf SfaAbiHeader format.
+pre-lowering input semantics and lowered MLIR argument types, and
+serializes to protobuf SfaAbiHeader format.
 
 Usage:
-    from compiler.sfa_abi import parse_ciface_signatures, merge_with_semantics, serialize_abi
+    from compiler.sfa_abi import (
+        parse_ciface_signatures, parse_lowered_argument_types,
+        merge_with_semantics, serialize_abi,
+    )
 
     sigs = parse_ciface_signatures("model.ll")
-    metas = merge_with_semantics(sigs, pre_lowering_module)
+    lowered_types = parse_lowered_argument_types("model.lowered.mlir")
+    metas = merge_with_semantics(sigs, pre_lowering_module, lowered_types)
     proto_bytes = serialize_abi(metas)
 """
 
@@ -36,6 +41,88 @@ _CIFACE_DEF_RE: re.Pattern[str] = re.compile(
 
 # Extracts rank from descriptor struct: [N x i64]
 _RANK_RE: re.Pattern[str] = re.compile(r"\[(\d+)\s+x\s+i64\]")
+
+# Matches a single function argument in lowered MLIR: %argN: tensor<...x...xf32>
+# Captures function name and the full type string.
+_LOWERED_ARG_RE: re.Pattern[str] = re.compile(
+    r"%\w+:\s*(tensor<([^>]*)>\s*)"
+)
+
+
+def parse_lowered_argument_types(
+    lowered_mlir_path: str,
+) -> dict[str, list[tuple[int, list[int]]]]:
+    """Parse lowered MLIR to extract function argument types (rank + dims).
+
+    Scans for ``func.func @NAME(%arg0: tensor<DIMS>, ...)`` and parses
+    the tensor dimension lists. Handles multi-line function signatures.
+
+    Dynamic dimensions (``?``) are mapped to 0.
+
+    Args:
+        lowered_mlir_path: Path to lowered MLIR text file
+            (e.g. ``model.lowered.mlir``).
+
+    Returns:
+        Dict mapping base function name (e.g. ``"main_0"``) to a list of
+        ``(rank, dims)`` tuples, one per argument.  If a function has no
+        tensor arguments or the file cannot be read, the entry may be
+        empty or missing.
+    """
+    try:
+        with open(lowered_mlir_path) as f:
+            text = f.read()
+    except (FileNotFoundError, OSError):
+        return {}
+
+    # Match: func.func @<name>(<args>) [-> ...] {
+    # Use re.DOTALL so multi-line signatures are captured.
+    _func_re = re.compile(
+        r"func\.func\s+@(\w+)\s*\(([^)]*)\)(?:\s*->\s*[^{]*)?\s*\{",
+        re.DOTALL,
+    )
+
+    _tensor_re = re.compile(
+        r"tensor<([^>]*)>"
+    )
+
+    result: dict[str, list[tuple[int, list[int]]]] = {}
+
+    for func_match in _func_re.finditer(text):
+        func_name = func_match.group(1)
+        args_str = func_match.group(2)
+
+        arg_types: list[tuple[int, list[int]]] = []
+
+        # Find all tensor types in the argument string
+        for tensor_match in _tensor_re.finditer(args_str):
+            dim_str = tensor_match.group(1).strip()
+            if not dim_str:
+                # scalar tensor: tensor<f32> → rank=0, dims=[]
+                arg_types.append((0, []))
+                continue
+
+            # Split by 'x' to get individual dimensions. The last 'x'-separated
+            # token is the element type (f32, i64, etc.) — strip it.
+            dim_parts = [d.strip() for d in dim_str.split("x")]
+            # Filter: keep only parts that are digits or '?' (dimension specs)
+            dim_parts = [d for d in dim_parts if re.match(r"^(?:\?|\d+)$", d)]
+            dims: list[int] = []
+            for d in dim_parts:
+                if d == "?":
+                    dims.append(0)
+                else:
+                    dims.append(int(d))
+
+            arg_types.append((len(dims), dims))
+
+        if func_name in result:
+            # Duplicate function name (shouldn't happen in well-formed MLIR)
+            continue
+
+        result[func_name] = arg_types
+
+    return result
 
 
 def parse_ciface_signatures(llvm_ir_path: str) -> dict[str, tuple[int, int]]:
@@ -106,6 +193,7 @@ def parse_ciface_signatures(llvm_ir_path: str) -> dict[str, tuple[int, int]]:
 def merge_with_semantics(
     signatures: dict[str, tuple[int, int]],
     pre_lowering_module: dict[str, Any],
+    lowered_arg_types: dict[str, list[tuple[int, list[int]]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Merge LLVM IR ciface signatures with pre-lowering input semantics.
 
@@ -125,6 +213,10 @@ def merge_with_semantics(
             - ``"weights"``: dict (optional)
             - ``"weight_ops"``: list of dicts with ``"name"`` key (optional)
             - ``"outputs"``: list of ``(name, type_str, consumed)`` tuples (optional)
+        lowered_arg_types: Optional output of :func:`parse_lowered_argument_types`.
+            When provided, ``rank`` and ``dims`` are populated in each input_field
+            dict from the lowered MLIR tensor type.  Functions not found in this
+            dict fall back to the pre-lowering approach (no rank/dims).
 
     Returns:
         List of ``SfaFuncMeta`` dicts, each containing:
@@ -134,7 +226,8 @@ def merge_with_semantics(
         - ``"output_rank"``: int — packed output memref rank
         - ``"input_fields"``: list of ``SfaInputField`` dicts with keys:
           ``kind`` (int), ``weight_name`` (str, optional),
-          ``producer_func`` (int, optional), ``producer_out`` (int, optional)
+          ``producer_func`` (int, optional), ``producer_out`` (int, optional),
+          ``rank`` (int, optional), ``dims`` (list of int, optional)
     """
     funcs = pre_lowering_module.get("functions", [])
 
@@ -227,6 +320,14 @@ def merge_with_semantics(
             "dims": [0] * effective_output_rank,
         }]
 
+        # Populate rank/dims from lowered MLIR arg types when available
+        if lowered_arg_types and func["name"] in lowered_arg_types:
+            lt = lowered_arg_types[func["name"]]
+            for idx in range(min(len(input_fields), len(lt))):
+                rank, dims = lt[idx]
+                input_fields[idx]["rank"] = rank
+                input_fields[idx]["dims"] = dims
+
         metas.append({
             "symbol": symbol,
             "num_inputs": num_args,
@@ -272,6 +373,11 @@ def serialize_abi(func_metas: list[dict[str, Any]]) -> bytes:
                 input_field.ssa.producer_func = field.get("producer_func", 0)
                 input_field.ssa.producer_out = field.get("producer_out", 0)
             # SFA_INPUT_GLOBAL: no binding needed
+
+            if "rank" in field:
+                input_field.rank = field["rank"]
+            if "dims" in field:
+                input_field.dims.extend(field["dims"])
 
         for od in meta.get("outputs", []):
             out_desc = func_meta.outputs.add()

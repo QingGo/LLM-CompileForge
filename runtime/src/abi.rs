@@ -217,8 +217,8 @@ pub fn build_compute_graph(
                     consumed_internally: false,
                 },
                 _ => IOTensorDef {
-                    rank: 0,
-                    shape: Vec::new(),
+                    rank: field.rank as u8,
+                    shape: field.dims.clone(),
                     consumed_internally: false,
                 },
             };
@@ -303,6 +303,8 @@ mod tests {
                 func.input_fields.push(SfaInputField {
                     kind: SfaInputKind::SfaInputGlobal as i32,
                     binding: None,
+                    rank: 0,
+                    dims: Vec::new(),
                 });
             }
 
@@ -365,6 +367,8 @@ mod tests {
         func.input_fields.push(SfaInputField {
             kind: SfaInputKind::SfaInputWeight as i32,
             binding: Some(Binding::WeightName("matmul".to_string())),
+            rank: 0,
+            dims: Vec::new(),
         });
 
         func.input_fields.push(SfaInputField {
@@ -373,6 +377,8 @@ mod tests {
                 producer_func: 0,
                 producer_out: 0,
             })),
+            rank: 0,
+            dims: Vec::new(),
         });
 
         let header = SfaAbiHeader {
@@ -427,10 +433,14 @@ mod tests {
                         SfaInputField {
                             kind: SfaInputKind::SfaInputGlobal as i32,
                             binding: None,
+                            rank: 2,
+                            dims: vec![0, 0],
                         },
                         SfaInputField {
                             kind: SfaInputKind::SfaInputWeight as i32,
                             binding: Some(Binding::WeightName("wte.weight".to_string())),
+                            rank: 2,
+                            dims: vec![50272, 768],
                         },
                         SfaInputField {
                             kind: SfaInputKind::SfaInputSsa as i32,
@@ -438,6 +448,8 @@ mod tests {
                                 producer_func: 0,
                                 producer_out: 0,
                             })),
+                            rank: 3,
+                            dims: vec![0, 0, 768],
                         },
                     ],
                     outputs: Vec::new(),

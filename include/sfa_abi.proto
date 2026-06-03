@@ -26,12 +26,17 @@ message OutputDescriptor {
 }
 
 // Describes the kind and binding of each function input argument.
+// Per-input rank and dimensions tell the runtime what shape MemRef
+// descriptor to construct for this argument, critical for correctly
+// passing sub-views of packed output buffers to the dylib.
 message SfaInputField {
   SfaInputKind kind = 1;
   oneof binding {
     string weight_name = 2;     // SFA_INPUT_WEIGHT — compiled weight/constant name
     SfaSsaRef ssa = 3;          // SFA_INPUT_SSA — reference to producer function output
   }
+  uint32 rank = 5;              // tensor rank of this input (1-4)
+  repeated uint64 dims = 6;     // tensor dimensions (0 = dynamic / unknown at compile time)
 }
 
 // Discriminated input source: global (model input), weight (compiled weight),

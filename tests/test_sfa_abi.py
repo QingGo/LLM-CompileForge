@@ -438,3 +438,232 @@ class TestSerializeAbi:
         assert len(f1.input_fields) == 2
         assert f1.input_fields[0].kind == SfaInputKind.SFA_INPUT_SSA
         assert f1.input_fields[1].kind == SfaInputKind.SFA_INPUT_WEIGHT
+
+
+# ── Mock lowered MLIR generator ───────────────────────────────────────
+
+def _mock_lowered_mlir() -> str:
+    return """
+module {
+  func.func @main_0(%arg0: tensor<?x?xi64>, %arg1: tensor<50272x768xf32>)
+      -> tensor<?x?x768xf32> {
+    %0 = linalg.generic {indexing_maps = [], iterator_types = []}
+        ins(%arg0 : tensor<?x?xi64>) outs() { } -> tensor<?x?x768xf32>
+    return %0 : tensor<?x?x768xf32>
+  }
+  func.func @main_1(
+      %arg0: tensor<1xf32>,
+      %arg1: tensor<?x?x768xf32>,
+      %arg2: tensor<?x1x?x?xf32>
+  ) -> tensor<?x?x768xf32> {
+    return %arg1 : tensor<?x?x768xf32>
+  }
+  func.func @main_13(
+      %arg0: tensor<?x?x768xf32>,
+      %arg1: tensor<768xf32>,
+      %arg2: tensor<768xf32>
+  ) -> tensor<?x?x768xf32> {
+    return %arg0 : tensor<?x?x768xf32>
+  }
+}
+"""
+
+
+# ── Tests: parse_lowered_argument_types ──────────────────────────────
+
+class TestParseLoweredArgumentTypes:
+    """parse_lowered_argument_types: extract rank + dims from lowered MLIR."""
+
+    def test_parse_main_0(self):
+        from compiler.sfa_abi import parse_lowered_argument_types
+
+        path = _write_temp_ll(_mock_lowered_mlir())
+        try:
+            result = parse_lowered_argument_types(path)
+            assert "main_0" in result
+            args = result["main_0"]
+            assert len(args) == 2
+            # arg0: tensor<?x?xi64> → rank=2, dims=[0, 0]
+            assert args[0] == (2, [0, 0])
+            # arg1: tensor<50272x768xf32> → rank=2, dims=[50272, 768]
+            assert args[1] == (2, [50272, 768])
+        finally:
+            Path(path).unlink()
+
+    def test_parse_main_1(self):
+        from compiler.sfa_abi import parse_lowered_argument_types
+
+        path = _write_temp_ll(_mock_lowered_mlir())
+        try:
+            result = parse_lowered_argument_types(path)
+            assert "main_1" in result
+            args = result["main_1"]
+            assert len(args) == 3
+            # arg0: tensor<1xf32> → rank=1, dims=[1]
+            assert args[0] == (1, [1])
+            # arg1: tensor<?x?x768xf32> → rank=3, dims=[0, 0, 768]
+            assert args[1] == (3, [0, 0, 768])
+            # arg2: tensor<?x1x?x?xf32> → rank=4, dims=[0, 1, 0, 0]
+            assert args[2] == (4, [0, 1, 0, 0])
+        finally:
+            Path(path).unlink()
+
+    def test_missing_file(self):
+        from compiler.sfa_abi import parse_lowered_argument_types
+
+        result = parse_lowered_argument_types("/nonexistent/path.mlir")
+        assert result == {}
+
+    def test_all_functions_present(self):
+        from compiler.sfa_abi import parse_lowered_argument_types
+
+        path = _write_temp_ll(_mock_lowered_mlir())
+        try:
+            result = parse_lowered_argument_types(path)
+            assert set(result.keys()) == {"main_0", "main_1", "main_13"}
+        finally:
+            Path(path).unlink()
+
+
+# ── Tests: merge_with_semantics + lowered_arg_types ──────────────────
+
+class TestMergeWithLoweredArgTypes:
+    """merge_with_semantics with lowered_arg_types populates rank/dims."""
+
+    def test_rank_dims_populated(self):
+        from compiler.sfa_abi import merge_with_semantics
+
+        sigs = {
+            "_mlir_ciface_main_0": (3, 3),
+            "_mlir_ciface_main_1": (4, 1),
+        }
+        module = {
+            "functions": [
+                {
+                    "name": "main_0",
+                    "inputs": [
+                        ("input_ids", "tensor<4x64xf32>"),
+                        ("position_ids", "tensor<4xf32>"),
+                    ],
+                    "weights": {},
+                    "weight_ops": [],
+                },
+                {
+                    "name": "main_1",
+                    "inputs": [
+                        ("hidden_states", "tensor<4x64x64xf32>"),
+                    ],
+                    "weights": {},
+                    "weight_ops": [],
+                },
+            ],
+        }
+        lowered_arg_types = {
+            "main_0": [
+                (2, [4, 64]),   # input_ids
+                (1, [4]),       # position_ids
+            ],
+            "main_1": [
+                (3, [4, 64, 64]),  # hidden_states
+            ],
+        }
+
+        metas = merge_with_semantics(sigs, module, lowered_arg_types)
+
+        # main_0: rank/dims on input_fields
+        f0_fields = metas[0]["input_fields"]
+        assert f0_fields[0].get("rank") == 2
+        assert f0_fields[0].get("dims") == [4, 64]
+        assert f0_fields[1].get("rank") == 1
+        assert f0_fields[1].get("dims") == [4]
+
+        # main_1: rank/dims on input_fields
+        f1_fields = metas[1]["input_fields"]
+        assert f1_fields[0].get("rank") == 3
+        assert f1_fields[0].get("dims") == [4, 64, 64]
+
+    def test_backward_compatible_no_lowered_types(self):
+        from compiler.sfa_abi import merge_with_semantics
+
+        sigs = {"_mlir_ciface_main_0": (3, 3)}
+        module = {
+            "functions": [
+                {
+                    "name": "main_0",
+                    "inputs": [("input_ids", "tensor<4x64xf32>")],
+                    "weights": {},
+                    "weight_ops": [],
+                },
+            ],
+        }
+
+        metas = merge_with_semantics(sigs, module)
+        assert len(metas) == 1
+        # No rank/dims without lowered_arg_types
+        assert "rank" not in metas[0]["input_fields"][0]
+
+
+# ── Tests: serialize_abi with rank/dims ──────────────────────────────
+
+class TestSerializeAbiWithRankDims:
+    """serialize_abi includes rank/dims in proto output."""
+
+    def test_rank_dims_in_proto(self):
+        from compiler.sfa_abi import serialize_abi
+
+        metas = [
+            {
+                "symbol": "_mlir_ciface_main_0",
+                "num_inputs": 2,
+                "output_rank": 3,
+                "input_fields": [
+                    {
+                        "kind": SfaInputKind.Value("SFA_INPUT_GLOBAL"),
+                        "rank": 2,
+                        "dims": [4, 64],
+                    },
+                    {
+                        "kind": SfaInputKind.Value("SFA_INPUT_WEIGHT"),
+                        "weight_name": "wte.weight",
+                        "rank": 2,
+                        "dims": [50272, 768],
+                    },
+                ],
+            },
+        ]
+        data = serialize_abi(metas)
+        header = _parse_abi(data)
+
+        f0 = header.funcs[0]
+        assert len(f0.input_fields) == 2
+
+        # GLOBAL input with rank/dims
+        assert f0.input_fields[0].kind == SfaInputKind.SFA_INPUT_GLOBAL
+        assert f0.input_fields[0].rank == 2
+        assert list(f0.input_fields[0].dims) == [4, 64]
+
+        # WEIGHT input with rank/dims
+        assert f0.input_fields[1].kind == SfaInputKind.SFA_INPUT_WEIGHT
+        assert f0.input_fields[1].rank == 2
+        assert list(f0.input_fields[1].dims) == [50272, 768]
+
+    def test_no_rank_dims_when_not_present(self):
+        from compiler.sfa_abi import serialize_abi
+
+        metas = [
+            {
+                "symbol": "_mlir_ciface_main_0",
+                "num_inputs": 1,
+                "output_rank": 3,
+                "input_fields": [
+                    {"kind": SfaInputKind.Value("SFA_INPUT_GLOBAL")},
+                ],
+            },
+        ]
+        data = serialize_abi(metas)
+        header = _parse_abi(data)
+
+        f0 = header.funcs[0]
+        # rank defaults to 0 when not set
+        assert f0.input_fields[0].rank == 0
+        assert list(f0.input_fields[0].dims) == []
