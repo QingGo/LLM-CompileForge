@@ -324,58 +324,24 @@ pub fn run_function_graph(
         }
 
         // Build SfaMemRef descriptors from input buffers.
-        // Use io_def.rank to create correctly-ranked descriptors —
-        // critical for SSA inputs where the producer's packed output
-        // has a different rank than the dylib expects for each argument.
-        let mut input_sfa: Vec<crate::hal::sfa::SfaMemRef> = Vec::with_capacity(input_bufs.len());
-        for (bi, buf) in input_bufs.iter().enumerate() {
-            let native_sfa = buf.as_ref().as_sfa_memref();
-            let io_def = &func_def.inputs[bi].1;
-            let elem_size = native_sfa.element_size();
-
-            let sfa = if io_def.rank > 0 && native_sfa.rank() as u8 != io_def.rank {
-                let ptr = native_sfa.data_ptr() as *mut std::ffi::c_void;
-                let io_rank = io_def.rank as usize;
-                match io_rank {
-                    1 => {
-                        let s0 = io_def.shape.first().copied().unwrap_or(0) as i64;
-                        crate::hal::sfa::SfaMemRef::r1(ptr, [s0], [1], elem_size)
-                    }
-                    2 => {
-                        let s0 = io_def.shape.first().copied().unwrap_or(0) as i64;
-                        let s1 = io_def.shape.get(1).copied().unwrap_or(1) as i64;
-                        crate::hal::sfa::SfaMemRef::r2(ptr, [s0, s1], [s1, 1], elem_size)
-                    }
-                    3 => {
-                        let s0 = io_def.shape.first().copied().unwrap_or(0) as i64;
-                        let s1 = io_def.shape.get(1).copied().unwrap_or(1) as i64;
-                        let s2 = io_def.shape.get(2).copied().unwrap_or(1) as i64;
-                        crate::hal::sfa::SfaMemRef::r3(ptr, [s0, s1, s2], [s2 * s1, s2, 1], elem_size)
-                    }
-                    4 => {
-                        let s0 = io_def.shape.first().copied().unwrap_or(0) as i64;
-                        let s1 = io_def.shape.get(1).copied().unwrap_or(1) as i64;
-                        let s2 = io_def.shape.get(2).copied().unwrap_or(1) as i64;
-                        let s3 = io_def.shape.get(3).copied().unwrap_or(1) as i64;
-                        crate::hal::sfa::SfaMemRef::r4(ptr, [s0, s1, s2, s3], [s3 * s2 * s1, s3 * s2, s3, 1], elem_size)
-                    }
-                    _ => native_sfa,
+        // All dylib ciface functions expect rank-2 descriptors — promote
+        // rank-1 tensors (e.g. bias vectors) to rank-2 for compatibility.
+        let input_sfa: Vec<crate::hal::sfa::SfaMemRef> =
+            input_bufs.iter().map(|b| {
+                let sfa = b.as_ref().as_sfa_memref();
+                if sfa.rank() == 1 {
+                    let shape = sfa.sizes();
+                    let ptr = sfa.data_ptr() as *mut std::ffi::c_void;
+                    crate::hal::sfa::SfaMemRef::r2(
+                        ptr,
+                        [shape[0] as i64, 1],
+                        [1, 1],
+                        sfa.element_size(),
+                    )
+                } else {
+                    sfa
                 }
-            } else if native_sfa.rank() == 1 {
-                // Promote rank-1 to rank-2 for dylib compatibility
-                let shape = native_sfa.sizes();
-                let ptr = native_sfa.data_ptr() as *mut std::ffi::c_void;
-                crate::hal::sfa::SfaMemRef::r2(
-                    ptr,
-                    [shape[0] as i64, 1],
-                    [1, 1],
-                    elem_size,
-                )
-            } else {
-                native_sfa
-            };
-            input_sfa.push(sfa);
-        }
+            }).collect();
 
         // Pre-allocate output buffers sized from the compute graph metadata.
         let seq_len = input_ids.len();
@@ -895,6 +861,8 @@ mod tests {
                 f.input_fields.push(SfaInputField {
                     kind: SfaInputKind::SfaInputGlobal as i32,
                     binding: None,
+                    rank: 0,
+                    dims: Vec::new(),
                 });
             }
             header.funcs.push(f);
@@ -1034,6 +1002,8 @@ mod tests {
         func0.input_fields.push(SfaInputField {
             kind: SfaInputKind::SfaInputWeight as i32,
             binding: Some(Binding::WeightName("weight_a".to_string())),
+            rank: 0,
+            dims: Vec::new(),
         });
         abi.funcs.push(func0);
 
@@ -1051,6 +1021,8 @@ mod tests {
                 producer_func: 0,
                 producer_out: 0,
             })),
+            rank: 0,
+            dims: Vec::new(),
         });
         abi.funcs.push(func1);
 
