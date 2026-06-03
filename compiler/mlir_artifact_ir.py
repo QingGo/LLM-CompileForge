@@ -306,14 +306,32 @@ def _map_op_results(op: MlirOp, ir_op: Any, ssa_map: dict[str, ir.Value]) -> Non
 
 
 def _resolve_output_values(func: MlirFunction, ssa_map: dict[str, ir.Value]) -> list[ir.Value]:
-    """Resolve function output values from SSA map."""
-    output_values: list[ir.Value] = []
-    for out_name, _, _ in func.outputs:
-        if out_name in ssa_map:
-            output_values.append(ssa_map[out_name])
-        elif out_name.lstrip("%") in ssa_map:
-            output_values.append(ssa_map[out_name.lstrip("%")])
+    """Resolve function output values from SSA map using type-based matching.
 
+    Output entries (func.outputs) are matched to op results by type string
+    in declaration order.  No dependency on SSA name format.
+    """
+    if not func.outputs:
+        return []
+
+    # Group op results by output type string in definition order
+    type_to_results: dict[str, list[str]] = {}
+    for op in func.ops:
+        for j, r in enumerate(op.results):
+            if j < len(op.output_types) and r in ssa_map:
+                type_to_results.setdefault(op.output_types[j], []).append(r)
+
+    # Match outputs to results in declaration order
+    output_values: list[ir.Value] = []
+    type_positions: dict[str, int] = {}
+    for _out_name, out_tp, _consumed in func.outputs:
+        results = type_to_results.get(out_tp, [])
+        pos = type_positions.get(out_tp, 0)
+        if pos < len(results):
+            output_values.append(ssa_map[results[pos]])
+            type_positions[out_tp] = pos + 1
+
+    # Fallback: no outputs matched by type — use last op's last result
     if not output_values and func.ops:
         last_op = func.ops[-1]
         if last_op.results:
