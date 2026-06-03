@@ -748,13 +748,13 @@ mod tests {
             let abi = crate::abi::load_sfa_abi(&lib)
                 .expect("failed to load sfa_abi");
             assert_eq!(abi.funcs.len(), 16, "16 functions expected");
-            // main_0 must have exactly 1 output (not 211)
+            // After _fixup_output_names fix, main_0 has 211 outputs (one per result)
             let main0 = &abi.funcs[0];
-            assert_eq!(main0.outputs.len(), 1,
-                "main_0 should have 1 output (was 211 in buggy proto)");
-            assert_eq!(main0.outputs[0].rank, 3,
-                "main_0 output rank should be 3 (matching LLVM IR sret)");
-            // All other functions must also have 1 output
+            assert_eq!(main0.outputs.len(), 211,
+                "main_0 should have 211 outputs (one per func result)");
+            assert_eq!(main0.outputs[0].rank, 1,
+                "main_0 output rank should be 1 (individual scalar result)");
+            // All other functions must have 1 output
             for fi in 1..abi.funcs.len() {
                 assert_eq!(abi.funcs[fi].outputs.len(), 1,
                     "func[{}] should have 1 output", fi);
