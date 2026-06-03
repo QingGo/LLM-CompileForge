@@ -125,6 +125,71 @@ def parse_lowered_argument_types(
     return result
 
 
+def parse_lowered_output_types(
+    lowered_mlir_path: str,
+) -> dict[str, list[tuple[int, list[int]]]]:
+    """Parse lowered MLIR to extract function return types (rank + dims).
+
+    Scans for ``func.func @NAME(...) -> TYPES {`` and parses the
+    tensor type(s) in the return position.  Supports both single
+    (``tensor<...>``) and multi-output (``(tensor<...>, tensor<...>)``)
+    signatures.
+
+    Dynamic dimensions (``?``) are mapped to 0.
+
+    Args:
+        lowered_mlir_path: Path to lowered MLIR text file.
+
+    Returns:
+        Dict mapping base function name (e.g. ``"main_0"``) to a list of
+        ``(rank, dims)`` tuples, one per output.  If a function has no
+        tensor return types or the file cannot be read, the entry may be
+        empty or missing.
+    """
+    try:
+        with open(lowered_mlir_path) as f:
+            text = f.read()
+    except (FileNotFoundError, OSError):
+        return {}
+
+    _func_re = re.compile(
+        r"func\.func\s+@(\w+)\s*\([^)]*\)\s*->\s*(.+?)\s*(?:attributes\s*\{|\{)",
+        re.DOTALL,
+    )
+
+    _tensor_re = re.compile(r"tensor<([^>]*)>")
+
+    result: dict[str, list[tuple[int, list[int]]]] = {}
+
+    for func_match in _func_re.finditer(text):
+        func_name = func_match.group(1)
+        return_str = func_match.group(2).strip()
+
+        output_types: list[tuple[int, list[int]]] = []
+
+        for tensor_match in _tensor_re.finditer(return_str):
+            dim_str = tensor_match.group(1).strip()
+            if not dim_str:
+                output_types.append((0, []))
+                continue
+
+            dim_parts = [d.strip() for d in dim_str.split("x")]
+            dim_parts = [d for d in dim_parts if re.match(r"^(?:\?|\d+)$", d)]
+            dims: list[int] = []
+            for d in dim_parts:
+                if d == "?":
+                    dims.append(0)
+                else:
+                    dims.append(int(d))
+
+            output_types.append((len(dims), dims))
+
+        if func_name not in result:
+            result[func_name] = output_types
+
+    return result
+
+
 def parse_ciface_signatures(llvm_ir_path: str) -> dict[str, tuple[int, int]]:
     """Parse LLVM IR text to extract function signatures from ciface wrappers.
 
@@ -194,6 +259,7 @@ def merge_with_semantics(
     signatures: dict[str, tuple[int, int]],
     pre_lowering_module: dict[str, Any],
     lowered_arg_types: dict[str, list[tuple[int, list[int]]]] | None = None,
+    lowered_output_types: dict[str, list[tuple[int, list[int]]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Merge LLVM IR ciface signatures with pre-lowering input semantics.
 
@@ -217,6 +283,11 @@ def merge_with_semantics(
             When provided, ``rank`` and ``dims`` are populated in each input_field
             dict from the lowered MLIR tensor type.  Functions not found in this
             dict fall back to the pre-lowering approach (no rank/dims).
+        lowered_output_types: Optional output of :func:`parse_lowered_output_types`.
+            When provided and the function is found, generates one
+            ``OutputDescriptor`` per lowered output type instead of a single
+            ``[rank, zeros]`` entry.  Functions not found fall back to the
+            single-descriptor default.
 
     Returns:
         List of ``SfaFuncMeta`` dicts, each containing:
@@ -228,6 +299,8 @@ def merge_with_semantics(
           ``kind`` (int), ``weight_name`` (str, optional),
           ``producer_func`` (int, optional), ``producer_out`` (int, optional),
           ``rank`` (int, optional), ``dims`` (list of int, optional)
+        - ``"outputs"``: list of ``OutputDescriptor`` dicts with keys:
+          ``rank`` (int), ``dims`` (list of int)
     """
     funcs = pre_lowering_module.get("functions", [])
 
@@ -319,6 +392,11 @@ def merge_with_semantics(
             "rank": effective_output_rank,
             "dims": [0] * effective_output_rank,
         }]
+
+        # If lowered output types are available, replace with per-output descriptors
+        if lowered_output_types and func["name"] in lowered_output_types:
+            lot = lowered_output_types[func["name"]]
+            output_descs = [{"rank": rank, "dims": dims} for rank, dims in lot]
 
         # Populate rank/dims from lowered MLIR arg types when available
         if lowered_arg_types and func["name"] in lowered_arg_types:

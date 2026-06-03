@@ -603,6 +603,121 @@ class TestMergeWithLoweredArgTypes:
         assert "rank" not in metas[0]["input_fields"][0]
 
 
+# ── Mock lowered MLIR with multi-output ──────────────────────────────
+
+def _mock_lowered_mlir_multi_output() -> str:
+    return """
+module {
+  func.func @main_0(%arg0: tensor<?x?xi64>, %arg1: tensor<50272x768xf32>)
+      -> (tensor<1xf32>, tensor<1xf32>, tensor<?x?x768xf32>) attributes {sf.weight_names = ["w1", "w2"]} {
+    return %arg0 : tensor<?x?xi64>
+  }
+  func.func @main_1(%arg0: tensor<?x?x768xf32>, %arg1: tensor<768xf32>)
+      -> tensor<?x?x768xf32> {
+    return %arg0 : tensor<?x?x768xf32>
+  }
+}
+"""
+
+
+# ── Tests: parse_lowered_output_types + merge multi-output ────────────
+
+class TestMultiOutputDescriptors:
+    """merge_with_semantics with lowered_output_types produces N OutputDescriptors."""
+
+    def test_multiple_outputs_per_function(self):
+        from compiler.sfa_abi import (
+            merge_with_semantics,
+            parse_lowered_output_types,
+        )
+
+        path = _write_temp_ll(_mock_lowered_mlir_multi_output())
+        try:
+            lowered_output_types = parse_lowered_output_types(path)
+
+            # Verify parsing
+            assert "main_0" in lowered_output_types
+            lot_main0 = lowered_output_types["main_0"]
+            assert len(lot_main0) == 3
+            assert lot_main0[0] == (1, [1])
+            assert lot_main0[1] == (1, [1])
+            assert lot_main0[2] == (3, [0, 0, 768])
+
+            # main_1 has single output
+            assert "main_1" in lowered_output_types
+            lot_main1 = lowered_output_types["main_1"]
+            assert len(lot_main1) == 1
+            assert lot_main1[0] == (3, [0, 0, 768])
+
+            # Now test merge_with_semantics
+            sigs = {
+                "_mlir_ciface_main_0": (3, 3),
+                "_mlir_ciface_main_1": (3, 1),
+            }
+            module = {
+                "functions": [
+                    {
+                        "name": "main_0",
+                        "inputs": [
+                            ("input_ids", "tensor<4x64xf32>"),
+                            ("position_ids", "tensor<4xf32>"),
+                        ],
+                        "weights": {},
+                        "weight_ops": [],
+                    },
+                    {
+                        "name": "main_1",
+                        "inputs": [
+                            ("hidden_states", "tensor<4x64x64xf32>"),
+                        ],
+                        "weights": {},
+                        "weight_ops": [],
+                    },
+                ],
+            }
+
+            metas = merge_with_semantics(
+                sigs, module, lowered_output_types=lowered_output_types,
+            )
+
+            # main_0: 3 outputs
+            f0_outputs = metas[0]["outputs"]
+            assert len(f0_outputs) == 3
+            assert f0_outputs[0] == {"rank": 1, "dims": [1]}
+            assert f0_outputs[1] == {"rank": 1, "dims": [1]}
+            assert f0_outputs[2] == {"rank": 3, "dims": [0, 0, 768]}
+
+            # main_1: 1 output (merged from single lowered output type)
+            f1_outputs = metas[1]["outputs"]
+            assert len(f1_outputs) == 1
+            assert f1_outputs[0] == {"rank": 3, "dims": [0, 0, 768]}
+        finally:
+            Path(path).unlink()
+
+    def test_backward_compat_no_lowered_output_types(self):
+        from compiler.sfa_abi import merge_with_semantics
+
+        sigs = {"_mlir_ciface_main_0": (3, 3)}
+        module = {
+            "functions": [
+                {
+                    "name": "main_0",
+                    "inputs": [("input_ids", "tensor<4x64xf32>")],
+                    "weights": {},
+                    "weight_ops": [],
+                },
+            ],
+        }
+
+        # No lowered_output_types → single OutputDescriptor (backward compat)
+        metas = merge_with_semantics(sigs, module)
+        assert len(metas) == 1
+        outputs = metas[0]["outputs"]
+        assert len(outputs) == 1
+        assert outputs[0]["rank"] == 3
+        assert outputs[0]["dims"] == [0, 0, 0]
+
+
 # ── Tests: serialize_abi with rank/dims ──────────────────────────────
 
 class TestSerializeAbiWithRankDims:
