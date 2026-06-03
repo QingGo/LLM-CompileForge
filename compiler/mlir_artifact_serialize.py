@@ -87,10 +87,28 @@ def mlir_module_to_text(module: MlirModule) -> str:
                 f'{" : " + type_sig if type_sig else ""}'
             )
 
-        # Return
-        ret_names = [_ssa(name) for name, _, _ in func.outputs]
-        ret_str = ", ".join(ret_names)
+        # Return — use explicit SSA names.  If any output name is empty
+        # (legacy pre-lowering artifact), derive from op results by type.
+        ret_names: list[str] = []
         ret_types = [tp for _, tp, _ in func.outputs]
+        if any(not name for name, _, _ in func.outputs):
+            type_to_results: dict[str, list[str]] = {}
+            for op in func.ops:
+                for j, r in enumerate(op.results):
+                    if j < len(op.output_types):
+                        type_to_results.setdefault(op.output_types[j], []).append(r)
+            type_positions: dict[str, int] = {}
+            for name, tp, _ in func.outputs:
+                results = type_to_results.get(tp, [])
+                pos = type_positions.get(tp, 0)
+                if pos < len(results):
+                    ret_names.append(f"%{results[pos]}")
+                    type_positions[tp] = pos + 1
+                else:
+                    ret_names.append("")
+            ret_str = ", ".join(ret_names)
+        else:
+            ret_str = ", ".join(_ssa(name) for name, _, _ in func.outputs)
         if len(ret_types) == 1:
             ret_type_str = f" : {ret_types[0]}"
         else:

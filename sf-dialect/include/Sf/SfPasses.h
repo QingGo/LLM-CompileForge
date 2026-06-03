@@ -9,7 +9,6 @@ namespace sf {
 
 std::unique_ptr<mlir::Pass> createSfPromoteWeights();
 std::unique_ptr<mlir::Pass> createSfLowerToLinalg();
-std::unique_ptr<mlir::Pass> createSfExplicitReturn();
 std::unique_ptr<mlir::Pass> createSfStripGEPNuw();
 std::unique_ptr<mlir::Pass> createSfFuseSiluPass();
 std::unique_ptr<mlir::Pass> createSfFuseRmsNormPass();

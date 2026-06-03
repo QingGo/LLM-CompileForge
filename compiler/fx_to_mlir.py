@@ -207,7 +207,13 @@ def fx_graph_to_mlir(
                     else:
                         tp = "tensor<f32>"
                     func_outputs.append((out_name, tp, False))
-            continue
+
+    # Post-process: ensure all output names are valid MLIR SSA names.
+    # Some FX nodes may be skipped (unmapped ops) so ssa_map fallback
+    # returns the FX node name instead of an MLIR SSA name.  Derive
+    # correct names from the op results that produce each output.
+    if func_outputs:
+        _fixup_output_names(func_outputs, mlir_ops)
 
     # Backfill dump_layer for handler-generated ops (getitem, split, chunk)
     for op in mlir_ops:
@@ -588,3 +594,36 @@ def _apply_post_kwargs(
         int_args = [a for a in node.args if isinstance(a, (int, torch.SymInt)) and not isinstance(a, bool)]  # type: ignore[misc]
         if int_args:
             kwargs["dim"] = _symint_to_int(int_args[0]) or int_args[0]
+
+
+def _fixup_output_names(
+    func_outputs: list[tuple[str, str, bool]],
+    mlir_ops: list[MlirOp],
+) -> None:
+    """Ensure every output name is a valid MLIR SSA name.
+
+    When an output references an FX node that was skipped during conversion
+    (unmapped ops), ``ssa_map`` fallback returns the FX node name — not a
+    valid MLIR SSA name (e.g. ``%42``).  This function derives correct names
+    from the op results that produce each output, matching by type in
+    declaration order.
+
+    In-place: modifies ``func_outputs`` entries that lack valid SSA names.
+    """
+    type_to_results: dict[str, list[str]] = {}
+    for op in mlir_ops:
+        for j, r in enumerate(op.results):
+            if j < len(op.output_types):
+                type_to_results.setdefault(op.output_types[j], []).append(r)
+
+    type_positions: dict[str, int] = {}
+    for i, (name, tp, consumed) in enumerate(func_outputs):
+        if name and name.startswith("%"):
+            clean = name.lstrip("%")
+            if any(clean in op.results for op in mlir_ops):
+                continue
+        results = type_to_results.get(tp, [])
+        pos = type_positions.get(tp, 0)
+        if pos < len(results):
+            func_outputs[i] = ("%" + results[pos], tp, consumed)
+            type_positions[tp] = pos + 1
