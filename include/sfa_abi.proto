@@ -74,3 +74,124 @@ message SfaConstant {
   repeated uint64 shape = 3;  // tensor dimensions
   bytes data = 4;             // raw element bytes
 }
+
+// ── Cache policy types (field numbers 200+) ───────────────────────
+
+// Describes one contiguous cache storage region.
+// Mirrors compiler/cache_policy.py::_SlabSpec and runtime/src/kv_cache.rs::SlabSpec.
+// dims dict is flattened into explicit fields for type safety.
+message SfaSlabSpec {
+  string name = 200;         // logical name, e.g. "k", "v", "state" (Python: slab_id)
+  string slab_type = 201;    // storage scheme — "paged" | "flat" | "circular" | "fixed" (Python: storage)
+  string layout = 202;       // tensor dim order, e.g. "BNLD", "RLD"
+  string dtype = 203;        // element type, e.g. "float32", "bfloat16"
+  uint32 num_blocks = 204;   // number of blocks allocated (0 = computed at runtime)
+  uint32 block_size = 205;   // tokens per block (propagated from CachePolicy.block_size)
+  uint32 num_layers = 206;   // dims.layers — number of transformer layers
+  uint32 num_heads = 207;    // dims.heads — number of KV attention heads
+  uint32 head_dim = 208;     // dims.dim — dimension per head
+}
+
+// Describes when and how the executor intercepts an op for cache I/O.
+// Mirrors compiler/cache_policy.py::_InterceptSpec and runtime/src/kv_cache.rs::InterceptSpec.
+message SfaInterceptSpec {
+  string slab_id = 210;             // which slab to read from / write to
+  string op_name_pattern = 211;     // short op name, e.g. "scaled_dot_product_attention" (Python: op_name)
+  string intercept_type = 212;      // "read" | "write" | "read_write" (Python: direction)
+  string source = 213;              // how to extract data, e.g. "operand[1]" | "output"
+  string layer = 214;               // layer indexing: "sequential" or static index
+  repeated uint32 param_indices = 215; // parsed operand/output indices from source
+}
+
+// Declarative model cache strategy — serialized at compile time.
+// Mirrors compiler/cache_policy.py::CachePolicy and runtime/src/kv_cache.rs::CachePolicy.
+message SfaCachePolicy {
+  repeated SfaSlabSpec slabs = 220;
+  repeated SfaInterceptSpec intercepts = 221;
+  uint32 block_size = 222;      // default block size for paged slabs
+  uint32 max_requests = 223;    // pool capacity for fixed-size slabs
+}
+
+// ---------------------------------------------------------------------------
+// MLIR artifact schema — serializable representation of a compiled MLIR module.
+// These messages mirror the compiler/mlir_dialect/mlir_op_types.py dataclasses:
+//   MlirOp → SfaMlirOp, MlirFunction → SfaMlirFunction, MlirModule → SfaMlirArtifact.
+// Field numbers start at 100 to avoid collisions with core ABI messages (1-10).
+// ---------------------------------------------------------------------------
+
+// Top-level MLIR artifact: a module containing functions and metadata.
+message SfaMlirArtifact {
+  repeated SfaMlirFunction functions = 100;
+  map<string, string> metadata = 101;
+}
+
+// A parsed MLIR function (func.func) with its operations, I/O, and weights.
+message SfaMlirFunction {
+  string name = 100;
+  repeated SfaMlirOp ops = 101;
+  repeated string input_names = 102;   // SSA names of function inputs
+  repeated string output_names = 103;  // SSA names of function outputs
+  repeated SfaWeightEntry weights = 104;
+}
+
+// A single MLIR operation within a function.
+message SfaMlirOp {
+  string op_type = 100;             // full qualified name: "sf.linear", "arith.addf", etc.
+  map<string, string> attributes = 101;
+  repeated string inputs = 102;     // SSA names of operands
+  repeated string outputs = 103;    // SSA names of results
+}
+
+// ── Op Catalog (field numbers 300+) ─────────────────────────────
+// Single source of truth for all HAL operators shared across
+// compiler / sf-dialect / runtime. Derived from compiler/mlir_dialect/_op_defs.py
+// and sf-dialect/include/Sf/SfOps.td.
+
+// Describes a parameter (input) of an operator.
+message SfaOpParam {
+  string name = 1;     // parameter name, e.g. "input", "weight", "dim"
+  string dtype = 2;    // element type: "float32", "float16", "int64", etc.
+  uint32 rank = 3;     // 0=scalar, 1-4=tensor rank
+}
+
+// Describes a single HAL operator.
+message SfaOpDef {
+  string name = 300;                    // canonical op name: "linear", "add", etc.
+  string kind = 301;                    // category: matmul|element_wise|reduce|attention|normalization|reshape|compare|gather|fill|shape|slice|softmax
+  repeated SfaOpParam params = 302;     // input parameter descriptors
+  repeated string output_dtypes = 303;  // output element types
+}
+
+// Catalog of all HAL operators known to the system.
+message SfaOpCatalog {
+  repeated SfaOpDef ops = 310;
+}
+
+// ── HAL Op Semantics (field numbers 400+) ─────────────────────────
+// Runtime semantic contract for hal_ir.json ops — defines what each
+// HAL operator should look like at the structural level: arity,
+// expected dtypes, and category kind.
+//
+// This is Path B's equivalent of the function-level ABI contract.
+// While SfaOpCatalog defines what ops EXIST, SfaHalOpSemantics defines
+// what they should LOOK LIKE at runtime (input/output counts, dtypes).
+//
+// Op name matching uses prefix matching: "element_wise" semantics
+// apply to "element_wise:add", "element_wise:mul", etc.
+
+// Describes the semantic contract for a single HAL operator.
+message SfaHalOpSemanticEntry {
+  string op_name = 1;                  // canonical op name, e.g. "matmul", "element_wise", "gather"
+  uint32 expected_input_count = 2;     // minimum number of input tensors (0 for fill ops)
+  uint32 expected_output_count = 3;    // number of output tensors (0 for pure-side-effect ops)
+  repeated string input_dtypes = 4;    // expected element types for inputs, e.g. ["f32","f32"]
+  repeated string output_dtypes = 5;   // expected element types for outputs, e.g. ["f32"]
+  string kind = 6;                     // semantic category: matmul|element_wise|reduce|attention|normalization|reshape|compare|gather|fill|shape|slice|softmax|scan|cache|concat
+}
+
+// Collection of HAL operator semantic contracts.
+// Used by the Rust hal_runner to validate loaded hal_ir.json
+// against known operator contracts on startup.
+message SfaHalOpSemantics {
+  repeated SfaHalOpSemanticEntry entries = 400;
+}

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import torch
 
-from gen.proto.python.sfa_abi_pb2 import SfaWeightData
+from gen.proto.python.sfa_abi_pb2 import SfaWeightData  # type: ignore[attr-defined]
 
 # dtype code mapping (must match Rust runtime)
 _DTYPE_TO_CODE: dict[torch.dtype, int] = {
@@ -54,4 +54,4 @@ def build_weight_data(
             entry.shape.append(dim)
         entry.data = tensor.detach().cpu().contiguous().numpy().tobytes()
 
-    return msg.SerializeToString()
+    return bytes(msg.SerializeToString())

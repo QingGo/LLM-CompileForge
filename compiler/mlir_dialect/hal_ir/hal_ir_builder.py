@@ -75,18 +75,7 @@ class HalIRBuilder:
         stored as ``self._mlir_module``.
         """
         _setup_mlir_path()
-        import sys
-        from pathlib import Path as _Path
-
         import mlir.ir as ir
-
-        _sf_base = _Path(__file__).resolve().parent.parent.parent.parent / "sf-dialect"
-        for _sf_candidate in [
-            _sf_base / "build" / "python_packages" / "sf",
-            _sf_base / "python_packages" / "sf",
-        ]:
-            if _sf_candidate.is_dir() and str(_sf_candidate) not in sys.path:
-                sys.path.insert(0, str(_sf_candidate))
 
         ctx = ir.Context()
         ctx.allow_unregistered_dialects = True

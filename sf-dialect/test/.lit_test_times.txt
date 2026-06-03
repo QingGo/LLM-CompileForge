@@ -10,4 +10,14 @@
 1.201262e-01 shape_inference.mlir
 -7.492304e-02 broadcast_lowering.mlir
 9.785271e-02 sfa_contract_test_temp.mlir
-1.081932e-01 Sf/sfa_contract_verify.mlir
+2.847695e-02 Sf/sfa_contract_verify.mlir
+5.127621e-02 Sf/sf-fuse-silu.mlir
+9.145188e-02 Sf/sf-lower-attention.mlir
+6.329608e-02 Sf/sf-lower-compare.mlir
+4.730010e-02 Sf/sf-lower-element-wise.mlir
+5.409980e-02 Sf/sf-lower-gelu.mlir
+6.358409e-02 Sf/sf-lower-matmul.mlir
+7.452893e-02 Sf/sf-lower-reduce.mlir
+7.722807e-02 Sf/sf-lower-reshape.mlir
+8.745217e-02 Sf/sf-lower-rms-norm.mlir
+4.693818e-02 Sf/sf-lower-silu.mlir

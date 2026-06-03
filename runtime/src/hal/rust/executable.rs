@@ -539,21 +539,44 @@ impl traits::Executable for HalRustExecutable {
             return Ok(output_shapes);
         }
 
-        // Default path: convert all inputs to f32 slices
-        let input_slices: Vec<&[f32]> = inputs
-            .iter()
-            // SAFETY: All inputs are f32 buffers (element_size == 4).
-            .map(|sfa| unsafe { Self::sfa_as_f32_slice(sfa) })
-            .collect();
+        // Default path: try trait-based dispatch first, fall back to
+        // string-based dispatch for ops not yet registered as KernelOp.
+        // Wave 3 / Task 10: migrate all ops to KernelOp trait; this
+        // fallback is temporary.
+        let registry = crate::hal::primitives::traits::kernel_registry();
+        if let Some(kernel) = registry.get(op_name) {
+            let input_slices: Vec<&[f32]> = inputs
+                .iter()
+                // SAFETY: All inputs are f32 buffers (element_size == 4).
+                .map(|sfa| unsafe { Self::sfa_as_f32_slice(sfa) })
+                .collect();
 
-        if let Some(out_sfa) = outputs.first() {
-            // SAFETY: Output buffer is pre-allocated as f32 by the runner.
-            let out_slice = unsafe { Self::sfa_as_f32_mut(out_sfa) };
-            crate::hal::hal_ops_cpu::dispatch(op_name, &input_slices, out_slice, &meta)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            if let Some(out_sfa) = outputs.first() {
+                // SAFETY: Output buffer is pre-allocated as f32 by the runner.
+                let out_slice = unsafe { Self::sfa_as_f32_mut(out_sfa) };
+                kernel.execute_typed(&input_slices, out_slice, &meta)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            } else {
+                kernel.execute_typed(&input_slices, &mut [], &meta)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            }
         } else {
-            crate::hal::hal_ops_cpu::dispatch(op_name, &input_slices, &mut [], &meta)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            // Legacy fallback for ops not yet in the KernelOp registry.
+            let input_slices: Vec<&[f32]> = inputs
+                .iter()
+                // SAFETY: All inputs are f32 buffers (element_size == 4).
+                .map(|sfa| unsafe { Self::sfa_as_f32_slice(sfa) })
+                .collect();
+
+            if let Some(out_sfa) = outputs.first() {
+                // SAFETY: Output buffer is pre-allocated as f32 by the runner.
+                let out_slice = unsafe { Self::sfa_as_f32_mut(out_sfa) };
+                crate::hal::hal_ops_cpu::dispatch(op_name, &input_slices, out_slice, &meta)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            } else {
+                crate::hal::hal_ops_cpu::dispatch(op_name, &input_slices, &mut [], &meta)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            }
         }
         Ok(output_shapes)
     }
@@ -627,7 +650,7 @@ mod tests {
     fn test_hal_rust_executable_execute_unknown_op() {
         let exe = HalRustExecutable::new(1);
         let stream = NoopStream;
-        let result = exe.execute("nonexistent_op", &stream, &[], &[]);
+        let result = exe.execute("nonexistent_op", &stream, &[], &mut []);
         assert!(result.is_err(), "unknown op should return error");
         assert!(
             result.unwrap_err().to_string().contains("unknown op"),

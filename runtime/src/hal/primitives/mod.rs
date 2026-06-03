@@ -2,7 +2,12 @@
 //!
 //! These are the building blocks for both direct dispatch and fused kernels.
 //! Each primitive is a standalone, testable function.
+//!
+//! Submodules:
+//! - ``traits``  — ``KernelOp`` trait, kernel type wrappers, and the registry
+//!   that replaces string-based dispatch.
 
+pub mod traits;
 pub mod vec_ops;
 pub mod reduce_ops;
 pub mod matmul;

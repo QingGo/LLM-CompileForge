@@ -20,7 +20,6 @@ from typing import Any
 
 import torch
 
-from compiler.mlir_artifact import MlirModule  # type: ignore[attr-defined]
 from engine._constants import (
     DEFAULT_BLOCK_SIZE,
     DEFAULT_CHUNK_SIZE,
@@ -46,7 +45,7 @@ def _read_policy_dim(raw_policy: dict[str, Any], key: str) -> int:
 class _CacheParams:
     """KV cache configuration extracted from module metadata."""
 
-    def __init__(self, module: MlirModule, **overrides: Any) -> None:
+    def __init__(self, module: Any, **overrides: Any) -> None:
         raw = module.metadata.get("cache_policy") if module.metadata else {}
         if raw is None:
             raw = {}
@@ -79,7 +78,7 @@ class LLMEngine:
 
     def __init__(
         self,
-        module: MlirModule,
+        module: Any,
         hal_backend: Any,
         executor: Any = None,
         **kwargs: Any,

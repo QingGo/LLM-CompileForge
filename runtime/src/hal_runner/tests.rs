@@ -705,11 +705,14 @@ fn test_matmul_dispatch_recognized() {
 
     let a = TestBuf(vec![0u8; 16], 4, vec![2, 2]);
     let b = TestBuf(vec![0u8; 16], 4, vec![2, 2]);
-    let out = TestBuf(vec![0u8; 16], 4, vec![2, 2]);
-    let inputs: [&dyn traits::Buffer; 2] = [&a, &b];
-    let outputs: [&dyn traits::Buffer; 1] = [&out];
+    let mut out = TestBuf(vec![0u8; 16], 4, vec![2, 2]);
+    let a_sfa = a.as_sfa_memref();
+    let b_sfa = b.as_sfa_memref();
+    let out_sfa = out.as_sfa_memref();
+    let inputs = [a_sfa, b_sfa];
+    let mut outputs = [out_sfa];
 
-    let result = exe.execute("matmul", &stream, &inputs, &outputs);
+    let result = exe.execute("matmul", &stream, &inputs, &mut outputs);
     assert!(result.is_ok(),
         "matmul dispatch should succeed, got: {:?}", result.err());
 }

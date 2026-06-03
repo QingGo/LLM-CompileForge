@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use half::f16;
+use log::warn;
 
 use crate::block_manager::BlockManager;
 use crate::compute_graph::{ComputeGraph, FuncDef, InputBinding, IOTensorDef};
@@ -337,9 +338,13 @@ pub fn run_function_graph(
         // rank/dims in io_def are informational metadata for the compiler
         // and for future per-input buffer allocation.
         let input_sfa: Vec<crate::hal::sfa::SfaMemRef> =
-            input_bufs.iter().map(|b| {
+            input_bufs.iter().zip(func_def.inputs.iter()).map(|(b, (_binding, io_def))| {
                 let sfa = b.as_ref().as_sfa_memref();
-                if sfa.rank() == 1 {
+                let native_rank = sfa.rank();
+                if native_rank > io_def.rank {
+                    warn!("rank promotion: buffer rank={} > io_def.rank={} for input", native_rank, io_def.rank);
+                }
+                let out = if sfa.rank() == 1 {
                     let shape = sfa.sizes();
                     let ptr = sfa.data_ptr() as *mut std::ffi::c_void;
                     crate::hal::sfa::SfaMemRef::r2(
@@ -350,7 +355,11 @@ pub fn run_function_graph(
                     )
                 } else {
                     sfa
-                }
+                };
+                debug_assert!(io_def.rank <= out.rank(),
+                    "io_def.rank {} exceeds final buffer rank {} — dylib may SIGSEGV",
+                    io_def.rank, out.rank());
+                out
             }).collect();
 
         // Pre-allocate output buffers sized from the compute graph metadata.

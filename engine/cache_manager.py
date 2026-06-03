@@ -13,9 +13,51 @@ Slab types:
 
 from __future__ import annotations
 
+import logging
+from typing import Any
+
 import torch
 
-from compiler.cache_policy import CachePolicy, _SlabSpec
+from gen.proto.python.sfa_abi_pb2 import (  # type: ignore[attr-defined]
+    SfaCachePolicy,
+    SfaInterceptSpec,
+    SfaSlabSpec,
+)
+
+_logger = logging.getLogger(__name__)
+
+
+def _dict_to_proto_cache_policy(raw: dict[str, Any]) -> SfaCachePolicy:
+    """Convert a JSON cache_policy dict (from metadata.json) to proto SfaCachePolicy.
+
+    Backward-compatible fallback for existing compiled models whose
+    metadata.json carries JSON-serialized CachePolicy.
+    """
+    _logger.warning(
+        "Loading cache_policy from JSON fallback (upgrade model to proto "
+        "SfaCachePolicy for faster startup)"
+    )
+    policy = SfaCachePolicy()
+    policy.block_size = int(raw.get("block_size", 16))
+    policy.max_requests = int(raw.get("max_requests", 256))
+    for s in raw.get("slabs", []):
+        slab: SfaSlabSpec = policy.slabs.add()
+        slab.name = s["slab_id"]
+        slab.slab_type = s["storage"]
+        slab.layout = s.get("layout", "")
+        slab.dtype = s.get("dtype", "float32")
+        slab.block_size = int(raw.get("block_size", 16))
+        slab.num_layers = int(s["dims"].get("layers", 0))
+        slab.num_heads = int(s["dims"].get("heads", 0))
+        slab.head_dim = int(s["dims"].get("dim", 0))
+    for i in raw.get("intercepts", []):
+        ispec: SfaInterceptSpec = policy.intercepts.add()
+        ispec.slab_id = i["slab_id"]
+        ispec.op_name_pattern = i["op_name"]
+        ispec.intercept_type = i["direction"]
+        ispec.source = i.get("source", "")
+        ispec.layer = i.get("layer", "sequential")
+    return policy
 
 
 def _dtype_from_str(name: str) -> torch.dtype:
@@ -33,7 +75,7 @@ class CacheManager:
 
     def __init__(
         self,
-        policy: CachePolicy,
+        policy: SfaCachePolicy,
         num_blocks: int,
     ) -> None:
         self._policy = policy
@@ -42,35 +84,35 @@ class CacheManager:
         self._max_requests = policy.max_requests
 
         self._slabs: dict[str, torch.Tensor] = {}
-        self._specs: dict[str, _SlabSpec] = {}
+        self._specs: dict[str, SfaSlabSpec] = {}
         self._layer_counters: dict[str, int] = {}
         self._block_tables: dict[str, list[int]] = {}
 
         for spec in policy.slabs:
             tensor = self._allocate_slab(spec)
-            self._slabs[spec.slab_id] = tensor
-            self._specs[spec.slab_id] = spec
-            self._layer_counters[spec.slab_id] = 0
+            self._slabs[spec.name] = tensor
+            self._specs[spec.name] = spec
+            self._layer_counters[spec.name] = 0
 
-    def _allocate_slab(self, spec: _SlabSpec) -> torch.Tensor:
+    def _allocate_slab(self, spec: SfaSlabSpec) -> torch.Tensor:
         dtype = _dtype_from_str(spec.dtype)
         shape: tuple[int, ...]
-        if spec.storage == "paged":
+        if spec.slab_type == "paged":
             shape = (
                 self._num_blocks,
-                int(spec.dims["layers"]),
+                spec.num_layers,
                 self._block_size,
-                int(spec.dims["heads"]),
-                int(spec.dims["dim"]),
+                spec.num_heads,
+                spec.head_dim,
             )
-        elif spec.storage == "fixed":
+        elif spec.slab_type == "fixed":
             shape = (
                 self._max_requests,
-                int(spec.dims["layers"]),
-                int(spec.dims["dim"]),
+                spec.num_layers,
+                spec.head_dim,
             )
         else:
-            raise ValueError(f"Unknown storage type: {spec.storage}")
+            raise ValueError(f"Unknown storage type: {spec.slab_type}")
         return torch.zeros(shape, dtype=dtype)
 
     # ── Per-step state ────────────────────────────────────
@@ -123,8 +165,8 @@ class CacheManager:
             raise RuntimeError("Paged slab read requested without active block tables")
         bs = self._block_size
         spec = self._specs[slab_id]
-        nkh = int(spec.dims["heads"])
-        hd = int(spec.dims["dim"])
+        nkh = spec.num_heads
+        hd = spec.head_dim
         dtype = slab.dtype
         num_reqs = len(bt)
         result = torch.zeros(num_reqs, max_seq_len, nkh, hd, dtype=dtype)
@@ -165,8 +207,8 @@ class CacheManager:
         if t.dim() >= 4 and t.shape[0] == 1:
             t = t.squeeze(0)
         spec = self._specs[slab_id]
-        nkh = int(spec.dims["heads"])
-        hd = int(spec.dims["dim"])
+        nkh = spec.num_heads
+        hd = spec.head_dim
         if t.dim() == 3 and t.shape[0] == nkh and t.shape[-1] == hd:
             t = t.permute(1, 0, 2)
         elif t.dim() == 3 and t.shape[1] == nkh and t.shape[-1] == hd:
@@ -188,23 +230,23 @@ class CacheManager:
     @property
     def has_paged_cache(self) -> bool:
         return any(
-            s.storage == "paged" for s in self._policy.slabs
+            s.slab_type == "paged" for s in self._policy.slabs
         )
 
     def configured_kv_heads(self) -> int:
         for spec in self._policy.slabs:
-            if spec.storage == "paged" and "heads" in spec.dims:
-                return int(spec.dims["heads"])
+            if spec.slab_type == "paged" and spec.num_heads > 0:
+                return int(spec.num_heads)
         return 0
 
     def configured_head_dim(self) -> int:
         for spec in self._policy.slabs:
-            if spec.storage == "paged" and "dim" in spec.dims:
-                return int(spec.dims["dim"])
+            if spec.slab_type == "paged" and spec.head_dim > 0:
+                return int(spec.head_dim)
         return 0
 
     def configured_num_layers(self) -> int:
         for spec in self._policy.slabs:
-            if "layers" in spec.dims:
-                return int(spec.dims["layers"])
+            if spec.num_layers > 0:
+                return int(spec.num_layers)
         return 0

@@ -157,6 +157,14 @@ impl HalRustRunner {
     /// Parse a HAL IR JSON string.
     pub fn from_json(json_str: &str) -> Result<Self, anyhow::Error> {
         let hal_ir: HalIR = serde_json::from_str(json_str)?;
+        // Validate against semantic contract on startup (warnings only).
+        let semantics = super::default_hal_op_semantics();
+        let warnings = super::validate_hal_ir_against_semantics(
+            &hal_ir, &semantics,
+        );
+        for w in &warnings {
+            log::warn!("{}", w);
+        }
         Ok(Self { hal_ir })
     }
 

@@ -60,18 +60,24 @@ fn load_hal_rust_executable_from_dir(dylib_dir: &std::path::Path) -> Result<Box<
 /// Try to load compute graph and weight provider from ``sfa_abi`` and
 /// ``sfa_weights`` symbols embedded in the compiled dylib.
 ///
-/// Returns ``Ok((WeightProvider, ComputeGraph))`` on success, or an error
-/// if either symbol is missing or the ABI data is malformed.
+/// Also attempts to load cache policy from the ``sfa_cache_policy``
+/// symbol (proto format).  Returns ``None`` if the symbol is absent
+/// (older models).
+///
+/// Returns ``Ok((WeightProvider, ComputeGraph, Option<CachePolicy>))``
+/// on success, or an error if either symbol is missing or the ABI data
+/// is malformed.
 fn try_load_sfa_abi(
     dylib_path: &str,
     safetensors_path: Option<&str>,
-) -> Result<(WeightProvider, ComputeGraph), anyhow::Error> {
+) -> Result<(WeightProvider, ComputeGraph, Option<CachePolicy>), anyhow::Error> {
     // SAFETY: Loading a compiled dylib produced by the SFA toolchain.
     // The sfa_abi / sfa_weights symbols point to protobuf-encoded
     // data embedded at compile time, decoded into owned Rust types.
     let lib = unsafe { libloading::Library::new(dylib_path)? };
     let abi = unsafe { crate::abi::load_sfa_abi(&lib)? };
     let sfa_wp = unsafe { crate::abi::load_sfa_weights(&lib)? };
+    let cache_policy_proto = unsafe { crate::abi::load_sfa_cache_policy(&lib)? };
     // build_compute_graph takes references to the decoded proto types
     // and clones all data into the owned ComputeGraph.
     let compute_graph = crate::abi::build_compute_graph(&abi, &sfa_wp)?;
@@ -81,7 +87,11 @@ fn try_load_sfa_abi(
     };
     let st_path = safetensors_path.map(std::path::Path::new);
     let weight_provider = WeightProvider::new(registry, st_path)?;
-    Ok((weight_provider, compute_graph))
+    let cache_policy = match cache_policy_proto {
+        Some(p) => Some(CachePolicy::from_proto(&p).map_err(|e| anyhow::anyhow!("{}", e))?),
+        None => None,
+    };
+    Ok((weight_provider, compute_graph, cache_policy))
 }
 
 pub struct ModelExecutor {
@@ -143,21 +153,22 @@ impl ModelExecutor {
                 .extension()
                 .map_or(false, |ext| ext == "dylib" || ext == "so");
 
-        let (weight_provider, compute_graph, sfcf_version, mut data_pos, data_for_contract): (
+        let (weight_provider, compute_graph, proto_cache_policy, sfcf_version, mut data_pos, data_for_contract): (
             WeightProvider,
             ComputeGraph,
+            Option<CachePolicy>,
             u32,
             usize,
             Option<&[u8]>,
         ) = if is_dylib {
             match try_load_sfa_abi(dylib_path, safetensors_path) {
-                Ok((wp, cg)) => {
+                Ok((wp, cg, cache_pol)) => {
                     log::info!(
                         "Loaded compute graph from sfa_abi: {} functions",
                         cg.functions.len()
                     );
                     // SFCF version 0 signals "skip contract parsing".
-                    (wp, cg, 0u32, 0usize, None)
+                    (wp, cg, cache_pol, 0u32, 0usize, None)
                 }
                 Err(e) => {
                     log::warn!(
@@ -175,7 +186,7 @@ impl ModelExecutor {
                     } else {
                         return Err(ExecutorError::MissingComputeGraph.into());
                     };
-                    (wp, cg, version, pos, Some(data))
+                    (wp, cg, None, version, pos, Some(data))
                 }
             }
         } else {
@@ -190,7 +201,7 @@ impl ModelExecutor {
             } else {
                 return Err(ExecutorError::MissingComputeGraph.into());
             };
-            (wp, cg, version, pos, Some(data))
+            (wp, cg, None, version, pos, Some(data))
         };
 
         // Parse contract section (v4+) for constants.bin path only.
@@ -222,13 +233,61 @@ impl ModelExecutor {
             }
         }
 
+        // Resolve cache policy: proto (from sfa_cache_policy symbol) first,
+        // JSON metadata.json fallback second, none() as last resort.
+        let cache_policy = if let Some(pol) = proto_cache_policy {
+            pol
+        } else {
+            let dylib_p = std::path::Path::new(dylib_path);
+            let meta_path = if let Some(parent) = dylib_p.parent() {
+                parent.join("metadata.json")
+            } else {
+                std::path::PathBuf::from("metadata.json")
+            };
+            if meta_path.exists() {
+                match std::fs::read_to_string(&meta_path) {
+                    Ok(contents) => {
+                        match serde_json::from_str::<serde_json::Value>(&contents) {
+                            Ok(meta) => {
+                                if let Some(cp_json) = meta.get("cache_policy") {
+                                    log::warn!(
+                                        "Using JSON CachePolicy fallback — migrate to proto format"
+                                    );
+                                    CachePolicy::from_dict(cp_json)
+                                        .unwrap_or_else(|e| {
+                                            log::error!(
+                                                "Failed to parse cache_policy from JSON: {}",
+                                                e
+                                            );
+                                            CachePolicy::none()
+                                        })
+                                } else {
+                                    CachePolicy::none()
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!("Failed to parse metadata.json: {}", e);
+                                CachePolicy::none()
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to read metadata.json: {}", e);
+                        CachePolicy::none()
+                    }
+                }
+            } else {
+                CachePolicy::none()
+            }
+        };
+
         Ok(Self {
             executable,
             weight_provider,
             compute_graph,
             weight_cache: RefCell::new(std::collections::HashMap::new()),
             catalog: None,
-            cache_policy: CachePolicy::none(),
+            cache_policy,
         })
     }
 

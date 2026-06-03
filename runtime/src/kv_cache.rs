@@ -177,6 +177,76 @@ impl CachePolicy {
     pub fn is_empty(&self) -> bool {
         self.slabs.is_empty()
     }
+
+    /// Parse a `CachePolicy` from a protobuf `SfaCachePolicy` message.
+    ///
+    /// Field mapping follows the contract defined in `sfa_abi.proto`:
+    ///   - `SfaSlabSpec.name` → `SlabSpec.slab_id`
+    ///   - `SfaSlabSpec.slab_type` → `SlabSpec.storage`
+    ///   - `SfaSlabSpec.num_blocks/layers/heads/head_dim` → `SlabSpec.dims`
+    ///   - `SfaInterceptSpec.op_name_pattern` → `InterceptSpec.op_name`
+    ///   - `SfaInterceptSpec.intercept_type` → `InterceptSpec.direction`
+    ///   - `SfaInterceptSpec.param_indices[0]` → `InterceptSpec.func_index`
+    ///   - `SfaInterceptSpec.param_indices[1]` → `InterceptSpec.output_index`
+    pub fn from_proto(
+        p: &crate::abi::proto::SfaCachePolicy,
+    ) -> Result<Self, String> {
+        let slabs: Vec<SlabSpec> = p
+            .slabs
+            .iter()
+            .map(|s| {
+                let mut dims = HashMap::with_capacity(4);
+                dims.insert("blocks".to_string(), s.num_blocks as usize);
+                dims.insert("layers".to_string(), s.num_layers as usize);
+                dims.insert("heads".to_string(), s.num_heads as usize);
+                dims.insert("dim".to_string(), s.head_dim as usize);
+                SlabSpec {
+                    slab_id: s.name.clone(),
+                    storage: s.slab_type.clone(),
+                    dims,
+                    layout: s.layout.clone(),
+                    dtype: if s.dtype.is_empty() {
+                        "float32".to_string()
+                    } else {
+                        s.dtype.clone()
+                    },
+                }
+            })
+            .collect();
+
+        let intercepts: Vec<InterceptSpec> = p
+            .intercepts
+            .iter()
+            .map(|i| InterceptSpec {
+                slab_id: i.slab_id.clone(),
+                op_name: i.op_name_pattern.clone(),
+                direction: i.intercept_type.clone(),
+                source: i.source.clone(),
+                layer: if i.layer.is_empty() {
+                    "sequential".to_string()
+                } else {
+                    i.layer.clone()
+                },
+                func_index: i.param_indices.first().copied().unwrap_or(0) as usize,
+                output_index: i.param_indices.get(1).copied().unwrap_or(0) as usize,
+            })
+            .collect();
+
+        Ok(Self {
+            slabs,
+            intercepts,
+            block_size: if p.block_size > 0 {
+                p.block_size as usize
+            } else {
+                16
+            },
+            max_requests: if p.max_requests > 0 {
+                p.max_requests as usize
+            } else {
+                256
+            },
+        })
+    }
 }
 
 #[cfg(test)]
@@ -294,14 +364,153 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_policy_missing_fields_default() {
-        let json = serde_json::json!({
-            "slabs": [],
-            "intercepts": [],
-        });
-        let policy = CachePolicy::from_dict(&json).expect("minimal JSON");
+    fn test_cache_policy_from_proto_llama() {
+        let proto = crate::abi::proto::SfaCachePolicy {
+            slabs: vec![
+                crate::abi::proto::SfaSlabSpec {
+                    name: "k".to_string(),
+                    slab_type: "paged".to_string(),
+                    layout: "BNLD".to_string(),
+                    dtype: "float32".to_string(),
+                    num_blocks: 0,
+                    block_size: 16,
+                    num_layers: 12,
+                    num_heads: 8,
+                    head_dim: 64,
+                },
+                crate::abi::proto::SfaSlabSpec {
+                    name: "v".to_string(),
+                    slab_type: "paged".to_string(),
+                    layout: "BNLD".to_string(),
+                    dtype: "float32".to_string(),
+                    num_blocks: 0,
+                    block_size: 16,
+                    num_layers: 12,
+                    num_heads: 8,
+                    head_dim: 64,
+                },
+            ],
+            intercepts: vec![
+                crate::abi::proto::SfaInterceptSpec {
+                    slab_id: "k".to_string(),
+                    op_name_pattern: "scaled_dot_product_attention".to_string(),
+                    intercept_type: "read_write".to_string(),
+                    source: "operand[1]".to_string(),
+                    layer: "sequential".to_string(),
+                    param_indices: vec![1, 1],
+                },
+                crate::abi::proto::SfaInterceptSpec {
+                    slab_id: "v".to_string(),
+                    op_name_pattern: "scaled_dot_product_attention".to_string(),
+                    intercept_type: "read_write".to_string(),
+                    source: "operand[2]".to_string(),
+                    layer: "sequential".to_string(),
+                    param_indices: vec![1, 2],
+                },
+            ],
+            block_size: 16,
+            max_requests: 256,
+        };
+
+        let policy = CachePolicy::from_proto(&proto).expect("valid proto");
+        assert_eq!(policy.slabs.len(), 2);
+        assert_eq!(policy.intercepts.len(), 2);
+        assert!(!policy.is_empty());
+
+        // Check k slab
+        let k_slab = &policy.slabs[0];
+        assert_eq!(k_slab.slab_id, "k");
+        assert_eq!(k_slab.storage, "paged");
+        assert_eq!(k_slab.dims.get("layers"), Some(&12));
+        assert_eq!(k_slab.dims.get("heads"), Some(&8));
+        assert_eq!(k_slab.dims.get("dim"), Some(&64));
+        assert_eq!(k_slab.layout, "BNLD");
+        assert_eq!(k_slab.dtype, "float32");
+
+        // Check v slab
+        let v_slab = &policy.slabs[1];
+        assert_eq!(v_slab.slab_id, "v");
+        assert_eq!(v_slab.dims.get("dim"), Some(&64));
+
+        // Check intercepts
+        assert_eq!(policy.intercepts[0].slab_id, "k");
+        assert_eq!(policy.intercepts[0].op_name, "scaled_dot_product_attention");
+        assert_eq!(policy.intercepts[0].direction, "read_write");
+        assert_eq!(policy.intercepts[0].source, "operand[1]");
+        assert_eq!(policy.intercepts[0].layer, "sequential");
+        assert_eq!(policy.intercepts[0].func_index, 1);
+        assert_eq!(policy.intercepts[0].output_index, 1);
+
+        assert_eq!(policy.intercepts[1].slab_id, "v");
+        assert_eq!(policy.intercepts[1].source, "operand[2]");
+        assert_eq!(policy.intercepts[1].func_index, 1);
+        assert_eq!(policy.intercepts[1].output_index, 2);
+
+        assert_eq!(policy.block_size, 16);
+        assert_eq!(policy.max_requests, 256);
+    }
+
+    #[test]
+    fn test_cache_policy_from_proto_empty() {
+        let proto = crate::abi::proto::SfaCachePolicy {
+            slabs: vec![],
+            intercepts: vec![],
+            block_size: 0,
+            max_requests: 0,
+        };
+        let policy = CachePolicy::from_proto(&proto).expect("empty proto");
         assert!(policy.is_empty());
-        assert_eq!(policy.block_size, 16);  // default
-        assert_eq!(policy.max_requests, 256); // default
+        // Defaults kick in for block_size/max_requests
+        assert_eq!(policy.block_size, 16);
+        assert_eq!(policy.max_requests, 256);
+    }
+
+    #[test]
+    fn test_cache_policy_from_proto_default_dtype() {
+        let proto = crate::abi::proto::SfaCachePolicy {
+            slabs: vec![crate::abi::proto::SfaSlabSpec {
+                name: "k".to_string(),
+                slab_type: "paged".to_string(),
+                layout: "".to_string(),
+                dtype: "".to_string(),
+                num_blocks: 0,
+                block_size: 16,
+                num_layers: 1,
+                num_heads: 1,
+                head_dim: 1,
+            }],
+            intercepts: vec![],
+            block_size: 32,
+            max_requests: 128,
+        };
+        let policy = CachePolicy::from_proto(&proto).expect("valid");
+        assert_eq!(policy.slabs[0].dtype, "float32");
+        assert_eq!(policy.block_size, 32);
+        assert_eq!(policy.max_requests, 128);
+        assert!(!policy.is_empty());
+    }
+
+    #[test]
+    fn test_cache_policy_from_proto_intercept_defaults() {
+        let proto = crate::abi::proto::SfaCachePolicy {
+            slabs: vec![],
+            intercepts: vec![crate::abi::proto::SfaInterceptSpec {
+                slab_id: "k".to_string(),
+                op_name_pattern: "attention".to_string(),
+                intercept_type: "write".to_string(),
+                source: "output".to_string(),
+                layer: "".to_string(),
+                param_indices: vec![],
+            }],
+            block_size: 16,
+            max_requests: 256,
+        };
+        let policy = CachePolicy::from_proto(&proto).expect("valid");
+        assert_eq!(policy.intercepts.len(), 1);
+        // Empty layer → default "sequential"
+        assert_eq!(policy.intercepts[0].layer, "sequential");
+        // Empty param_indices → default 0
+        assert_eq!(policy.intercepts[0].func_index, 0);
+        assert_eq!(policy.intercepts[0].output_index, 0);
     }
 }

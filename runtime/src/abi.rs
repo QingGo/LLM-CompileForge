@@ -27,15 +27,22 @@ pub mod proto {
 pub use proto::sfa_input_field::Binding;
 pub use proto::OutputDescriptor;
 pub use proto::SfaAbiHeader;
+pub use proto::SfaCachePolicy;
 pub use proto::SfaFuncMeta;
 pub use proto::SfaInputField;
 pub use proto::SfaInputKind;
+pub use proto::SfaInterceptSpec;
+pub use proto::SfaSlabSpec;
 pub use proto::SfaSsaRef;
+pub use proto::SfaHalOpSemantics;
+pub use proto::SfaHalOpSemanticEntry;
 
 // ── Constants ──────────────────────────────────────────────────────
 
 /// Magic bytes "SFBA" stored as u32 LE.
 pub const SFA_MAGIC: u32 = 0x41464253;
+/// SFA ABI version — must match the version embedded by the compiler.
+pub const SFA_VERSION: u32 = 1;
 
 // ── Weight provider ────────────────────────────────────────────────
 
@@ -116,6 +123,13 @@ pub unsafe fn load_sfa_abi(lib: &libloading::Library) -> Result<SfaAbiHeader, an
             SFA_MAGIC
         );
     }
+    if abi.version != SFA_VERSION {
+        anyhow::bail!(
+            "SFA ABI version mismatch: expected {}, got {}",
+            SFA_VERSION,
+            abi.version
+        );
+    }
     Ok(abi)
 }
 
@@ -161,6 +175,27 @@ pub unsafe fn load_sfa_weights(
         constants,
         num_constants,
     })
+}
+
+/// Load the SFA cache policy proto from a compiled dylib.
+///
+/// Reads ``sfa_cache_policy`` and ``sfa_cache_policy_size`` symbols,
+/// decodes them from protobuf. Returns ``Ok(None)`` if either symbol
+/// is missing (older models predating proto cache policy).
+///
+/// # Safety
+/// ``lib`` must reference a valid, loaded dylib.
+pub unsafe fn load_sfa_cache_policy(
+    lib: &libloading::Library,
+) -> Result<Option<SfaCachePolicy>, anyhow::Error> {
+    let data = match unsafe {
+        read_byte_slice_from_symbol(lib, b"sfa_cache_policy", b"sfa_cache_policy_size")
+    } {
+        Ok(data) => data,
+        Err(_) => return Ok(None),
+    };
+    let policy = SfaCachePolicy::decode(data)?;
+    Ok(Some(policy))
 }
 
 /// Build a ComputeGraph from SFA ABI header and weight provider.
@@ -212,8 +247,18 @@ pub fn build_compute_graph(
 
             let io_def = match kind {
                 SfaInputKind::SfaInputGlobal => IOTensorDef {
-                    rank: 2,
-                    shape: vec![0, 0], // dynamic sentinel → resolved at runtime: [1, seq_len]
+                    rank: if field.rank > 0 {
+                        field.rank as u8
+                    } else {
+                        log::warn!("GlobalInput rank=0 in proto, defaulting to 2");
+                        2
+                    },
+                    shape: if !field.dims.is_empty() {
+                        field.dims.clone()
+                    } else {
+                        log::warn!("GlobalInput dims empty in proto, defaulting to [0,0]");
+                        vec![0, 0]
+                    },
                     consumed_internally: false,
                 },
                 _ => IOTensorDef {
@@ -224,6 +269,13 @@ pub fn build_compute_graph(
             };
             inputs.push((binding, io_def));
         }
+
+        anyhow::ensure!(
+            inputs.len() == num_inputs,
+            "num_inputs mismatch: proto field says {}, but found {} input_fields",
+            num_inputs,
+            inputs.len()
+        );
 
         // Output tensors: use OutputDescriptor entries if present, fall back to output_rank.
         let outputs: Vec<IOTensorDef> = if !func_meta.outputs.is_empty() {

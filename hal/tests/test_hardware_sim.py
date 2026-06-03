@@ -14,7 +14,7 @@ class TestHardwareSpec:
         from hal.hardware_spec import HardwareSpec
 
         spec_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
             "hal", "hardware_specs", "a100.yaml",
         )
         spec = HardwareSpec.from_yaml(spec_path)
@@ -32,7 +32,7 @@ class TestHardwareSpec:
         from hal.hardware_spec import HardwareSpec
 
         spec_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
             "hal", "hardware_specs", "m2_pro.yaml",
         )
         spec = HardwareSpec.from_yaml(spec_path)
@@ -45,7 +45,7 @@ class TestHardwareSpec:
         from hal.hardware_spec import HardwareSpec
 
         spec_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
             "hal", "hardware_specs", "hypothetical_npu.yaml",
         )
         spec = HardwareSpec.from_yaml(spec_path)
@@ -101,7 +101,7 @@ class TestRooflineSimulator:
         from verification.roofline_sim import RooflineSimulator
 
         spec_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
             "hal", "hardware_specs", "a100.yaml",
         )
         sim = RooflineSimulator.from_yaml(spec_path)

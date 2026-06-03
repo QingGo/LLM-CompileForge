@@ -14,9 +14,11 @@ pub mod rust;
 pub mod primitives;
 
 #[cfg(feature = "hal-rust")]
-// To switch models: change the path below to the target model's
-// generated/hal_ops_cpu.rs, then recompile with `cargo build --features hal-rust`.
-// Example: compiled/opt_125m_hal/generated/hal_ops_cpu.rs
-#[path = "../../../compiled/opt_125m_fresh/generated/hal_ops_cpu.rs"]
-#[allow(clippy::excessive_precision, clippy::get_first, clippy::len_zero, clippy::manual_memcpy, clippy::needless_range_loop, clippy::manual_is_multiple_of)]
-pub mod hal_ops_cpu;
+// To switch models: set HAL_OPS_CPU_PATH to the target model's
+// generated/ directory, then recompile with `cargo build --features hal-rust`.
+// Example: HAL_OPS_CPU_PATH=<model_output_dir>/generated cargo build --features hal-rust
+pub mod hal_ops_cpu {
+    #![allow(clippy::excessive_precision, clippy::get_first, clippy::len_zero, clippy::manual_memcpy, clippy::needless_range_loop, clippy::manual_is_multiple_of)]
+    #![allow(unused_variables, dead_code)]
+    include!(concat!(env!("HAL_OPS_CPU_PATH"), "/hal_ops_cpu.rs"));
+}

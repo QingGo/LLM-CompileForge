@@ -18,6 +18,7 @@ mod tests;
 pub use types::{HalIR, HalFunction, HalOp, HalRustRunner, HalTensorDef, HalWeightEntry};
 
 use crate::hal::traits;
+use crate::hal::traits::Buffer;
 use crate::sfa_tensor::SFATensor;
 use crate::tensor::{Dtype, Tensor};
 use crate::weight_loader::WeightProvider;
@@ -265,6 +266,11 @@ pub fn run_hal_function_graph(
                 let output_refs: Vec<&dyn traits::Buffer> =
                     output_bufs.iter().map(|b| b.as_ref()).collect();
 
+                let input_memrefs: Vec<crate::hal::sfa::SfaMemRef> =
+                    input_refs.iter().map(|b| b.as_sfa_memref()).collect();
+                let mut output_memrefs: Vec<crate::hal::sfa::SfaMemRef> =
+                    output_refs.iter().map(|b| b.as_sfa_memref()).collect();
+
                 let op_name = if let Some(kind) = &op.kind {
                     format!("{}:{}", op.op, kind)
                 } else if op.op == "transpose" {
@@ -291,7 +297,7 @@ pub fn run_hal_function_graph(
                 }
 
                 let exe_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    executable.execute(&op_name, stream, &input_refs, &output_refs)
+                    executable.execute(&op_name, stream, &input_memrefs, &mut output_memrefs)
                 }));
                 let shapes = match exe_result {
                     Ok(Ok(shapes)) => shapes,
@@ -354,4 +360,295 @@ pub fn run_hal_function_graph(
     }
 
     extract_global_output(hal_ir, &ssa_map, &ssa_shapes, &ssa_dtypes, seq_len)
+}
+
+// ── Semantic Contract Validation ───────────────────────────────────────
+
+/// Build the default HAL operator semantics contract with 23 entries
+/// covering all op categories handled by the Rust runtime dispatch.
+pub fn default_hal_op_semantics() -> crate::abi::SfaHalOpSemantics {
+    use crate::abi::SfaHalOpSemanticEntry;
+
+    let entries = vec![
+        // ── matmul ──
+        SfaHalOpSemanticEntry {
+            op_name: "matmul".into(),
+            expected_input_count: 2,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into(), "f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "matmul".into(),
+        },
+        SfaHalOpSemanticEntry {
+            op_name: "linear".into(),
+            expected_input_count: 2,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into(), "f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "matmul".into(),
+        },
+        // ── element_wise ──
+        SfaHalOpSemanticEntry {
+            op_name: "element_wise".into(),
+            expected_input_count: 2,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into(), "f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "element_wise".into(),
+        },
+        SfaHalOpSemanticEntry {
+            op_name: "element_wise:rsqrt".into(),
+            expected_input_count: 1,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "element_wise".into(),
+        },
+        // ── reshape / transpose ──
+        SfaHalOpSemanticEntry {
+            op_name: "reshape".into(),
+            expected_input_count: 1,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "reshape".into(),
+        },
+        SfaHalOpSemanticEntry {
+            op_name: "transpose".into(),
+            expected_input_count: 1,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "reshape".into(),
+        },
+        SfaHalOpSemanticEntry {
+            op_name: "unsqueeze".into(),
+            expected_input_count: 1,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "reshape".into(),
+        },
+        SfaHalOpSemanticEntry {
+            op_name: "concat".into(),
+            expected_input_count: 2,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into(), "f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "concat".into(),
+        },
+        // ── normalization ──
+        SfaHalOpSemanticEntry {
+            op_name: "layer_norm".into(),
+            expected_input_count: 2,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into(), "f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "normalization".into(),
+        },
+        SfaHalOpSemanticEntry {
+            op_name: "rms_norm".into(),
+            expected_input_count: 2,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into(), "f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "normalization".into(),
+        },
+        // ── softmax ──
+        SfaHalOpSemanticEntry {
+            op_name: "softmax".into(),
+            expected_input_count: 1,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "softmax".into(),
+        },
+        // ── attention ──
+        SfaHalOpSemanticEntry {
+            op_name: "scaled_dot_product_attention".into(),
+            expected_input_count: 4,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into(), "f32".into(), "f32".into(), "f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "attention".into(),
+        },
+        // ── gather ──
+        SfaHalOpSemanticEntry {
+            op_name: "gather".into(),
+            expected_input_count: 2,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into(), "i64".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "gather".into(),
+        },
+        // ── reduce ──
+        SfaHalOpSemanticEntry {
+            op_name: "reduce".into(),
+            expected_input_count: 1,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "reduce".into(),
+        },
+        SfaHalOpSemanticEntry {
+            op_name: "reduce:mean".into(),
+            expected_input_count: 1,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "reduce".into(),
+        },
+        // ── scan ──
+        SfaHalOpSemanticEntry {
+            op_name: "scan".into(),
+            expected_input_count: 1,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "scan".into(),
+        },
+        SfaHalOpSemanticEntry {
+            op_name: "scan:cumsum".into(),
+            expected_input_count: 1,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "scan".into(),
+        },
+        // ── fill ──
+        SfaHalOpSemanticEntry {
+            op_name: "fill".into(),
+            expected_input_count: 0,
+            expected_output_count: 1,
+            input_dtypes: vec![],
+            output_dtypes: vec!["f32".into()],
+            kind: "fill".into(),
+        },
+        SfaHalOpSemanticEntry {
+            op_name: "fill:arange".into(),
+            expected_input_count: 0,
+            expected_output_count: 1,
+            input_dtypes: vec![],
+            output_dtypes: vec!["i64".into()],
+            kind: "fill".into(),
+        },
+        // ── slice ──
+        SfaHalOpSemanticEntry {
+            op_name: "slice".into(),
+            expected_input_count: 1,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "slice".into(),
+        },
+        // ── compare ──
+        SfaHalOpSemanticEntry {
+            op_name: "compare".into(),
+            expected_input_count: 2,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into(), "f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "compare".into(),
+        },
+        // ── shape ──
+        SfaHalOpSemanticEntry {
+            op_name: "shape_of".into(),
+            expected_input_count: 1,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "shape".into(),
+        },
+        // ── cache ──
+        SfaHalOpSemanticEntry {
+            op_name: "cache_read".into(),
+            expected_input_count: 1,
+            expected_output_count: 1,
+            input_dtypes: vec!["f32".into()],
+            output_dtypes: vec!["f32".into()],
+            kind: "cache".into(),
+        },
+        SfaHalOpSemanticEntry {
+            op_name: "cache_write".into(),
+            expected_input_count: 1,
+            expected_output_count: 0,
+            input_dtypes: vec!["f32".into()],
+            output_dtypes: vec![],
+            kind: "cache".into(),
+        },
+    ];
+
+    crate::abi::SfaHalOpSemantics { entries }
+}
+
+/// Validate a loaded `HalIR` against the HAL operator semantic contract.
+///
+/// For each op in every function, looks up the op name (and its base name
+/// for qualified ops like `element_wise:add` → `element_wise`) in the
+/// semantic contract. Warns on unknown ops and arity mismatches.
+///
+/// Returns a list of warning strings. The caller should log these via
+/// `log::warn!`. Validation is non-fatal — only warnings are emitted.
+pub fn validate_hal_ir_against_semantics(
+    hal_ir: &HalIR,
+    semantics: &crate::abi::SfaHalOpSemantics,
+) -> Vec<String> {
+    use std::collections::HashSet;
+
+    // Build lookup: op_name → SfaHalOpSemanticEntry
+    let mut sem_map: std::collections::HashMap<&str, &crate::abi::SfaHalOpSemanticEntry> =
+        std::collections::HashMap::with_capacity(semantics.entries.len());
+    for entry in &semantics.entries {
+        sem_map.entry(&entry.op_name).or_insert(entry);
+    }
+
+    let mut warnings: Vec<String> = Vec::new();
+    let mut unknown_ops: HashSet<String> = HashSet::new();
+
+    for func in &hal_ir.functions {
+        for op in &func.ops {
+            // Resolve qualified op names: "element_wise:add" → lookup "element_wise"
+            let base_name = op.op.split(':').next().unwrap_or(&op.op);
+            let lookup_name = if op.op.contains(':') { base_name } else { &op.op };
+
+            // Also try exact match first for ops with known qualified forms
+            let entry = sem_map
+                .get(&op.op.as_str())
+                .or_else(|| sem_map.get(lookup_name));
+
+            match entry {
+                Some(sem) => {
+                    let actual_inputs = op.inputs.len() as u32;
+                    let actual_outputs = op.outputs.len() as u32;
+
+                    if actual_inputs < sem.expected_input_count {
+                        warnings.push(format!(
+                            "hal_op_semantics: op '{}' in func '{}' expects >= {} inputs, got {}",
+                            op.op, func.name, sem.expected_input_count, actual_inputs,
+                        ));
+                    }
+                    if actual_outputs != sem.expected_output_count {
+                        // Allow cache ops that are skipped to have 0 outputs
+                        let is_cache = sem.kind == "cache";
+                        if !is_cache || actual_outputs > 0 {
+                            warnings.push(format!(
+                                "hal_op_semantics: op '{}' in func '{}' expects {} outputs, got {}",
+                                op.op, func.name, sem.expected_output_count, actual_outputs,
+                            ));
+                        }
+                    }
+                }
+                None => {
+                    if unknown_ops.insert(op.op.clone()) {
+                        warnings.push(format!(
+                            "hal_op_semantics: unknown op '{}' in func '{}' — not in semantic contract",
+                            op.op, func.name,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    warnings
 }

@@ -3,10 +3,54 @@
 //! Each function handles a specific HAL operation type, converting SfaMemRef
 //! descriptors to ``&[f32]``/``&mut [f32]`` slices and calling the corresponding
 //! ``*_cpu`` function from ``hal_ops_cpu``.
+//!
+//! Wave 3 / Task 10: ``dispatch_via_trait()`` replaces string-based dispatch
+//! with trait-object dispatch via ``KernelOp`` registry. Each kernel type
+//! satisfies the ``KernelOp`` contract checked at compile time.
 
 use crate::hal::sfa::SfaMemRef;
 
 use super::executable::HalRustExecutable;
+
+/// Unified dispatch through the ``KernelOp`` trait registry.
+///
+/// Looks up ``op_name`` in ``kernel_registry()`` and delegates to
+/// ``KernelOp::execute_typed``. This is the canonical dispatch path
+/// for all HAL operations.
+pub fn dispatch_via_trait(
+    op_name: &str,
+    inputs: &[SfaMemRef],
+    outputs: &mut [SfaMemRef],
+) -> Result<Vec<Vec<i64>>, anyhow::Error> {
+    let input_slices: Vec<&[f32]> = inputs
+        .iter()
+        // SAFETY: All inputs are f32 buffers (element_size == 4).
+        .map(|m| unsafe { HalRustExecutable::sfa_as_f32_slice(m) })
+        .collect();
+    let output_shapes: Vec<Vec<i64>> = outputs
+        .iter()
+        .map(|m| m.sizes_i64())
+        .collect();
+    let meta = HalRustExecutable::build_shape_meta_from_sfa(inputs, outputs);
+
+    let registry = crate::hal::primitives::traits::kernel_registry();
+    let kernel = registry
+        .get(op_name)
+        .ok_or_else(|| anyhow::anyhow!("unknown op: {}", op_name))?;
+
+    if let Some(out_sfa) = outputs.first() {
+        // SAFETY: Output buffer is pre-allocated as f32 by the runner.
+        let out_slice = unsafe { HalRustExecutable::sfa_as_f32_mut(out_sfa) };
+        kernel
+            .execute_typed(&input_slices, out_slice, &meta)
+            .map_err(|e| anyhow::anyhow!("{}: {}", op_name, e))?;
+    } else {
+        kernel
+            .execute_typed(&input_slices, &mut [], &meta)
+            .map_err(|e| anyhow::anyhow!("{}: {}", op_name, e))?;
+    }
+    Ok(output_shapes)
+}
 
 /// Dispatch a matmul operation.
 #[allow(dead_code)]

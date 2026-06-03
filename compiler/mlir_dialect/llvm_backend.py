@@ -13,8 +13,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
-from pathlib import Path
 from typing import Any
 
 from compiler.exceptions import MissingBindingsError
@@ -53,12 +51,7 @@ def _register_sf_passes() -> None:
     registered before the pass manager can resolve them by name.  This function
     is idempotent — calling it multiple times is safe.
     """
-    # Ensure sf-dialect Python bindings are on sys.path
-    _sf_base = Path(__file__).resolve().parent.parent.parent / "sf-dialect"
-    for _sf_candidate in [_sf_base / "python_packages" / "sf", _sf_base / "build" / "python_packages" / "sf"]:
-        if _sf_candidate.is_dir() and str(_sf_candidate) not in sys.path:
-            sys.path.insert(0, str(_sf_candidate))
-            break
+    _setup_mlir_path()
     try:
         from mlir_sf._mlir_libs._sfDialectsNanobind import sf
         # Importing the module side-effects to register passes via

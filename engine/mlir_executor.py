@@ -1,11 +1,11 @@
 """MLIR-based model executor — bridges compiled MLIR to HAL.
 
-Walks the parsed MlirModule (from model.mlir) and dispatches each
+Walks the parsed MLIR artifact (from model.mlir) and dispatches each
 operation to the HAL OpExecutor.  This is the MLIR-native counterpart
 to the legacy Executor (which walks Python IrModule).
 
 Key features:
-  - Weight tensor lookup from MlirFunction.weights
+  - Weight tensor lookup from function weights
   - Same HAL dispatch as the Python IR executor
   - CacheManager-based KV cache (policy-driven, no heuristic guessing)
   - Backward compatible with old compiled models (fallback to legacy path)
@@ -19,7 +19,6 @@ from typing import Any
 
 import torch
 
-from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp  # type: ignore[attr-defined]
 from engine._kv_cache import _KVCacheMixin, _normalize_kv_for_cache
 
 _WEIGHT_OPS = frozenset({"sf.weight", "sf.constant", "constant"})
@@ -46,7 +45,7 @@ class MlirExecutor(_KVCacheMixin):
 
     def __init__(
         self,
-        module: MlirModule,
+        module: Any,
         hal_backend: Any,
         dump_dir: str | None = None,
     ) -> None:
@@ -102,17 +101,16 @@ class MlirExecutor(_KVCacheMixin):
 
         raw_policy = module.metadata.get("cache_policy")
         if raw_policy and not self._uses_static_shape:
-            from compiler.cache_policy import CachePolicy
-            from engine.cache_manager import CacheManager
+            from engine.cache_manager import CacheManager, _dict_to_proto_cache_policy
 
-            policy = CachePolicy.from_dict(raw_policy)
-            if not policy.is_empty:
+            policy = _dict_to_proto_cache_policy(raw_policy)
+            if len(policy.slabs) > 0:
                 num_blocks = module.metadata.get("num_blocks", 1000)
                 self._cache_mgr = CacheManager(policy, num_blocks=int(num_blocks))
                 self._uses_cache_manager = True
                 for idef in policy.intercepts:
-                    self._intercepts_by_op.setdefault(idef.op_name, []).append(idef)
-                    self._intercept_slab_ops.add(idef.op_name)
+                    self._intercepts_by_op.setdefault(idef.op_name_pattern, []).append(idef)
+                    self._intercept_slab_ops.add(idef.op_name_pattern)
 
         # ── Legacy KV cache state ──────────────────────────
         self._kv_cache: torch.Tensor | None = None
@@ -137,8 +135,27 @@ class MlirExecutor(_KVCacheMixin):
                 return True
         return False
 
+    @staticmethod
+    def _build_cache_policy(raw_policy: dict[str, Any]) -> Any:
+        """Build a CachePolicy-compatible object from a raw metadata dict.
+
+        Uses SimpleNamespace to avoid importing compiler.cache_policy.
+        """
+        from types import SimpleNamespace
+
+        slabs = [SimpleNamespace(**s) for s in raw_policy.get("slabs", [])]
+        intercepts = [SimpleNamespace(**i) for i in raw_policy.get("intercepts", [])]
+        policy = SimpleNamespace(
+            slabs=slabs,
+            intercepts=intercepts,
+            block_size=int(raw_policy.get("block_size", 16)),
+            max_requests=int(raw_policy.get("max_requests", 256)),
+        )
+        policy.is_empty = len(slabs) == 0
+        return policy
+
     @property
-    def function(self) -> MlirFunction:
+    def function(self) -> Any:
         return self._function
 
     def forward(self, input_ids: torch.Tensor, **kwargs: Any) -> torch.Tensor:
@@ -248,7 +265,7 @@ class MlirExecutor(_KVCacheMixin):
         self._current_positions = kwargs.get("positions", None)
         self._current_is_decode = kwargs.get("is_decode", False)
 
-    def _execute_op(self, op: MlirOp, ssa_values: dict[str, torch.Tensor]) -> torch.Tensor | None:
+    def _execute_op(self, op: Any, ssa_values: dict[str, torch.Tensor]) -> torch.Tensor | None:
         if op.name in _WEIGHT_OPS:
             wname = op.attributes.get("name", "") or op.attributes.get('"name"', "")
             if not wname and op.operands:
@@ -311,11 +328,11 @@ class MlirExecutor(_KVCacheMixin):
 
     # ── Cache Manager intercept ───────────────────────────
 
-    def _handle_cache_intercept(self, op: MlirOp, ssa_values: dict[str, torch.Tensor]) -> None:
+    def _handle_cache_intercept(self, op: Any, ssa_values: dict[str, torch.Tensor]) -> None:
         if self._cache_mgr is None:
             return
         for idef in self._intercepts_by_op.get(op.op_name, []):
-            if idef.direction not in ("write", "read_write"):
+            if idef.intercept_type not in ("write", "read_write"):
                 continue
 
             slab_id = idef.slab_id
@@ -329,7 +346,7 @@ class MlirExecutor(_KVCacheMixin):
                 flat_pos = positions.squeeze(0) if positions.dim() >= 2 else positions
                 self._cache_mgr.write_paged(slab_id, layer_idx, data, flat_pos)
 
-            if idef.direction == "read_write" and self._block_tables and self._current_is_decode:
+            if idef.intercept_type == "read_write" and self._block_tables and self._current_is_decode:
                 max_seq = self._max_seq_from_tables(self._block_tables)
                 gathered = self._cache_mgr.read_paged(slab_id, layer_idx, max_seq)
                 source_key = self._get_source_ssa_key(idef, op)
@@ -339,7 +356,7 @@ class MlirExecutor(_KVCacheMixin):
                         gathered = gathered.permute(0, 2, 1, 3)
                     ssa_values[source_key] = gathered.to(orig_dtype)
 
-    def _extract_source(self, idef: Any, op: MlirOp, ssa_values: dict[str, torch.Tensor]) -> torch.Tensor | None:
+    def _extract_source(self, idef: Any, op: Any, ssa_values: dict[str, torch.Tensor]) -> torch.Tensor | None:
         source = idef.source
         if source.startswith("operand["):
             idx_str = source[len("operand["):-1]
@@ -353,18 +370,20 @@ class MlirExecutor(_KVCacheMixin):
                 return ssa_values.get(key)
         return None
 
-    def _get_source_ssa_key(self, idef: Any, op: MlirOp) -> str | None:
+    def _get_source_ssa_key(self, idef: Any, op: Any) -> str | None:
         source = idef.source
         if source.startswith("operand["):
             idx_str = source[len("operand["):-1]
             idx = int(idx_str)
             if idx < len(op.operands):
-                return op.operands[idx]
+                result = op.operands[idx]
+                if isinstance(result, str):
+                    return result
         return None
 
     # ── Legacy intercept (backward compat) ─────────────────
 
-    def _intercept_sdpa_legacy(self, op: MlirOp, ssa_values: dict[str, torch.Tensor]) -> None:
+    def _intercept_sdpa_legacy(self, op: Any, ssa_values: dict[str, torch.Tensor]) -> None:
         layer_idx = self._sda_layer_count
         self._sda_layer_count += 1
 

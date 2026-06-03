@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from gen.proto.python.sfa_abi_pb2 import (
+from gen.proto.python.sfa_abi_pb2 import (  # type: ignore[attr-defined]
     SfaAbiHeader,
     SfaInputKind,
 )
@@ -483,7 +483,7 @@ def serialize_abi(func_metas: list[dict[str, Any]]) -> bytes:
 
         for field in meta.get("input_fields", []):
             input_field = func_meta.input_fields.add()
-            input_field.kind = field["kind"]  # type: ignore[assignment]
+            input_field.kind = field["kind"]
 
             if field["kind"] == SfaInputKind.Value("SFA_INPUT_WEIGHT"):
                 input_field.weight_name = field.get("weight_name", "")
@@ -502,4 +502,4 @@ def serialize_abi(func_metas: list[dict[str, Any]]) -> bytes:
             out_desc.rank = od["rank"]
             out_desc.dims.extend(od["dims"])
 
-    return header.SerializeToString()
+    return bytes(header.SerializeToString())
