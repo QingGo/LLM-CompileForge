@@ -782,3 +782,51 @@ class TestSerializeAbiWithRankDims:
         # rank defaults to 0 when not set
         assert f0.input_fields[0].rank == 0
         assert list(f0.input_fields[0].dims) == []
+
+
+# ── Tests: SSA wiring (type-based producer_out matching) ─────────────
+
+class TestSsaWiring:
+    """SSA input wiring should map types to correct producer output indices."""
+
+    def test_ssa_wiring_matches_type_not_always_zero(self):
+        from compiler.sfa_abi import merge_with_semantics
+
+        sigs = {"_mlir_ciface_main_0": (1, 3), "_mlir_ciface_main_1": (1, 3)}
+        module = {
+            "functions": [
+                {"name": "main_0", "inputs": [("ids", "tensor<4x64xf32>")],
+                 "outputs": [("", "tensor<1xf32>", False)], "weight_ops": []},
+                {"name": "main_1", "inputs": [("h", "tensor<3xf32>")],
+                 "outputs": [("", "tensor<3xf32>", False)], "weight_ops": []},
+            ],
+        }
+        lowered_output_types = {
+            "main_0": [(1, [1]), (1, [3]), (3, [4, 64])],
+            "main_1": [(3, [4, 64])],
+        }
+        metas = merge_with_semantics(sigs, module, lowered_output_types=lowered_output_types)
+        m1_input = metas[1]["input_fields"][0]
+        assert m1_input["kind"] == SfaInputKind.Value("SFA_INPUT_SSA")
+        assert m1_input["producer_out"] == 1, "should map tensor<3xf32> to output[1]"
+
+    def test_ssa_wiring_type_counter(self):
+        from compiler.sfa_abi import merge_with_semantics
+
+        sigs = {"_mlir_ciface_main_0": (1, 3), "_mlir_ciface_main_1": (2, 3)}
+        module = {
+            "functions": [
+                {"name": "main_0", "inputs": [("ids", "tensor<4x64xf32>")],
+                 "outputs": [("", "tensor<1xf32>", False)], "weight_ops": []},
+                {"name": "main_1",
+                 "inputs": [("a", "tensor<1xf32>"), ("b", "tensor<1xf32>")],
+                 "outputs": [("", "tensor<1xf32>", False)], "weight_ops": []},
+            ],
+        }
+        lowered_output_types = {
+            "main_0": [(1, [1]), (1, [1]), (3, [4, 64])],  # 2 tensor<1xf32> outputs
+            "main_1": [(1, [1])],
+        }
+        metas = merge_with_semantics(sigs, module, lowered_output_types=lowered_output_types)
+        assert metas[1]["input_fields"][0]["producer_out"] == 0  # first tensor<1xf32>
+        assert metas[1]["input_fields"][1]["producer_out"] == 1  # second tensor<1xf32>

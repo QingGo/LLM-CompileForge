@@ -49,6 +49,15 @@ _LOWERED_ARG_RE: re.Pattern[str] = re.compile(
 )
 
 
+# ── Type helpers ──────────────────────────────────────────────────────
+
+
+def _lowered_to_type_str(rank: int, dims: list[int]) -> str:
+    """Convert lowered output type (rank, dims) to tensor type string."""
+    parts = [str(d) if d > 0 else "?" for d in dims]
+    return f"tensor<{'x'.join(parts)}>"
+
+
 def parse_lowered_argument_types(
     lowered_mlir_path: str,
 ) -> dict[str, list[tuple[int, list[int]]]]:
@@ -319,6 +328,18 @@ def merge_with_semantics(
                 # Use actual output index from pre-lowering (not packed to 0)
                 producer_map[out_name] = (fi, _oi)
 
+    # Build type→output-indices map per function from lowered output types
+    producer_type_indices: dict[str, dict[str, list[int]]] = {}
+    if lowered_output_types:
+        for fname, outs in lowered_output_types.items():
+            tmap: dict[str, list[int]] = {}
+            for idx, (rank, dims) in enumerate(outs):
+                type_str = _lowered_to_type_str(rank, dims)
+                tmap.setdefault(type_str, []).append(idx)
+            producer_type_indices[fname] = tmap
+
+    type_counter: dict[tuple[str, str], int] = {}  # (producer_name, type_str) → position
+
     metas: list[dict[str, Any]] = []
     for fi, func in enumerate(funcs):
         symbol = f"_mlir_ciface_{func['name']}"
@@ -361,12 +382,31 @@ def merge_with_semantics(
                         matched = True
                         break
                 if not matched:
-                    # Fallback: treat as SSA from previous function
+                    # Fallback: treat as SSA from previous function, match by type
                     prev_fi = max(0, fi - 1)
+                    prod_name = funcs[prev_fi]["name"]
+                    in_type = func.get("inputs", [])[in_idx][1] if in_idx < len(func.get("inputs", [])) else ""
+                    # Try to match by type against the producer's lowered outputs
+                    pti = producer_type_indices.get(prod_name, {})
+                    match_type = in_type
+                    # Strip element type suffix (e.g. "xf32", "xi64") for matching
+                    if "x" in match_type and ">" in match_type:
+                        dims_part = match_type.split("<")[1].split(">")[0]
+                        parts = dims_part.split("x")
+                        dims_only = "x".join(parts[:-1])
+                        match_type = f"tensor<{dims_only}>" if dims_only else f"tensor<{parts[0]}>"
+                    matching = pti.get(match_type, [])
+                    key = (prod_name, match_type)
+                    pos = type_counter.get(key, 0)
+                    if matching and pos < len(matching):
+                        pout = matching[pos]
+                        type_counter[key] = pos + 1
+                    else:
+                        pout = 0
                     input_fields.append({
                         "kind": SfaInputKind.Value("SFA_INPUT_SSA"),
                         "producer_func": prev_fi,
-                        "producer_out": 0,
+                        "producer_out": pout,
                     })
 
         # 2. Weight/constant ops (promoted to function args during C++ lowering)
