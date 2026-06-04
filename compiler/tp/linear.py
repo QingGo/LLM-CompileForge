@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F  # noqa: N812
 
-from python_runtime.hal.communicator import Communicator
+from compiler.tp.communicator_protocol import TPCommunicator
 
 
 class ColumnParallelLinear(nn.Module):
@@ -35,7 +35,7 @@ class ColumnParallelLinear(nn.Module):
         self,
         in_features: int,
         out_features: int,
-        comm: Communicator,
+        comm: TPCommunicator,
         gather_output: bool = True,
         bias: bool = True,
     ) -> None:
@@ -93,7 +93,7 @@ class RowParallelLinear(nn.Module):
         self,
         in_features: int,
         out_features: int,
-        comm: Communicator,
+        comm: TPCommunicator,
         input_is_parallel: bool = False,
         bias: bool = True,
     ) -> None:
@@ -147,7 +147,7 @@ class VocabParallelEmbedding(nn.Module):
         self,
         num_embeddings: int,
         embedding_dim: int,
-        comm: Communicator,
+        comm: TPCommunicator,
     ) -> None:
         super().__init__()
         self.comm = comm

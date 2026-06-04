@@ -1,7 +1,5 @@
 """Unit tests for compiler/serialize.py — artifact loading."""
 
-import tempfile
-from pathlib import Path
 
 import pytest
 
