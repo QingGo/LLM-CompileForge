@@ -338,7 +338,7 @@ else
     echo -e "${YELLOW}No compiled models found.${NC}"
     echo "  To enable e2e tests, compile a model:"
     echo ""
-    echo "    .venv/bin/python scripts/compile.py tiny-llama"
+    echo "    .venv/bin/python compiler/compile.py tiny-llama"
     echo ""
     echo "  Or re-run setup with:"
     echo "    bash scripts/setup.sh --with-models"
@@ -347,7 +347,7 @@ fi
 if $WITH_MODELS; then
     echo ""
     echo -e "${CYAN}Compiling tiny-llama model for e2e tests...${NC}"
-    .venv/bin/python scripts/compile.py tiny-llama 2>&1
+    .venv/bin/python compiler/compile.py tiny-llama 2>&1
     echo ""
 fi
 

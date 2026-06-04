@@ -22,7 +22,7 @@ from tests.helpers import cosine_similarity
 
 # ── Constants ──────────────────────────────────────────────────
 
-MODEL_DIR = "./compiled/opt_125m_kv"
+MODEL_DIR = "./outputs/compiled/opt_125m_kv"
 NUM_LAYERS = 12
 NUM_KV_HEADS = 12
 HEAD_DIM = 64

@@ -167,7 +167,7 @@ def main() -> None:
     parser.add_argument(
         "mlir_path",
         nargs="?",
-        default="compiled/opt_125m_kv/model.normalized.mlir",
+        default="outputs/compiled/opt_125m_kv/model.normalized.mlir",
         help="Path to normalized MLIR file",
     )
     parser.add_argument(

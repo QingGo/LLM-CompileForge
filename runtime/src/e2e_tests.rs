@@ -11,7 +11,7 @@ mod e2e_tests {
     use crate::executor::ModelExecutor;
 
 
-    const COMPILED_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../compiled/opt_125m_fresh");
+    const COMPILED_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../outputs/compiled/opt_125m_fresh");
 
     // ── KV-cache model constants ──────────────────────────────────────────
     #[allow(dead_code)]
@@ -19,9 +19,9 @@ mod e2e_tests {
     const PROMPT_IDS: &[u32] = &[2, 133, 812, 9, 1470, 16];
     const EXPECTED_TOKENS: &[u32] = &[5, 812, 9, 5, 1515];
     const KV_COMPILED_DIR: &str =
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../compiled/opt_125m_kv");
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../outputs/compiled/opt_125m_kv");
     const FRESH_COMPILED_DIR: &str =
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../compiled/opt_125m_fresh");
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../outputs/compiled/opt_125m_fresh");
 
     /// Find the local safetensors path for a HuggingFace model.
     fn find_safetensors(model_name: &str) -> Option<String> {

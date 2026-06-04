@@ -34,7 +34,7 @@ def pytest_runtest_setup(item: Any) -> None:
 _MODEL_SETUP_NOTE = (
     "No compiled model found.  Run one of:\n"
     "  bash scripts/setup.sh --with-models\n"
-    "  .venv/bin/python scripts/compile.py tiny-llama"
+    "  .venv/bin/python compiler/compile.py tiny-llama"
 )
 
 
@@ -69,28 +69,28 @@ def mlir_context() -> Any:
 @pytest.fixture(scope="session")
 def module_tiny_llama():
     from compiler.serialize import load_artifact
-    p = _require_compiled_model("./compiled/tiny_llama")
+    p = _require_compiled_model("./outputs/compiled/tiny_llama")
     return load_artifact(str(p))
 
 
 @pytest.fixture(scope="session")
 def module_opt_125m():
     from compiler.serialize import load_artifact
-    p = _require_compiled_model("./compiled/opt_125m")
+    p = _require_compiled_model("./outputs/compiled/opt_125m")
     return load_artifact(str(p))
 
 
 @pytest.fixture(scope="session")
 def module_opt_125m_dynamic():
     from compiler.serialize import load_artifact
-    p = _require_compiled_model("./compiled/opt_125m_dynamic")
+    p = _require_compiled_model("./outputs/compiled/opt_125m_dynamic")
     return load_artifact(str(p))
 
 
 @pytest.fixture(scope="session")
 def module_qwen():
     from compiler.serialize import load_artifact
-    p = _require_compiled_model("./compiled/qwen3_0.8b")
+    p = _require_compiled_model("./outputs/compiled/qwen3_0.8b")
     return load_artifact(str(p))
 
 

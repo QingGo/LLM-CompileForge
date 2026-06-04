@@ -215,7 +215,7 @@ def run_stages(
     (indicating possible IR explosion).
 
     When ``LLM_SERVEFORGE_LOG=DEBUG``, full IR snapshots are saved to
-    ``logs/pipeline/stages/`` after each stage.
+    ``outputs/logs/pipeline/stages/`` after each stage.
 
     When ``LLM_SERVEFORGE_LOG_FORMAT=json``, structured events with
     ``event_type="pipeline_stage"`` and ``event_type="pipeline_complete"``

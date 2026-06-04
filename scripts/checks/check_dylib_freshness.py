@@ -2,7 +2,7 @@
 """Check that dylib is newer than model.mlir (freshness check).
 
 Usage:
-    python scripts/check_dylib_freshness.py compiled/opt_125m_fresh
+    python scripts/check_dylib_freshness.py outputs/compiled/opt_125m_fresh
 
 Exits 0 if dylib is fresh (newer than model.mlir), 1 otherwise.
 """

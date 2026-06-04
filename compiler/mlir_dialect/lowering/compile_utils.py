@@ -343,7 +343,7 @@ def compile_module_to_dylib(
     arch: str = "native",
     opt_level: int = 0,
 ) -> str:
-    """Compile a lowered MLIR module into the compiled/ artifacts directory.
+    """Compile a lowered MLIR module into the outputs/compiled/ artifacts directory.
 
     Produces:
     * ``<output_dir>/<model_name>.ll``   — LLVM IR text

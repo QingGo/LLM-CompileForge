@@ -120,7 +120,7 @@ def test_op_sdpa_model_mask() -> None:
 
     from scripts.ctypes_forward import run_ctypes
 
-    model_dir = 'compiled/opt_125m_fresh'
+    model_dir = 'outputs/compiled/opt_125m_fresh'
     dylib = run_ctypes(model_dir, dylib_path=f'{model_dir}/libopt_125m.dylib')
     model_mask = dylib._func_outputs[0][13]
 

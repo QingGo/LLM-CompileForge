@@ -197,7 +197,7 @@ def _jit_compare_op(
 
 
 def main() -> None:
-    model_dir = "compiled/opt_125m_fresh"
+    model_dir = "outputs/compiled/opt_125m_fresh"
 
     # 1. Load artifact (MLIR text + weights)
     artifact = load_mlir_artifact(model_dir)

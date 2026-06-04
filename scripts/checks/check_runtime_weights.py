@@ -13,8 +13,8 @@ For Python side: MlirExecutor._weights contains the actual weight tensors
 used during execution.
 
 Usage:
-    python scripts/check_runtime_weights.py --model compiled/opt_125m_fresh
-    python scripts/check_runtime_weights.py --model compiled/opt_125m_fresh --rust-dump /tmp/dump_opt125m
+    python scripts/check_runtime_weights.py --model outputs/compiled/opt_125m_fresh
+    python scripts/check_runtime_weights.py --model outputs/compiled/opt_125m_fresh --rust-dump /tmp/dump_opt125m
 """
 
 from __future__ import annotations
@@ -176,7 +176,7 @@ def main() -> int:
     parser.add_argument(
         "--model",
         required=True,
-        help="Path to compiled model directory (e.g. compiled/opt_125m_fresh)",
+        help="Path to compiled model directory (e.g. outputs/compiled/opt_125m_fresh)",
     )
     parser.add_argument(
         "--rust-dump",

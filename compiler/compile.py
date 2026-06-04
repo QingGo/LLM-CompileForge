@@ -2,9 +2,9 @@
 """Compile a PyTorch model through the LLM-ServeForge compiler pipeline.
 
 Usage:
-    python scripts/compile.py opt-125m    # Compile facebook/opt-125m
-    python scripts/compile.py opt-125m --output-dir ./compiled/opt125m
-    python scripts/compile.py --help
+    python compiler/compile.py opt-125m    # Compile facebook/opt-125m
+    python compiler/compile.py opt-125m --output-dir ./outputs/compiled/opt125m
+    python compiler/compile.py --help
 """
 
 from __future__ import annotations
@@ -481,12 +481,12 @@ def main() -> None:
     args = parser.parse_args()
 
     targets = {
-        "opt-125m": (compile_opt125m, "./compiled/opt_125m"),
-        "tiny-llama": (compile_tiny_llama, "./compiled/tiny_llama"),
-        "qwen": (compile_qwen, "./compiled/qwen3_0.8b"),
-        "llama-1b": (compile_llama_1b, "./compiled/llama_1b"),
-        "llama-3b": (compile_llama_3b, "./compiled/llama_3b"),
-        "rwkv": (compile_rwkv, "./compiled/rwkv7_g1d_0.4b"),
+        "opt-125m": (compile_opt125m, "./outputs/compiled/opt_125m"),
+        "tiny-llama": (compile_tiny_llama, "./outputs/compiled/tiny_llama"),
+        "qwen": (compile_qwen, "./outputs/compiled/qwen3_0.8b"),
+        "llama-1b": (compile_llama_1b, "./outputs/compiled/llama_1b"),
+        "llama-3b": (compile_llama_3b, "./outputs/compiled/llama_3b"),
+        "rwkv": (compile_rwkv, "./outputs/compiled/rwkv7_g1d_0.4b"),
     }
 
     func, default_dir = targets[args.model]

@@ -2,8 +2,8 @@
 """Pipeline smoke test — compile model.mlir to .dylib with timing checks.
 
 Usage:
-    python scripts/test_pipeline_smoke.py compiled/opt_125m_fresh
-    python scripts/test_pipeline_smoke.py compiled/opt_125m_fresh --timeout 120
+    python scripts/test_pipeline_smoke.py outputs/compiled/opt_125m_fresh
+    python scripts/test_pipeline_smoke.py outputs/compiled/opt_125m_fresh --timeout 120
 
 This test verifies:
   1. Lowered IR is valid (no remaining sf ops, linalg ops present)
@@ -32,7 +32,7 @@ def check(label: str, condition: bool, detail: str = "") -> None:
 
 
 def main():
-    compiled_dir = sys.argv[1] if len(sys.argv) > 1 else "compiled/opt_125m_fresh"
+    compiled_dir = sys.argv[1] if len(sys.argv) > 1 else "outputs/compiled/opt_125m_fresh"
     timeout = 120
 
     for arg in sys.argv:
@@ -43,7 +43,7 @@ def main():
     lowered_path = artifact / "model.lowered.mlir"
 
     if not lowered_path.exists():
-        print(f"❌ {lowered_path} not found — run 'python scripts/compile_dylib.py {compiled_dir}' first")
+        print(f"❌ {lowered_path} not found — run 'python compiler/compile_dylib.py {compiled_dir}' first")
         sys.exit(1)
 
     print(f"Pipeline smoke test: {compiled_dir}")

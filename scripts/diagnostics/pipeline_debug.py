@@ -4,8 +4,8 @@ Each pipeline step reads from a file, runs on a freshly parsed module,
 writes result to a new file.  Avoids str(mod) roundtrip bug in PassManager.
 
 Usage:
-    python scripts/pipeline_debug.py compiled/opt_125m_fresh
-    python scripts/pipeline_debug.py compiled/opt_125m_fresh --timeout 30
+    python scripts/pipeline_debug.py outputs/compiled/opt_125m_fresh
+    python scripts/pipeline_debug.py outputs/compiled/opt_125m_fresh --timeout 30
 """
 
 import glob
@@ -22,7 +22,7 @@ def run_pipeline():
     import mlir.passmanager as pm
 
     # ── Config ────────────────────────────────────────────────────────
-    artifact_dir = sys.argv[1] if len(sys.argv) > 1 else "compiled/opt_125m_fresh"
+    artifact_dir = sys.argv[1] if len(sys.argv) > 1 else "outputs/compiled/opt_125m_fresh"
     out_dir = "/tmp/pipeline_debug"
     timeout_default = int(next((a for a in sys.argv if a.startswith("--timeout=")), "--timeout=30").split("=")[1])
 

@@ -1,7 +1,7 @@
 """Pipeline timing diagnostics: step-by-step profiling of the full compile.
 
 Usage:
-    python scripts/pipeline_timing.py compiled/opt_125m_fresh
+    python scripts/pipeline_timing.py outputs/compiled/opt_125m_fresh
 
 This script runs each pipeline step independently with timing and
 timeout detection.  If a step hangs or crashes, the script reports

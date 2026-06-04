@@ -89,7 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging.  Use RUST_LOG=info for moderate output.
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
-    let compiled_dir = PathBuf::from("compiled/opt_125m_fresh");
+    let compiled_dir = PathBuf::from("outputs/compiled/opt_125m_fresh");
     let hal_ir_dir = compiled_dir.join("generated");
     let hal_ir_path = hal_ir_dir.join("hal_ir.json");
     let dylib_path = compiled_dir.join("libopt_125m.dylib");

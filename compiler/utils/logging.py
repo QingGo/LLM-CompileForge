@@ -198,7 +198,7 @@ class StepTimer:
 class LogSession:
     """A compile/run log session with timestamped directory and semantic naming.
 
-    Creates ``logs/<category>/<model>_<timestamp>/`` and provides
+    Creates ``outputs/logs/<category>/<model>_<timestamp>/`` and provides
     methods to save IR snapshots and diagnostic reports.
 
     Usage:

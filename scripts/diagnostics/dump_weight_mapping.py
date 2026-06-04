@@ -5,7 +5,7 @@ Shows per-function weight argument bindings with weight names, HF key aliases,
 and tensor shapes (when artifact loading succeeds).
 
 Usage:
-    python scripts/dump_weight_mapping.py compiled/opt_125m_fresh
+    python scripts/dump_weight_mapping.py outputs/compiled/opt_125m_fresh
 """
 
 from __future__ import annotations
@@ -212,7 +212,7 @@ def dump_weight_mapping(model_dir: str) -> int:
 
 
 def main() -> int:
-    model_dir = sys.argv[1] if len(sys.argv) > 1 else "compiled/opt_125m_fresh"
+    model_dir = sys.argv[1] if len(sys.argv) > 1 else "outputs/compiled/opt_125m_fresh"
     if model_dir == "--help" or model_dir == "-h":
         print("Usage: python scripts/dump_weight_mapping.py [model_dir]")
         print(f"  Default model_dir: {model_dir}")

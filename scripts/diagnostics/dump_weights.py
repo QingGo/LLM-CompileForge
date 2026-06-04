@@ -12,7 +12,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from compiler.serialize import load_artifact
 
-ARTIFACT_DIR = "./compiled/opt_125m_fresh"
+ARTIFACT_DIR = "./outputs/compiled/opt_125m_fresh"
 OUTPUT_DIR = "/tmp/issue45_weights"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 

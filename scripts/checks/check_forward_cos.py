@@ -6,7 +6,7 @@ baseline (if available) using cosine similarity.  Without a baseline,
 it validates that forward pass output is finite and has expected shape.
 
 Usage:
-    python scripts/check_forward_cos.py compiled/opt_125m_fresh [--threshold 0.999]
+    python scripts/check_forward_cos.py outputs/compiled/opt_125m_fresh [--threshold 0.999]
 
 Exits 0 on success, 1 on failure.
 """

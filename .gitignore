@@ -6,7 +6,6 @@ __pycache__/
 .ruff_cache/
 dist/
 *.egg-info/
-compiled/
 .cache/
 models/
 mlir_binding/

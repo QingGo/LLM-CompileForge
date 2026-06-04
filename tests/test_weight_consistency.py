@@ -11,8 +11,8 @@ import numpy as np
 import pytest
 
 skip_no_model = pytest.mark.skipif(
-    not os.path.isdir("compiled/opt_125m_fresh"),
-    reason="Requires compiled model at compiled/opt_125m_fresh",
+    not os.path.isdir("outputs/compiled/opt_125m_fresh"),
+    reason="Requires compiled model at outputs/compiled/opt_125m_fresh",
 )
 
 skip_no_rust = pytest.mark.skipif(
@@ -37,7 +37,7 @@ def test_weight_script_importable() -> None:
 def test_weight_consistency_opt125m() -> None:
     """Run check_weights on compiled model, verify all pass."""
     result = subprocess.run(
-        ["python", "scripts/check_weights.py", "--model", "compiled/opt_125m_fresh"],
+        ["python", "scripts/check_weights.py", "--model", "outputs/compiled/opt_125m_fresh"],
         capture_output=True,
         text=True,
     )
@@ -51,7 +51,7 @@ def test_weight_consistency_opt125m() -> None:
 def test_weight_skip_no_model() -> None:
     """Verify graceful skip (exit 0) when model doesn't exist."""
     result = subprocess.run(
-        ["python", "scripts/check_weights.py", "--model", "compiled/nonexistent"],
+        ["python", "scripts/check_weights.py", "--model", "outputs/compiled/nonexistent"],
         capture_output=True,
         text=True,
     )
@@ -88,7 +88,7 @@ def test_dump_weights_produces_valid_npy() -> None:
                 "dump_weights",
                 "--",
                 "--compiled-dir",
-                "compiled/opt_125m_fresh",
+                "outputs/compiled/opt_125m_fresh",
                 "--output-dir",
                 tmpdir,
             ],

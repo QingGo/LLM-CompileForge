@@ -14,7 +14,7 @@ Usage:
         $PWD/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs"
     export KMP_DUPLICATE_LIB_OK=TRUE
     unset CONDA_PREFIX
-    python scripts/diagnose_func12_ctypes.py [--model-dir compiled/opt_125m_fresh]
+    python scripts/diagnose_func12_ctypes.py [--model-dir outputs/compiled/opt_125m_fresh]
 """
 
 from __future__ import annotations
@@ -337,8 +337,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--model-dir",
-        default="compiled/opt_125m_fresh",
-        help="Compiled model directory (default: compiled/opt_125m_fresh)",
+        default="outputs/compiled/opt_125m_fresh",
+        help="Compiled model directory (default: outputs/compiled/opt_125m_fresh)",
     )
     parser.add_argument(
         "--func",

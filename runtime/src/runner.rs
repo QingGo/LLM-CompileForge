@@ -410,7 +410,7 @@ mod tests {
     fn compiled_executor() -> ModelExecutor {
         let dylib = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../compiled/opt_125m_fresh/libopt_125m_fresh.dylib"
+            "/../outputs/compiled/opt_125m_fresh/libopt_125m_fresh.dylib"
         );
         ModelExecutor::load(dylib, None)
             .unwrap_or_else(|_| panic!(

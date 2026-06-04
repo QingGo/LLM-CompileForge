@@ -26,7 +26,7 @@ import numpy as np
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _PROJECT_ROOT)
 
-ARTIFACT_DIR = "compiled/opt_125m_fresh"
+ARTIFACT_DIR = "outputs/compiled/opt_125m_fresh"
 DYLIB_PATH = os.path.join(ARTIFACT_DIR, "libopt_125m.dylib")
 FORWARD_CHECK_BIN = "rust/target/release/forward_check"
 RUST_LOGITS_CSV = "/tmp/rust_logits.csv"

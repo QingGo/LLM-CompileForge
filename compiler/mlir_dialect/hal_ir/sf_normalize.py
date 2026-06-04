@@ -158,7 +158,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--input", "-i",
-        default="compiled/opt_125m_kv/model.mlir",
+        default="outputs/compiled/opt_125m_kv/model.mlir",
         help="Input model.mlir path",
     )
     parser.add_argument(

@@ -68,7 +68,7 @@ def compile_mlir(
     apply_lowering = kwargs.pop("apply_lowering", False)
     if apply_lowering:
         warnings.warn(
-            "apply_lowering=True is deprecated. Use 'python scripts/compile_dylib.py <dir>"
+            "apply_lowering=True is deprecated. Use 'python compiler/compile_dylib.py <dir>"
             " --model-name <name>' instead.",
             DeprecationWarning,
             stacklevel=2,

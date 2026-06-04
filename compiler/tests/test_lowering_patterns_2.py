@@ -550,7 +550,7 @@ def test_zero_dim_tensor_prevention(caplog):
         f"Lowered IR must NOT contain 0D tensor<f32>:\n{lowered}"
     )
 
-    from scripts.compile_dylib import _verify_lowered_ir
+    from compiler.compile_dylib import _verify_lowered_ir
     bad_ir = '''module {
   func.func @test(%a: tensor<f32>) -> tensor<f32> {
     %0 = linalg.copy ins(%a : tensor<f32>) outs(%a : tensor<f32>)

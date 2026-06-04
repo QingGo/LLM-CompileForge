@@ -72,7 +72,7 @@ class TestHFCosineTinyLlama:
         from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         hf_model = _load_hf_tiny_llama()
-        compiled_module = load_artifact("./compiled/tiny_llama")
+        compiled_module = load_artifact("./outputs/compiled/tiny_llama")
         backend = PyTorchBackend("cpu")
         executor = MlirExecutor(compiled_module, backend)
 
@@ -102,7 +102,7 @@ class TestHFCosineTinyLlama:
         from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         hf_model = _load_hf_tiny_llama()
-        compiled_module = load_artifact("./compiled/tiny_llama")
+        compiled_module = load_artifact("./outputs/compiled/tiny_llama")
         backend = PyTorchBackend("cpu")
         executor = MlirExecutor(compiled_module, backend)
 
@@ -134,7 +134,7 @@ class TestHFCosineOpt125M:
         from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         hf_model = _load_hf_opt_125m()
-        compiled_module = load_artifact("./compiled/opt_125m")
+        compiled_module = load_artifact("./outputs/compiled/opt_125m")
         backend = PyTorchBackend("cpu")
         executor = MlirExecutor(compiled_module, backend)
 
@@ -164,7 +164,7 @@ class TestHFCosineOpt125M:
         from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         hf_model = _load_hf_opt_125m()
-        compiled_module = load_artifact("./compiled/opt_125m")
+        compiled_module = load_artifact("./outputs/compiled/opt_125m")
         backend = PyTorchBackend("cpu")
         executor = MlirExecutor(compiled_module, backend)
 
@@ -196,7 +196,7 @@ class TestHFCosineOpt125MDynamic:
         from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         hf_model = _load_hf_opt_125m()
-        compiled_module = load_artifact("./compiled/opt_125m_dynamic")
+        compiled_module = load_artifact("./outputs/compiled/opt_125m_dynamic")
         backend = PyTorchBackend("cpu")
         executor = MlirExecutor(compiled_module, backend)
 
@@ -225,7 +225,7 @@ class TestHFCosineOpt125MDynamic:
         from python_runtime.engine.mlir_executor import MlirExecutor
         from python_runtime.hal.pytorch_backend import PyTorchBackend
 
-        compiled_module = load_artifact("./compiled/opt_125m_dynamic")
+        compiled_module = load_artifact("./outputs/compiled/opt_125m_dynamic")
         backend = PyTorchBackend("cpu")
         executor = MlirExecutor(compiled_module, backend)
 
@@ -312,7 +312,7 @@ class TestHFCosineLlama1B:
         )
         hf_model.eval()
 
-        compiled = load_artifact("./compiled/llama_1b")
+        compiled = load_artifact("./outputs/compiled/llama_1b")
         executor = MlirExecutor(compiled, PyTorchBackend("cpu"))
 
         input_ids = torch.randint(0, 5000, (1, 4), dtype=torch.long)
@@ -351,7 +351,7 @@ class TestHFCosineLlama3B:
         )
         hf_model.eval()
 
-        compiled = load_artifact("./compiled/llama_3b")
+        compiled = load_artifact("./outputs/compiled/llama_3b")
         executor = MlirExecutor(compiled, PyTorchBackend("cpu"))
 
         input_ids = torch.randint(0, 5000, (1, 4), dtype=torch.long)

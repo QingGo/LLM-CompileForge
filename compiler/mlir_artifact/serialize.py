@@ -3,7 +3,7 @@
 Section A: Serialization functions from the original mlir_artifact.py.
 
 Output structure:
-  compiled/<model>/
+  outputs/compiled/<model>/
     model.mlir       — MLIR text (primary format)
     weights.pth      — PyTorch state dict
     metadata.json    — compilation metadata

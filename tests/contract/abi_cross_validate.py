@@ -14,8 +14,8 @@ Checks:
   5. All weight entries have non-empty compiled_name/hf_key
 
 Usage:
-    python tests/contract/abi_cross_validate.py compiled/opt_125m_fresh
-    python tests/contract/abi_cross_validate.py  # auto-discovers from compiled/
+    python tests/contract/abi_cross_validate.py outputs/compiled/opt_125m_fresh
+    python tests/contract/abi_cross_validate.py  # auto-discovers from outputs/compiled/
 
 Exit 0: all checks pass (or gracefully skipped when no model available)
 Exit 1: at least one check fails
@@ -42,13 +42,13 @@ def _find_compiled_dir(argv_path: str | None = None) -> str | None:
     if argv_path:
         if os.path.isdir(argv_path):
             return os.path.abspath(argv_path)
-        # Try as model name under compiled/
+        # Try as model name under outputs/compiled/
         candidate = os.path.join(_PROJECT_ROOT, "compiled", argv_path)
         if os.path.isdir(candidate):
             return candidate
         return None
 
-    # Auto-discovery: first subdirectory under compiled/
+    # Auto-discovery: first subdirectory under outputs/compiled/
     compiled_root = os.path.join(_PROJECT_ROOT, "compiled")
     if not os.path.isdir(compiled_root):
         return None
@@ -218,7 +218,7 @@ def main() -> int:
         "model_dir",
         nargs="?",
         default=None,
-        help="Path to compiled model directory (e.g. compiled/opt_125m_fresh)",
+        help="Path to compiled model directory (e.g. outputs/compiled/opt_125m_fresh)",
     )
     args = parser.parse_args()
 

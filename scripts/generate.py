@@ -22,20 +22,20 @@ from compiler.mlir_dialect.lowering.compile_utils import _patch_transformers_tor
 
 MODEL_PRESETS = {
     "llama_1b": {
-        "dir": "./compiled/llama_1b",
+        "dir": "./outputs/compiled/llama_1b",
         "tokenizer_dir": "./models/LLM-Research/Llama-3.2-1B",
     },
     "llama_3b": {
-        "dir": "./compiled/llama_3b",
+        "dir": "./outputs/compiled/llama_3b",
         "tokenizer_dir": "./models/LLM-Research/Llama-3.2-3B",
     },
     "qwen": {
-        "dir": "./compiled/qwen3_0.8b",
+        "dir": "./outputs/compiled/qwen3_0.8b",
         "tokenizer_dir": "./models/Qwen/Qwen3.5-0.8B",
         "pad_to": 64,
     },
     "tiny_llama": {
-        "dir": "./compiled/tiny_llama",
+        "dir": "./outputs/compiled/tiny_llama",
         "tokenizer_dir": None,
     },
 }

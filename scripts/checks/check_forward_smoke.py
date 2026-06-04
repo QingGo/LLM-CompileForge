@@ -5,7 +5,7 @@ Validates that a compiled model produces sensible output without
 loading the HuggingFace reference model.
 
 Usage:
-    python scripts/check_forward_smoke.py compiled/opt_125m_fresh [--seed 42] [--seq-len 4]
+    python scripts/check_forward_smoke.py outputs/compiled/opt_125m_fresh [--seed 42] [--seq-len 4]
 
 Exits 0 on success, 1 on failure.
 """

@@ -10,7 +10,7 @@ Usage:
     unset CONDA_PREFIX
     export KMP_DUPLICATE_LIB_OK=TRUE
     export DYLD_LIBRARY_PATH="..."
-    python scripts/diag_hal_paths.py [--artifact compiled/opt_125m_fresh] [--tokens 2,32826,85,4129]
+    python scripts/diag_hal_paths.py [--artifact outputs/compiled/opt_125m_fresh] [--tokens 2,32826,85,4129]
 """
 
 from __future__ import annotations
@@ -244,7 +244,7 @@ def main() -> int:
         description="Diagnose HAL IR Path A vs Path B accuracy gap"
     )
     parser.add_argument(
-        "--artifact", default="compiled/opt_125m_fresh",
+        "--artifact", default="outputs/compiled/opt_125m_fresh",
         help="Path to compiled model artifact"
     )
     parser.add_argument(

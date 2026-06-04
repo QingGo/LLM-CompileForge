@@ -2,7 +2,7 @@
 """Verify consistency between compiled .dylib, compute graph, and lowered IR.
 
 Usage:
-    python scripts/verify_dylib_consistency.py compiled/opt_125m_fresh
+    python scripts/verify_dylib_consistency.py outputs/compiled/opt_125m_fresh
 """
 
 import argparse

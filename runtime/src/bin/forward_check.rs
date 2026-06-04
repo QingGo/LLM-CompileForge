@@ -65,7 +65,7 @@ fn find_safetensors(compiled_dir: &PathBuf) -> Option<String> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let compiled_dir = PathBuf::from("compiled/opt_125m_fresh");
+    let compiled_dir = PathBuf::from("outputs/compiled/opt_125m_fresh");
     let dylib_path = compiled_dir.join("libopt_125m_fresh.dylib");
 
     if !dylib_path.exists() {

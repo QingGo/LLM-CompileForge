@@ -28,7 +28,7 @@ class _DeadStageTracker:
     """Persistent dead stage detection across pipeline runs.
 
     Records consecutive zero-dialect-change runs for each stage in a JSON
-    file (``logs/pipeline/dead_stages.json``).  When a stage reaches 3
+    file (``outputs/logs/pipeline/dead_stages.json``).  When a stage reaches 3
     consecutive such runs it is marked as "dead" and a warning is emitted.
     """
 
@@ -91,7 +91,7 @@ class _DeadStageTracker:
 
 
 def _save_ir_stats(ir_module: Any, stage_name: str, timestamp: str = "") -> dict[str, int]:
-    """Walk ops by full name, save top-10 counts to logs/pipeline/stats_{name}.txt."""
+    """Walk ops by full name, save top-10 counts to outputs/logs/pipeline/stats_{name}.txt."""
     op_counts: dict[str, int] = {}
     total_ops = 0
 
@@ -147,7 +147,7 @@ def _save_ir_stats(ir_module: Any, stage_name: str, timestamp: str = "") -> dict
 
 
 def _save_ir_snapshot(ir_module: Any, stage_name: str) -> str:
-    """Save IR module snapshot to logs/pipeline/ for debugging.
+    """Save IR module snapshot to outputs/logs/pipeline/ for debugging.
 
     Also saves a companion IR stats file (via ``_save_ir_stats``) containing
     per-op-name counts and the top 10 most frequent operations.
@@ -396,7 +396,7 @@ class Stage:
     via ``PassManager``.
 
     Each stage has a per-stage timeout; on failure or timeout, an IR
-    snapshot is saved to ``logs/pipeline/``.
+    snapshot is saved to ``outputs/logs/pipeline/``.
     """
     name: str
     pipeline: str = ""

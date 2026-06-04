@@ -25,7 +25,7 @@ sys.path.insert(0, _project_root)
 
 from scripts.ctypes_forward import run_ctypes  # noqa: E402
 
-DYLIB_DIR = "compiled/opt_125m_fresh"
+DYLIB_DIR = "outputs/compiled/opt_125m_fresh"
 
 # Mask tensor index within main_0's func_outputs
 _MASK_OUTPUT_IDX: int = 13

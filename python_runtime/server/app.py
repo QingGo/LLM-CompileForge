@@ -96,7 +96,7 @@ def create_engine(
     chunk_size: int = 256,
     num_blocks: int = 1000,
     block_size: int = 16,
-    artifact_dir: str = "compiled/opt_125m_fresh",
+    artifact_dir: str = "outputs/compiled/opt_125m_fresh",
 ) -> LLMEngine:
     """Create an LLMEngine with a compiled module and HAL backend.
 

@@ -4,7 +4,7 @@ Validates that Modules A (Quantization), B (Speculative Decoding),
 and D (Tensor Parallelism) work correctly with real compiled model
 artifacts.
 
-Requires compiled models in compiled/.  Tests are marked 'integration'
+Requires compiled models in outputs/compiled/.  Tests are marked 'integration'
 and gracefully skip when models are absent.
 
 Reference: design-phase2.md §3, §5.2

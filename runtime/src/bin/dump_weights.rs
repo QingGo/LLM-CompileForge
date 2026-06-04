@@ -3,7 +3,7 @@
 //! Dump all runtime-loaded weights as .npy files for offline inspection.
 //!
 //! Usage:
-//!   cargo run --bin dump_weights -- --compiled-dir compiled/tiny_llama_fresh
+//!   cargo run --bin dump_weights -- --compiled-dir outputs/compiled/tiny_llama_fresh
 //!
 //! Loads the compiled .dylib, reads the name_mapping from the embedded
 //! SFCF blob, resolves HF keys in the safetensors file, converts f16→f32,
@@ -264,7 +264,7 @@ fn find_safetensors(compiled_dir: &PathBuf) -> Result<String, Box<dyn std::error
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    let mut compiled_dir = PathBuf::from("compiled/tiny_llama_fresh");
+    let mut compiled_dir = PathBuf::from("outputs/compiled/tiny_llama_fresh");
     let mut output_dir: Option<PathBuf> = None;
 
     let mut i = 1;

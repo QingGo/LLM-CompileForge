@@ -21,7 +21,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 
-MODEL_DIR = Path("compiled/opt_125m_fresh")
+MODEL_DIR = Path("outputs/compiled/opt_125m_fresh")
 
 
 def _dylib_exists() -> bool:

@@ -10,7 +10,7 @@ Each step has a per-step timeout.  The test fails if any step times out
 or produces unexpected output (e.g. vector ops remaining, memref ops
 remaining, ciface wrappers missing).
 
-Requires: compiled/opt_125m_fresh/model.mlir (the model artifact).
+Requires: outputs/compiled/opt_125m_fresh/model.mlir (the model artifact).
 """
 
 import os
@@ -28,13 +28,13 @@ from compiler.tests.test_pipeline_lowering import MLIR_BINDINGS
 pytestmark = [
     pytest.mark.skipif(not MLIR_BINDINGS, reason="mlir-core not available"),
     pytest.mark.skipif(
-        not (_PROJECT_ROOT / "compiled/opt_125m_fresh/model.mlir").exists(),
-        reason="compiled/opt_125m_fresh/model.mlir not found (run export model first)",
+        not (_PROJECT_ROOT / "outputs/compiled/opt_125m_fresh/model.mlir").exists(),
+        reason="outputs/compiled/opt_125m_fresh/model.mlir not found (run export model first)",
     ),
     pytest.mark.integration,
 ]
 
-ARTIFACT_DIR = _PROJECT_ROOT / "compiled/opt_125m_fresh"
+ARTIFACT_DIR = _PROJECT_ROOT / "outputs/compiled/opt_125m_fresh"
 LLVM_BIN = os.environ.get(
     "SERVE_FORGE_LLVM_BIN",
     str(_PROJECT_ROOT / "llvm-project/build/bin"),

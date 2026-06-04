@@ -181,11 +181,11 @@ class TestQwenMain2FullPipeline:
         from compiler.pipeline import _apply_sf_to_linalg as sf_to_linalg_pass_on_module
         from compiler.serialize import load_artifact
 
-        compiled_path = Path("compiled/qwen3_0.8b/model.mlir")
+        compiled_path = Path("outputs/compiled/qwen3_0.8b/model.mlir")
         if not compiled_path.is_file():
-            pytest.skip("Qwen model not compiled — run: python scripts/compile.py qwen")
+            pytest.skip("Qwen model not compiled — run: python compiler/compile.py qwen")
 
-        mod = load_artifact(str(Path("compiled/qwen3_0.8b")))
+        mod = load_artifact(str(Path("outputs/compiled/qwen3_0.8b")))
         func = mod.functions[2]  # main_2: 500 compute ops, 0 weights
         ir_mod = mlir_module_to_ir_module(MlirModule(functions=[func]), ctx=ir_ctx)
         sf_to_linalg_pass_on_module(ir_mod)
@@ -230,11 +230,11 @@ class TestQwenMain2FullPipeline:
         from compiler.pipeline import _apply_sf_to_linalg as sf_to_linalg_pass_on_module
         from compiler.serialize import load_artifact
 
-        compiled_path = Path("compiled/qwen3_0.8b/model.mlir")
+        compiled_path = Path("outputs/compiled/qwen3_0.8b/model.mlir")
         if not compiled_path.is_file():
             pytest.skip("Qwen model not compiled")
 
-        mod = load_artifact(str(Path("compiled/qwen3_0.8b")))
+        mod = load_artifact(str(Path("outputs/compiled/qwen3_0.8b")))
         func = mod.functions[2]
         ir_mod = mlir_module_to_ir_module(MlirModule(functions=[func]), ctx=mlir_context)
 

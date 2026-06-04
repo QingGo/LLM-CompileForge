@@ -19,7 +19,7 @@ sys.path.insert(0, _project_root)
 
 from scripts.ctypes_forward import run_ctypes, run_python_executor  # noqa: E402
 
-DYLIB_DIR = "compiled/opt_125m_fresh"
+DYLIB_DIR = "outputs/compiled/opt_125m_fresh"
 
 
 def _dylib_exists() -> bool:

@@ -318,7 +318,7 @@ def test_real_mask_op_sequence() -> None:
     """Test all mask ops matching model.mlir op sequence."""
     from pathlib import Path
 
-    mlir_path = Path("compiled/opt_125m_fresh/model.mlir")
+    mlir_path = Path("outputs/compiled/opt_125m_fresh/model.mlir")
     if not mlir_path.exists():
         print("[7/7] model.mlir not found — skipping")
         return

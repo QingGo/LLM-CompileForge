@@ -71,7 +71,7 @@ class LLMEngine:
 
     Usage:
         backend = PyTorchBackend("cpu")
-        ir_module = load_artifact("./compiled/model")
+        ir_module = load_artifact("./outputs/compiled/model")
         engine = LLMEngine(ir_module, backend)
         text = engine.generate("Explain quantum computing", max_tokens=100)
     """

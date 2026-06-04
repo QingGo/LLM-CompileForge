@@ -2,10 +2,10 @@
 """Inspect a compiled .dylib: list functions, weights, compute graph.
 
 Usage:
-    python scripts/inspect_dylib.py compiled/opt_125m_fresh/libopt_125m.dylib
-    python scripts/inspect_dylib.py compiled/opt_125m_fresh --summary
-    python scripts/inspect_dylib.py compiled/opt_125m_fresh --functions
-    python scripts/inspect_dylib.py compiled/opt_125m_fresh --compute-graph
+    python scripts/inspect_dylib.py outputs/compiled/opt_125m_fresh/libopt_125m.dylib
+    python scripts/inspect_dylib.py outputs/compiled/opt_125m_fresh --summary
+    python scripts/inspect_dylib.py outputs/compiled/opt_125m_fresh --functions
+    python scripts/inspect_dylib.py outputs/compiled/opt_125m_fresh --compute-graph
 """
 
 import argparse

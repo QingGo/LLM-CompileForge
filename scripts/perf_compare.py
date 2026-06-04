@@ -54,9 +54,9 @@ class ComparisonResult:
 
 
 MODEL_PRESETS: dict[str, dict[str, Any]] = {
-    "tiny_llama": {"dir": "./compiled/tiny_llama", "hf_id": "hf-internal-testing/tiny-random-LlamaForCausalLM"},
-    "llama-1b": {"dir": "./compiled/llama_1b", "local": "./models/LLM-Research/Llama-3.2-1B", "dtype": "bfloat16"},
-    "llama-3b": {"dir": "./compiled/llama_3b", "local": "./models/LLM-Research/Llama-3.2-3B", "dtype": "bfloat16"},
+    "tiny_llama": {"dir": "./outputs/compiled/tiny_llama", "hf_id": "hf-internal-testing/tiny-random-LlamaForCausalLM"},
+    "llama-1b": {"dir": "./outputs/compiled/llama_1b", "local": "./models/LLM-Research/Llama-3.2-1B", "dtype": "bfloat16"},
+    "llama-3b": {"dir": "./outputs/compiled/llama_3b", "local": "./models/LLM-Research/Llama-3.2-3B", "dtype": "bfloat16"},
 }
 
 

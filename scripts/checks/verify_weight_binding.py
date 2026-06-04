@@ -63,7 +63,7 @@ def _mismatch_detail(mlir: list[str], cg: list[str]) -> list[str]:
 
 
 def main() -> int:
-    model_dir = sys.argv[1] if len(sys.argv) > 1 else "compiled/opt_125m_fresh"
+    model_dir = sys.argv[1] if len(sys.argv) > 1 else "outputs/compiled/opt_125m_fresh"
     model_dir = os.path.abspath(model_dir)
 
     lowered_path = os.path.join(model_dir, "model.lowered.mlir")

@@ -4,7 +4,7 @@ The sole artifact format is MLIR (model.mlir) with weights (weights.pth)
 and metadata (metadata.json).
 
 Output structure:
-  compiled/<model_name>/
+  outputs/compiled/<model_name>/
     model.mlir       — MLIR text (standard-compliant)
     weights.pth      — PyTorch state dict
     metadata.json    — compilation metadata

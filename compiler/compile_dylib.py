@@ -1,7 +1,7 @@
 """Compile model.mlir → .dylib for Rust runtime.
 
-Usage: python scripts/compile_dylib.py <compiled_dir> [--model-name <name>]
-Example: python scripts/compile_dylib.py compiled/tiny_llama --model-name tiny_llama
+Usage: python compiler/compile_dylib.py <compiled_dir> [--model-name <name>]
+Example: python compiler/compile_dylib.py outputs/compiled/tiny_llama --model-name tiny_llama
 """
 
 import faulthandler
@@ -87,7 +87,7 @@ def _save_failure_context(
 ) -> Path:
     """Save diagnostic context on pipeline failure and print diagnosis guide."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    failure_dir = Path("logs/pipeline") / f"failure_{timestamp}"
+    failure_dir = Path("outputs/logs/pipeline") / f"failure_{timestamp}"
     failure_dir.mkdir(parents=True, exist_ok=True)
 
     if ir_text is not None:
@@ -115,7 +115,7 @@ def _save_failure_context(
     print("📋 Suggested next steps:")
     print("   1. Check saved IR files for unexpected ops")
     print("   2. Run: python scripts/bisect_pipeline_stages.py --auto")
-    print("   3. Or use: python scripts/compile_dylib.py --debug for per-pass snapshots")
+    print("   3. Or use: python compiler/compile_dylib.py --debug for per-pass snapshots")
 
     return failure_dir
 
@@ -174,7 +174,7 @@ def _check_sf_dialect_freshness(compiled_dir: str) -> None:
         print(f"  Generated with sf-dialect: {old_hash[:8]}", file=_sys.stderr)
         print(f"  Current sf-dialect HEAD:  {new_hash[:8]}", file=_sys.stderr)
         print(
-            f"  Run 'python scripts/compile.py ... --output-dir {compiled_dir}' first.",
+            f"  Run 'python compiler/compile.py ... --output-dir {compiled_dir}' first.",
             file=_sys.stderr,
         )
         print(

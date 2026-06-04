@@ -549,7 +549,7 @@ mod integration_tests {
     fn test_load_sfa_abi_from_real_dylib() {
         let dylib_path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../compiled/opt_125m_fresh/libopt_125m.dylib"
+            "/../outputs/compiled/opt_125m_fresh/libopt_125m.dylib"
         );
         if !std::path::Path::new(dylib_path).exists() {
             eprintln!("SKIP: dylib not found at {}", dylib_path);

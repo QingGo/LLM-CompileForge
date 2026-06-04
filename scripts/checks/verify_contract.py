@@ -73,18 +73,18 @@ def check1_engine_no_compiler_imports() -> tuple[str, str, str]:
         return label, "FAIL", f"grep error: {result.stderr.strip()}"
 
 
-# ── Check 2: runtime/src/hal/mod.rs must not have hardcoded compiled/ ─
+# ── Check 2: runtime/src/hal/mod.rs must not have hardcoded outputs/compiled/ ─
 
 
 def check2_hal_no_hardcoded_compiled_path() -> tuple[str, str, str]:
-    """Verify no hardcoded 'compiled/' path in hal/mod.rs."""
-    label = "Check 2: runtime/src/hal/mod.rs has no hardcoded 'compiled/'"
+    """Verify no hardcoded 'outputs/compiled/' path in hal/mod.rs."""
+    label = "Check 2: runtime/src/hal/mod.rs has no hardcoded 'outputs/compiled/'"
     hal_mod = PROJECT_ROOT / "runtime" / "src" / "hal" / "mod.rs"
     if not hal_mod.is_file():
         return label, "SKIP", "NO_HAL_MOD: runtime/src/hal/mod.rs not found"
 
     result = subprocess.run(
-        ["grep", "-n", "compiled/", str(hal_mod)],
+        ["grep", "-n", "outputs/compiled/", str(hal_mod)],
         capture_output=True, text=True,
     )
     if result.returncode == 0:
@@ -94,7 +94,7 @@ def check2_hal_no_hardcoded_compiled_path() -> tuple[str, str, str]:
         )
         return label, "FAIL", details
     elif result.returncode == 1:
-        return label, "PASS", "no hardcoded 'compiled/' path found"
+        return label, "PASS", "no hardcoded 'outputs/compiled/' path found"
     else:
         return label, "FAIL", f"grep error: {result.stderr.strip()}"
 
@@ -224,12 +224,12 @@ def check5_hal_ir_schema() -> tuple[str, str, str]:
     if not schema_path.is_file():
         return label, "SKIP", "NO_SCHEMA: include/hal_ir.schema.json not found"
 
-    # Find hal_ir.json — check compiled/ directories
+    # Find hal_ir.json — check outputs/compiled/ directories
     hal_ir_candidates = sorted(
-        PROJECT_ROOT.glob("compiled/*/hal_ir.json")
+        PROJECT_ROOT.glob("outputs/compiled/*/hal_ir.json")
     )
     if not hal_ir_candidates:
-        return label, "SKIP", "NO_HAL_IR_SKIP: no hal_ir.json found under compiled/"
+        return label, "SKIP", "NO_HAL_IR_SKIP: no hal_ir.json found under outputs/compiled/"
 
     # Use the first (or most recent) hal_ir.json
     hal_ir_path = hal_ir_candidates[-1]
@@ -278,10 +278,10 @@ def check6_metadata_cache_policy() -> tuple[str, str, str]:
 
     # Find metadata.json
     metadata_candidates = sorted(
-        PROJECT_ROOT.glob("compiled/*/metadata.json")
+        PROJECT_ROOT.glob("outputs/compiled/*/metadata.json")
     )
     if not metadata_candidates:
-        return label, "SKIP", "NO_METADATA_SKIP: no metadata.json found under compiled/"
+        return label, "SKIP", "NO_METADATA_SKIP: no metadata.json found under outputs/compiled/"
 
     metadata_path = metadata_candidates[-1]
     try:

@@ -37,7 +37,7 @@ class MlirExecutor(_KVCacheMixin):
         "sdpa" substring match + _KVCacheMixin path.
 
     Usage:
-        module = load_mlir_artifact("./compiled/model")
+        module = load_mlir_artifact("./outputs/compiled/model")
         backend = PyTorchBackend("cpu")
         executor = MlirExecutor(module, backend)
         logits = executor.forward(input_ids)

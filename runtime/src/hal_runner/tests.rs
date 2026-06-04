@@ -58,7 +58,7 @@ impl traits::Stream for NoopStream {
 fn test_hal_ir_path() -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     format!(
-        "{}/../compiled/opt_125m_fresh/generated/hal_ir.json",
+        "{}/../outputs/compiled/opt_125m_fresh/generated/hal_ir.json",
         manifest_dir
     )
 }

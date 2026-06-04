@@ -3,7 +3,7 @@
 Verifies that:
   1. StageResult.context contains dialect_counts_pre and post
   2. Per-stage log output contains IR dialect op count info
-  3. DEBUG mode saves IR snapshot files to logs/pipeline/stages/
+  3. DEBUG mode saves IR snapshot files to outputs/logs/pipeline/stages/
   4. INFO mode does NOT save snapshot files
 
 All tests skip gracefully when MLIR Python bindings are unavailable.

@@ -41,8 +41,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--model-dir",
-        default="compiled/opt_125m_fresh",
-        help="Compiled model directory (default: compiled/opt_125m_fresh)",
+        default="outputs/compiled/opt_125m_fresh",
+        help="Compiled model directory (default: outputs/compiled/opt_125m_fresh)",
     )
     parser.add_argument(
         "--layer",
@@ -63,7 +63,7 @@ def main() -> None:
         py_ref = run_python_executor(args.model_dir)
     except FileNotFoundError as e:
         print(f"Error: {e}")
-        print("Make sure the model is compiled first (see scripts/compile.py)")
+        print("Make sure the model is compiled first (see compiler/compile.py)")
         sys.exit(1)
     except Exception as e:
         print(f"Error running forward pass: {e}")

@@ -16,7 +16,7 @@ MLIR_LIBS_PATH := $(PROJECT_ROOT)/llvm-project/build/tools/mlir/python_packages/
 SF_MLIR_LIBS := $(PROJECT_ROOT)/sf-dialect/build/python_packages/sf/mlir_sf/_mlir_libs
 TORCH_LIB_PATH := $(PROJECT_ROOT)/$(VENV)/lib/python3.10/site-packages/torch/lib
 DYLIB_ENV := DYLD_LIBRARY_PATH="$(SF_MLIR_LIBS):$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)"
-HAL_OPS_CPU_PATH_DEFAULT := $(PROJECT_ROOT)/compiled/opt_125m_fresh/generated
+HAL_OPS_CPU_PATH_DEFAULT := $(PROJECT_ROOT)/outputs/compiled/opt_125m_fresh/generated
 HAL_OPS_CPU_PATH ?= $(HAL_OPS_CPU_PATH_DEFAULT)
 
 $(VENV):
@@ -107,33 +107,33 @@ build-plugin: build-sf
 	cmake --build sf-dialect/build --target SfDialectPlugin
 
 # ---- step 1: 导出模型 (Python) ----
-# scripts/compile.py: torch.export → FX Graph → MlirModule → MLIR artifact
+# compiler/compile.py: torch.export → FX Graph → MlirModule → MLIR artifact
 #   cache_policy 参数: CachePolicy.for_llama(...) 触发 SDPA 边界切分
 #   输出: model.mlir + metadata.json + constants.bin + constants.pth
 rebuild-mlir: $(VENV)
-	$(PYTHON) scripts/compile.py opt-125m --output-dir ./compiled/opt_125m_fresh
+	$(PYTHON) compiler/compile.py opt-125m --output-dir ./outputs/compiled/opt_125m_fresh
 
 # ---- step 2: 编译 .dylib (C++ lowering + llc) ----
-# scripts/compile_dylib.py: MLIR → sf→linalg → LLVM IR → .o → .dylib
+# compiler/compile_dylib.py: MLIR → sf→linalg → LLVM IR → .o → .dylib
 #   需要 sf dialect Python bindings (需先 make build-so)
 #   产物: lib<model-name>.dylib (嵌入 constants.bin)
 rebuild-dylib: $(VENV)
-	$(DYLIB_ENV) $(PYTHON) scripts/compile_dylib.py compiled/opt_125m_fresh --model-name opt_125m
+	$(DYLIB_ENV) $(PYTHON) compiler/compile_dylib.py outputs/compiled/opt_125m_fresh --model-name opt_125m
 
 # ---- 全量: step 1 + step 2 + Rust 测试 ----
 rebuild: rebuild-clean rebuild-mlir rebuild-dylib rebuild-test
 
 rebuild-clean:
-	rm -rf compiled/opt_125m_fresh
+	rm -rf outputs/compiled/opt_125m_fresh
 
 rebuild-test:
 	cd runtime && cargo test test_opt_125m_forward_runs -- --nocapture 2>&1 | tail -5
 
 # ---- 从头完整构建 (新机器适用) ----
-# Usage: make build-all                    # 编译 opt-125m → compiled/opt_125m_fresh
+# Usage: make build-all                    # 编译 opt-125m → outputs/compiled/opt_125m_fresh
 #        make build-all MODEL=opt-125m      # 等同默认
-#        make build-all MODEL=tiny-llama    # 编译 tiny-llama → compiled/tiny_llama
-# 约定: scripts/compile.py 的 CLI 参数用 dash (opt-125m), 输出目录用 underscore (opt_125m_fresh)
+#        make build-all MODEL=tiny-llama    # 编译 tiny-llama → outputs/compiled/tiny_llama
+# 约定: compiler/compile.py 的 CLI 参数用 dash (opt-125m), 输出目录用 underscore (opt_125m_fresh)
 .PHONY: build-all
 build-all: $(VENV) build-so build-plugin
 	@echo "=== 完整编译流水线 ==="
@@ -147,16 +147,16 @@ build-all: $(VENV) build-so build-plugin
 	@echo "  ✓ sf-dialect build"
 	@echo ""
 	@echo "Step 1: 编译模型 ($(MODEL))"
-	$(PYTHON) scripts/compile.py $(MODEL) --output-dir ./compiled/$(MODEL_FRESH)
+	$(PYTHON) compiler/compile.py $(MODEL) --output-dir ./outputs/compiled/$(MODEL_FRESH)
 	@echo ""
 	@echo "Step 2: lowering + .dylib"
-	rm -f compiled/$(MODEL_FRESH)/model.lowered.mlir
-	PATH="$(LLVM_BUILD_BIN):$(PATH)" $(DYLIB_ENV) $(PYTHON) scripts/compile_dylib.py compiled/$(MODEL_FRESH) --model-name $(MODEL_FRESH)
+	rm -f outputs/compiled/$(MODEL_FRESH)/model.lowered.mlir
+	PATH="$(LLVM_BUILD_BIN):$(PATH)" $(DYLIB_ENV) $(PYTHON) compiler/compile_dylib.py outputs/compiled/$(MODEL_FRESH) --model-name $(MODEL_FRESH)
 	@echo ""
 	@echo "Step 3: tokenizer files"
-	$(DYLIB_ENV) $(PYTHON) -c "from transformers import AutoTokenizer; tok = AutoTokenizer.from_pretrained('facebook/opt-125m' if '$(MODEL)' == 'opt-125m' else '$(MODEL)'); tok.backend_tokenizer.save('compiled/$(MODEL_FRESH)/tokenizer.json')"
+	$(DYLIB_ENV) $(PYTHON) -c "from transformers import AutoTokenizer; tok = AutoTokenizer.from_pretrained('facebook/opt-125m' if '$(MODEL)' == 'opt-125m' else '$(MODEL)'); tok.backend_tokenizer.save('outputs/compiled/$(MODEL_FRESH)/tokenizer.json')"
 	@if [ "$(MODEL)" = "opt-125m" ]; then \
-		cp $$(python3 -c "from pathlib import Path; p = Path.home() / '.cache/huggingface/hub/models--facebook--opt-125m/snapshots'; print(sorted(p.glob('*/tokenizer_config.json'))[0])") compiled/$(MODEL_FRESH)/tokenizer_config.json; \
+		cp $$(python3 -c "from pathlib import Path; p = Path.home() / '.cache/huggingface/hub/models--facebook--opt-125m/snapshots'; print(sorted(p.glob('*/tokenizer_config.json'))[0])") outputs/compiled/$(MODEL_FRESH)/tokenizer_config.json; \
 	fi
 	@echo "Step 4: Rust 二进制"
 	$(MAKE) build
@@ -164,7 +164,7 @@ build-all: $(VENV) build-so build-plugin
 	@echo "✅ build-all complete"
 
 # 模型名 → 编译产物目录名映射
-# scripts/compile.py 的 targets 字典定义了默认路径, 这里统一映射
+# compiler/compile.py 的 targets 字典定义了默认路径, 这里统一映射
 MODEL ?= opt-125m
 MODEL_FRESH = $(patsubst opt-125m,opt_125m_fresh,$(patsubst tiny-llama,tiny_llama,$(MODEL)))
 
@@ -172,26 +172,26 @@ MODEL_FRESH = $(patsubst opt-125m,opt_125m_fresh,$(patsubst tiny-llama,tiny_llam
 # 两步合并, 跳过 compile.py (需要已有 model.mlir)
 # debug-cos 与 test-dylib-cos-quick 几乎相同, 保留为专用诊断入口
 test-dylib-cos: build-so rebuild-mlir
-	rm -f compiled/opt_125m_fresh/model.lowered.mlir
-	PATH="$(LLVM_BUILD_BIN):$(PATH)" $(DYLIB_ENV) $(PYTHON) scripts/compile_dylib.py compiled/opt_125m_fresh --model-name opt_125m
+	rm -f outputs/compiled/opt_125m_fresh/model.lowered.mlir
+	PATH="$(LLVM_BUILD_BIN):$(PATH)" $(DYLIB_ENV) $(PYTHON) compiler/compile_dylib.py outputs/compiled/opt_125m_fresh --model-name opt_125m
 	$(PYTHON) tests/test_dylib_cosine.py -v
 
 test-dylib-cos-quick: build-so
-	rm -f compiled/opt_125m_fresh/model.lowered.mlir
-	PATH="$(LLVM_BUILD_BIN):$(PATH)" $(DYLIB_ENV) $(PYTHON) scripts/compile_dylib.py compiled/opt_125m_fresh --model-name opt_125m
+	rm -f outputs/compiled/opt_125m_fresh/model.lowered.mlir
+	PATH="$(LLVM_BUILD_BIN):$(PATH)" $(DYLIB_ENV) $(PYTHON) compiler/compile_dylib.py outputs/compiled/opt_125m_fresh --model-name opt_125m
 	$(PYTHON) tests/test_dylib_cosine.py -v
 
 debug-cos: build-so
-	rm -f compiled/opt_125m_fresh/model.lowered.mlir
-	PATH="$(LLVM_BUILD_BIN):$(PATH)" $(DYLIB_ENV) $(PYTHON) scripts/compile_dylib.py compiled/opt_125m_fresh --model-name opt_125m
+	rm -f outputs/compiled/opt_125m_fresh/model.lowered.mlir
+	PATH="$(LLVM_BUILD_BIN):$(PATH)" $(DYLIB_ENV) $(PYTHON) compiler/compile_dylib.py outputs/compiled/opt_125m_fresh --model-name opt_125m
 	$(PYTHON) scripts/diagnostics/diagnose_cos.py --layer 12
 
 clean-compiled:
-	rm -f compiled/opt_125m_fresh/model.mlir
-	rm -f compiled/opt_125m_fresh/model.lowered.mlir
-	rm -f compiled/opt_125m_fresh/model.lowered.readable.mlir
-	rm -f compiled/opt_125m_fresh/model.ll
-	rm -f compiled/opt_125m_fresh/lib*.dylib
+	rm -f outputs/compiled/opt_125m_fresh/model.mlir
+	rm -f outputs/compiled/opt_125m_fresh/model.lowered.mlir
+	rm -f outputs/compiled/opt_125m_fresh/model.lowered.readable.mlir
+	rm -f outputs/compiled/opt_125m_fresh/model.ll
+	rm -f outputs/compiled/opt_125m_fresh/lib*.dylib
 
 # ═══════════════════════════════════════════════════════════════
 #  Rust 构建 & 服务
@@ -250,7 +250,7 @@ test-ddr:
 	else echo "  ❌ DRR patterns failed"; exit 1; fi
 
 # L0: Contract — cross-validate proto ABI fields in compiled model
-TEST_CONTRACT_MODEL := compiled/opt_125m_fresh
+TEST_CONTRACT_MODEL := outputs/compiled/opt_125m_fresh
 test-contract: $(VENV)
 	PYTHONPATH="$(PROJECT_ROOT)/gen/proto/python:$$PYTHONPATH" $(PYTHON) tests/contract/abi_cross_validate.py $(TEST_CONTRACT_MODEL)
 
@@ -267,8 +267,8 @@ test-fixup: $(VENV)
 test-ctypes-oracle: $(VENV)
 	$(PYTEST) tests/test_ctypes_oracle.py -v --tb=short --timeout=30
 test-rust-unit: $(VENV)
-	mkdir -p logs/rust
-	cd runtime && cargo test --lib > ../logs/rust/test_unit_$$(date +%Y%m%d_%H%M%S).log 2>&1
+	mkdir -p outputs/logs/rust
+	cd runtime && cargo test --lib > ../outputs/logs/rust/test_unit_$$(date +%Y%m%d_%H%M%S).log 2>&1
 test-rust: test-rust-unit test-rust-integ
 test-e2e-forward:
 	cd runtime && HAL_OPS_CPU_PATH="$(HAL_OPS_CPU_PATH)" cargo test --test integration_tests --features hal-rust
@@ -279,9 +279,9 @@ test-e2e-forward-hal:
 test-rust-cov:
 	cargo llvm-cov --lib --summary-only
 test-pipeline-timing: $(VENV)
-	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" $(PYTHON) scripts/diagnostics/pipeline_timing.py compiled/opt_125m_fresh
+	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" $(PYTHON) scripts/diagnostics/pipeline_timing.py outputs/compiled/opt_125m_fresh
 test-pipeline-debug: $(VENV)
-	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" $(PYTHON) scripts/diagnostics/pipeline_debug.py compiled/opt_125m_fresh --out /tmp/pipeline_debug
+	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" $(PYTHON) scripts/diagnostics/pipeline_debug.py outputs/compiled/opt_125m_fresh --out /tmp/pipeline_debug
 test-changed: $(VENV)
 	@if [ -f tests/run_related_tests.py ]; then \
 		$(PYTHON) tests/run_related_tests.py; \
@@ -289,11 +289,11 @@ test-changed: $(VENV)
 
 # L1.5: 正确性
 test-forward-smoke: $(VENV)
-	mkdir -p logs/test
-	@for model in compiled/opt_125m_fresh compiled/tiny_llama; do \
+	mkdir -p outputs/logs/test
+	@for model in outputs/compiled/opt_125m_fresh outputs/compiled/tiny_llama; do \
 		if [ -d $$model ]; then \
 			echo "[$$model]"; \
-			LLM_SERVEFORGE_LOG=INFO $(PYTHON) scripts/checks/check_forward_smoke.py $$model > logs/test/forward_smoke_$$(date +%Y%m%d_%H%M%S).log 2>&1 || exit 1; \
+			LLM_SERVEFORGE_LOG=INFO $(PYTHON) scripts/checks/check_forward_smoke.py $$model > outputs/logs/test/forward_smoke_$$(date +%Y%m%d_%H%M%S).log 2>&1 || exit 1; \
 		fi; \
 	done
 
@@ -309,7 +309,7 @@ test-forward-smoke-rust-hal:
 	./runtime/target/debug/forward_check_hal
 
 test-forward-cos: test-forward-smoke
-	@for model in compiled/opt_125m_fresh; do \
+	@for model in outputs/compiled/opt_125m_fresh; do \
 		if [ -d $$model ]; then \
 			echo "[$$model]"; \
 			$(PYTHON) scripts/checks/check_forward_cos.py $$model || exit 1; \
@@ -333,19 +333,19 @@ test-pipeline-quick: $(VENV)
 test-weight-consistency: $(VENV)
 	$(PYTEST) tests/test_weight_consistency.py -v --tb=short --timeout=120 -m "not slow"
 verify-dylib:
-	$(PYTHON) scripts/checks/verify_dylib_consistency.py compiled/opt_125m_fresh
+	$(PYTHON) scripts/checks/verify_dylib_consistency.py outputs/compiled/opt_125m_fresh
 
 verify-dylib-fresh:
-	@for model in compiled/opt_125m_fresh compiled/tiny_llama; do \
+	@for model in outputs/compiled/opt_125m_fresh outputs/compiled/tiny_llama; do \
 		if [ -d $$model ]; then \
 			echo "[$$model]"; \
 			$(PYTHON) scripts/checks/check_dylib_freshness.py $$model || exit 1; \
 		fi; \
 	done
 verify-consistency: $(VENV)
-	$(PYTHON) scripts/checks/verify_dylib_consistency.py compiled/opt_125m_fresh
+	$(PYTHON) scripts/checks/verify_dylib_consistency.py outputs/compiled/opt_125m_fresh
 verify-diag:
-	$(PYTHON) -c "import sys, os; sys.path.insert(0, os.getcwd()); from scripts.checks.verify_dylib_consistency import check_diag_tool_health; sys.exit(check_diag_tool_health('compiled/opt_125m_fresh'))"
+	$(PYTHON) -c "import sys, os; sys.path.insert(0, os.getcwd()); from scripts.checks.verify_dylib_consistency import check_diag_tool_health; sys.exit(check_diag_tool_health('outputs/compiled/opt_125m_fresh'))"
 verify-preflight: verify-consistency verify-diag
 
 # KV Cache 测试集
@@ -362,10 +362,10 @@ test-kv-all: test-kv-compiler test-kv-rust test-kv-python-e2e
 test-integration: $(VENV)
 	-$(PYTEST) tests/ -m integration -v --tb=short --timeout=300
 test-rust-integ: $(VENV)
-	mkdir -p logs/rust
-	cd runtime && cargo test --bin serveforge > ../logs/rust/test_integ_$$(date +%Y%m%d_%H%M%S).log 2>&1
+	mkdir -p outputs/logs/rust
+	cd runtime && cargo test --bin serveforge > ../outputs/logs/rust/test_integ_$$(date +%Y%m%d_%H%M%S).log 2>&1
 test-pipeline-smoke: $(VENV)
-	$(PYTHON) tests/test_pipeline_smoke.py compiled/opt_125m_fresh --timeout 120
+	$(PYTHON) tests/test_pipeline_smoke.py outputs/compiled/opt_125m_fresh --timeout 120
 test-pipeline-validate: $(VENV)
 	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" $(PYTHON) -m pytest tests/test_pipeline_validation.py -v --tb=short --timeout=60
 test-compile-full: $(VENV)
@@ -376,8 +376,8 @@ test-consistency: $(VENV)
 	$(PYTHON) scripts/checks/test_consistency.py
 
 test-dylib-quick: build-so
-	rm -f compiled/tiny_llama/model.lowered.mlir
-	PATH="$(LLVM_BUILD_BIN):$(PATH)" $(DYLIB_ENV) $(PYTHON) scripts/compile_dylib.py compiled/tiny_llama --model-name tiny_llama
+	rm -f outputs/compiled/tiny_llama/model.lowered.mlir
+	PATH="$(LLVM_BUILD_BIN):$(PATH)" $(DYLIB_ENV) $(PYTHON) compiler/compile_dylib.py outputs/compiled/tiny_llama --model-name tiny_llama
 	$(PYTHON) tests/test_forward_correctness.py -v --timeout=30
 
 # L2 基线
@@ -423,9 +423,9 @@ diagnose:
 
 # ---- 清理 ----
 clean:
-	rm -rf .venv .pytest_cache .mypy_cache .ruff_cache dist *.egg-info compiled/ .profile_baseline.txt
+	rm -rf .venv .pytest_cache .mypy_cache .ruff_cache dist *.egg-info outputs/compiled/ .profile_baseline.txt
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 clean-logs:
-	rm -rf logs/pipeline/stages/ logs/test/ logs/e2e/ logs/bisect/ logs/rebuild/
+	rm -rf outputs/logs/pipeline/stages/ outputs/logs/test/ outputs/logs/e2e/ outputs/logs/bisect/ outputs/logs/rebuild/
 
 # (removed: test-dylib-cos-full alias — use test-dylib-cos directly)

@@ -26,7 +26,7 @@ from compiler.utils.logging import init_logging
 
 _log = logging.getLogger("bisect_pipeline")
 
-COMPILED_DIR = "compiled/opt_125m_fresh"
+COMPILED_DIR = "outputs/compiled/opt_125m_fresh"
 LOWERED_MLIR = os.path.join(COMPILED_DIR, "model.lowered.mlir")
 ORIG_DYLIB = os.path.join(COMPILED_DIR, "libopt_125m.dylib")
 RUST_DIR = "rust"
@@ -71,7 +71,7 @@ def compile_with_stages(
         module = ir.Module.parse(text, ctx)
 
         from compiler.mlir_dialect.pipeline.pipeline_stages import run_stages
-        results = run_stages(module, ctx, stages, log_dir=f"logs/bisect_{label}")
+        results = run_stages(module, ctx, stages, log_dir=f"outputs/logs/bisect_{label}")
 
         # Check all stages succeeded (or warn_only failed, which is OK)
         failed = [r for r in results if not r.success]
@@ -387,7 +387,7 @@ def main():
         _log.error("MLIR bindings not available")
         return 1
 
-    out_dir = "compiled/bisect_work"
+    out_dir = "outputs/compiled/bisect_work"
     os.makedirs(out_dir, exist_ok=True)
 
     stages = parse_stages()

@@ -5,7 +5,7 @@ and compares against Python executor reference using cosine similarity.
 
 Usage:
     from scripts.ctypes_oracle import CtypesOracle
-    oracle = CtypesOracle(artifact_dir="compiled/opt_125m_fresh")
+    oracle = CtypesOracle(artifact_dir="outputs/compiled/opt_125m_fresh")
     cos = oracle.compare("path/to/model.dylib")
 """
 
@@ -49,7 +49,7 @@ class CtypesOracle:
     # 128KB for sret output buffer (matches ctypes_forward.py)
     SRET_SIZE = 131072
 
-    def __init__(self, artifact_dir: str = "./compiled/opt_125m_fresh"):
+    def __init__(self, artifact_dir: str = "./outputs/compiled/opt_125m_fresh"):
         self.artifact_dir = os.path.abspath(artifact_dir)
         self._py_logits: np.ndarray | None = None
         self._load_sfcf_blob()
@@ -77,7 +77,7 @@ class CtypesOracle:
         if not os.path.exists(orig_dylib):
             raise FileNotFoundError(
                 f"Original dylib not found at {orig_dylib} — "
-                "compile the model first with scripts/compile.py"
+                "compile the model first with compiler/compile.py"
             )
 
         lib = ctypes.CDLL(orig_dylib)

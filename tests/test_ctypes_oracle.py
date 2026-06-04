@@ -9,8 +9,8 @@ import pytest
 
 from scripts.ctypes_oracle import CtypesOracle
 
-DYLIB_PATH = "compiled/opt_125m_fresh/libopt_125m.dylib"
-ARTIFACT_DIR = "compiled/opt_125m_fresh"
+DYLIB_PATH = "outputs/compiled/opt_125m_fresh/libopt_125m.dylib"
+ARTIFACT_DIR = "outputs/compiled/opt_125m_fresh"
 MIN_COS = 0.99  # ctypes should closely match Python executor
 
 

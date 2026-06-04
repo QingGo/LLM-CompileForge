@@ -79,7 +79,7 @@ class DylibResult:
 
 
 def run_ctypes(
-    artifact_dir: str = "./compiled/opt_125m_fresh",
+    artifact_dir: str = "./outputs/compiled/opt_125m_fresh",
     dylib_path: str | None = None,
     input_ids: np.ndarray | None = None,
 ) -> DylibResult:
@@ -87,7 +87,7 @@ def run_ctypes(
 
     Args:
         artifact_dir: Path to compiled artifact directory (default:
-            ``./compiled/opt_125m_fresh``).
+            ``./outputs/compiled/opt_125m_fresh``).
         dylib_path: Path to the .dylib (default: ``<artifact_dir>/libopt_125m_fresh.dylib``).
         input_ids: Input token IDs (default: batch=2, seq=4 sample).
 
@@ -225,7 +225,7 @@ def run_ctypes(
 
 
 def run_python_executor(
-    artifact_dir: str = "./compiled/opt_125m_fresh",
+    artifact_dir: str = "./outputs/compiled/opt_125m_fresh",
     input_ids: np.ndarray | None = None,
 ) -> DylibResult:
     """Run Python MlirExecutor and return per-function + logit results.

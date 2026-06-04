@@ -126,7 +126,7 @@ fn test_hal_forward_all_functions_in_ir() {
     // This is an IR-level validation, not a binary execution test.
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let hal_ir_path = format!(
-        "{}/../compiled/opt_125m_fresh/generated/hal_ir.json",
+        "{}/../outputs/compiled/opt_125m_fresh/generated/hal_ir.json",
         manifest_dir,
     );
 

@@ -10,7 +10,7 @@ from compiler.serialize import load_artifact
 
 ctx = ir.Context()
 sf.register_dialects(ctx._CAPIPtr, load=True)
-orig = load_artifact("compiled/opt_125m")
+orig = load_artifact("outputs/compiled/opt_125m")
 ir_mod = mlir_module_to_ir_module(orig, ctx=ctx)
 pman = pm.PassManager.parse(
     "builtin.module(sf-promote-weights,canonicalize,cse,sf-lower-to-linalg)", ctx)

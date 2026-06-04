@@ -964,9 +964,9 @@ mod crash_test {
     
     #[test]
     fn trace_crash_point() {
-        let dylib = concat!(env!("CARGO_MANIFEST_DIR"), "/../compiled/opt_125m_fresh/libopt_125m.dylib");
+        let dylib = concat!(env!("CARGO_MANIFEST_DIR"), "/../outputs/compiled/opt_125m_fresh/libopt_125m.dylib");
         if !std::path::Path::new(dylib).exists() { 
-            let dylib2 = concat!(env!("CARGO_MANIFEST_DIR"), "/../compiled/opt_125m_fresh/libopt_125m_fresh.dylib");
+            let dylib2 = concat!(env!("CARGO_MANIFEST_DIR"), "/../outputs/compiled/opt_125m_fresh/libopt_125m_fresh.dylib");
             let dylib = dylib2;
         }
         let _ = dylib;

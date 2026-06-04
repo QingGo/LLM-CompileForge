@@ -159,7 +159,7 @@ fn main() -> Result<(), anyhow::Error> {
                      Tried dylib: {}\n\
                      Suggestions:\n\
                      - Run: python scripts/compile_dylib.py {} --model-name <name>\n\
-                     - Check compiled/{} exists and contains a .dylib file\n\
+                     - Check outputs/compiled/{} exists and contains a .dylib file\n\
                      - Use --safetensors to point to the weights file",
                     model, e, dylib_path, ap, model,
                 )
@@ -650,7 +650,7 @@ fn run_serve(model: &str, compiled_dir: &str, port: u16) -> Result<(), anyhow::E
              Tried dylib: {}\n\
              Suggestions:\n\
              - Run: python scripts/compile_dylib.py {} --model-name <name>\n\
-             - Check compiled/{} exists and contains a .dylib file\n\
+             - Check outputs/compiled/{} exists and contains a .dylib file\n\
              - Use --safetensors to point to the weights file",
             model,
             e,
