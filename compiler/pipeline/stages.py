@@ -42,7 +42,7 @@ def _make_verify_stage() -> Stage:
     Checks all ``func.func`` ops have non-empty bodies and the module has at
     least one function.  Never blocks compilation — only logs warnings.
     """
-    from compiler.mlir_passes._ops import mlir_verify_structure
+    from compiler.passes._ops import mlir_verify_structure
 
     def _verify_action(m: Any) -> None:
         ctx = m.operation.context

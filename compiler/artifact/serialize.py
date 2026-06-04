@@ -18,7 +18,7 @@ from typing import Any
 
 import torch
 
-from compiler.mlir_artifact.binary import (
+from compiler.artifact.binary import (
     _build_constants_binary,
     _build_name_mapping,
 )

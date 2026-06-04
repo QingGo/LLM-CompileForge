@@ -22,7 +22,7 @@ from compiler.hal.op_lowering import (
     strip_mlir_quotes,
 )
 from compiler.hal.ssa_tracker import SSATracker
-from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp  # type: ignore[attr-defined]
+from compiler.artifact import MlirFunction, MlirModule, MlirOp  # type: ignore[attr-defined]
 from compiler.mlir_dialect.lowering.compile_utils import _setup_mlir_path
 
 _log = logging.getLogger(__name__)
@@ -102,7 +102,7 @@ class HalIRBuilder:
 
         # Generate MLIR text from the built MlirModule
         try:
-            from compiler.mlir_artifact import mlir_module_to_text
+            from compiler.artifact import mlir_module_to_text
             self._mlir_text_output = mlir_module_to_text(self._mlir_module)
         except Exception as e:
             _log.warning("Failed to generate HAL IR MLIR text: %s", e)

@@ -31,7 +31,7 @@ for name in (
     logging.getLogger(name).setLevel(logging.WARNING)
 
 
-from compiler.mlir_artifact import load_mlir_artifact
+from compiler.artifact import load_mlir_artifact
 from python_runtime.engine.mlir_executor import _WEIGHT_OPS
 from python_runtime.hal.pytorch_backend import PyTorchBackend
 from scripts._cos import cosine_similarity

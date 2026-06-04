@@ -70,7 +70,7 @@ class TestPipelineLowering:
 
     def test_sf_text_still_parsable_after_passes(self):
         """The sf-dialect text (without lowering) must still parse as MlirModule."""
-        from compiler.mlir_artifact import _parse_mlir_text
+        from compiler.artifact import _parse_mlir_text
         text, _ = _apply_mlir_passes(SIMPLE_SF_MODULE, apply_lowering=False)
         mod = _parse_mlir_text(text)
         assert len(mod.functions) == 1

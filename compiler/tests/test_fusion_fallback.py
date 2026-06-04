@@ -14,7 +14,7 @@ import builtins
 
 import pytest
 
-from compiler.mlir_passes.fusion import _run_pattern
+from compiler.passes.fusion import _run_pattern
 
 
 @pytest.mark.unit

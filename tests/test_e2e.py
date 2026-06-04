@@ -17,7 +17,7 @@ import pytest
 import torch
 from fastapi.testclient import TestClient
 
-from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp
+from compiler.artifact import MlirFunction, MlirModule, MlirOp
 from python_runtime.engine.llm_engine import LLMEngine
 from python_runtime.hal.pytorch_backend import PyTorchBackend
 from python_runtime.server.app import create_app

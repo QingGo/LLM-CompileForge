@@ -35,7 +35,7 @@ module {
 @pytest.mark.unit
 class TestMlirCountOps:
     def test_counts_arith_ops(self) -> None:
-        from compiler.mlir_passes import mlir_count_ops_in_module
+        from compiler.passes import mlir_count_ops_in_module
 
         stats = mlir_count_ops_in_module(_SIMPLE_ARITH_MLIR)
         assert stats.get("arith", 0) >= 3  # 2 constants + 1 addi
@@ -44,7 +44,7 @@ class TestMlirCountOps:
         assert total >= 4  # func.func + arith ops + return
 
     def test_empty_module_zero_counts(self) -> None:
-        from compiler.mlir_passes import mlir_count_ops_in_module
+        from compiler.passes import mlir_count_ops_in_module
 
         stats = mlir_count_ops_in_module(_NO_FUNC_MLIR)
         # builtin.module is not counted as "builtin" in some versions
@@ -56,7 +56,7 @@ class TestMlirVerifyStructure:
     def test_valid_module_passes(self) -> None:
         import mlir.ir as ir  # type: ignore[import-untyped]
 
-        from compiler.mlir_passes import mlir_verify_structure
+        from compiler.passes import mlir_verify_structure
 
         ctx = ir.Context()
         with ctx:
@@ -67,7 +67,7 @@ class TestMlirVerifyStructure:
     def test_empty_module_reported(self) -> None:
         import mlir.ir as ir  # type: ignore[import-untyped]
 
-        from compiler.mlir_passes import mlir_verify_structure
+        from compiler.passes import mlir_verify_structure
 
         ctx = ir.Context()
         with ctx:
@@ -81,7 +81,7 @@ class TestMlirCSE:
     def test_cse_does_not_crash(self) -> None:
         import mlir.ir as ir  # type: ignore[import-untyped]
 
-        from compiler.mlir_passes import mlir_run_cse
+        from compiler.passes import mlir_run_cse
 
         ctx = ir.Context()
         with ctx:
@@ -92,7 +92,7 @@ class TestMlirCSE:
     def test_canonicalize_does_not_crash(self) -> None:
         import mlir.ir as ir  # type: ignore[import-untyped]
 
-        from compiler.mlir_passes import mlir_run_canonicalize
+        from compiler.passes import mlir_run_canonicalize
 
         ctx = ir.Context()
         with ctx:

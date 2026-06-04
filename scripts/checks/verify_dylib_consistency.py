@@ -288,7 +288,7 @@ def verify(compiled_dir: str) -> int:
     model_path = os.path.join(compiled_dir, "model.mlir")
     if os.path.exists(model_path) and os.path.exists(lowered_path):
         try:
-            from compiler.mlir_artifact import _parse_mlir_text
+            from compiler.artifact import _parse_mlir_text
             with open(model_path) as _fm:
                 module = _parse_mlir_text(_fm.read())
             with open(lowered_path) as _fl:

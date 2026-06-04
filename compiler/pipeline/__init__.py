@@ -17,12 +17,12 @@ from typing import Any
 
 import torch
 
-from compiler.fx.converter import fx_graph_to_mlir
-from compiler.mlir_artifact import (  # type: ignore[attr-defined]
+from compiler.artifact import (  # type: ignore[attr-defined]
     MlirModule,
     mlir_module_to_text,
     save_mlir_module_artifact,
 )
+from compiler.fx.converter import fx_graph_to_mlir
 from compiler.mlir_dialect.lowering.compile_utils import _setup_mlir_path
 
 
@@ -116,7 +116,7 @@ def compile_mlir(
     # NOTE: _parse_mlir_text is a lightweight text parser that may not handle
     # output from the canonicalize pass (which uses a different text format).
     # Fall back to the original MlirModule if re-parse fails.
-    from compiler.mlir_artifact import _parse_mlir_text  # type: ignore[attr-defined]
+    from compiler.artifact import _parse_mlir_text  # type: ignore[attr-defined]
     try:
         mlir_mod = _parse_mlir_text(mlir_text)
     except (ValueError, IndexError, KeyError) as e:
@@ -243,7 +243,7 @@ def _apply_mlir_passes(
             try:
                 with ctx:
                     if orig_mlir_mod is not None:
-                        from compiler.mlir_artifact import mlir_module_to_ir_module  # type: ignore[attr-defined]
+                        from compiler.artifact import mlir_module_to_ir_module  # type: ignore[attr-defined]
                         module = mlir_module_to_ir_module(orig_mlir_mod, ctx=ctx)
                     else:
                         module = ir.Module.parse(mlir_text, ctx)
@@ -281,7 +281,7 @@ def _apply_mlir_passes(
 
     # Phase 2 fallback: Python fusion passes
     if not _cpp_fusion_available:
-        from compiler.mlir_passes.fusion import (
+        from compiler.passes.fusion import (
             fuse_attention_pass,
             fuse_qkv_pass,
             fuse_rms_norm_pass,
@@ -332,7 +332,7 @@ def _apply_sf_to_linalg(mlir_text: str, orig_mlir_mod: Any = None) -> str:
     sf.register_dialects(ctx._CAPIPtr, load=True)
     with ctx:
         if orig_mlir_mod is not None:
-            from compiler.mlir_artifact import mlir_module_to_ir_module  # type: ignore[attr-defined]
+            from compiler.artifact import mlir_module_to_ir_module  # type: ignore[attr-defined]
             ir_mod = mlir_module_to_ir_module(orig_mlir_mod, ctx=ctx)
         else:
             ir_mod = ir.Module.parse(mlir_text, ctx)

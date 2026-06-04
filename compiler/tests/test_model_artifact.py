@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from compiler.mlir_artifact import MlirOp, _parse_mlir_text
+from compiler.artifact import MlirOp, _parse_mlir_text
 from compiler.serialize import load_artifact
 
 

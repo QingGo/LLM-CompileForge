@@ -102,7 +102,7 @@ def time_pipeline(artifact_dir: str) -> None:
             "sf-lower-to-linalg",
             [sys.executable, "-c", f"""
 import sys; sys.path.insert(0, '.')
-from compiler.mlir_artifact import _parse_mlir_text, mlir_module_to_ir_module
+from compiler.artifact import _parse_mlir_text, mlir_module_to_ir_module
 import mlir.ir as ir, mlir.passmanager as pm
 from mlir_sf._mlir_libs._sfDialectsNanobind import sf
 

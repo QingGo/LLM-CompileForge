@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 
-from compiler.mlir_artifact import MlirFunction, MlirOp  # type: ignore[attr-defined]
+from compiler.artifact import MlirFunction, MlirOp  # type: ignore[attr-defined]
 
 _log = logging.getLogger(__name__)
 

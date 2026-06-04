@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from compiler.mlir_artifact import (
+from compiler.artifact import (
     MlirFunction,
     MlirModule,
     MlirOp,
@@ -316,18 +316,18 @@ class TestCandidateNames:
     """Verify suffix-based name matching for model prefix variations."""
 
     def test_simple_name_unchanged(self) -> None:
-        from compiler.mlir_artifact import _candidate_names
+        from compiler.artifact import _candidate_names
         names = _candidate_names("model_embed_tokens_weight")
         assert "model_embed_tokens_weight" in names
 
     def test_qwen_prefix_stripped(self) -> None:
         """model_language_model_embed_tokens → model_embed_tokens via suffix."""
-        from compiler.mlir_artifact import _candidate_names
+        from compiler.artifact import _candidate_names
         names = _candidate_names("model_language_model_embed_tokens_weight")
         assert "model_embed_tokens_weight" in names
 
     def test_full_suffix_chain(self) -> None:
-        from compiler.mlir_artifact import _candidate_names
+        from compiler.artifact import _candidate_names
         names = _candidate_names("a_b_c_d_e")
         assert "a_b_c_d_e" in names
         assert "b_c_d_e" in names
@@ -341,7 +341,7 @@ class TestMultiFunctionRoundtrip:
 
     @pytest.mark.timeout(5)
     def test_roundtrip_preserves_function_outputs(self) -> None:
-        from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp, _parse_mlir_text, mlir_module_to_text
+        from compiler.artifact import MlirFunction, MlirModule, MlirOp, _parse_mlir_text, mlir_module_to_text
 
         mod = MlirModule(functions=[
             MlirFunction(name="f0", inputs=[("%x", "tensor<2x4xf32>")],
@@ -364,7 +364,7 @@ class TestMultiFunctionRoundtrip:
 
     @pytest.mark.timeout(5)
     def test_roundtrip_preserves_function_inputs(self) -> None:
-        from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp, _parse_mlir_text, mlir_module_to_text
+        from compiler.artifact import MlirFunction, MlirModule, MlirOp, _parse_mlir_text, mlir_module_to_text
 
         mod = MlirModule(functions=[
             MlirFunction(name="f0", inputs=[("%in", "tensor<1x64xf32>")],

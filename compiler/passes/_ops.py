@@ -4,7 +4,7 @@ These functions require the official MLIR Python bindings to be
 available (e.g. via mlir_binding/ or pip-installed mlir package).
 
 Usage:
-    from compiler.mlir_passes import mlir_count_ops, mlir_run_cse
+    from compiler.passes import mlir_count_ops, mlir_run_cse
 """
 
 from __future__ import annotations

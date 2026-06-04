@@ -414,7 +414,7 @@ class Stage:
         """Execute this stage with timeout and IR snapshot on failure."""
         import mlir.passmanager as pm
 
-        from compiler.mlir_passes._ops import mlir_count_ops
+        from compiler.passes._ops import mlir_count_ops
 
         t0 = _time.perf_counter()
         pre_stats = mlir_count_ops(module, ctx)

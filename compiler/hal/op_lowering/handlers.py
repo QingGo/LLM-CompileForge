@@ -22,7 +22,7 @@ from compiler.hal.op_lowering.core import (
     shape_from_type,
     strip_mlir_quotes,
 )
-from compiler.mlir_artifact import MlirOp  # type: ignore[attr-defined]
+from compiler.artifact import MlirOp  # type: ignore[attr-defined]
 
 # ── Handler factory ──────────────────────────────────────────────────
 

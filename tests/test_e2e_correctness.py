@@ -61,7 +61,7 @@ def _load_hf_reference(model_name: str, input_ids: torch.Tensor) -> torch.Tensor
 
 def _run_python_executor(model_name: str, input_ids: torch.Tensor) -> torch.Tensor:
     """Run compiled model through Python MlirExecutor, return logits."""
-    from compiler.mlir_artifact import load_artifact
+    from compiler.artifact import load_artifact
     from python_runtime.engine.mlir_executor import MlirExecutor
     from python_runtime.hal.pytorch_backend import PyTorchBackend
 

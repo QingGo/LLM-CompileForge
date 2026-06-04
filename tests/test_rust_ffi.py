@@ -283,7 +283,7 @@ class TestLLMEngineRustIntegration:
 
     @staticmethod
     def _make_test_mlir():
-        from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp
+        from compiler.artifact import MlirFunction, MlirModule, MlirOp
         return MlirModule(
             functions=[
                 MlirFunction(

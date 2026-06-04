@@ -95,7 +95,7 @@ class TestFullCompile:
             "sf-lower-to-linalg",
             f"""
 import sys; sys.path.insert(0, '.')
-from compiler.mlir_artifact import _parse_mlir_text, mlir_module_to_ir_module
+from compiler.artifact import _parse_mlir_text, mlir_module_to_ir_module
 import mlir.ir as ir, mlir.passmanager as pm
 from mlir_sf._mlir_libs._sfDialectsNanobind import sf
 

@@ -5,7 +5,7 @@ import mlir.ir as ir
 import mlir.passmanager as pm
 from mlir_sf._mlir_libs._sfDialectsNanobind import sf
 
-from compiler.mlir_artifact import mlir_module_to_ir_module
+from compiler.artifact import mlir_module_to_ir_module
 from compiler.serialize import load_artifact
 
 ctx = ir.Context()

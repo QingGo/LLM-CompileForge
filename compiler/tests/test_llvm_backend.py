@@ -176,7 +176,7 @@ class TestQwenMain2FullPipeline:
 
     def _run_pipeline_on_main2(self, ir_ctx: Any) -> str:
         """Run sf→linalg→LLVM pipeline on Qwen main_2, return LLVM IR text."""
-        from compiler.mlir_artifact import MlirModule, mlir_module_to_ir_module
+        from compiler.artifact import MlirModule, mlir_module_to_ir_module
         from compiler.mlir_dialect.lowering.llvm_backend import lower_linalg_to_llvm_ir, mlir_module_to_llvm_ir
         from compiler.pipeline import _apply_sf_to_linalg as sf_to_linalg_pass_on_module
         from compiler.serialize import load_artifact
@@ -225,7 +225,7 @@ class TestQwenMain2FullPipeline:
 
         import mlir.ir as ir
 
-        from compiler.mlir_artifact import MlirModule, mlir_module_to_ir_module
+        from compiler.artifact import MlirModule, mlir_module_to_ir_module
         from compiler.mlir_dialect.lowering.llvm_backend import compile_mlir_to_dylib, lower_linalg_to_llvm_ir
         from compiler.pipeline import _apply_sf_to_linalg as sf_to_linalg_pass_on_module
         from compiler.serialize import load_artifact

@@ -56,7 +56,7 @@ def main() -> None:
 
     import compiler.sfa_abi as sfa_abi
     import compiler.sfa_weights as sfa_weights
-    from compiler.mlir_artifact import (
+    from compiler.artifact import (
         _build_constants_binary,
         _build_name_mapping,
         _parse_mlir_text,

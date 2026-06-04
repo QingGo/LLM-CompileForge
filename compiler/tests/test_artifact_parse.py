@@ -1,12 +1,12 @@
 # ruff: noqa: E501  # MLIR text fixtures exceed 120-char limit
 """Seam tests for MLIR text parsing through public compiler API.
 
-Tests ``_parse_mlir_text()`` from ``compiler.mlir_artifact_parse``
+Tests ``_parse_mlir_text()`` from ``compiler.artifact_parse``
 — a lightweight line-based MLIR parser that does NOT require PyMLIR,
 C++ bindings, or any compiled artifacts.
 """
 
-from compiler.mlir_artifact import _parse_mlir_text
+from compiler.artifact import _parse_mlir_text
 from compiler.mlir_dialect.sf.mlir_op_types import MlirModule
 
 # ── Hand-crafted MLIR snippet (valid sf dialect) ─────────────────────

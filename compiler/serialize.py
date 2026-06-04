@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from compiler.mlir_artifact import MlirModule  # type: ignore[attr-defined]
+from compiler.artifact import MlirModule  # type: ignore[attr-defined]
 
 
 def load_artifact(directory: str) -> MlirModule:
@@ -27,6 +27,6 @@ def load_artifact(directory: str) -> MlirModule:
     if not in_dir.is_dir():
         raise FileNotFoundError(f"Directory not found: {directory}")
 
-    from compiler.mlir_artifact import load_mlir_artifact  # type: ignore[attr-defined]
+    from compiler.artifact import load_mlir_artifact  # type: ignore[attr-defined]
 
     return load_mlir_artifact(str(in_dir))

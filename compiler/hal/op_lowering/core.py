@@ -18,7 +18,7 @@ from collections.abc import Callable
 from typing import Any
 
 from compiler.hal.ssa_tracker import SSATracker
-from compiler.mlir_artifact import MlirOp  # type: ignore[attr-defined]
+from compiler.artifact import MlirOp  # type: ignore[attr-defined]
 
 _log = logging.getLogger(__name__)
 

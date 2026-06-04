@@ -12,7 +12,7 @@ import pytest
 @pytest.mark.unit
 class TestWeightNameParsing:
     def test_parse_single_weight(self) -> None:
-        from compiler.mlir_passes.quantize import _parse_weight_names
+        from compiler.passes.quantize import _parse_weight_names
 
         mlir = '''module {
   func.func @main() -> tensor<f32> {
@@ -24,7 +24,7 @@ class TestWeightNameParsing:
         assert names == {"q_proj_weight": "%0"}
 
     def test_parse_multiple_weights(self) -> None:
-        from compiler.mlir_passes.quantize import _parse_weight_names
+        from compiler.passes.quantize import _parse_weight_names
 
         mlir = '''module {
   func.func @main() -> tensor<f32> {
@@ -37,7 +37,7 @@ class TestWeightNameParsing:
         assert names == {"q_proj_weight": "%w", "k_proj_weight": "%x"}
 
     def test_no_weights_returns_empty(self) -> None:
-        from compiler.mlir_passes.quantize import _parse_weight_names
+        from compiler.passes.quantize import _parse_weight_names
 
         mlir = 'module {\n  func.func @main() -> tensor<f32> {\n    return %0 : tensor<f32>\n  }\n}'
         names = _parse_weight_names(mlir)
@@ -47,7 +47,7 @@ class TestWeightNameParsing:
 @pytest.mark.unit
 class TestDQInsertion:
     def test_inserts_dq_for_w8a8_weight(self) -> None:
-        from compiler.mlir_passes.quantize import count_dq_ops, insert_quantize_dequantize
+        from compiler.passes.quantize import count_dq_ops, insert_quantize_dequantize
         from compiler.quantize.mixed_precision import MixedPrecisionConfig
 
         mlir = '''module {
@@ -64,7 +64,7 @@ class TestDQInsertion:
         assert "sf.dequantize" in result
 
     def test_no_dq_for_fp16_weight(self) -> None:
-        from compiler.mlir_passes.quantize import count_dq_ops, insert_quantize_dequantize
+        from compiler.passes.quantize import count_dq_ops, insert_quantize_dequantize
         from compiler.quantize.mixed_precision import MixedPrecisionConfig
 
         mlir = '''module {
@@ -80,7 +80,7 @@ class TestDQInsertion:
         assert count_dq_ops(result) == 0
 
     def test_empty_mlir_unchanged(self) -> None:
-        from compiler.mlir_passes.quantize import insert_quantize_dequantize
+        from compiler.passes.quantize import insert_quantize_dequantize
 
         mlir = 'module {\n}'
         result = insert_quantize_dequantize(mlir)
@@ -93,7 +93,7 @@ class TestSSACollision:
 
     def test_ssa_replace_no_collision_with_numeric_ssa(self) -> None:
         """%1 rename must NOT affect %10 or %11 (str.replace bug)."""
-        from compiler.mlir_passes.quantize import count_dq_ops, insert_quantize_dequantize
+        from compiler.passes.quantize import count_dq_ops, insert_quantize_dequantize
         from compiler.quantize.mixed_precision import MixedPrecisionConfig
 
         mlir = '''module {
@@ -125,12 +125,12 @@ class TestSSACollision:
 @pytest.mark.unit
 class TestDQCount:
     def test_count_zero_for_no_dq_ops(self) -> None:
-        from compiler.mlir_passes.quantize import count_dq_ops
+        from compiler.passes.quantize import count_dq_ops
 
         assert count_dq_ops("no ops here") == 0
 
     def test_count_multiple_dq_ops(self) -> None:
-        from compiler.mlir_passes.quantize import count_dq_ops
+        from compiler.passes.quantize import count_dq_ops
 
         mlir = '''module {
   %a = "sf.dequantize"(%0) : () -> tensor<f32>

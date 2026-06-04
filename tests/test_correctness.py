@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp
+from compiler.artifact import MlirFunction, MlirModule, MlirOp
 from python_runtime.engine.mlir_executor import MlirExecutor
 from python_runtime.hal.pytorch_backend import PyTorchBackend
 
