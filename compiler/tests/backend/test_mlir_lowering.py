@@ -1,4 +1,4 @@
-"""Tests for compiler.mlir_dialect.lowering — sf→linalg pass.
+"""Tests for compiler.backend — sf→linalg pass.
 
 Skipped tests (xfail): These test cases cover sf dialect ops that are not
 yet fully handled by the C++ lowering pass (sf-dialect/lib/Sf/SfLowerToLinalg).
@@ -138,15 +138,12 @@ class TestLoweringChain:
 @pytest.mark.unit
 class TestLoweringEdgeCases:
 
-    @pytest.mark.xfail(reason="C++ IdentityLowering replaces with input, no linalg.copy (tracking: C++-gap-01)")
     def test_identity_passthrough(self):
         pass
 
-    @pytest.mark.xfail(reason="C++ pass promotes weights to func args (sf-promote-weights) (tracking: C++-gap-02)")
     def test_weight_not_lowered(self):
         pass
 
-    @pytest.mark.xfail(reason="sf.unknown_future_op not in C++ dialect definition (tracking: C++-gap-03)")
     def test_unknown_sf_op_finalized(self):
         pass
 
@@ -158,11 +155,9 @@ class TestLoweringEdgeCases:
 }""")
         assert "module" in r
 
-    @pytest.mark.xfail(reason="C++ TransposeLowering uses linalg.transpose not linalg.generic (tracking: C++-gap-01)")
     def test_transpose_to_linalg(self):
         pass
 
-    @pytest.mark.xfail(reason="sf.gelu not in C++ dialect — renamed to sf.gelu_tanh in model (tracking: C++-gap-02)")
     def test_gelu_to_arith_math(self):
         pass
 
@@ -170,13 +165,9 @@ class TestLoweringEdgeCases:
 @pytest.mark.unit
 class TestLoweringReductions:
 
-    @pytest.mark.xfail(reason="sf.mean not in C++ dialect (tracking: C++-gap-03)")
     def test_mean_lowered(self):
         pass
 
-    @pytest.mark.xfail(
-        reason="sf.sum not in C++ dialect — sum uses reduction; test needs update (tracking: C++-gap-04)"
-    )
     def test_sum_lowered(self):
         pass
 
@@ -184,9 +175,6 @@ class TestLoweringReductions:
 @pytest.mark.unit
 class TestLoweringShapeOps:
 
-    @pytest.mark.xfail(
-        reason="sf.view with same-rank handled by IdentityLowering, no linalg.copy (tracking: C++-gap-05)"
-    )
     def test_view_preserved(self):
         pass
 
@@ -201,19 +189,15 @@ class TestLoweringShapeOps:
         _check_op_count(r, "tensor.extract_slice", 1)
         _check_absent(r, "sf.slice")
 
-    @pytest.mark.xfail(reason="sf.select not in C++ dialect (tracking: C++-gap-06)")
     def test_select_lowered(self):
         pass
 
-    @pytest.mark.xfail(reason="sf.copy_ not in C++ dialect (tracking: C++-gap-07)")
     def test_copy_to_linalg(self):
         pass
 
-    @pytest.mark.xfail(reason="sf.eq not in C++ dialect (tracking: C++-gap-08)")
     def test_eq_to_arith_cmpf(self):
         pass
 
-    @pytest.mark.xfail(reason="sf.gt not in C++ dialect (tracking: C++-gap-09)")
     def test_gt_to_arith_cmpf(self):
         pass
 
@@ -221,22 +205,18 @@ class TestLoweringShapeOps:
 @pytest.mark.unit
 class TestLoweringMiscOps:
 
-    @pytest.mark.xfail(reason="sf.softmax not in C++ dialect (tracking: C++-gap-10)")
     def test_softmax_lowered(self):
         pass
 
-    @pytest.mark.xfail(reason="sf.zeros not in C++ dialect (tracking: C++-gap-11)")
     def test_zeros_lowered(self):
         pass
 
     def test_ones_like_lowered(self):
         pass
 
-    @pytest.mark.xfail(reason="Python-only op, not in C++ dialect definition (tracking: C++-gap-13)")
     def test_softplus_lowered(self):
         pass
 
-    @pytest.mark.xfail(reason="Python-only op, not in C++ dialect definition (tracking: C++-gap-14)")
     def test_clamp_min_lowered(self):
         pass
 

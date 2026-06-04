@@ -1,6 +1,6 @@
 """Seam tests for build_op_catalog() — populates SfaOpCatalog proto.
 
-Tests that ``build_op_catalog()`` from ``compiler.mlir_dialect.op_catalog``
+Tests that ``build_op_catalog()`` from ``compiler.dialect.op_catalog``
 returns a populated ``SfaOpCatalog`` with 30+ HAL operators grouped by kind.
 """
 

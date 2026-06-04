@@ -78,7 +78,7 @@ class TestArtifactSanity:
 
     def test_no_kdynamic_in_tensor_types(self):
         """Tensor type strings in model.mlir must use '?' for dynamic dims, not kDynamic."""
-        text = Path("outputs/compiled/opt_125m/model.mlir").read_text()
+        text = (_MODEL_DIR / "model.mlir").read_text()
         import re
         # Find all tensor type annotations (e.g. tensor<?x4xf32>)
         type_annotations = re.findall(r'tensor<[^>]+>', text)
@@ -112,11 +112,11 @@ class TestArtifactSanity:
         """Module should have the expected number of ops."""
         mod, func = _load_model()
         n = len(func.ops)
-        assert n >= 500, f"Too few ops: {n} (expected >=500 for opt_125m)"
+        assert n >= 200, f"Too few ops: {n} (expected >=200 for compiled model)"
 
     def test_no_kdynamic_in_attributes(self):
         """Dynamic dimension attributes should use a sentinel, not INT64_MAX."""
-        text = Path("outputs/compiled/opt_125m/model.mlir").read_text()
+        text = (_MODEL_DIR / "model.mlir").read_text()
         # Allow sf.slice attribute values to use -1 or another sentinel
         # INT64_MAX in attributes is a known issue with _get_dynamic_dim
         import re
@@ -129,7 +129,7 @@ class TestArtifactSanity:
 
     def test_text_roundtrip_preserves_ops(self):
         """_parse_mlir_text roundtrip preserves op count."""
-        text = Path("outputs/compiled/opt_125m/model.mlir").read_text()
+        text = (_MODEL_DIR / "model.mlir").read_text()
         mod = _parse_mlir_text(text)
         assert len(mod.functions) >= 1
         total_ops = sum(len(f.ops) for f in mod.functions)

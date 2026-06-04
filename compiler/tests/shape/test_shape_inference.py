@@ -1,6 +1,6 @@
 """Seam tests for shape inference through public compiler API.
 
-Tests ``infer_output_shape()`` from ``compiler.mlir_dialect.shape_inference``
+Tests ``infer_output_shape()`` from ``compiler.shape.shape_inference``
 — a pure-Python function that requires NO MLIR context, NO compiled dylib,
 and NO model artifacts.
 """

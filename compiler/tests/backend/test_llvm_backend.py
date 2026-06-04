@@ -1,4 +1,4 @@
-"""Tests for compiler.mlir_dialect.llvm_backend — LLVM IR emission and llc compilation."""
+"""Tests for compiler.backend.llvm_backend — LLVM IR emission and llc compilation."""
 
 from __future__ import annotations
 

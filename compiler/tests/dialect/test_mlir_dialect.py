@@ -1,4 +1,4 @@
-"""Tests for compiler.mlir_dialect — sf dialect definition and shape inference.
+"""Tests for compiler.dialect — sf dialect definition and shape inference.
 
 Each test creates its own MLIR context via ``with ir.Context() as ctx:``
 — the documented and safe pattern for context lifecycle management.

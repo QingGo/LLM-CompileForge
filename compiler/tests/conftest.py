@@ -43,6 +43,23 @@ def tmp_output_dir(tmp_path: Path) -> Path:
     return d
 
 
+# ── MLIR fixtures ─────────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="session")
+def mlir_context() -> Any:
+    """Session-scoped MLIR Context shared across all compiler tests.
+
+    Shared to avoid creating/destroying many Context objects, which can
+    trigger nanobind type registry instability in LLVM 22.x.
+    """
+    import mlir.ir as ir
+
+    ctx = ir.Context()
+    ctx.allow_unregistered_dialects = True
+    return ctx
+
+
 # MLIR bindings may not be available in all environments.
 # Markers are defined in pyproject.toml — no re-registration needed here.
 
@@ -53,7 +70,8 @@ def pytest_collection_modifyitems(config: Any, items: list[Any]) -> None:
     if not _has_mlir:
         skip_mlir = pytest.mark.skip(reason="MLIR Python bindings not available")
         for item in items:
-            if "mlir" in item.nodeid.lower() or "llvm" in item.nodeid.lower():
+            _nid = item.nodeid.lower()
+            if any(k in _nid for k in ("mlir", "llvm", "pipeline_ir", "pipeline_stage", "pipeline_lowering", "pipeline_validation", "pipeline_bugs")):
                 item.add_marker(skip_mlir)
 
 
