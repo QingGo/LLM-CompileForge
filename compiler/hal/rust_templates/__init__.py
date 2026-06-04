@@ -5,18 +5,18 @@ Exports all individual template constants plus the combined OP_IMPLS dict.
 
 from __future__ import annotations
 
-from compiler.mlir_dialect.hal_ir.rust_templates.binary_ops import (
+from compiler.hal.rust_templates.binary_ops import (
     OP_COMPARE,
     OP_ELEMENT_WISE,
     OP_MATMUL,
 )
-from compiler.mlir_dialect.hal_ir.rust_templates.boilerplate import (
+from compiler.hal.rust_templates.boilerplate import (
     BLAS_EXTERN,
     HEADER,
     OP_SHAPE_META,
     STUB_CACHE,
 )
-from compiler.mlir_dialect.hal_ir.rust_templates.memory_ops import (
+from compiler.hal.rust_templates.memory_ops import (
     OP_FILL,
     OP_GATHER,
     OP_RESHAPE,
@@ -24,7 +24,7 @@ from compiler.mlir_dialect.hal_ir.rust_templates.memory_ops import (
     OP_TRANSPOSE,
     OP_UNSQUEEZE,
 )
-from compiler.mlir_dialect.hal_ir.rust_templates.reduce_ops import (
+from compiler.hal.rust_templates.reduce_ops import (
     OP_REDUCE,
     OP_SHAPE_OF,
     OP_SOFTMAX,

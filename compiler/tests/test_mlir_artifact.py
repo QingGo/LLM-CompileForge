@@ -285,7 +285,7 @@ class TestSynthConstClassification:
 
     def test_synth_const_in_weight_classification(self) -> None:
         """Verify fx_to_mlir classifies non-param weights as consts."""
-        from compiler.fx_to_mlir import fx_graph_to_mlir
+        from compiler.fx.converter import fx_graph_to_mlir
 
         class FakeSpec:
             kind = type("k", (), {"value": -1})()  # not a weight kind

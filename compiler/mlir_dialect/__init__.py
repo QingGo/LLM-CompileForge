@@ -8,8 +8,8 @@ that carry full tensor types.  This enables:
 
 Usage::
 
-    from compiler.mlir_dialect.builder import SfModule
-    from compiler.mlir_dialect.shape_inference import infer_output_type
+    from compiler.mlir_dialect.sf.builder import SfModule
+    from compiler.mlir_dialect.shape.shape_inference import infer_output_type
 
     module = SfModule("main", input_types=[...])
     result = module.add_op("add", [module.inputs[0], module.inputs[1]])

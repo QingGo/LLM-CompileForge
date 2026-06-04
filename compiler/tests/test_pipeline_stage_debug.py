@@ -59,7 +59,7 @@ class TestSaveIrStats:
         if not has_mlir_bindings():
             pytest.skip("MLIR bindings not available")
 
-        from compiler.mlir_dialect.pipeline.pipeline_stages_utils import _save_ir_stats
+        from compiler.pipeline.stages_utils import _save_ir_stats
 
         module = _make_test_module(mlir_context)
         _clean_pipeline_logs()
@@ -84,7 +84,7 @@ class TestSaveIrStats:
         if not has_mlir_bindings():
             pytest.skip("MLIR bindings not available")
 
-        from compiler.mlir_dialect.pipeline.pipeline_stages_utils import _save_ir_stats
+        from compiler.pipeline.stages_utils import _save_ir_stats
 
         module = _make_test_module(mlir_context)
         _clean_pipeline_logs()
@@ -109,7 +109,7 @@ class TestSaveIrStats:
 @pytest.mark.unit
 class TestVerifyStageOutput:
     def test_no_mismatch_returns_empty(self) -> None:
-        from compiler.mlir_dialect.pipeline.pipeline_stages_utils import _verify_stage_output
+        from compiler.pipeline.stages_utils import _verify_stage_output
 
         ir_text = (
             "module {\n"
@@ -127,7 +127,7 @@ class TestVerifyStageOutput:
         assert warnings == [], f"Expected no warnings, got {warnings}"
 
     def test_detects_func_func_change(self) -> None:
-        from compiler.mlir_dialect.pipeline.pipeline_stages_utils import _verify_stage_output
+        from compiler.pipeline.stages_utils import _verify_stage_output
 
         before = (
             "module {\n"
@@ -156,7 +156,7 @@ class TestVerifyStageOutput:
         )
 
     def test_detects_func_return_change(self) -> None:
-        from compiler.mlir_dialect.pipeline.pipeline_stages_utils import _verify_stage_output
+        from compiler.pipeline.stages_utils import _verify_stage_output
 
         before = (
             "module {\n"
@@ -193,7 +193,7 @@ class TestStageRunVerification:
         if not has_mlir_bindings():
             pytest.skip("MLIR bindings not available")
 
-        from compiler.mlir_dialect.pipeline.pipeline_stages import Stage
+        from compiler.pipeline.stages import Stage
 
         module = _make_test_module(mlir_context)
         _clean_pipeline_logs()
@@ -226,7 +226,7 @@ class TestStageRunVerification:
         if not has_mlir_bindings():
             pytest.skip("MLIR bindings not available")
 
-        from compiler.mlir_dialect.pipeline.pipeline_stages import Stage
+        from compiler.pipeline.stages import Stage
 
         caplog.set_level(logging.WARNING)
 
@@ -249,7 +249,7 @@ class TestStageRunVerification:
 @pytest.mark.unit
 class TestModuleVerifyStage:
     def test_verify_stage_in_builtin_stages(self) -> None:
-        from compiler.mlir_dialect.pipeline.pipeline_stages import BUILTIN_STAGES
+        from compiler.pipeline.stages import BUILTIN_STAGES
 
         names = [s.name for s in BUILTIN_STAGES]
         assert "module-verify" in names, (
@@ -263,7 +263,7 @@ class TestModuleVerifyStage:
         if not has_mlir_bindings():
             pytest.skip("MLIR bindings not available")
 
-        from compiler.mlir_dialect.pipeline.pipeline_stages import _make_verify_stage
+        from compiler.pipeline.stages import _make_verify_stage
 
         caplog.set_level(logging.INFO)
 
@@ -277,7 +277,7 @@ class TestModuleVerifyStage:
         )
 
     def test_verify_stage_in_no_fma_list(self) -> None:
-        from compiler.mlir_dialect.pipeline.pipeline_stages import BUILTIN_STAGES_NO_FMA
+        from compiler.pipeline.stages import BUILTIN_STAGES_NO_FMA
 
         names = [s.name for s in BUILTIN_STAGES_NO_FMA]
         assert "module-verify" in names, (
@@ -296,7 +296,7 @@ class TestEndToEndSnapshots:
         if not has_mlir_bindings():
             pytest.skip("MLIR bindings not available")
 
-        from compiler.mlir_dialect.pipeline.pipeline_stages import Stage, run_stages
+        from compiler.pipeline.stages import Stage, run_stages
 
         module = _make_test_module(mlir_context)
         stages = [
@@ -332,7 +332,7 @@ class TestEndToEndSnapshots:
         if not has_mlir_bindings():
             pytest.skip("MLIR bindings not available")
 
-        from compiler.mlir_dialect.pipeline.pipeline_stages import (
+        from compiler.pipeline.stages import (
             Stage,
             _count_module_ops,
             run_stages,

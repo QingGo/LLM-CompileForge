@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 # ── Sub-module imports ────────────────────────────────────────────────
-from compiler.mlir_dialect.pipeline.pipeline_stages_utils import (
+from compiler.pipeline.stages_utils import (
     Stage,
     StageResult,
     _count_module_ops,

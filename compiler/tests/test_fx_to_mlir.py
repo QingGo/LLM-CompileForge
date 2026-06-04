@@ -5,7 +5,7 @@ Tests ``_map_aten_op()`` and ``_shape_to_mlir_type()`` from
 require NO MLIR context, NO compiled dylib, NO torch tensors in test code.
 """
 
-from compiler.fx_to_mlir_utils import (
+from compiler.fx.utils import (
     _map_aten_op,
     _parse_mlir_type_to_shape,
     _shape_to_mlir_type,

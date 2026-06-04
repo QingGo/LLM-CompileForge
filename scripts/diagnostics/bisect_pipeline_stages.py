@@ -42,7 +42,7 @@ def _setup_mlir() -> None:
 
 
 def parse_stages() -> list:
-    from compiler.mlir_dialect.pipeline.pipeline_stages import BUILTIN_STAGES, Stage
+    from compiler.pipeline.stages import BUILTIN_STAGES, Stage
     return [Stage(**{f.name: getattr(s, f.name) for f in s.__dataclass_fields__.values()}) for s in BUILTIN_STAGES]
 
 
@@ -70,7 +70,7 @@ def compile_with_stages(
             text = f.read()
         module = ir.Module.parse(text, ctx)
 
-        from compiler.mlir_dialect.pipeline.pipeline_stages import run_stages
+        from compiler.pipeline.stages import run_stages
         results = run_stages(module, ctx, stages, log_dir=f"outputs/logs/bisect_{label}")
 
         # Check all stages succeeded (or warn_only failed, which is OK)

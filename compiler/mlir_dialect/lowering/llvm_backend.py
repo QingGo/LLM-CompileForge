@@ -33,7 +33,7 @@ from compiler.mlir_dialect.lowering.compile_utils import (
     llc_compile,
     mlir_module_to_llvm_ir,
 )
-from compiler.mlir_dialect.pipeline.pipeline_stages import (  # type: ignore[attr-defined]
+from compiler.pipeline import (  # type: ignore[attr-defined]
     BUILTIN_STAGES,
     Stage,
     StageResult,

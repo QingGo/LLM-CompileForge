@@ -6,7 +6,7 @@ structure that requires NO MLIR context, NO compiled artifacts, and
 NO torch tensors.
 """
 
-from compiler.fx_to_mlir_utils import _ATEN_TO_HAL, _map_aten_op
+from compiler.fx.utils import _ATEN_TO_HAL, _map_aten_op
 
 
 class TestAtenToHalMapping:
@@ -118,7 +118,7 @@ class TestNoCrossBoundaryImports:
     def test_no_forbidden_imports(self) -> None:
         import inspect
 
-        import compiler.fx_to_mlir_utils as m
+        import compiler.fx.utils as m
         for name in dir(m):
             obj = getattr(m, name)
             if inspect.ismodule(obj):

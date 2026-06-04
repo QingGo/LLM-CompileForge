@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from compiler.fx_to_mlir_utils import (
+from compiler.fx.utils import (
     DTYPE_REGISTRY,
     _apply_dtype_hook,
     _replace_element_type,

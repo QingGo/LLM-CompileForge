@@ -17,8 +17,8 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+from compiler.hal.ssa_tracker import SSATracker
 from compiler.mlir_artifact import MlirOp  # type: ignore[attr-defined]
-from compiler.mlir_dialect.hal_ir.ssa_tracker import SSATracker
 
 _log = logging.getLogger(__name__)
 
@@ -246,7 +246,7 @@ def lower_op(
 # Circular import safety: handlers.py imports helpers/maps from this
 # module, which are already defined above by the time this import runs.
 
-from compiler.mlir_dialect.hal_ir.op_lowering.handlers import (  # noqa: E402
+from compiler.hal.op_lowering.handlers import (  # noqa: E402
     register_handlers,
 )
 

@@ -14,13 +14,13 @@ import torch
 import torch.fx
 from torch.export import ExportedProgram
 
-from compiler.fx_to_mlir_split import (
+from compiler.fx.split import (
     _detect_layer,
     _log_split_plan,
     _make_multi_functions,
     _split_into_functions,
 )
-from compiler.fx_to_mlir_utils import (
+from compiler.fx.utils import (
     _extract_node_kwargs,
     _fake_to_shape_tuple,
     _map_aten_op,

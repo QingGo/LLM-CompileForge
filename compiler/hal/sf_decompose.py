@@ -24,7 +24,7 @@ Decomposition rules (all ops stay in the SF dialect):
     output    = sf.add(scaled, bias)
 
 Usage:
-    from compiler.mlir_dialect.hal_ir.sf_decompose import (
+    from compiler.hal.sf_decompose import (
         _decompose_sdpa, _decompose_linear, _decompose_layer_norm,
     )
 """

@@ -45,7 +45,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from compiler.mlir_dialect.hal_ir.hal_ir_builder import HalIRBuilder
+from compiler.hal.hal_ir_builder import HalIRBuilder
 
 _log = logging.getLogger(__name__)
 

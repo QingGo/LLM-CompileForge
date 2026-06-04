@@ -14,15 +14,15 @@ import logging
 import re
 from typing import Any
 
-from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp  # type: ignore[attr-defined]
-from compiler.mlir_dialect.hal_ir.op_lowering import (
+from compiler.hal.op_lowering import (
     infer_dtype_from_type,
     lower_op,
     parse_sf_op_name,
     shape_from_type,
     strip_mlir_quotes,
 )
-from compiler.mlir_dialect.hal_ir.ssa_tracker import SSATracker
+from compiler.hal.ssa_tracker import SSATracker
+from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp  # type: ignore[attr-defined]
 from compiler.mlir_dialect.lowering.compile_utils import _setup_mlir_path
 
 _log = logging.getLogger(__name__)

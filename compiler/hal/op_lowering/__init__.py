@@ -1,6 +1,6 @@
 """Op lowering — dispatch ``sf.*`` ops to HAL IR entries."""
 
-from compiler.mlir_dialect.hal_ir.op_lowering.core import (
+from compiler.hal.op_lowering.core import (
     infer_dtype_from_type,
     lower_op,
     parse_sf_op_name,

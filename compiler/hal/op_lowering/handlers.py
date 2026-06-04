@@ -13,8 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from compiler.mlir_artifact import MlirOp  # type: ignore[attr-defined]
-from compiler.mlir_dialect.hal_ir.op_lowering.core import (
+from compiler.hal.op_lowering.core import (
     _COMPARE_MAP,
     _ELEMENT_WISE_MAP,
     _get_int_attr,
@@ -23,6 +22,7 @@ from compiler.mlir_dialect.hal_ir.op_lowering.core import (
     shape_from_type,
     strip_mlir_quotes,
 )
+from compiler.mlir_artifact import MlirOp  # type: ignore[attr-defined]
 
 # ── Handler factory ──────────────────────────────────────────────────
 

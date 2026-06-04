@@ -88,7 +88,7 @@ class TestStageResultDialectCounts:
         if not has_mlir_bindings():
             pytest.skip("MLIR bindings not available")
 
-        from compiler.mlir_dialect.pipeline.pipeline_stages import Stage
+        from compiler.pipeline.stages import Stage
 
         module = _make_test_module(mlir_context)
         stage = Stage(name="test_counts", action=_noop_action, timeout=5.0)
@@ -118,7 +118,7 @@ class TestIRStatsLogging:
 
         caplog.set_level(logging.INFO)
 
-        from compiler.mlir_dialect.pipeline.pipeline_stages import Stage
+        from compiler.pipeline.stages import Stage
 
         module = _make_test_module(mlir_context)
         stage = Stage(name="ir_stats_test", action=_noop_action, timeout=5.0)
@@ -141,7 +141,7 @@ class TestDebugSnapshots:
         if not has_mlir_bindings():
             pytest.skip("MLIR bindings not available")
 
-        from compiler.mlir_dialect.pipeline.pipeline_stages import Stage, run_stages
+        from compiler.pipeline.stages import Stage, run_stages
 
         module = _make_test_module(mlir_context)
         stages = [Stage(name="debug_stage_1", action=_noop_action, timeout=5.0)]
@@ -174,7 +174,7 @@ class TestInfoModeNoSnapshots:
         if not has_mlir_bindings():
             pytest.skip("MLIR bindings not available")
 
-        from compiler.mlir_dialect.pipeline.pipeline_stages import Stage, run_stages
+        from compiler.pipeline.stages import Stage, run_stages
 
         module = _make_test_module(mlir_context)
         stages = [Stage(name="info_stage_1", action=_noop_action, timeout=5.0)]
@@ -212,7 +212,7 @@ class TestStageContract:
         if not has_mlir_bindings():
             pytest.skip("MLIR bindings not available")
 
-        from compiler.mlir_dialect.pipeline.pipeline_stages import _make_tile_stage
+        from compiler.pipeline.stages import _make_tile_stage
 
         mod = _make_matmul_test_module(mlir_context)
         stage = _make_tile_stage()
@@ -240,7 +240,7 @@ class TestStageContract:
 
         import mlir.ir as ir
 
-        from compiler.mlir_dialect.pipeline.pipeline_stages import Stage
+        from compiler.pipeline.stages import Stage
 
         # Module with redundant ops that canonicalize will fold
         noncanonical_text = """

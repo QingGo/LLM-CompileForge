@@ -6,267 +6,18 @@ Example: python compiler/compile_dylib.py outputs/compiled/tiny_llama --model-na
 
 import faulthandler
 import json
-import logging
 import os
-import re
-import shutil
-import subprocess
+import re as _re
 import sys
-import textwrap
-import traceback
-from datetime import datetime
 from pathlib import Path
 
-from compiler.mlir_dialect.lowering.compile_utils import (
-    _compile_serveforge_free,
-    _find_cc,
-    _setup_mlir_path,
-)
+from compiler.backend.dylib import _check_sf_dialect_freshness, _sfa_relink_dylib
+from compiler.backend.verify import _save_failure_context, _verify_lowered_ir
+from compiler.mlir_dialect.lowering.compile_utils import _setup_mlir_path
 
 faulthandler.enable()
 
 DEBUG: bool = False
-
-
-def _verify_lowered_ir(lowered_text: str) -> None:
-    """Verify lowered IR contains no illegal ops that would fail re-parse."""
-    errors: list[str] = []
-
-    # 1. No bare arith ops on tensors at module level (must be inside linalg.generic)
-    bare_arith = re.findall(
-        r'%\d+\s+=\s+"(arith\.\w+)"\(',
-        lowered_text,
-    )
-    if bare_arith:
-        tensor_arith = re.findall(
-            r'"arith\.(mul|add|sub|div)f".*tensor<',
-            lowered_text,
-        )
-        if tensor_arith:
-            for op in tensor_arith:
-                errors.append(
-                    f"Bare arith.{op}f on tensor detected — should be inside linalg.generic"
-                )
-
-    # 2. No unresolved sf.* ops (except sf.weight/sf.constant which are handled later)
-    sf_ops = set(re.findall(r'"sf\.(\w+)"', lowered_text))
-    sf_ignored = {"weight", "constant"}
-    unresolved = sf_ops - sf_ignored
-    if unresolved:
-        errors.append(f"Unresolved sf ops remaining: {sorted(unresolved)}")
-
-    # 3. Must contain at least one linalg op (sanity check)
-    if "linalg." not in lowered_text and "scf." not in lowered_text:
-        errors.append("No linalg or scf ops found — lowering may have produced nothing")
-
-    # 4. Warn about 0D tensors (tensor<f32>, tensor<i64>, etc. — no dimensions)
-    zero_dim_tensors = re.findall(
-        r'tensor<(f32|f64|i1|i8|i16|i32|i64)>',
-        lowered_text,
-    )
-    if zero_dim_tensors:
-        logging.warning(
-            "Lowered IR contains %d zero-dimensional tensor(s) — "
-            "types: %s",
-            len(zero_dim_tensors),
-            sorted(set(zero_dim_tensors)),
-        )
-
-    if errors:
-        raise ValueError(
-            "Lowered IR verification failed:\n  - " + "\n  - ".join(errors)
-        )
-
-
-def _save_failure_context(
-    step_num: str,
-    pass_name: str,
-    compiled_path: Path,
-    ir_text: str | None = None,
-    copy_source: str | None = None,
-) -> Path:
-    """Save diagnostic context on pipeline failure and print diagnosis guide."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    failure_dir = Path("outputs/logs/pipeline") / f"failure_{timestamp}"
-    failure_dir.mkdir(parents=True, exist_ok=True)
-
-    if ir_text is not None:
-        ir_path = failure_dir / "model.snapshot.mlir"
-        ir_path.write_text(ir_text)
-        print(f"   Saved IR snapshot: {ir_path}")
-
-    if copy_source is not None:
-        src = Path(copy_source)
-        if src.exists():
-            shutil.copy2(str(src), str(failure_dir / "source.mlir"))
-            print(f"   Saved source MLIR: {failure_dir / 'source.mlir'}")
-
-    error_path = failure_dir / "error.txt"
-    with open(error_path, "w") as f:
-        f.write(f"Step: [{step_num}/5] ({pass_name})\n")
-        f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"Compiled dir: {compiled_path}\n")
-        f.write("-" * 60 + "\n")
-        traceback.print_exc(file=f)
-    print(f"   Error details saved to: {error_path}")
-
-    print(f"\n❌ Pipeline failed at step [{step_num}/5] ({pass_name})")
-    print(f"📍 Diagnostic context saved to: {failure_dir}")
-    print("📋 Suggested next steps:")
-    print("   1. Check saved IR files for unexpected ops")
-    print("   2. Run: python scripts/bisect_pipeline_stages.py --auto")
-    print("   3. Or use: python compiler/compile_dylib.py --debug for per-pass snapshots")
-
-    return failure_dir
-
-
-def _check_sf_dialect_freshness(compiled_dir: str) -> None:
-    """Check model.mlir is not stale vs current sf-dialect.
-
-    Hard error if sf_dialect_hash in metadata differs from HEAD.
-    Silent pass if metadata has no hash (old model) or not in git repo.
-    """
-    import json as _json
-    import os as _os
-    import subprocess as _subprocess
-    import sys as _sys
-
-    meta_path = _os.path.join(compiled_dir, "metadata.json")
-    if not _os.path.isfile(meta_path):
-        return  # no metadata, skip check
-
-    with open(meta_path) as _f:
-        meta = _json.load(_f)
-
-    old_hash = meta.get("sf_dialect_hash")
-    if old_hash is None:
-        # Pre-staleness-check era model — warn and continue
-        print(
-            "WARNING: model.mlir has no sf_dialect_hash (pre-staleness-check era)",
-            file=_sys.stderr,
-        )
-        return
-
-    try:
-        result = _subprocess.run(
-            ["git", "rev-parse", "HEAD:sf-dialect/"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except Exception:
-        print(
-            "WARNING: could not verify sf-dialect freshness (not a git repo?)",
-            file=_sys.stderr,
-        )
-        return
-
-    if result.returncode != 0:
-        print(
-            "WARNING: could not verify sf-dialect freshness (git error)",
-            file=_sys.stderr,
-        )
-        return
-
-    new_hash = result.stdout.strip()
-    if old_hash != new_hash:
-        print("ERROR: model.mlir is stale!", file=_sys.stderr)
-        print(f"  Generated with sf-dialect: {old_hash[:8]}", file=_sys.stderr)
-        print(f"  Current sf-dialect HEAD:  {new_hash[:8]}", file=_sys.stderr)
-        print(
-            f"  Run 'python compiler/compile.py ... --output-dir {compiled_dir}' first.",
-            file=_sys.stderr,
-        )
-        print(
-            "  Or use 'make test-dylib-cos' which handles this automatically.",
-            file=_sys.stderr,
-        )
-        _sys.exit(1)
-
-
-def _compile_blob_to_o(
-    data: bytes,
-    symbol_name: str,
-    size_symbol_name: str,
-    work_dir: str,
-) -> str:
-    """Compile a binary blob to a .o file exporting named symbols.
-
-    Follows the same pattern as ``_compile_embedded_data`` in compile_utils.py,
-    but allows custom symbol names (instead of hardcoded ``serveforge_constants_*``).
-
-    Returns the path to the generated .o file.
-    """
-    hex_lines: list[str] = []
-    for i in range(0, len(data), 12):
-        chunk = data[i : i + 12]
-        hex_lines.append(", ".join(f"0x{b:02X}" for b in chunk))
-
-    c_source = textwrap.dedent(f"""\
-    #include <stdint.h>
-    const uint8_t {symbol_name}[{len(data)}] = {{
-        {",".join(hex_lines)}
-    }};
-    const uint64_t {size_symbol_name} = {len(data)};
-    """)
-
-    c_path = os.path.join(work_dir, f"{symbol_name}.c")
-    o_path = os.path.join(work_dir, f"{symbol_name}.o")
-    with open(c_path, "w") as f:
-        f.write(c_source)
-
-    cc_bin = _find_cc()
-    result = subprocess.run(
-        [cc_bin, "-c", c_path, "-o", o_path],
-        capture_output=True, text=True,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Failed to compile {symbol_name} object (exit {result.returncode}):\n"
-            f"{result.stderr[:2000]}"
-        )
-    return o_path
-
-
-def _sfa_relink_dylib(
-    compiled_path: Path,
-    model_name: str,
-    sfa_abi_data: bytes,
-    sfa_weights_data: bytes,
-) -> None:
-    """Re-link the dylib with SFA ABI and weights object files embedded.
-
-    model.ll is recompiled to .o (via llc), constants.bin is recompiled to .o,
-    and SFA data is compiled to .o files using ``_compile_blob_to_o``.
-    All .o files are linked into the final dylib.
-    """
-    from compiler.mlir_dialect.lowering.llvm_backend import (
-        _compile_embedded_data,
-        link_dylib,
-        llc_compile,
-    )
-
-    work_dir = str(compiled_path)
-
-    sfa_abi_o = _compile_blob_to_o(
-        sfa_abi_data, "sfa_abi", "sfa_abi_size", work_dir,
-    )
-    sfa_weights_o = _compile_blob_to_o(
-        sfa_weights_data, "sfa_weights", "sfa_weights_size", work_dir,
-    )
-
-    model_ll = os.path.join(work_dir, "model.ll")
-    model_o = llc_compile(model_ll, arch="native", opt_level=0)
-
-    const_bin = os.path.join(work_dir, "constants.bin")
-    const_o = _compile_embedded_data(const_bin, work_dir)
-
-    free_o = _compile_serveforge_free(work_dir)
-
-    dylib_path = os.path.join(work_dir, f"lib{model_name}.dylib")
-    obj_files = [model_o, const_o, free_o, sfa_abi_o, sfa_weights_o]
-    link_dylib(obj_files, dylib_path)
 
 
 def main() -> None:
@@ -315,6 +66,7 @@ def main() -> None:
         compile_module_to_dylib,
         lower_linalg_to_llvm_ir,
     )
+
     # Step 1: Load model.mlir → MlirModule
     if DEBUG:
         print(f"  [debug] Step [1/5] starting: parse {mlir_path}")
@@ -364,7 +116,6 @@ def main() -> None:
         metadata = json.loads(metadata_path.read_text())
 
     if "hf_key_map" not in module.metadata:
-        # First try metadata.json (stored at compile time)
         hf_from_meta = metadata.get("hf_key_map", {})
         if hf_from_meta:
             print(f"[2/5] Loading hf_key_map from metadata.json ({len(hf_from_meta)} entries)")
@@ -424,14 +175,10 @@ def main() -> None:
     # Step 3: Generate constants.bin
     if DEBUG:
         print("  [debug] Step [3/5] starting: generate constants.bin")
-    # Inject tied_weights from metadata.json into module.metadata for name_mapping
     ws = metadata.get("weight_source", {})
     if "weight_source" not in module.metadata:
         module.metadata["weight_source"] = ws
 
-    # Restore consumed_internally flags from the original constants.bin
-    # (the text parser defaults them to False, but the compiler produced
-    # the correct values in the original binary).
     _orig_bin_path = compiled_path / "constants.bin"
     if _orig_bin_path.exists():
         try:
@@ -441,7 +188,6 @@ def main() -> None:
                 from compiler.sfcf_parser import parse_compute_graph, parse_sfcf_blob
                 _nm, _const, _gpos, _ver = parse_sfcf_blob(_existing[_sfcf_off:])
                 _existing_graph, _ = parse_compute_graph(_existing[_sfcf_off:], _gpos, _ver)
-                # Map existing consumed_internally flags back to re-parsed functions
                 for _fi, _ef in enumerate(_existing_graph["functions"]):
                     if _fi < len(module.functions):
                         _mf = module.functions[_fi]
@@ -455,8 +201,8 @@ def main() -> None:
                             ]
         except Exception as _e:
             if DEBUG:
-                import traceback; traceback.print_exc()
-            # If restoration fails, proceed without it (no cache support)
+                import traceback as _tb
+                _tb.print_exc()
             pass
 
     print("[3/5] Generating constants.bin (weights only, no compute graph) ...")
@@ -477,10 +223,9 @@ def main() -> None:
     bin_path.write_bytes(const_bin)
     print(f"   Written {len(const_bin)} bytes to {bin_path}")
 
-    # Freshness check: ensure sf-dialect hash matches current HEAD
     _check_sf_dialect_freshness(compiled_dir)
 
-    # Step 4: MlirModule → ir.Module → register sf dialect → C++ lowering
+    # Step 4: MlirModule → ir.Module → C++ lowering
     if DEBUG:
         print("  [debug] Step [4/5] starting: convert to ir.Module and lower to linalg")
     print("[4/5] Converting MlirModule → ir.Module → sf→linalg lowering ...")
@@ -488,8 +233,6 @@ def main() -> None:
     import mlir.ir as ir
     import mlir.passmanager as pm
 
-    # Register sf dialect FIRST, before creating ops. MLIR requires dialect
-    # registration before op creation for typed op access in C++ passes.
     ctx_lower = ir.Context()
     try:
         from mlir_sf._mlir_libs._sfDialectsNanobind import sf
@@ -504,7 +247,6 @@ def main() -> None:
 
     ir_mod = mlir_module_to_ir_module(module, ctx=ctx_lower)
 
-    # Direct C++ pipeline (separate passes to allow fixup between them)
     print("   Running C++ lowering...")
     _pass_pipelines = [
         ("sf-promote-weights", "builtin.module(sf-promote-weights)"),
@@ -528,19 +270,17 @@ def main() -> None:
                 _pman.enable_verifier(True)
             _pman.run(ir_mod.operation)
         except Exception:
-            # Save debug IR before failure (use original source as fallback)
             _debug_path = Path(compiled_path) / f"debug_{_pass_name}_before.mlir"
             try:
                 _debug_text = ir_mod.operation.get_asm(
                     print_generic_op_form=True, assume_verified=False)
                 _debug_path.write_text(_debug_text)
             except Exception:
-                # Fall back to source MLIR copy
-                import shutil
-                shutil.copy(str(mlir_path), _debug_path)
+                import shutil as _shutil
+                _shutil.copy(str(mlir_path), _debug_path)
             print(f"   Saved debug IR: {_debug_path}")
             _save_failure_context("4", _pass_name, compiled_path,
-                                  copy_source=_debug_path)
+                                   copy_source=_debug_path)
             raise
         if DEBUG:
             _snapshot_text = ir_mod.operation.get_asm(print_generic_op_form=True)
@@ -548,10 +288,9 @@ def main() -> None:
             _snapshot_path.parent.mkdir(parents=True, exist_ok=True)
             _snapshot_path.write_text(_snapshot_text)
             print(f"  [debug] Saved snapshot: {_snapshot_path}")
-    # Serialize with generic op format (required for mlir-opt and regex post-processing)
+
     lowered_text = ir_mod.operation.get_asm(print_generic_op_form=True)
 
-    # Also save a human-readable copy with custom format + debug info
     readable_text = ir_mod.operation.get_asm(
         enable_debug_info=True,
         pretty_debug_info=True,
@@ -561,10 +300,6 @@ def main() -> None:
     )
     print(f"   C++ lowering succeeded (verifier {'disabled' if _no_verify else 'enabled'})")
 
-    # Verify weight promotion ordering: check that sf.weight_names in lowered IR
-    # matches weight op order from the Python MlirModule (dict insertion order
-    # from fx_to_mlir.py Phase 4). Catches order mismatches between the compute
-    # graph binary (built before C++ lowering) and the promoted function args.
     from scripts.checks.verify_weight_consistency import verify_weight_promotion_order
     try:
         weight_errors = verify_weight_promotion_order(module, lowered_text)
@@ -585,7 +320,7 @@ def main() -> None:
     readable_path.write_text(readable_text)
     print(f"   Saved readable lowered MLIR to {readable_path}")
 
-    import re as _re
+    # Fix tensor.empty ops with dynamic sizes
     _lines = lowered_text.split('\n')
     _const_vals = {}
     for _line in _lines:
@@ -640,14 +375,12 @@ def main() -> None:
         lowered_path.write_text(lowered_text)
         print(f"   Fixed {_changes} tensor.empty ops with dynamic sizes")
 
-    # Fix arith.constant ops: scalar value + tensor result → dense attr
     from compiler.mlir_dialect.lowering.fixups import _fixup_arith_tensor_constants_mlir
     _before = lowered_text
     lowered_text = _fixup_arith_tensor_constants_mlir(lowered_text)
     if lowered_text != _before:
         lowered_path.write_text(lowered_text)
 
-    # Verification gate: ensure lowered IR is valid before proceeding
     if DEBUG:
         print("  [debug] Step [4v/5] starting: verify lowered IR")
     print("[4v] Verifying lowered IR ...")
@@ -657,11 +390,10 @@ def main() -> None:
     except ValueError as e:
         print(f"   VERIFICATION FAILED:\n{e}")
         _save_failure_context("4v", "IR verification", compiled_path,
-                              ir_text=lowered_text)
+                               ir_text=lowered_text)
         print("   (continuing anyway for debugging purposes)")
 
     # Step 5: Lower LLVM dialect → LLVM IR (.ll) + compile to .dylib
-    # lower_linalg_to_llvm_ir runs: bufferize → linalg→loops → scf→cf → memref→llvm → func→llvm
     if DEBUG:
         print("  [debug] Step [5/5] starting: lower to LLVM and compile .dylib")
     print("[5/5] Lowering linalg → LLVM + compiling to .dylib ...")
@@ -672,12 +404,10 @@ def main() -> None:
     with ctx_llvm:
         ir_mod = ir.Module.parse(lowered_text, ctx_llvm)
         try:
-            # Always skip stage 0 (canonicalize,cse) — it cannot handle
-            # shape-specialized IR from index_op dim mappings.
             lower_linalg_to_llvm_ir(ir_mod, skip_first_canonicalize=True)
         except Exception:
             _save_failure_context("5", "LLVM lowering", compiled_path,
-                                  copy_source=str(lowered_path))
+                                   copy_source=str(lowered_path))
             raise
     print("   LLVM dialect lowering succeeded")
 

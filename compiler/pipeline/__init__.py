@@ -17,7 +17,7 @@ from typing import Any
 
 import torch
 
-from compiler.fx_to_mlir import fx_graph_to_mlir
+from compiler.fx.converter import fx_graph_to_mlir
 from compiler.mlir_artifact import (  # type: ignore[attr-defined]
     MlirModule,
     mlir_module_to_text,
@@ -391,3 +391,18 @@ def _post_lowering_canonicalize(mlir_text: str) -> str:
 
     return mlir_text
 
+
+# Re-exports from pipeline submodules for backward compatibility
+from compiler.pipeline.actions import tile_matmuls_action  # noqa: F401, E402
+from compiler.pipeline.stages import (  # noqa: F401, E402
+    BUILTIN_STAGES,
+    _make_verify_stage,
+    _save_ir_snapshot,
+    run_stages,
+)
+from compiler.pipeline.stages_utils import (  # noqa: F401, E402
+    Stage,
+    StageResult,
+    _save_ir_stats,
+    _verify_stage_output,
+)
