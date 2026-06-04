@@ -171,10 +171,10 @@ def test_pipeline_timing():
     import mlir.passmanager as pm
 
     from compiler.backend.llvm_backend import (
-        tile_matmuls_action,
         lower_linalg_to_llvm_ir,
         mlir_module_to_llvm_ir,
     )
+    from compiler.pipeline.actions import tile_matmuls_action
 
     with ir.Location.unknown(ctx):
         pm.PassManager.parse(

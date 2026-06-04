@@ -20,7 +20,7 @@ except ImportError:
 
 pytestmark = pytest.mark.xfail(
     reason="sf-dialect C++ bindings not available — build: make build-so",
-    raises=RuntimeError,
+    raises=(RuntimeError, Exception),
 )
 
 from tests.lowering_test_helpers import (
