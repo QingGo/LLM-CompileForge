@@ -285,7 +285,7 @@ def link_dylib(
     # Locate MLIR runner_utils library for memrefCopy and other runtime helpers
     # needed by bufferized dynamic-shaped memref ops.
     build_lib = (
-        Path(__file__).resolve().parent.parent.parent
+        Path(__file__).resolve().parent.parent.parent.parent
         / "llvm-project" / "build" / "lib"
     )
     runner_lib = build_lib / "libmlir_c_runner_utils.dylib"
