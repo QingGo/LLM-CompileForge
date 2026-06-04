@@ -5,7 +5,7 @@ Tests ``infer_output_shape()`` from ``compiler.mlir_dialect.shape_inference``
 and NO model artifacts.
 """
 
-from compiler.mlir_dialect.shape.shape_inference import infer_output_shape
+from compiler.shape.shape_inference import infer_output_shape
 
 
 class TestMatmul:

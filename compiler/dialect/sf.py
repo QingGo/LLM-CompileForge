@@ -18,7 +18,7 @@ from typing import Any, ClassVar
 
 import mlir.ir as ir
 
-from compiler.mlir_dialect.shape.shape_inference_utils import _get_elt_type_map
+from compiler.shape.shape_inference_utils import _get_elt_type_map
 
 
 def _tensor_type(

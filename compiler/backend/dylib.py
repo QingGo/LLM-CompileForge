@@ -5,7 +5,7 @@ import subprocess
 import textwrap
 from pathlib import Path
 
-from compiler.mlir_dialect.lowering.compile_utils import (
+from compiler.backend.compile_utils import (
     _compile_serveforge_free,
     _find_cc,
 )
@@ -123,7 +123,7 @@ def _sfa_relink_dylib(
     sfa_weights_data: bytes,
 ) -> None:
     """Re-link the dylib with SFA ABI and weights object files embedded."""
-    from compiler.mlir_dialect.lowering.llvm_backend import (
+    from compiler.backend.llvm_backend import (
         _compile_embedded_data,
         link_dylib,
         llc_compile,

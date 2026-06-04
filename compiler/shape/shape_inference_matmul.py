@@ -10,7 +10,7 @@ from typing import Any
 
 import mlir.ir as ir
 
-from compiler.mlir_dialect.shape.shape_inference_activations import (  # type: ignore[attr-defined]  # noqa: F401
+from compiler.shape.shape_inference_activations import (  # type: ignore[attr-defined]  # noqa: F401
     infer_add,
     infer_cat,
     infer_clamp_min,
@@ -59,10 +59,10 @@ from compiler.mlir_dialect.shape.shape_inference_activations import (  # type: i
     infer_var,
     infer_view,
 )
-from compiler.mlir_dialect.shape.shape_inference_pure import (
+from compiler.shape.shape_inference_pure import (
     _infer_embedding_pure,
 )
-from compiler.mlir_dialect.shape.shape_inference_utils import (
+from compiler.shape.shape_inference_utils import (
     _broadcast_shapes,
     _elt_type_str,
     _infer_ir_via_pure,

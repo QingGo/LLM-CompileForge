@@ -246,7 +246,7 @@ class TestCoverageAllOps:
 
     def test_all_sf_ops_in_cxx_patterns(self):
         """Verify every sf op has a C++ lowering pattern (replaces deleted _LOWER_TABLE)."""
-        from compiler.mlir_dialect.sf import _ALL_OPS
+        from compiler.dialect import _ALL_OPS
 
         # Ops handled by C++ patterns (sf-promote-weights + sf-lower-to-linalg)
         cxx_lowered = {

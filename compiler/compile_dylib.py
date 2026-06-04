@@ -11,9 +11,9 @@ import re as _re
 import sys
 from pathlib import Path
 
+from compiler.backend.compile_utils import _setup_mlir_path
 from compiler.backend.dylib import _check_sf_dialect_freshness, _sfa_relink_dylib
 from compiler.backend.verify import _save_failure_context, _verify_lowered_ir
-from compiler.mlir_dialect.lowering.compile_utils import _setup_mlir_path
 
 faulthandler.enable()
 
@@ -62,7 +62,7 @@ def main() -> None:
         _parse_mlir_text,
         mlir_module_to_ir_module,
     )
-    from compiler.mlir_dialect.lowering.llvm_backend import (
+    from compiler.backend.llvm_backend import (
         compile_module_to_dylib,
         lower_linalg_to_llvm_ir,
     )
@@ -260,7 +260,7 @@ def main() -> None:
 
     for _pass_name, _pipeline_str in _pass_pipelines:
         if _pass_name in ("canonicalize", "cse"):
-            from compiler.mlir_dialect.lowering.fixups import _walk_and_fix_tensor_constants
+            from compiler.backend.fixups import _walk_and_fix_tensor_constants
             _walk_and_fix_tensor_constants(ir_mod)
         try:
             _pman = pm.PassManager.parse(_pipeline_str, ctx_lower)
@@ -375,7 +375,7 @@ def main() -> None:
         lowered_path.write_text(lowered_text)
         print(f"   Fixed {_changes} tensor.empty ops with dynamic sizes")
 
-    from compiler.mlir_dialect.lowering.fixups import _fixup_arith_tensor_constants_mlir
+    from compiler.backend.fixups import _fixup_arith_tensor_constants_mlir
     _before = lowered_text
     lowered_text = _fixup_arith_tensor_constants_mlir(lowered_text)
     if lowered_text != _before:

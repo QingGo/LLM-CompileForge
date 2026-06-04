@@ -443,7 +443,7 @@ def test_batch_matmul_dynamic_dims():
   }
 }''')
     assert "linalg." in lowered, "lowering failed"
-    from compiler.mlir_dialect.lowering.llvm_backend import _has_bindings
+    from compiler.backend.llvm_backend import _has_bindings
     if not _has_bindings():
         pytest.skip("MLIR bindings not available")
     import mlir.ir as ir

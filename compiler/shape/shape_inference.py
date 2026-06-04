@@ -15,7 +15,7 @@ This module is a convenience re-export hub.  The actual implementations live in:
 - ``shape_inference_pure.py`` — pure-Python _pure functions & infer_output_shape
 """
 
-from compiler.mlir_dialect.shape.shape_inference_activations import (  # type: ignore[attr-defined]  # noqa: F401
+from compiler.shape.shape_inference_activations import (  # type: ignore[attr-defined]  # noqa: F401
     _infer_broadcast,
     _infer_compare,
     _infer_elementwise,
@@ -68,7 +68,7 @@ from compiler.mlir_dialect.shape.shape_inference_activations import (  # type: i
     infer_var,
     infer_view,
 )
-from compiler.mlir_dialect.shape.shape_inference_matmul import (  # noqa: F401
+from compiler.shape.shape_inference_matmul import (  # noqa: F401
     _INFERENCE_TABLE,
     infer_arange,
     infer_chunk,
@@ -102,11 +102,11 @@ from compiler.mlir_dialect.shape.shape_inference_matmul import (  # noqa: F401
     infer_zeros,
     infer_zeros_like,
 )
-from compiler.mlir_dialect.shape.shape_inference_pure import (  # noqa: F401
+from compiler.shape.shape_inference_pure import (  # noqa: F401
     _PURE_TABLE,
     infer_output_shape,
 )
-from compiler.mlir_dialect.shape.shape_inference_utils import (  # noqa: F401
+from compiler.shape.shape_inference_utils import (  # noqa: F401
     _broadcast_shapes,
     _broadcast_types,
     _elt_from_str,

@@ -165,8 +165,8 @@ def _copy_region(src, dst, val_map):
 # ═══════════════════════════════════════════════════════════════════
 
 def _jit_run(mod) -> np.ndarray | None:
-    from compiler.mlir_dialect.lowering.compile_utils import _find_cc
-    from compiler.mlir_dialect.lowering.llvm_backend import lower_linalg_to_llvm_ir
+    from compiler.backend.compile_utils import _find_cc
+    from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir
 
     try:
         lower_linalg_to_llvm_ir(mod)

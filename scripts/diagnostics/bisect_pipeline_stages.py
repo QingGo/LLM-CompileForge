@@ -19,7 +19,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from compiler.mlir_dialect.lowering.llvm_backend import (
+from compiler.backend.llvm_backend import (
     _has_bindings,
 )
 from compiler.utils.logging import init_logging
@@ -37,7 +37,7 @@ TEST_NAME = "test_forward_matches_python_argmax"
 
 
 def _setup_mlir() -> None:
-    from compiler.mlir_dialect.lowering.compile_utils import _setup_mlir_path as _do_setup
+    from compiler.backend.compile_utils import _setup_mlir_path as _do_setup
     _do_setup()
 
 
@@ -84,7 +84,7 @@ def compile_with_stages(
 
         llvm_ir = os.path.join(out_dir, f"model_{label}.ll")
 
-    from compiler.mlir_dialect.lowering.compile_utils import emit_llvm_ir_to_file, link_dylib, llc_compile
+    from compiler.backend.compile_utils import emit_llvm_ir_to_file, link_dylib, llc_compile
     try:
         emit_llvm_ir_to_file(module, llvm_ir)
         obj_path = llc_compile(llvm_ir, output=os.path.join(out_dir, f"model_{label}.o"))

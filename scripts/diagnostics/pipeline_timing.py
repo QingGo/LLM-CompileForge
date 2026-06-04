@@ -238,7 +238,7 @@ with ctx:
     try:
         import mlir.ir as ir
 
-        from compiler.mlir_dialect.lowering.llvm_backend import mlir_module_to_llvm_ir
+        from compiler.backend.llvm_backend import mlir_module_to_llvm_ir
         ctx = ir.Context()
         with ctx:
             mod = ir.Module.parse(lowered_text)

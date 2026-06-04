@@ -11,7 +11,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from compiler.mlir_dialect.lowering.compile_utils import _setup_mlir_path
+from compiler.backend.compile_utils import _setup_mlir_path
 
 MINIMAL_MLIR = r"""
 module {
@@ -59,8 +59,8 @@ def main():
         print(f"  [2/4] C++ lowering: {t:.2f}s (sf remaining: {sf_rem})")
 
         # Step 3: LLVM lowering (bufferize + convert)
-        from compiler.mlir_dialect.lowering.compile_utils import mlir_module_to_llvm_ir
-        from compiler.mlir_dialect.lowering.llvm_backend import lower_linalg_to_llvm_ir
+        from compiler.backend.compile_utils import mlir_module_to_llvm_ir
+        from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir
         t0 = time.time()
         llvm_text = lower_linalg_to_llvm_ir(module)
         t = time.time() - t0

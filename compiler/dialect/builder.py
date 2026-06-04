@@ -10,7 +10,7 @@ from typing import Any
 
 import mlir.ir as ir
 
-from compiler.mlir_dialect.shape.shape_inference import infer_output_type  # type: ignore[attr-defined]
+from compiler.shape.shape_inference import infer_output_type  # type: ignore[attr-defined]
 
 
 def _make_ranked(shape: tuple[int, ...], elt_str: str) -> ir.RankedTensorType:

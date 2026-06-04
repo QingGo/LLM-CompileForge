@@ -20,7 +20,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from compiler.mlir_dialect.lowering.compile_utils import _setup_mlir_path
+from compiler.backend.compile_utils import _setup_mlir_path
 from scripts._cos import cosine_similarity
 from tests.op_correctness.registry import OpCase
 
@@ -217,7 +217,7 @@ def lower_and_jit(mlir_text: str) -> tuple[Any, tuple[int, ...]]:
         output_shape = _detect_output_shape(module)
 
         # Step 5: Fix remaining unrealized_conversion_cast ops
-        from compiler.mlir_dialect.lowering.fixups import _fixup_unrealized_casts_pass
+        from compiler.backend.fixups import _fixup_unrealized_casts_pass
 
         _fixup_unrealized_casts_pass(module)
 

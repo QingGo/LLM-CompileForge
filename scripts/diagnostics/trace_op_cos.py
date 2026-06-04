@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 logging.basicConfig(level=logging.WARNING)
 for name in (
     "tests.op_correctness.runner",
-    "compiler.mlir_dialect.fixups",
+    "compiler.backend.fixups",
     "compiler.fixups",
 ):
     logging.getLogger(name).setLevel(logging.WARNING)

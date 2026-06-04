@@ -21,7 +21,7 @@ def _tools_available() -> bool:
     if _MLIR_TOOLS_OK is not None:
         return _MLIR_TOOLS_OK
 
-    from compiler.mlir_dialect.lowering.llvm_backend import _find_llc, _find_mlir_translate
+    from compiler.backend.llvm_backend import _find_llc, _find_mlir_translate
 
     try:
         _find_llc()
@@ -45,19 +45,19 @@ def _mlir_path_setup() -> None:
 class TestFindTools:
 
     def test_find_llc(self) -> None:
-        from compiler.mlir_dialect.lowering.llvm_backend import _find_llc
+        from compiler.backend.llvm_backend import _find_llc
         llc = _find_llc()
         assert os.path.isfile(llc)
         assert os.access(llc, os.X_OK)
 
     def test_find_mlir_translate(self) -> None:
-        from compiler.mlir_dialect.lowering.llvm_backend import _find_mlir_translate
+        from compiler.backend.llvm_backend import _find_mlir_translate
         mt = _find_mlir_translate()
         assert os.path.isfile(mt)
         assert os.access(mt, os.X_OK)
 
     def test_find_tools_returns_different_binaries(self) -> None:
-        from compiler.mlir_dialect.lowering.llvm_backend import _find_llc, _find_mlir_translate
+        from compiler.backend.llvm_backend import _find_llc, _find_mlir_translate
         llc = _find_llc()
         mt = _find_mlir_translate()
         assert Path(llc).name != Path(mt).name
@@ -70,7 +70,7 @@ class TestLLCCompile:
         if not _tools_available():
             pytest.skip("llc/mlir-translate not available")
 
-        from compiler.mlir_dialect.lowering.llvm_backend import llc_compile
+        from compiler.backend.llvm_backend import llc_compile
 
         minimal_ll = """; ModuleID = 'minimal'
 target triple = "x86_64-apple-macosx10.15.0"
@@ -90,7 +90,7 @@ define i32 @answer() {
         if not _tools_available():
             pytest.skip("llc/mlir-translate not available")
 
-        from compiler.mlir_dialect.lowering.llvm_backend import llc_compile
+        from compiler.backend.llvm_backend import llc_compile
 
         minimal_ll = """; ModuleID = 'minimal'
 target triple = "x86_64-apple-macosx10.15.0"
@@ -110,7 +110,7 @@ define i32 @answer() {
         if not _tools_available():
             pytest.skip("llc/mlir-translate not available")
 
-        from compiler.mlir_dialect.lowering.llvm_backend import llc_compile
+        from compiler.backend.llvm_backend import llc_compile
 
         bad_path = str(tmp_path / "not.ll")
         Path(bad_path).write_text("this is not valid LLVM IR")
@@ -128,7 +128,7 @@ class TestLinkDylib:
         if not _tools_available():
             pytest.skip("llc/mlir-translate not available")
 
-        from compiler.mlir_dialect.lowering.llvm_backend import link_dylib, llc_compile
+        from compiler.backend.llvm_backend import link_dylib, llc_compile
 
         minimal_ll = """; ModuleID = 'minimal'
 target triple = "x86_64-apple-macosx10.15.0"
@@ -149,7 +149,7 @@ define i32 @answer() {
         if not _tools_available():
             pytest.skip("llc/mlir-translate not available")
 
-        from compiler.mlir_dialect.lowering.llvm_backend import link_dylib, llc_compile
+        from compiler.backend.llvm_backend import link_dylib, llc_compile
 
         ll1 = """; ModuleID = 'a'
 target triple = "x86_64-apple-macosx10.15.0"
@@ -177,7 +177,7 @@ class TestQwenMain2FullPipeline:
     def _run_pipeline_on_main2(self, ir_ctx: Any) -> str:
         """Run sf→linalg→LLVM pipeline on Qwen main_2, return LLVM IR text."""
         from compiler.artifact import MlirModule, mlir_module_to_ir_module
-        from compiler.mlir_dialect.lowering.llvm_backend import lower_linalg_to_llvm_ir, mlir_module_to_llvm_ir
+        from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir, mlir_module_to_llvm_ir
         from compiler.pipeline import _apply_sf_to_linalg as sf_to_linalg_pass_on_module
         from compiler.serialize import load_artifact
 
@@ -204,7 +204,7 @@ class TestQwenMain2FullPipeline:
         if not _tools_available():
             pytest.skip("llc/mlir-translate not available")
 
-        from compiler.mlir_dialect.lowering.llvm_backend import llc_compile
+        from compiler.backend.llvm_backend import llc_compile
 
         llvm_ir = self._run_pipeline_on_main2(mlir_context)
         ll_path = str(tmp_path / "main2.ll")
@@ -226,7 +226,7 @@ class TestQwenMain2FullPipeline:
         import mlir.ir as ir
 
         from compiler.artifact import MlirModule, mlir_module_to_ir_module
-        from compiler.mlir_dialect.lowering.llvm_backend import compile_mlir_to_dylib, lower_linalg_to_llvm_ir
+        from compiler.backend.llvm_backend import compile_mlir_to_dylib, lower_linalg_to_llvm_ir
         from compiler.pipeline import _apply_sf_to_linalg as sf_to_linalg_pass_on_module
         from compiler.serialize import load_artifact
 

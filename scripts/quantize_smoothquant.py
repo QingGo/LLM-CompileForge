@@ -18,7 +18,7 @@ _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
 
 
-from compiler.mlir_dialect.lowering.compile_utils import _patch_transformers_torch
+from compiler.backend.compile_utils import _patch_transformers_torch
 
 
 def quantize_llama_1b() -> dict:

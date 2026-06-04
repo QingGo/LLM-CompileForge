@@ -18,15 +18,15 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from compiler.backend.fixups import (
+    _fixup_unrealized_casts_pass,
+)
 from compiler.exceptions import (
     LinkError,
     LLCError,
     MissingBindingsError,
     MLIRTranslateError,
     ToolNotFoundError,
-)
-from compiler.mlir_dialect.lowering.fixups import (
-    _fixup_unrealized_casts_pass,
 )
 
 _log = logging.getLogger(__name__)

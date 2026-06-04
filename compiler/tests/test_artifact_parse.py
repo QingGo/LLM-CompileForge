@@ -7,7 +7,7 @@ C++ bindings, or any compiled artifacts.
 """
 
 from compiler.artifact import _parse_mlir_text
-from compiler.mlir_dialect.sf.mlir_op_types import MlirModule
+from compiler.dialect.mlir_op_types import MlirModule
 
 # ── Hand-crafted MLIR snippet (valid sf dialect) ─────────────────────
 

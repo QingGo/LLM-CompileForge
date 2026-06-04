@@ -14,7 +14,7 @@ import torch
 
 from compiler.artifact._utils import _candidate_names
 from compiler.artifact.parse import _parse_mlir_text
-from compiler.mlir_dialect.sf.mlir_op_types import (
+from compiler.dialect.mlir_op_types import (
     MlirModule,
 )
 

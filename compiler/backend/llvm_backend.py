@@ -15,8 +15,7 @@ import logging
 import os
 from typing import Any
 
-from compiler.exceptions import MissingBindingsError
-from compiler.mlir_dialect.lowering.compile_utils import (
+from compiler.backend.compile_utils import (
     _compile_embedded_data,
     _compile_mlir_to_dylib_with_constants,
     _find_cc,
@@ -33,6 +32,7 @@ from compiler.mlir_dialect.lowering.compile_utils import (
     llc_compile,
     mlir_module_to_llvm_ir,
 )
+from compiler.exceptions import MissingBindingsError
 from compiler.pipeline import (  # type: ignore[attr-defined]
     BUILTIN_STAGES,
     Stage,

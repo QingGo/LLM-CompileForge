@@ -11,7 +11,7 @@ from typing import Any
 
 import mlir.ir as ir
 
-from compiler.mlir_dialect.shape.shape_inference_pure import (
+from compiler.shape.shape_inference_pure import (
     _infer_cat_pure,
     _infer_expand_pure,
     _infer_linear_pure,
@@ -22,7 +22,7 @@ from compiler.mlir_dialect.shape.shape_inference_pure import (
     _infer_unsqueeze_pure,
     _infer_view_pure,
 )
-from compiler.mlir_dialect.shape.shape_inference_utils import (
+from compiler.shape.shape_inference_utils import (
     _broadcast_types,
     _elt_type_str,
     _infer_ir_via_pure,

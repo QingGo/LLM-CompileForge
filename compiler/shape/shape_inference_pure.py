@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from compiler.mlir_dialect.shape.shape_inference_utils import _broadcast_shapes
+from compiler.shape.shape_inference_utils import _broadcast_shapes
 
 
 def _infer_elementwise_pure(

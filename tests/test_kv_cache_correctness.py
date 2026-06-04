@@ -35,7 +35,7 @@ SEQ_LEN = 8
 
 def _load_hf_opt_125m():
     """Load facebook/opt-125m from local HF cache with use_cache=True."""
-    from compiler.mlir_dialect.lowering.compile_utils import _patch_transformers_torch
+    from compiler.backend.compile_utils import _patch_transformers_torch
     _patch_transformers_torch()
     from transformers.models.opt.configuration_opt import OPTConfig
     from transformers.models.opt.modeling_opt import OPTForCausalLM

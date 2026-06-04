@@ -22,10 +22,10 @@ from compiler.artifact.binary import (
     _build_constants_binary,
     _build_name_mapping,
 )
-from compiler.mlir_dialect.sf.mlir_op_types import (
+from compiler.dialect.mlir_op_types import (
     MlirModule,
 )
-from compiler.mlir_dialect.sf.mlir_op_types import (
+from compiler.dialect.mlir_op_types import (
     ssa as _ssa,
 )
 

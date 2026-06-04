@@ -71,7 +71,7 @@ def main():
     # (skip_first_canonicalize=True, fuse/tile stages filtered out) because the
     # canonicalize pass's InferStaticShapeOfOperands pattern corrupts linalg.generic
     # output types when broadcast maps are present.
-    from compiler.mlir_dialect.lowering.llvm_backend import lower_linalg_to_llvm_ir
+    from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir
     t5 = time.time()
     lower_linalg_to_llvm_ir(mod)
     elapsed_llvm = time.time() - t5
@@ -81,7 +81,7 @@ def main():
           f"Took {elapsed_llvm:.1f}s (limit {timeout}s)")
 
     # Step 6: mlir-translate (fixup pass runs in mlir_module_to_llvm_ir)
-    from compiler.mlir_dialect.lowering.llvm_backend import mlir_module_to_llvm_ir
+    from compiler.backend.llvm_backend import mlir_module_to_llvm_ir
     t6 = time.time()
     llvm_ir = mlir_module_to_llvm_ir(mod)
     elapsed_translate = time.time() - t6
@@ -101,7 +101,7 @@ def main():
     # Step 7: llc + link
     import tempfile
 
-    from compiler.mlir_dialect.lowering.llvm_backend import _compile_embedded_data, link_dylib, llc_compile
+    from compiler.backend.llvm_backend import _compile_embedded_data, link_dylib, llc_compile
     t7 = time.time()
     with tempfile.TemporaryDirectory() as td:
         ll_path = os.path.join(td, "model.ll")

@@ -23,7 +23,7 @@ from compiler.hal.op_lowering import (
 )
 from compiler.hal.ssa_tracker import SSATracker
 from compiler.artifact import MlirFunction, MlirModule, MlirOp  # type: ignore[attr-defined]
-from compiler.mlir_dialect.lowering.compile_utils import _setup_mlir_path
+from compiler.backend.compile_utils import _setup_mlir_path
 
 _log = logging.getLogger(__name__)
 

@@ -74,7 +74,7 @@ def _fixup_arith_tensor_constants_action(module: Any) -> int:
     import mlir.ir as ir
     if not isinstance(module, ir.Module):
         return 0
-    from compiler.mlir_dialect.lowering.fixups import _walk_and_fix_tensor_constants
+    from compiler.backend.fixups import _walk_and_fix_tensor_constants
     return _walk_and_fix_tensor_constants(module)
 
 

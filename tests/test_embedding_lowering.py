@@ -38,8 +38,8 @@ def test_embedding_dylib() -> float:
     import mlir.ir as ir
     from mlir_sf._mlir_libs._sfDialectsNanobind import sf
 
-    from compiler.mlir_dialect.lowering.fixups import _fixup_unrealized_casts_pass
-    from compiler.mlir_dialect.lowering.llvm_backend import lower_linalg_to_llvm_ir
+    from compiler.backend.fixups import _fixup_unrealized_casts_pass
+    from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir
     from compiler.pipeline import _apply_sf_to_linalg
 
     sf_mlir = """module {

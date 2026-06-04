@@ -8,8 +8,8 @@ from typing import Any
 import torch
 import torch.fx
 
-from compiler.mlir_dialect.sf._op_defs import _ATEN_TO_HAL
-from compiler.mlir_dialect.shape.shape_inference import infer_output_shape  # type: ignore[attr-defined]
+from compiler.dialect._op_defs import _ATEN_TO_HAL
+from compiler.shape.shape_inference import infer_output_shape  # type: ignore[attr-defined]
 
 _log = logging.getLogger(__name__)
 
