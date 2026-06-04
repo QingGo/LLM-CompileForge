@@ -143,7 +143,7 @@ class TestAWQCompiled:
 @pytest.mark.integration
 class TestSpecDecCompiled:
     def test_verifier_with_model_weights(self, module_tiny_llama: Any) -> None:
-        from engine.speculative.verifier import SpeculativeVerifier
+        from python_runtime.engine.speculative.verifier import SpeculativeVerifier
 
         weights = module_tiny_llama.main.weights
         vocab_size = weights["model_embed_tokens_weight"].size(0)
@@ -159,7 +159,7 @@ class TestSpecDecCompiled:
             assert tok.shape == (1,)
 
     def test_mtp_proposer_with_compiled_hidden_size(self, module_tiny_llama: Any) -> None:
-        from engine.speculative.mtp_proposer import MTPProposer
+        from python_runtime.engine.speculative.mtp_proposer import MTPProposer
 
         weights = module_tiny_llama.main.weights
         hidden_size = weights["model_layers_0_self_attn_q_proj_weight"].size(0)

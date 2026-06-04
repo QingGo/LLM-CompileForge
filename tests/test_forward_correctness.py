@@ -157,8 +157,8 @@ def test_opt125m_compile_and_forward_cosine() -> None:
 
     # Compile through full pipeline
     from compiler.pipeline import compile_mlir
-    from engine.mlir_executor import MlirExecutor
-    from hal.pytorch_backend import PyTorchBackend
+    from python_runtime.engine.mlir_executor import MlirExecutor
+    from python_runtime.hal.pytorch_backend import PyTorchBackend
 
     with tempfile.TemporaryDirectory(prefix="l15_opt_") as tmpdir:
         mlir_mod = compile_mlir(
@@ -219,8 +219,8 @@ def test_opt125m_forward_smoke() -> None:
     model.eval()
 
     from compiler.pipeline import compile_mlir
-    from engine.mlir_executor import MlirExecutor
-    from hal.pytorch_backend import PyTorchBackend
+    from python_runtime.engine.mlir_executor import MlirExecutor
+    from python_runtime.hal.pytorch_backend import PyTorchBackend
 
     input_ids = torch.randint(0, 50272, (1, 4), dtype=torch.long)
     with tempfile.TemporaryDirectory(prefix="l15_opt2_") as tmpdir:

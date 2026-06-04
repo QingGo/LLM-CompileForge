@@ -34,7 +34,7 @@ def _capture_json_logging() -> tuple[io.StringIO, Callable[[], None]]:
     old_stderr = sys.stderr
     sys.stderr = captured
 
-    from utils.logging import init_logging
+    from compiler.utils.logging import init_logging
 
     init_logging()
     # Override module-level _LOG_LEVEL default (WARNING) so INFO messages appear
@@ -63,7 +63,7 @@ def _capture_text_logging() -> tuple[io.StringIO, Callable[[], None]]:
     old_stderr = sys.stderr
     sys.stderr = captured
 
-    from utils.logging import init_logging
+    from compiler.utils.logging import init_logging
 
     init_logging()
     # Override module-level _LOG_LEVEL default (WARNING) so INFO messages appear
@@ -150,7 +150,7 @@ class TestJsonEngineEvent:
     def test_json_engine_event(self) -> None:
         captured, restore = _capture_json_logging()
         try:
-            from utils.logging import log_step_begin
+            from compiler.utils.logging import log_step_begin
 
             log = logging.getLogger("test_engine")
             log_step_begin(log, step_id=7, waiting=2, running=1)

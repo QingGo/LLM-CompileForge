@@ -66,8 +66,8 @@ def main() -> None:
 
     # ── Load compiled model ─────────────────────────────
     from compiler.serialize import load_artifact
-    from engine.llm_engine import LLMEngine
-    from hal.pytorch_backend import PyTorchBackend
+    from python_runtime.engine.llm_engine import LLMEngine
+    from python_runtime.hal.pytorch_backend import PyTorchBackend
 
     print(f"Loading compiled model from: {compiled_dir}")
     module = load_artifact(compiled_dir)

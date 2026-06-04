@@ -150,8 +150,8 @@ class CtypesOracle:
             return
 
         _log.info("Generating reference logits via MlirExecutor (may take a moment)...")
-        from engine.mlir_executor import MlirExecutor
-        from hal.pytorch_backend import PyTorchBackend
+        from python_runtime.engine.mlir_executor import MlirExecutor
+        from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         backend = PyTorchBackend("cpu")
         executor = MlirExecutor(self._artifact, backend)

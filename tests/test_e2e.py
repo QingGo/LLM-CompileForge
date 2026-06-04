@@ -18,9 +18,9 @@ import torch
 from fastapi.testclient import TestClient
 
 from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp
-from engine.llm_engine import LLMEngine
-from hal import PyTorchBackend
-from server.app import create_app
+from python_runtime.engine.llm_engine import LLMEngine
+from python_runtime.hal.pytorch_backend import PyTorchBackend
+from python_runtime.server.app import create_app
 
 # ── Simple tokenizer for e2e tests ─────────────────────────
 

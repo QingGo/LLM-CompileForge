@@ -270,7 +270,7 @@ def _sfa_relink_dylib(
 
 
 def main() -> None:
-    from utils.logging import init_logging
+    from compiler.utils.logging import init_logging
     init_logging()
     global DEBUG
     if "--debug" in sys.argv:
@@ -565,7 +565,7 @@ def main() -> None:
     # matches weight op order from the Python MlirModule (dict insertion order
     # from fx_to_mlir.py Phase 4). Catches order mismatches between the compute
     # graph binary (built before C++ lowering) and the promoted function args.
-    from scripts.verify_weight_consistency import verify_weight_promotion_order
+    from scripts.checks.verify_weight_consistency import verify_weight_promotion_order
     try:
         weight_errors = verify_weight_promotion_order(module, lowered_text)
     except Exception as e:

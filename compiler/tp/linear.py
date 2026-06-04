@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F  # noqa: N812
 
-from hal.communicator import Communicator
+from python_runtime.hal.communicator import Communicator
 
 
 class ColumnParallelLinear(nn.Module):

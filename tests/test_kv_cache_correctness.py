@@ -76,8 +76,8 @@ def _load_compiled():
 
 def _make_executor(compiled_module):
     """Create MlirExecutor for the compiled module."""
-    from engine.mlir_executor import MlirExecutor
-    from hal.pytorch_backend import PyTorchBackend
+    from python_runtime.engine.mlir_executor import MlirExecutor
+    from python_runtime.hal.pytorch_backend import PyTorchBackend
     return MlirExecutor(compiled_module, PyTorchBackend("cpu"))
 
 

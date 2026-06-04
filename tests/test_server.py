@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from server.app import create_app
+from python_runtime.server.app import create_app
 
 # ═══════════════════════════════════════════════════════════
 # Mock Engine — fast, no torch dependency

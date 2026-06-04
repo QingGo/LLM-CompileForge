@@ -90,7 +90,7 @@ def check_regression(
 
 
 def main() -> int:
-    from utils.logging import init_logging
+    from compiler.utils.logging import init_logging
     init_logging()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 

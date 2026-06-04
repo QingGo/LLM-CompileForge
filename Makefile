@@ -184,7 +184,7 @@ test-dylib-cos-quick: build-so
 debug-cos: build-so
 	rm -f compiled/opt_125m_fresh/model.lowered.mlir
 	PATH="$(LLVM_BUILD_BIN):$(PATH)" $(DYLIB_ENV) $(PYTHON) scripts/compile_dylib.py compiled/opt_125m_fresh --model-name opt_125m
-	$(PYTHON) scripts/diagnose_cos.py --layer 12
+	$(PYTHON) scripts/diagnostics/diagnose_cos.py --layer 12
 
 clean-compiled:
 	rm -f compiled/opt_125m_fresh/model.mlir
@@ -234,11 +234,11 @@ lint: lint-ruff lint-mypy
 lint-clippy:
 	cargo clippy -- -D warnings
 lint-ruff:
-	$(RUFF) check hal/ compiler/ engine/ server/ tests/
+	$(RUFF) check python_runtime/ compiler/ kernels/ tests/
 lint-mypy:
-	$(MYPY) hal/ compiler/ engine/ server/ --config-file pyproject.toml
+	$(MYPY) python_runtime/ compiler/ kernels/ --config-file pyproject.toml
 check-op-consistency:
-	$(PYTHON) scripts/check_op_consistency.py
+	$(PYTHON) scripts/checks/check_op_consistency.py
 test-ddr:
 	@echo "=== Verifying DRR patterns ==="; \
 	TBLGEN=$(PROJECT_ROOT)/llvm-project/build/bin/mlir-tblgen; \
@@ -279,13 +279,13 @@ test-e2e-forward-hal:
 test-rust-cov:
 	cargo llvm-cov --lib --summary-only
 test-pipeline-timing: $(VENV)
-	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" $(PYTHON) scripts/pipeline_timing.py compiled/opt_125m_fresh
+	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" $(PYTHON) scripts/diagnostics/pipeline_timing.py compiled/opt_125m_fresh
 test-pipeline-debug: $(VENV)
-	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" $(PYTHON) scripts/pipeline_debug.py compiled/opt_125m_fresh --out /tmp/pipeline_debug
+	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" $(PYTHON) scripts/diagnostics/pipeline_debug.py compiled/opt_125m_fresh --out /tmp/pipeline_debug
 test-changed: $(VENV)
-	@if [ -f scripts/run_related_tests.py ]; then \
-		$(PYTHON) scripts/run_related_tests.py; \
-	else echo "⚠️  scripts/run_related_tests.py 不存在，回退到 test-fast"; $(MAKE) test-fast; fi
+	@if [ -f tests/run_related_tests.py ]; then \
+		$(PYTHON) tests/run_related_tests.py; \
+	else echo "⚠️  tests/run_related_tests.py 不存在，回退到 test-fast"; $(MAKE) test-fast; fi
 
 # L1.5: 正确性
 test-forward-smoke: $(VENV)
@@ -293,7 +293,7 @@ test-forward-smoke: $(VENV)
 	@for model in compiled/opt_125m_fresh compiled/tiny_llama; do \
 		if [ -d $$model ]; then \
 			echo "[$$model]"; \
-			LLM_SERVEFORGE_LOG=INFO $(PYTHON) scripts/check_forward_smoke.py $$model > logs/test/forward_smoke_$$(date +%Y%m%d_%H%M%S).log 2>&1 || exit 1; \
+			LLM_SERVEFORGE_LOG=INFO $(PYTHON) scripts/checks/check_forward_smoke.py $$model > logs/test/forward_smoke_$$(date +%Y%m%d_%H%M%S).log 2>&1 || exit 1; \
 		fi; \
 	done
 
@@ -312,15 +312,15 @@ test-forward-cos: test-forward-smoke
 	@for model in compiled/opt_125m_fresh; do \
 		if [ -d $$model ]; then \
 			echo "[$$model]"; \
-			$(PYTHON) scripts/check_forward_cos.py $$model || exit 1; \
+			$(PYTHON) scripts/checks/check_forward_cos.py $$model || exit 1; \
 		fi; \
 	done
 
 test-vec: $(VENV)
-	$(PYTHON) scripts/test_transform_vec.py
+	$(PYTHON) tests/test_transform_vec.py
 	$(PYTHON) -m pytest tests/test_pipeline_bugs.py -v --tb=short --timeout=60
 test-lower: $(VENV)
-	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" $(PYTHON) scripts/test_lowering_diag.py
+	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" $(PYTHON) tests/test_lowering_diag.py
 test-pipeline-quick: $(VENV)
 	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" \
 	$(PYTEST) tests/test_pipeline_validation.py::test_no_arith_ops_after_lowering \
@@ -333,19 +333,19 @@ test-pipeline-quick: $(VENV)
 test-weight-consistency: $(VENV)
 	$(PYTEST) tests/test_weight_consistency.py -v --tb=short --timeout=120 -m "not slow"
 verify-dylib:
-	$(PYTHON) scripts/verify_dylib_consistency.py compiled/opt_125m_fresh
+	$(PYTHON) scripts/checks/verify_dylib_consistency.py compiled/opt_125m_fresh
 
 verify-dylib-fresh:
 	@for model in compiled/opt_125m_fresh compiled/tiny_llama; do \
 		if [ -d $$model ]; then \
 			echo "[$$model]"; \
-			$(PYTHON) scripts/check_dylib_freshness.py $$model || exit 1; \
+			$(PYTHON) scripts/checks/check_dylib_freshness.py $$model || exit 1; \
 		fi; \
 	done
 verify-consistency: $(VENV)
-	$(PYTHON) scripts/verify_dylib_consistency.py compiled/opt_125m_fresh
+	$(PYTHON) scripts/checks/verify_dylib_consistency.py compiled/opt_125m_fresh
 verify-diag:
-	$(PYTHON) -c "import sys, os; sys.path.insert(0, os.getcwd()); from scripts.verify_dylib_consistency import check_diag_tool_health; sys.exit(check_diag_tool_health('compiled/opt_125m_fresh'))"
+	$(PYTHON) -c "import sys, os; sys.path.insert(0, os.getcwd()); from scripts.checks.verify_dylib_consistency import check_diag_tool_health; sys.exit(check_diag_tool_health('compiled/opt_125m_fresh'))"
 verify-preflight: verify-consistency verify-diag
 
 # KV Cache 测试集
@@ -365,7 +365,7 @@ test-rust-integ: $(VENV)
 	mkdir -p logs/rust
 	cd runtime && cargo test --bin serveforge > ../logs/rust/test_integ_$$(date +%Y%m%d_%H%M%S).log 2>&1
 test-pipeline-smoke: $(VENV)
-	$(PYTHON) scripts/test_pipeline_smoke.py compiled/opt_125m_fresh --timeout 120
+	$(PYTHON) tests/test_pipeline_smoke.py compiled/opt_125m_fresh --timeout 120
 test-pipeline-validate: $(VENV)
 	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" $(PYTHON) -m pytest tests/test_pipeline_validation.py -v --tb=short --timeout=60
 test-compile-full: $(VENV)
@@ -373,7 +373,7 @@ test-compile-full: $(VENV)
 test-consistency: $(VENV)
 	@echo "=== 四路一致性测试 (HF/PY/CTYPES/RUST) ==="
 	$(DYLIB_ENV) PYTHONPATH="$(PROJECT_ROOT)/llvm-project/build/tools/mlir/python_packages/mlir_core" \
-	$(PYTHON) scripts/test_consistency.py
+	$(PYTHON) scripts/checks/test_consistency.py
 
 test-dylib-quick: build-so
 	rm -f compiled/tiny_llama/model.lowered.mlir
@@ -402,14 +402,14 @@ smoke: $(VENV)
 
 # ---- 诊断 ----
 diagnose-bt:
-	lldb -b -o "run" -o "bt all" -o "quit" -- $(PYTHON) scripts/diagnose_lowering.py
+	lldb -b -o "run" -o "bt all" -o "quit" -- $(PYTHON) scripts/diagnostics/diagnose_lowering.py
 diagnose:
 	@echo "=== MECE Diagnosis Template ==="
 	@echo "A: Data — 权重复制/加载错误"
 	@echo "  A1: 权重值一致性 → make verify-consistency"
 	@echo "  A2: 权重绑定顺序 → verify_bindings()"
 	@echo "B: Compute — FP 精度/融合差异"
-	@echo "  B1: FX Export diff → python scripts/check_weights.py"
+	@echo "  B1: FX Export diff → python scripts/checks/check_weights.py"
 	@echo "  B2: C++ lowering → make test-fixup"
 	@echo "C: Runtime — 调用约定/签名"
 	@echo "  C1: 权重加载 → make verify-consistency"

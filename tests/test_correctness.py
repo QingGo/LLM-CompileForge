@@ -9,8 +9,8 @@ import pytest
 import torch
 
 from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp
-from engine.mlir_executor import MlirExecutor
-from hal.pytorch_backend import PyTorchBackend
+from python_runtime.engine.mlir_executor import MlirExecutor
+from python_runtime.hal.pytorch_backend import PyTorchBackend
 
 
 @pytest.mark.unit

@@ -305,8 +305,8 @@ class TestLLMEngineRustIntegration:
 
     def test_generate_multi_token(self):
         """Generate path works through Rust scheduler."""
-        from engine.llm_engine import LLMEngine
-        from hal.pytorch_backend import PyTorchBackend
+        from python_runtime.engine.llm_engine import LLMEngine
+        from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         engine = LLMEngine(
             self._make_test_mlir(),
@@ -318,15 +318,15 @@ class TestLLMEngineRustIntegration:
         assert isinstance(result, str)
 
     def test_step_idle_returns_empty(self):
-        from engine.llm_engine import LLMEngine
-        from hal.pytorch_backend import PyTorchBackend
+        from python_runtime.engine.llm_engine import LLMEngine
+        from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         engine = LLMEngine(self._make_test_mlir(), PyTorchBackend("cpu"))
         assert engine.step() == []
 
     def test_step_returns_results(self):
-        from engine.llm_engine import LLMEngine
-        from hal.pytorch_backend import PyTorchBackend
+        from python_runtime.engine.llm_engine import LLMEngine
+        from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         engine = LLMEngine(
             self._make_test_mlir(),
@@ -340,8 +340,8 @@ class TestLLMEngineRustIntegration:
         assert results[0].request_id.startswith("req_")
 
     def test_multiple_requests_batched(self):
-        from engine.llm_engine import LLMEngine
-        from hal.pytorch_backend import PyTorchBackend
+        from python_runtime.engine.llm_engine import LLMEngine
+        from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         engine = LLMEngine(
             self._make_test_mlir(),
@@ -357,8 +357,8 @@ class TestLLMEngineRustIntegration:
         assert len(results) >= 1  # at least one result
 
     def test_exhaust_loop_terminates(self):
-        from engine.llm_engine import LLMEngine
-        from hal.pytorch_backend import PyTorchBackend
+        from python_runtime.engine.llm_engine import LLMEngine
+        from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         engine = LLMEngine(
             self._make_test_mlir(),
@@ -377,16 +377,16 @@ class TestLLMEngineRustIntegration:
         assert engine.is_idle
 
     def test_add_request_with_text_requires_tokenizer(self):
-        from engine.llm_engine import LLMEngine
-        from hal.pytorch_backend import PyTorchBackend
+        from python_runtime.engine.llm_engine import LLMEngine
+        from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         engine = LLMEngine(self._make_test_mlir(), PyTorchBackend("cpu"))
         with pytest.raises(RuntimeError, match="requires a tokenizer"):
             engine.add_request("hello world")
 
     def test_stop_token_terminates(self):
-        from engine.llm_engine import LLMEngine
-        from hal.pytorch_backend import PyTorchBackend
+        from python_runtime.engine.llm_engine import LLMEngine
+        from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         engine = LLMEngine(
             self._make_test_mlir(),
@@ -409,8 +409,8 @@ class TestLLMEngineRustIntegration:
                 return  # fallback: engine exhausted
 
     def test_is_idle_transitions(self):
-        from engine.llm_engine import LLMEngine
-        from hal.pytorch_backend import PyTorchBackend
+        from python_runtime.engine.llm_engine import LLMEngine
+        from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         engine = LLMEngine(self._make_test_mlir(), PyTorchBackend("cpu"))
         assert engine.is_idle

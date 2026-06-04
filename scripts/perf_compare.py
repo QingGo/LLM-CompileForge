@@ -96,8 +96,8 @@ def compare(model_name: str, prompt_len: int, max_tokens: int) -> ComparisonResu
     import torch
 
     from compiler.serialize import load_artifact
-    from engine.mlir_executor import MlirExecutor
-    from hal.pytorch_backend import PyTorchBackend
+    from python_runtime.engine.mlir_executor import MlirExecutor
+    from python_runtime.hal.pytorch_backend import PyTorchBackend
     from tests.helpers import cosine_similarity
 
     preset = MODEL_PRESETS[model_name]

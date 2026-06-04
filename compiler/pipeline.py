@@ -60,7 +60,7 @@ def compile_mlir(
         The compiled MlirModule (post-optimization).
     """
     from compiler.export_ir import export_model
-    from utils.logging import get_logger
+    from compiler.utils.logging import get_logger
 
     _log = get_logger("compiler.pipeline")
     _t0 = time.perf_counter()

@@ -16,8 +16,8 @@ class TestE2ERealModel:
     @pytest.mark.timeout(120)
     def test_compiled_forward_varying_seq(self, module_tiny_llama):
         """Compiled model should accept different seq lengths without error."""
-        from engine.mlir_executor import MlirExecutor
-        from hal.pytorch_backend import PyTorchBackend
+        from python_runtime.engine.mlir_executor import MlirExecutor
+        from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         backend = PyTorchBackend("cpu")
         executor = MlirExecutor(module_tiny_llama, backend)
@@ -31,8 +31,8 @@ class TestE2ERealModel:
     @pytest.mark.timeout(120)
     def test_engine_generate_runs_without_error(self, module_tiny_llama):
         """LLMEngine.generate() should complete without crash."""
-        from engine.llm_engine import LLMEngine
-        from hal.pytorch_backend import PyTorchBackend
+        from python_runtime.engine.llm_engine import LLMEngine
+        from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         backend = PyTorchBackend("cpu")
         engine = LLMEngine(module_tiny_llama, backend, max_batch_size=4, chunk_size=8)
@@ -54,8 +54,8 @@ class TestE2ERealModel:
     @pytest.mark.timeout(120)
     def test_engine_step_returns_results(self, module_tiny_llama):
         """step() should produce GenerationResult entries."""
-        from engine.llm_engine import LLMEngine
-        from hal.pytorch_backend import PyTorchBackend
+        from python_runtime.engine.llm_engine import LLMEngine
+        from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         backend = PyTorchBackend("cpu")
         engine = LLMEngine(module_tiny_llama, backend, max_batch_size=4, chunk_size=8)
@@ -83,8 +83,8 @@ class TestE2EOpt125M:
     @pytest.mark.timeout(300)
     def test_compiled_forward_varying_seq(self, module_opt_125m):
         """opt-125m should accept different seq lengths."""
-        from engine.mlir_executor import MlirExecutor
-        from hal.pytorch_backend import PyTorchBackend
+        from python_runtime.engine.mlir_executor import MlirExecutor
+        from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         backend = PyTorchBackend("cpu")
         executor = MlirExecutor(module_opt_125m, backend)
@@ -98,8 +98,8 @@ class TestE2EOpt125M:
     @pytest.mark.timeout(300)
     def test_engine_step_runs_without_error(self, module_opt_125m):
         """LLMEngine.step() should work with compiled opt-125m."""
-        from engine.llm_engine import LLMEngine
-        from hal.pytorch_backend import PyTorchBackend
+        from python_runtime.engine.llm_engine import LLMEngine
+        from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         backend = PyTorchBackend("cpu")
         engine = LLMEngine(module_opt_125m, backend, max_batch_size=2, chunk_size=4)
