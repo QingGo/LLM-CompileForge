@@ -366,8 +366,8 @@ def main() -> None:
     rust_size = os.path.getsize(rust_path)
     print(f"  Generated Rust: {rust_path} ({rust_size} bytes)")
 
-    # Check for uncovered ops (no impl in emit_rust)
-    from compiler.mlir_dialect.hal_ir.emit_rust import OP_IMPLS
+    # Check for uncovered ops (no impl in op_implementations)
+    from compiler.mlir_dialect.hal_ir.op_implementations import OP_IMPLS
     uncovered = op_types - set(OP_IMPLS.keys())
     if uncovered:
         print(f"  ⚠ Uncovered ops (no Rust impl): {sorted(uncovered)}")

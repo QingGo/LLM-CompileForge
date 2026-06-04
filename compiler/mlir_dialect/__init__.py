@@ -16,9 +16,12 @@ Usage::
     mlir_text = str(module)
 """
 
-from compiler.mlir_dialect.builder import SfModule
-from compiler.mlir_dialect.sf import get_op_class
-from compiler.mlir_dialect.shape_inference import infer_output_shape, infer_output_type  # type: ignore[attr-defined]
+from compiler.mlir_dialect.sf.builder import SfModule
+from compiler.mlir_dialect.sf.sf import get_op_class
+from compiler.mlir_dialect.shape.shape_inference import (  # type: ignore[attr-defined]
+    infer_output_shape,
+    infer_output_type,
+)
 
 __all__ = [
     "SfModule",

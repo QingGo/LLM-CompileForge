@@ -22,29 +22,35 @@ from compiler.quantize._utils import (
     get_layer_weight,
     set_layer_weight,
 )
+from compiler.quantize.base import BaseQuantizer
 from kernels.quantize._utils import quantize_per_channel_int8
 
 
-class SmoothQuantCalibrator:
+class SmoothQuantCalibrator(BaseQuantizer):
     """SmoothQuant (W8A8) calibration and quantization.
 
     Args:
+        model: PyTorch nn.Module to quantize.
         alpha: Migration factor (0.0 = all difficulty stays on activation;
                1.0 = all difficulty migrated to weight; 0.5 = balanced).
     """
 
-    def __init__(self, alpha: float = 0.5) -> None:
-        if not 0.0 <= alpha <= 1.0:
-            raise ValueError(f"alpha must be in [0, 1], got {alpha}")
-        self.alpha = alpha
+    def __init__(self, model: nn.Module, alpha: float = 0.5) -> None:
+        super().__init__(model, {"alpha": alpha})
         self.smoothing_factors: dict[str, torch.Tensor] = {}
         self.activation_scales: dict[str, torch.Tensor] = {}
         self.weight_scales: dict[str, torch.Tensor] = {}
         self.weight_quant: dict[str, torch.Tensor] = {}
 
+    def _validate_config(self) -> None:
+        """Validate SmoothQuant-specific config parameters."""
+        alpha = self.config.get("alpha", 0.5)
+        if not 0.0 <= alpha <= 1.0:
+            raise ValueError(f"alpha must be in [0, 1], got {alpha}")
+        self.alpha = alpha
+
     def calibrate(
         self,
-        model: nn.Module,
         dataloader: list[tuple[torch.Tensor, ...]] | None = None,
         num_samples: int = 512,
     ) -> None:
@@ -55,11 +61,11 @@ class SmoothQuantCalibrator:
         Step 3: Apply smoothing transform: W *= s (weight) and store 1/s for activation.
         """
         act_stats = collect_activation_stats(
-            model, dataloader, num_samples, capture_input=True
+            self.model, dataloader, num_samples, capture_input=True
         )
 
         for layer_name, stats in act_stats.items():
-            weight = get_layer_weight(layer_name, model)
+            weight = get_layer_weight(layer_name, self.model)
             if weight is None:
                 continue
 
@@ -73,12 +79,12 @@ class SmoothQuantCalibrator:
             self.smoothing_factors[layer_name] = s
 
         for layer_name, s in self.smoothing_factors.items():
-            weight = get_layer_weight(layer_name, model)
+            weight = get_layer_weight(layer_name, self.model)
             if weight is None:
                 continue
 
             new_weight = weight.float() * s
-            set_layer_weight(model, layer_name, new_weight)
+            set_layer_weight(self.model, layer_name, new_weight)
 
             self.activation_scales[layer_name] = 1.0 / s
 
@@ -105,13 +111,13 @@ class SmoothQuantCalibrator:
         s = torch.clamp(s, min=1e-8)
         return s.to(torch.float32)
 
-    def quantize(self, model: nn.Module) -> None:
+    def quantize(self) -> None:
         """Apply per-channel INT8 quantization to all smoothed linear layers.
 
         Stores quantized weights and scales as registered buffers on each layer.
         """
         for layer_name in self.smoothing_factors:
-            layer = _resolve_layer(model, layer_name)
+            layer = _resolve_layer(self.model, layer_name)
             if layer is None or not hasattr(layer, "weight"):
                 continue
 

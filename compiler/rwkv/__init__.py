@@ -6,28 +6,9 @@ and state management for non-Transformer architectures.
 Reference: design-phase2.md §2.5
 """
 
-from __future__ import annotations
+from compiler._lazy_imports import lazy_imports
 
-from typing import Any
-
-__all__ = [
-    "emit_rwkv_op",
-    "is_rwkv_op",
-]
-
-_LAZY_ATTRS = frozenset(__all__)
-
-
-def __getattr__(name: str) -> Any:
-    if name in _LAZY_ATTRS:
-        import compiler.rwkv.dialect as _dialect
-
-        _globals = {
-            "emit_rwkv_op": _dialect.emit_rwkv_op,
-            "is_rwkv_op": _dialect.is_rwkv_op,
-        }
-        if name in _globals:
-            value = _globals[name]
-            globals()[name] = value
-            return value
-    raise AttributeError(f"module 'compiler.rwkv' has no attribute '{name}'")
+lazy_imports(__name__, globals(), {
+    "emit_rwkv_op": ("compiler.rwkv.dialect", "emit_rwkv_op"),
+    "is_rwkv_op": ("compiler.rwkv.dialect", "is_rwkv_op"),
+})

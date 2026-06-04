@@ -68,7 +68,7 @@ pytestmark = [
 
 @pytest.mark.integration
 def test_vectorize_flattens_nested_module():
-    """_vectorize_via_transform must flatten nested modules after clone-back."""
+    """Canonicalized module must not have nested builtin modules."""
     import mlir.ir as ir
 
     # Need a lowered module to test
@@ -88,12 +88,6 @@ def test_vectorize_flattens_nested_module():
         import mlir.passmanager as pm
 
         pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx).run(module.operation)
-
-        # Vectorize
-        ctx.load_all_available_dialects()
-        from compiler.mlir_dialect.llvm_backend import _vectorize_via_transform
-
-        _vectorize_via_transform(module)
 
         # Check: no nested `module { module {`
         text = str(module)
@@ -160,7 +154,7 @@ func.func @test(%a: tensor<2x4x768xf32>, %b: tensor<2x768x768xf32>) -> tensor<2x
 
 @pytest.mark.integration
 def test_transform_ops_removed_after_vectorize():
-    """_vectorize_via_transform must not leave transform.* ops in output."""
+    """Canonicalized module must not have transform dialect ops in output."""
     import mlir.ir as ir
 
     lowered_path = (
@@ -179,11 +173,6 @@ def test_transform_ops_removed_after_vectorize():
         import mlir.passmanager as pm
 
         pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx).run(module.operation)
-
-        ctx.load_all_available_dialects()
-        from compiler.mlir_dialect.llvm_backend import _vectorize_via_transform
-
-        _vectorize_via_transform(module)
         text = str(module)
         assert "transform.structured" not in text, (
             "transform dialect ops leaked into output module"
@@ -217,12 +206,8 @@ def test_bufferize_produces_memrefs():
     with ir.Location.unknown(ctx1):
         m = ir.Module.parse(lowered_path.read_text())
         pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx1).run(m.operation)
-        ctx1.load_all_available_dialects()
-        from compiler.mlir_dialect.llvm_backend import _vectorize_via_transform
 
-        _vectorize_via_transform(m)
-
-    # Bufferize with full registry
+    # Bufferize
     reg = ir.DialectRegistry()
     _mlirRegisterEverything.register_dialects(reg)
     ctx2 = ir.Context()
@@ -265,16 +250,12 @@ def test_contract_lowering_outerproduct_finishes():
     if not lowered_path.exists():
         pytest.skip("model.lowered.mlir not found")
 
-    # Pre-process + vectorize
+    # Pre-process
     ctx1 = ir.Context()
     ctx1.allow_unregistered_dialects = True
     with ir.Location.unknown(ctx1):
         m = ir.Module.parse(lowered_path.read_text())
         pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx1).run(m.operation)
-        ctx1.load_all_available_dialects()
-        from compiler.mlir_dialect.llvm_backend import _vectorize_via_transform
-
-        _vectorize_via_transform(m)
 
     # Bufferize
     reg = ir.DialectRegistry()

@@ -34,7 +34,7 @@ class TestSmoothQuantMath:
     def test_smoothing_factor_formula(self) -> None:
         from compiler.quantize.smoothquant import SmoothQuantCalibrator
 
-        calib = SmoothQuantCalibrator(alpha=0.5)
+        calib = SmoothQuantCalibrator(nn.Linear(1, 1), alpha=0.5)
         act_max = torch.tensor([4.0, 1.0, 0.25], dtype=torch.float32)
         w_max = torch.tensor([1.0, 4.0, 0.25], dtype=torch.float32)
 
@@ -45,7 +45,7 @@ class TestSmoothQuantMath:
     def test_alpha_zero_migrates_nothing(self) -> None:
         from compiler.quantize.smoothquant import SmoothQuantCalibrator
 
-        calib = SmoothQuantCalibrator(alpha=0.0)
+        calib = SmoothQuantCalibrator(nn.Linear(1, 1), alpha=0.0)
         act_max = torch.tensor([4.0, 1.0], dtype=torch.float32)
         w_max = torch.tensor([2.0, 0.5], dtype=torch.float32)
 
@@ -56,7 +56,7 @@ class TestSmoothQuantMath:
     def test_alpha_one_migrates_all(self) -> None:
         from compiler.quantize.smoothquant import SmoothQuantCalibrator
 
-        calib = SmoothQuantCalibrator(alpha=1.0)
+        calib = SmoothQuantCalibrator(nn.Linear(1, 1), alpha=1.0)
         act_max = torch.tensor([4.0, 1.0], dtype=torch.float32)
         w_max = torch.tensor([2.0, 0.5], dtype=torch.float32)
 
@@ -76,7 +76,7 @@ class TestSmoothQuantMath:
 
         from compiler.quantize.smoothquant import SmoothQuantCalibrator
 
-        calib = SmoothQuantCalibrator(alpha=0.5)
+        calib = SmoothQuantCalibrator(nn.Linear(1, 1), alpha=0.5)
         s = calib._compute_smoothing_factor(act_max, w_max)
 
         smoothed_weight = weight.float() * s
@@ -98,8 +98,8 @@ class TestSmoothQuantCalibration:
         inputs = torch.randn(8, 32)
         dataloader = [(inputs,)]
 
-        calib = SmoothQuantCalibrator(alpha=0.5)
-        calib.calibrate(model, dataloader, num_samples=1)
+        calib = SmoothQuantCalibrator(model, alpha=0.5)
+        calib.calibrate(dataloader, num_samples=1)
 
         assert calib.num_layers_processed == 2
         assert "fc1" in calib.smoothing_factors
@@ -117,8 +117,8 @@ class TestSmoothQuantCalibration:
         with torch.no_grad():
             ref = model(x).clone()
 
-        calib = SmoothQuantCalibrator(alpha=0.5)
-        calib.calibrate(model, [(x,)], num_samples=1)
+        calib = SmoothQuantCalibrator(model, alpha=0.5)
+        calib.calibrate([(x,)], num_samples=1)
 
         with torch.no_grad():
             result = model(x)
@@ -134,9 +134,9 @@ class TestSmoothQuantCalibration:
         model.eval()
 
         x = torch.randn(8, 32)
-        calib = SmoothQuantCalibrator(alpha=0.5)
-        calib.calibrate(model, [(x,)], num_samples=1)
-        calib.quantize(model)
+        calib = SmoothQuantCalibrator(model, alpha=0.5)
+        calib.calibrate([(x,)], num_samples=1)
+        calib.quantize()
 
         layer = get_layer_by_name(model, "fc1")
         assert layer is not None
@@ -153,8 +153,8 @@ class TestSmoothQuantCalibration:
 
         torch.manual_seed(1)
         model = TwoLayerMLP(in_f=32, hidden=64, out_f=16)
-        calib = SmoothQuantCalibrator(alpha=0.5)
-        calib.calibrate(model, dataloader=None, num_samples=1)
+        calib = SmoothQuantCalibrator(model, alpha=0.5)
+        calib.calibrate(dataloader=None, num_samples=1)
 
         assert calib.num_layers_processed >= 1
 
@@ -162,9 +162,9 @@ class TestSmoothQuantCalibration:
         from compiler.quantize.smoothquant import SmoothQuantCalibrator
 
         with pytest.raises(ValueError, match="alpha"):
-            SmoothQuantCalibrator(alpha=1.5)
+            SmoothQuantCalibrator(nn.Linear(1, 1), alpha=1.5)
         with pytest.raises(ValueError, match="alpha"):
-            SmoothQuantCalibrator(alpha=-0.1)
+            SmoothQuantCalibrator(nn.Linear(1, 1), alpha=-0.1)
 
 
 # ── AWQ ──────────────────────────────────────────────────
@@ -180,8 +180,8 @@ class TestAWQ:
         model.eval()
 
         x = torch.randn(8, 32)
-        aq = AWQQuantizer(group_size=128, salient_fraction=0.01)
-        aq.identify_salient_channels(model, [(x,)], num_samples=1)
+        aq = AWQQuantizer(model, group_size=128, salient_fraction=0.01)
+        aq.identify_salient_channels([(x,)], num_samples=1)
 
         assert "fc1" in aq.salient_channels
         assert "fc2" in aq.salient_channels
@@ -196,8 +196,8 @@ class TestAWQ:
         model = TwoLayerMLP(in_f=8, hidden=16, out_f=8)
         model.eval()
 
-        aq = AWQQuantizer(group_size=16, salient_fraction=0.01)
-        aq.identify_salient_channels(model, [(torch.randn(4, 8),)], num_samples=1)
+        aq = AWQQuantizer(model, group_size=16, salient_fraction=0.01)
+        aq.identify_salient_channels([(torch.randn(4, 8),)], num_samples=1)
         assert aq.num_layers_processed == 0
 
         for indices in aq.salient_channels.values():
@@ -210,9 +210,9 @@ class TestAWQ:
         model = TwoLayerMLP(in_f=32, hidden=64, out_f=16)
         model.eval()
 
-        aq = AWQQuantizer(group_size=64, salient_fraction=0.01)
-        aq.identify_salient_channels(model, [(torch.randn(8, 32),)], num_samples=1)
-        aq.find_optimal_scales(model, [(torch.randn(8, 32),)], scale_range=(1.0, 1.3), n_grid=10)
+        aq = AWQQuantizer(model, group_size=64, salient_fraction=0.01)
+        aq.identify_salient_channels([(torch.randn(8, 32),)], num_samples=1)
+        aq.find_optimal_scales([(torch.randn(8, 32),)], scale_range=(1.0, 1.3), n_grid=10)
 
         assert aq.num_layers_processed >= 1
         assert "fc1" in aq.optimal_scales
@@ -226,10 +226,10 @@ class TestAWQ:
         model = TwoLayerMLP(in_f=32, hidden=64, out_f=16)
         model.eval()
 
-        aq = AWQQuantizer(group_size=32, salient_fraction=0.01)
-        aq.identify_salient_channels(model, [(torch.randn(8, 32),)], num_samples=1)
-        aq.find_optimal_scales(model, [(torch.randn(8, 32),)], scale_range=(1.0, 1.2), n_grid=5)
-        aq.quantize(model)
+        aq = AWQQuantizer(model, group_size=32, salient_fraction=0.01)
+        aq.identify_salient_channels([(torch.randn(8, 32),)], num_samples=1)
+        aq.find_optimal_scales([(torch.randn(8, 32),)], scale_range=(1.0, 1.2), n_grid=5)
+        aq.quantize()
 
         layer = get_layer_by_name(model, "fc1")
         assert layer is not None
@@ -250,10 +250,10 @@ class TestAWQ:
         with torch.no_grad():
             ref = model(x).clone()
 
-        aq = AWQQuantizer(group_size=32, salient_fraction=0.05)
-        aq.identify_salient_channels(model, [(x,)], num_samples=1)
-        aq.find_optimal_scales(model, [(x,)], scale_range=(1.0, 1.2), n_grid=10)
-        aq.quantize(model)
+        aq = AWQQuantizer(model, group_size=32, salient_fraction=0.05)
+        aq.identify_salient_channels([(x,)], num_samples=1)
+        aq.find_optimal_scales([(x,)], scale_range=(1.0, 1.2), n_grid=10)
+        aq.quantize()
 
         fc1_out = w4a16_gemm(
             x, aq.weight_quant["fc1"], aq.weight_scales["fc1"],
@@ -271,9 +271,9 @@ class TestAWQ:
         from compiler.quantize.awq import AWQQuantizer
 
         with pytest.raises(ValueError, match="salient_fraction"):
-            AWQQuantizer(salient_fraction=0.0)
+            AWQQuantizer(nn.Linear(1, 1), salient_fraction=0.0)
         with pytest.raises(ValueError, match="salient_fraction"):
-            AWQQuantizer(salient_fraction=1.5)
+            AWQQuantizer(nn.Linear(1, 1), salient_fraction=1.5)
 
 
 # ── FP8 KV Cache ─────────────────────────────────────────

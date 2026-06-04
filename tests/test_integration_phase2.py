@@ -49,12 +49,12 @@ class TestSmoothQuantCompiled:
         model = SingleLayer(w)
         model.eval()
 
-        calib = SmoothQuantCalibrator(alpha=0.5)
-        calib.calibrate(model, [(torch.randn(1, w.size(1)),)], num_samples=1)
+        calib = SmoothQuantCalibrator(model, alpha=0.5)
+        calib.calibrate([(torch.randn(1, w.size(1)),)], num_samples=1)
 
         assert calib.num_layers_processed == 1
 
-        calib.quantize(model)
+        calib.quantize()
         assert hasattr(model.linear, "weight_quant")
         assert model.linear.weight_quant.dtype == torch.int8
 
@@ -105,15 +105,15 @@ class TestAWQCompiled:
         model = SingleLayer(w)
         model.eval()
 
-        aq = AWQQuantizer(group_size=16, salient_fraction=0.05)
-        aq.identify_salient_channels(model, [(torch.randn(1, w.size(1)),)], num_samples=1)
+        aq = AWQQuantizer(model, group_size=16, salient_fraction=0.05)
+        aq.identify_salient_channels([(torch.randn(1, w.size(1)),)], num_samples=1)
 
         assert len(aq.salient_channels) >= 1
 
         aq.find_optimal_scales(
-            model, [(torch.randn(1, w.size(1)),)], scale_range=(1.0, 1.2), n_grid=5
+            [(torch.randn(1, w.size(1)),)], scale_range=(1.0, 1.2), n_grid=5
         )
-        aq.quantize(model)
+        aq.quantize()
 
         assert aq.num_layers_processed >= 1
 

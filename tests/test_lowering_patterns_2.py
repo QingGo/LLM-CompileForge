@@ -469,8 +469,6 @@ def test_vector_contract_lowering_outerproduct():
     import mlir.ir as ir
     import mlir.passmanager as pm
 
-    from compiler.mlir_dialect.llvm_backend import _vectorize_via_transform
-
     mlir_text = """module {
   func.func @test(%a: tensor<1x12x4x64xf32>, %b: tensor<1x12x64x4xf32>) -> tensor<1x12x4x4xf32> {
     %0 = "sf.matmul"(%a, %b) : (tensor<1x12x4x64xf32>, tensor<1x12x64x4xf32>) -> tensor<1x12x4x4xf32>
@@ -484,7 +482,6 @@ def test_vector_contract_lowering_outerproduct():
     ctx.allow_unregistered_dialects = True
     with ir.Location.unknown(ctx):
         mod = ir.Module.parse(lowered, ctx)
-        _vectorize_via_transform(mod)
         text = str(mod)
         n_contract = text.count("vector.contract")
         if n_contract == 0:

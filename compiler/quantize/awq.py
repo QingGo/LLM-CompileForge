@@ -27,12 +27,13 @@ from compiler.quantize._utils import (
     get_layer_weight,
     set_layer_weight,
 )
+from compiler.quantize.base import BaseQuantizer
 from kernels.quantize._utils import quantize_groupwise_int4
 
 _log = logging.getLogger(__name__)
 
 
-class AWQQuantizer:
+class AWQQuantizer(BaseQuantizer):
     """AWQ W4A16 weight quantizer.
 
     Pipeline:
@@ -42,28 +43,56 @@ class AWQQuantizer:
       3. quantize: apply optimal scales and group-wise INT4 quantization.
 
     Args:
+        model: PyTorch nn.Module to quantize.
         group_size: number of features per quantization group (default 128).
         salient_fraction: fraction of channels deemed salient (default 0.01 = 1%).
     """
 
     def __init__(
         self,
+        model: nn.Module,
         group_size: int = 128,
         salient_fraction: float = 0.01,
     ) -> None:
-        if not 0.0 < salient_fraction <= 1.0:
-            raise ValueError(f"salient_fraction must be in (0, 1], got {salient_fraction}")
-        self.group_size = group_size
-        self.salient_fraction = salient_fraction
+        super().__init__(
+            model,
+            {"group_size": group_size, "salient_fraction": salient_fraction},
+        )
         self.salient_channels: dict[str, torch.Tensor] = {}
         self.optimal_scales: dict[str, float] = {}
         self.weight_quant: dict[str, torch.Tensor] = {}
         self.weight_scales: dict[str, torch.Tensor] = {}
         self.weight_zeros: dict[str, torch.Tensor] = {}
 
+    def _validate_config(self) -> None:
+        """Validate AWQ-specific config parameters."""
+        group_size = self.config.get("group_size", 128)
+        salient_fraction = self.config.get("salient_fraction", 0.01)
+
+        if not isinstance(group_size, int) or group_size < 1:
+            raise ValueError(f"group_size must be positive int, got {group_size}")
+        if not 0.0 < salient_fraction <= 1.0:
+            raise ValueError(
+                f"salient_fraction must be in (0, 1], got {salient_fraction}"
+            )
+
+        self.group_size = group_size
+        self.salient_fraction = salient_fraction
+
+    def calibrate(
+        self,
+        dataloader: list[tuple[torch.Tensor, ...]] | None = None,
+        num_samples: int = 128,
+    ) -> None:
+        """Run full AWQ calibration pipeline.
+
+        Calls identify_salient_channels() then find_optimal_scales().
+        """
+        self.identify_salient_channels(dataloader, num_samples)
+        self.find_optimal_scales(dataloader)
+
     def identify_salient_channels(
         self,
-        model: nn.Module,
         dataloader: list[tuple[torch.Tensor, ...]] | None = None,
         num_samples: int = 128,
     ) -> None:
@@ -73,12 +102,11 @@ class AWQQuantizer:
         (absolute value) averaged over the calibration set.
 
         Args:
-            model: PyTorch nn.Module to analyze.
             dataloader: Calibration data.  If None, uses a single random input.
             num_samples: Maximum number of calibration samples.
         """
         act_stats = collect_activation_stats(
-            model, dataloader, num_samples, capture_input=False
+            self.model, dataloader, num_samples, capture_input=False
         )
 
         for layer_name, stats in act_stats.items():
@@ -90,7 +118,6 @@ class AWQQuantizer:
 
     def find_optimal_scales(
         self,
-        model: nn.Module,
         dataloader: list[tuple[torch.Tensor, ...]] | None = None,
         scale_range: tuple[float, float] = (1.0, 1.3),
         n_grid: int = 20,
@@ -102,7 +129,6 @@ class AWQQuantizer:
         L2 output error.  Selects the scale that minimizes error.
 
         Args:
-            model: PyTorch nn.Module with original weights.
             dataloader: Calibration inputs for computing L2 error.
                 If None, uses a single random input.
             scale_range: (min_scale, max_scale) search bounds.
@@ -121,36 +147,40 @@ class AWQQuantizer:
                     layer_inputs[layer_name] = inp.detach().float()
             return _hook
 
-        for name, module in model.named_modules():
+        for name, module in self.model.named_modules():
             if name in self.salient_channels:
                 input_hooks.append(module.register_forward_hook(_capture_input(name)))
 
         try:
             if dataloader is None:
                 dummy = torch.randn(1, 32)
-                model.eval()
+                self.model.eval()
                 with torch.no_grad():
                     try:
-                        model(dummy)
+                        self.model(dummy)
                     except Exception:
-                        _log.debug("Model rejected dummy input during AWQ calibration (expected for non-forward models)", exc_info=True)  # noqa: E501
+                        _log.debug(
+                            "Model rejected dummy input during AWQ calibration "
+                            "(expected for non-forward models)",
+                            exc_info=True,
+                        )
             else:
-                model.eval()
+                self.model.eval()
                 with torch.no_grad():
                     for batch in dataloader:
                         if isinstance(batch, (list, tuple)):
-                            model(*batch)
+                            self.model(*batch)
                         elif isinstance(batch, dict):
-                            model(**batch)
+                            self.model(**batch)
                         else:
-                            model(batch)
+                            self.model(batch)
                         break
         finally:
             for hook in input_hooks:
                 hook.remove()
 
         for layer_name, salient_idx in self.salient_channels.items():
-            weight = get_layer_weight(layer_name, model)
+            weight = get_layer_weight(layer_name, self.model)
             if weight is None or layer_name not in layer_inputs:
                 continue
 
@@ -168,8 +198,11 @@ class AWQQuantizer:
                 from kernels.quantize._utils import dequantize_groupwise
 
                 w_deq = dequantize_groupwise(
-                    qp, qs, self.group_size,
-                    out_features=w_scaled.size(0), in_features=w_scaled.size(1),
+                    qp,
+                    qs,
+                    self.group_size,
+                    out_features=w_scaled.size(0),
+                    in_features=w_scaled.size(1),
                 )
                 loss = cast(float, F.mse_loss(x_inp @ w_deq.T, ref).item())
                 if loss < best_loss:
@@ -178,7 +211,7 @@ class AWQQuantizer:
 
             self.optimal_scales[layer_name] = best_scale
 
-    def quantize(self, model: nn.Module) -> None:
+    def quantize(self) -> None:
         """Apply optimal scales and group-wise INT4 quantization.
 
         Modifies model weights in-place: applies per-channel scaling,
@@ -186,7 +219,7 @@ class AWQQuantizer:
         registered buffers.
         """
         for layer_name, scale in self.optimal_scales.items():
-            weight = get_layer_weight(layer_name, model)
+            weight = get_layer_weight(layer_name, self.model)
             if weight is None:
                 continue
 
@@ -200,12 +233,12 @@ class AWQQuantizer:
             self.weight_scales[layer_name] = qs
             self.weight_zeros[layer_name] = qz
 
-            layer: nn.Module = get_layer_by_name_inline(model, layer_name)
+            layer: nn.Module = get_layer_by_name_inline(self.model, layer_name)
             layer.register_buffer("weight_quant", qp)
             layer.register_buffer("weight_scale", qs)
             layer.register_buffer("weight_zero", qz)
 
-            set_layer_weight(model, layer_name, w)
+            set_layer_weight(self.model, layer_name, w)
 
     @property
     def num_layers_processed(self) -> int:

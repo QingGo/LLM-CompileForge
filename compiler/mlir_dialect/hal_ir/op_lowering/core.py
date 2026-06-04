@@ -25,7 +25,8 @@ _log = logging.getLogger(__name__)
 
 # ── Op mapping tables ───────────────────────────────────────────────
 
-_UNARY_ARITH_MAP: dict[str, str] = {
+_ELEMENT_WISE_MAP: dict[str, str] = {
+    # Unary activations
     "sf.relu": "relu",
     "sf.gelu": "gelu",
     "sf.silu": "silu",
@@ -38,9 +39,7 @@ _UNARY_ARITH_MAP: dict[str, str] = {
     "sf.rsqrt": "rsqrt",
     "sf.cos": "cos",
     "sf.sin": "sin",
-}
-
-_BINARY_ARITH_MAP: dict[str, str] = {
+    # Binary arithmetic
     "sf.add": "add",
     "sf.sub": "sub",
     "sf.mul": "mul",
@@ -88,13 +87,19 @@ def parse_mlir_int_attr(attr_str: str | None) -> int | None:
     if attr_str is None:
         return None
     s = str(attr_str).strip()
-    # Strip type suffix like " : i64"
     if " : " in s:
         s = s.split(" : ")[0]
     try:
         return int(s)
     except ValueError:
         return None
+
+
+def _get_int_attr(op: Any, name: str, default: int = 0) -> int:
+    """Extract an integer attribute from *op* with a default value."""
+    raw = op.attributes.get(name)
+    val = parse_mlir_int_attr(str(raw) if raw is not None else None)
+    return val if val is not None else default
 
 
 def infer_dtype_from_type(t: Any) -> str:

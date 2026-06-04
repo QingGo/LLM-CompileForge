@@ -89,30 +89,6 @@ def parse_sfcf_blob(blob: bytes) -> tuple[dict[str, str], dict[str, np.ndarray[A
     return name_mapping, constants, pos, v
 
 
-def parse_contract_section(data: bytes, pos: int) -> dict[str, str]:
-    """Parse the trailing contract section appended after the compute graph trailer.
-
-    Contract format:
-        contract_count: u32
-        for each entry:
-            key_len: u32
-            key: UTF-8
-            val_len: u32
-            val: UTF-8
-
-    Returns a dict of key-value pairs, or empty dict if pos >= len(data)
-    (backward compatible: v2/v3 binaries have no contract section).
-    """
-    if pos >= len(data):
-        return {}
-    contract_count, pos = _read_u32(data, pos)
-    contract: dict[str, str] = {}
-    for _ in range(contract_count):
-        key, pos = _read_str(data, pos)
-        val, pos = _read_str(data, pos)
-        contract[key] = val
-    return contract
-
 
 def parse_compute_graph(data: bytes, pos: int, version: int = 3) -> tuple[dict[str, Any], int]:
     """Parse compute graph → list of func dicts + global I/O indices.

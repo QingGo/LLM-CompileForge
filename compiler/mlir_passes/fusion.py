@@ -246,12 +246,3 @@ def fuse_attention_pass(mlir_text: str) -> str:
 
     return _run_pattern(mlir_text, "sf.linear", callback)
 
-
-# ── ALL_PASSES registry ──────────────────────────────────────
-
-ALL_FUSION_PASSES = [
-    ("fuse_silu", fuse_silu_pass),
-    ("fuse_rms_norm", fuse_rms_norm_pass),
-    ("fuse_qkv", fuse_qkv_pass),
-    ("fuse_attention", fuse_attention_pass),
-]

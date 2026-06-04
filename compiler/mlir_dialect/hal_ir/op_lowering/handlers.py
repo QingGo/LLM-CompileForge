@@ -15,15 +15,33 @@ from typing import Any
 
 from compiler.mlir_artifact import MlirOp  # type: ignore[attr-defined]
 from compiler.mlir_dialect.hal_ir.op_lowering.core import (
-    _BINARY_ARITH_MAP,
     _COMPARE_MAP,
-    _UNARY_ARITH_MAP,
+    _ELEMENT_WISE_MAP,
+    _get_int_attr,
     infer_dtype_from_type,
     parse_attr_shape,
-    parse_mlir_int_attr,
     shape_from_type,
     strip_mlir_quotes,
 )
+
+# ── Handler factory ──────────────────────────────────────────────────
+
+
+def _make_mapped_handler(hal_name: str, **fixed_attrs: Any) -> Callable[..., Any]:
+    """Factory for simple MlirOp-returning handler functions."""
+
+    def handler(
+        op: Any, op_name: str, input_names: list[str], output_names: list[str],
+        *context: Any,
+    ) -> MlirOp:
+        return MlirOp(
+            name=f"hal.{hal_name}", dialect="hal", op_name=hal_name,
+            operands=input_names, results=output_names,
+            attributes=dict(fixed_attrs) if fixed_attrs else {},
+        )
+
+    return handler
+
 
 # ── Ops that produce no HAL entry ─────────────────────────────────────
 
@@ -69,26 +87,11 @@ def _handle_identity(op: Any, op_name: str, input_names: list[str], output_names
     return None
 
 
-# ── Shape / metadata ops ────────────────────────────────────────────
-
-
-def _handle_sym_size(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
-    return MlirOp(
-        name="hal.shape_of", dialect="hal", op_name="shape_of",
-        operands=input_names, results=output_names,
-    )
+# ── Shape-of filtering helpers ───────────────────────────────────────
 
 
 def _is_shape_of_output(value: object) -> bool:
-    """Check if an MLIR Value is produced by ``sf.sym_size`` (shape_of).
-
-    Uses ``.owner`` (the MLIR Python API property) rather than
-    ``get_defining_op()`` which does not exist on OpResult in this
-    MLIR version.  Without this fix, ALL operands silently fail the
-    check, causing ``_handle_view_expand`` to drop shape_of inputs
-    from the reshape op — making the causal mask [1,1,1,1] instead
-    of [1,1,seq,seq].
-    """
+    """Check if an MLIR Value is produced by ``sf.sym_size`` (shape_of)."""
     try:
         owner = value.owner  # type: ignore[attr-defined]
         if owner is None:
@@ -106,6 +109,11 @@ def _filter_shape_inputs(op: object, input_names: list[str]) -> list[str]:
         if i < len(input_names) and _is_shape_of_output(operand):
             filtered.append(input_names[i])
     return filtered
+
+
+# ── Shape / metadata ops ────────────────────────────────────────────
+
+_handle_sym_size = _make_mapped_handler("shape_of")
 
 
 def _handle_view_expand(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
@@ -129,12 +137,7 @@ def _handle_view_expand(op: Any, op_name: str, input_names: list[str], output_na
 
 
 def _handle_unsqueeze(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
-    dim = (
-        parse_mlir_int_attr(
-            str(op.attributes.get("dim")) if op.attributes.get("dim") is not None else None
-        )
-        or 0
-    )
+    dim = _get_int_attr(op, "dim")
     return MlirOp(
         name="hal.unsqueeze", dialect="hal", op_name="unsqueeze",
         operands=input_names, results=output_names,
@@ -143,18 +146,8 @@ def _handle_unsqueeze(op: Any, op_name: str, input_names: list[str], output_name
 
 
 def _handle_transpose(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
-    dim0 = (
-        parse_mlir_int_attr(
-            str(op.attributes.get("dim0")) if op.attributes.get("dim0") is not None else None
-        )
-        or 0
-    )
-    dim1 = (
-        parse_mlir_int_attr(
-            str(op.attributes.get("dim1")) if op.attributes.get("dim1") is not None else None
-        )
-        or 1
-    )
+    dim0 = _get_int_attr(op, "dim0")
+    dim1 = _get_int_attr(op, "dim1", default=1)
     return MlirOp(
         name="hal.transpose", dialect="hal", op_name="transpose",
         operands=input_names, results=output_names,
@@ -163,21 +156,11 @@ def _handle_transpose(op: Any, op_name: str, input_names: list[str], output_name
 
 
 def _handle_slice(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
-    dim = (
-        parse_mlir_int_attr(
-            str(op.attributes.get("dim")) if op.attributes.get("dim") is not None else None
-        )
-        or 0
-    )
-    start = (
-        parse_mlir_int_attr(
-            str(op.attributes.get("start")) if op.attributes.get("start") is not None else None
-        )
-        or 0
-    )
+    dim = _get_int_attr(op, "dim")
+    start = _get_int_attr(op, "start")
     end_raw_attr = op.attributes.get("end")
     end_raw = str(end_raw_attr) if end_raw_attr is not None else "MAX"
-    parsed_end = parse_mlir_int_attr(end_raw)
+    parsed_end = _get_int_attr(op, "end")
     if parsed_end is not None and abs(parsed_end) > 1_000_000_000:
         end_raw = "MAX"
     return MlirOp(
@@ -188,12 +171,7 @@ def _handle_slice(op: Any, op_name: str, input_names: list[str], output_names: l
 
 
 def _handle_cat(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:
-    dim = (
-        parse_mlir_int_attr(
-            str(op.attributes.get("dim")) if op.attributes.get("dim") is not None else None
-        )
-        or 0
-    )
+    dim = _get_int_attr(op, "dim")
     return MlirOp(
         name="hal.concat", dialect="hal", op_name="concat",
         operands=input_names, results=output_names,
@@ -201,27 +179,14 @@ def _handle_cat(op: Any, op_name: str, input_names: list[str], output_names: lis
     )
 
 
-def _handle_mean(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
-    return MlirOp(
-        name="hal.reduce", dialect="hal", op_name="reduce",
-        operands=input_names, results=output_names,
-        attributes={"kind": "mean"},
-    )
-
-
-def _handle_sum(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:
-    return MlirOp(
-        name="hal.reduce", dialect="hal", op_name="reduce",
-        operands=input_names, results=output_names,
-        attributes={"kind": "sum"},
-    )
+_handle_mean = _make_mapped_handler("reduce", kind="mean")
+_handle_sum = _make_mapped_handler("reduce", kind="sum")
 
 
 # ── Named ops ────────────────────────────────────────────────────────
 
 
 def _handle_embedding(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
-    # Look up the weight name from the first input's SSA.
     _, weights, _, _, _, _ = context
     weight_name = ""
     if input_names:
@@ -236,26 +201,9 @@ def _handle_embedding(op: Any, op_name: str, input_names: list[str], output_name
     )
 
 
-def _handle_index(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
-    return MlirOp(
-        name="hal.gather", dialect="hal", op_name="gather",
-        operands=input_names, results=output_names,
-        attributes={"mode": "indexed"},
-    )
-
-
-def _handle_matmul(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
-    return MlirOp(
-        name="hal.matmul", dialect="hal", op_name="matmul",
-        operands=input_names, results=output_names,
-    )
-
-
-def _handle_softmax(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
-    return MlirOp(
-        name="hal.softmax", dialect="hal", op_name="softmax",
-        operands=input_names, results=output_names,
-    )
+_handle_index = _make_mapped_handler("gather", mode="indexed")
+_handle_matmul = _make_mapped_handler("matmul")
+_handle_softmax = _make_mapped_handler("softmax")
 
 
 def _handle_ones_like(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
@@ -270,34 +218,10 @@ def _handle_ones_like(op: Any, op_name: str, input_names: list[str], output_name
     )
 
 
-def _handle_arange(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
-    return MlirOp(
-        name="hal.fill", dialect="hal", op_name="fill",
-        operands=input_names, results=output_names,
-        attributes={"kind": "arange"},
-    )
-
-
-def _handle_rms_norm(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
-    return MlirOp(
-        name="hal.rms_norm", dialect="hal", op_name="rms_norm",
-        operands=input_names, results=output_names,
-    )
-
-
-def _handle_layer_norm(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
-    return MlirOp(
-        name="hal.layer_norm", dialect="hal", op_name="layer_norm",
-        operands=input_names, results=output_names,
-    )
-
-
-def _handle_cumsum(op: Any, op_name: str, input_names: list[str], output_names: list[str], *context: Any) -> MlirOp | None:  # noqa: E501
-    return MlirOp(
-        name="hal.scan", dialect="hal", op_name="scan",
-        operands=input_names, results=output_names,
-        attributes={"kind": "cumsum"},
-    )
+_handle_arange = _make_mapped_handler("fill", kind="arange")
+_handle_rms_norm = _make_mapped_handler("rms_norm")
+_handle_layer_norm = _make_mapped_handler("layer_norm")
+_handle_cumsum = _make_mapped_handler("scan", kind="cumsum")
 
 
 # ── Dispatch table builder ──────────────────────────────────────────
@@ -321,31 +245,13 @@ def register_handlers(dispatch: dict[str, Callable[..., Any]]) -> None:
     dispatch["sf.mean"] = _handle_mean
     dispatch["sf.sum"] = _handle_sum
 
-    # Arithmetic / compare ops (via maps)
-    for sf_name, kind in _BINARY_ARITH_MAP.items():
-        dispatch[sf_name] = (
-            lambda op, on, ins, outs, *ctx, kind=kind: MlirOp(
-                name="hal.element_wise", dialect="hal", op_name="element_wise",
-                operands=ins, results=outs,
-                attributes={"kind": kind},
-            )
-        )
-    for sf_name, kind in _UNARY_ARITH_MAP.items():
-        dispatch[sf_name] = (
-            lambda op, on, ins, outs, *ctx, kind=kind: MlirOp(
-                name="hal.element_wise", dialect="hal", op_name="element_wise",
-                operands=ins, results=outs,
-                attributes={"kind": kind},
-            )
-        )
-    for sf_name, kind in _COMPARE_MAP.items():
-        dispatch[sf_name] = (
-            lambda op, on, ins, outs, *ctx, kind=kind: MlirOp(
-                name="hal.compare", dialect="hal", op_name="compare",
-                operands=ins, results=outs,
-                attributes={"kind": kind},
-            )
-        )
+    # Arithmetic / compare ops (single combined loop)
+    _op_table = {
+        **{k: ("element_wise", v) for k, v in _ELEMENT_WISE_MAP.items()},
+        **{k: ("compare", v) for k, v in _COMPARE_MAP.items()},
+    }
+    for sf_name, (hal_op, kind) in _op_table.items():
+        dispatch[sf_name] = _make_mapped_handler(hal_op, kind=kind)
 
     # Named ops
     dispatch["sf.embedding"] = _handle_embedding

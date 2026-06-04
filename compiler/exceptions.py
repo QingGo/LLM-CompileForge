@@ -39,15 +39,6 @@ class PipelineStageError(CompileError):
         super().__init__(msg)
 
 
-class PipelineTimeoutError(PipelineStageError):
-    """A pipeline stage exceeded its allowed time budget."""
-
-    def __init__(self, stage_name: str, timeout: float, snapshot_path: str = "") -> None:
-        self.timeout = timeout
-        msg = f"Timed out after {timeout}s"
-        super().__init__(stage_name, msg, snapshot_path)
-
-
 class MLIRTranslateError(CompileError):
     """mlir-translate failed to produce valid LLVM IR."""
 
@@ -87,13 +78,3 @@ class MissingBindingsError(CompileError):
     def __init__(self) -> None:
         super().__init__("MLIR Python bindings not available")
 
-
-class ArtifactError(CompileError):
-    """Model artifact not found or malformed."""
-
-    def __init__(self, path: str, detail: str = "") -> None:
-        self.path = path
-        msg = f"Artifact error: {path}"
-        if detail:
-            msg += f" — {detail}"
-        super().__init__(msg)

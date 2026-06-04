@@ -18,6 +18,8 @@ from typing import Any, ClassVar
 
 import mlir.ir as ir
 
+from compiler.mlir_dialect.shape.shape_inference_utils import _get_elt_type_map
+
 
 def _tensor_type(
     element_type: str = "f32",
@@ -29,17 +31,7 @@ def _tensor_type(
         element_type: "f32", "f16", "bf16", "i32", "i64", "i8", "bool"
         shape: tuple of int dimensions (None = dynamic)
     """
-    elt_map = {
-        "f32": ir.F32Type.get(),
-        "f64": ir.F64Type.get(),
-        "f16": ir.F16Type.get(),
-        "bf16": ir.BF16Type.get(),
-        "i8": ir.IntegerType.get_signless(8),
-        "i32": ir.IntegerType.get_signless(32),
-        "i64": ir.IntegerType.get_signless(64),
-        "bool": ir.IntegerType.get_signless(1),
-    }
-    elt = elt_map.get(element_type, ir.F32Type.get())
+    elt = _get_elt_type_map().get(element_type, ir.F32Type.get())
     if shape is None:
         return ir.UnrankedTensorType.get(elt)
     return ir.RankedTensorType.get(list(shape), elt)

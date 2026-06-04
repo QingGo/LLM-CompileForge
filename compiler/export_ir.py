@@ -89,38 +89,3 @@ def export_model(
     return program
 
 
-def get_signature(program: ExportedProgram) -> dict[str, Any]:
-    """Extract input/output signature from an ExportedProgram.
-
-    Returns a dict with keys:
-      - "inputs": list of (name, shape, dtype)
-      - "outputs": list of (name, shape, dtype)
-    """
-    sig = program.graph_signature
-    graph = program.graph_module.graph
-
-    inputs = []
-    for inp in sig.user_inputs:
-        node = None
-        for n in graph.nodes:
-            if n.name == inp:
-                node = n
-                break
-        fake_tensor = node.meta.get("val") if node else None
-        shape = tuple(fake_tensor.shape) if fake_tensor is not None else ()
-        dtype = str(fake_tensor.dtype) if fake_tensor is not None else "float32"
-        inputs.append((inp, shape, dtype))
-
-    outputs = []
-    for out in sig.user_outputs:
-        node = None
-        for n in graph.nodes:
-            if n.name == out:
-                node = n
-                break
-        fake_tensor = node.meta.get("val") if node else None
-        shape = tuple(fake_tensor.shape) if fake_tensor is not None else ()
-        dtype = str(fake_tensor.dtype) if fake_tensor is not None else "float32"
-        outputs.append((out, shape, dtype))
-
-    return {"inputs": inputs, "outputs": outputs}

@@ -59,8 +59,8 @@ def quantize_llama_1b() -> dict:
     ]
 
     print(f"Calibrating with {num_samples} samples...")
-    calibrator = SmoothQuantCalibrator(alpha=0.5)
-    calibrator.calibrate(model, calibration_data, num_samples=num_samples)
+    calibrator = SmoothQuantCalibrator(model, alpha=0.5)
+    calibrator.calibrate(calibration_data, num_samples=num_samples)
 
     num_layers = calibrator.num_layers_processed
     print(f"Smoothed {num_layers} layers")
@@ -71,7 +71,7 @@ def quantize_llama_1b() -> dict:
         ref_logits = model(test_input).logits
 
     print("Quantizing weights...")
-    calibrator.quantize(model)
+    calibrator.quantize()
 
     with torch.no_grad():
         quant_logits = model(test_input).logits

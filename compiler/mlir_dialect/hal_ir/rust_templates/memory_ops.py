@@ -6,26 +6,32 @@ CPU function templates.
 
 from __future__ import annotations
 
-OP_RESHAPE = """\
-// ── reshape (metadata only — flat copy) ────────────────────────────
 
-pub fn reshape_cpu(
+def _flat_copy_template(op_name: str) -> str:
+    """Shared template for ops that are metadata-only flat copies."""
+    return f"""\
+// ── {op_name} (metadata only — flat copy) ────────────────────────────
+
+pub fn {op_name}_cpu(
     inputs: &[&[f32]],
     output: &mut [f32],
     shape_meta: &OpShapeMeta,
-) -> Result<(), String> {
+) -> Result<(), String> {{
     let inp = inputs[0];
-    if inp.len() != output.len() {
+    if inp.len() != output.len() {{
         return Err(format!(
-            "reshape: element count mismatch: input {} != output {}",
+            "{op_name}: element count mismatch: input {{}} != output {{}}",
             inp.len(),
             output.len(),
         ));
-    }
+    }}
     output.copy_from_slice(inp);
     Ok(())
-}
+}}
 """
+
+
+OP_RESHAPE = _flat_copy_template("reshape")
 
 OP_TRANSPOSE = """\
 // ── transpose (generic nd transpose) ───────────────────────────────
@@ -237,23 +243,4 @@ pub fn fill_cpu(
 }
 """
 
-OP_UNSQUEEZE = """\
-// ── unsqueeze (metadata only — flat copy) ─────────────────────────
-
-pub fn unsqueeze_cpu(
-    inputs: &[&[f32]],
-    output: &mut [f32],
-    shape_meta: &OpShapeMeta,
-) -> Result<(), String> {
-    let inp = inputs[0];
-    if inp.len() != output.len() {
-        return Err(format!(
-            "unsqueeze: element count mismatch: input {} != output {}",
-            inp.len(),
-            output.len(),
-        ));
-    }
-    output.copy_from_slice(inp);
-    Ok(())
-}
-"""
+OP_UNSQUEEZE = _flat_copy_template("unsqueeze")
