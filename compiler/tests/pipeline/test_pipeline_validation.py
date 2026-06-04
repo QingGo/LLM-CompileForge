@@ -25,6 +25,20 @@ import pytest
 # ── helpers ──────────────────────────────────────────────────────────────
 from tests.helpers import has_mlir_bindings
 
+try:
+    from mlir_sf._mlir_libs._sfDialectsNanobind import sf  # noqa: F401
+    _HAS_SF_DIALECT = True
+except ImportError:
+    _HAS_SF_DIALECT = False
+
+
+def _requires_sf_dialect():
+    """Skip test if sf-dialect C++ bindings are not available."""
+    if not has_mlir_bindings():
+        pytest.skip("MLIR bindings not available")
+    if not _HAS_SF_DIALECT:
+        pytest.skip("sf-dialect C++ bindings not available — build: make build-so")
+
 
 def _load_lowered(model_dir: str):
     """Load model.lowered.mlir and return (module, context)."""
@@ -53,8 +67,7 @@ def _load_lowered(model_dir: str):
 @pytest.mark.timeout(30)
 def test_no_arith_ops_after_lowering():
     """No arith.* ops should survive the full lowering pipeline."""
-    if not has_mlir_bindings():
-        pytest.skip("MLIR bindings not available")
+    _requires_sf_dialect()
 
     mod, ctx, ir = _load_lowered("outputs/compiled/opt_125m_fresh")
     import mlir.passmanager as pm
@@ -108,14 +121,13 @@ def test_no_arith_ops_after_lowering():
 @pytest.mark.unit
 @pytest.mark.timeout(30)
 def test_tile_sizes_within_bounds():
-    """After tiling K=64,N=64, all inner matmuls should have dims ≤ 64."""
-    if not has_mlir_bindings():
-        pytest.skip("MLIR bindings not available")
+    """Tiled matmuls should produce bounded tile sizes."""
+    _requires_sf_dialect()
 
     mod, ctx, ir = _load_lowered("outputs/compiled/opt_125m_fresh")
     import mlir.passmanager as pm
 
-    from compiler.backend.llvm_backend import tile_matmuls_action
+    from compiler.pipeline.actions import tile_matmuls_action
 
     with ir.Location.unknown(ctx):
         pm.PassManager.parse(
@@ -152,9 +164,8 @@ def test_tile_sizes_within_bounds():
 @pytest.mark.unit
 @pytest.mark.timeout(60)
 def test_pipeline_timing():
-    """Full lowering pipeline should complete within time budget."""
-    if not has_mlir_bindings():
-        pytest.skip("MLIR bindings not available")
+    """Full pipeline must complete within expected time."""
+    _requires_sf_dialect()
 
     mod, ctx, ir = _load_lowered("outputs/compiled/opt_125m_fresh")
     import mlir.passmanager as pm
@@ -212,9 +223,8 @@ def test_pipeline_timing():
 @pytest.mark.unit
 @pytest.mark.timeout(30)
 def test_fma_fusion_fires():
-    """FMA fusion should replace ~90% of fmul+{fadd,fsub} with llvm.intr.fmuladd."""
-    if not has_mlir_bindings():
-        pytest.skip("MLIR bindings not available")
+    """FMA fusion should fire and produce expected op counts."""
+    _requires_sf_dialect()
 
     mod, ctx, ir = _load_lowered("outputs/compiled/opt_125m_fresh")
     import mlir.passmanager as pm

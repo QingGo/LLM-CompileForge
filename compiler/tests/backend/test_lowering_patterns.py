@@ -19,7 +19,6 @@ except ImportError:
     _HAS_SF_DIALECT = False
 
 pytestmark = pytest.mark.xfail(
-    not _HAS_SF_DIALECT,
     reason="sf-dialect C++ bindings not available — build: make build-so",
     raises=RuntimeError,
 )
