@@ -136,19 +136,16 @@ class RooflineSimulator:
 
     @classmethod
     def from_spec(cls, spec: Any) -> RooflineSimulator:
-        from python_runtime.hal.hardware_spec import HardwareSpec
-
-        if isinstance(spec, HardwareSpec):
-            return cls(spec.peak_tflops, spec.bandwidth_gbs, spec.name)
         if hasattr(spec, "peak_tflops"):
             return cls(spec.peak_tflops, spec.bandwidth_gbs, getattr(spec, "name", "unknown"))
         raise TypeError(f"Unsupported spec type: {type(spec)}")
 
     @classmethod
     def from_yaml(cls, path: str) -> RooflineSimulator:
-        from python_runtime.hal.hardware_spec import HardwareSpec
+        import importlib
 
-        spec = HardwareSpec.from_yaml(path)
+        hw_mod = importlib.import_module("python_runtime.hal.hardware_spec")
+        spec = hw_mod.HardwareSpec.from_yaml(path)
         return cls(spec.peak_tflops, spec.bandwidth_gbs, spec.name)
 
     def analyze(
