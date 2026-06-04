@@ -23,7 +23,7 @@ import pytest
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
-from compiler.tests.test_pipeline_lowering import MLIR_BINDINGS
+from compiler.tests.pipeline.test_pipeline_lowering import MLIR_BINDINGS
 
 pytestmark = [
     pytest.mark.skipif(not MLIR_BINDINGS, reason="mlir-core not available"),

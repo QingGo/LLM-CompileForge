@@ -15,9 +15,9 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-_SCHEMA_PATH = Path(__file__).resolve().parent.parent.parent / "include" / "hal_ir.schema.json"
+_SCHEMA_PATH = Path(__file__).resolve().parent.parent.parent.parent / "include" / "hal_ir.schema.json"
 _HAL_IR_EXAMPLE = (
-    Path(__file__).resolve().parent.parent.parent
+    Path(__file__).resolve().parent.parent.parent.parent
     / "compiled" / "opt_125m_fresh" / "generated" / "hal_ir.json"
 )
 

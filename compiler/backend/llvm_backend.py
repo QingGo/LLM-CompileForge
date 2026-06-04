@@ -33,13 +33,6 @@ from compiler.backend.compile_utils import (
     mlir_module_to_llvm_ir,
 )
 from compiler.exceptions import MissingBindingsError
-from compiler.pipeline import (  # type: ignore[attr-defined]
-    BUILTIN_STAGES,
-    Stage,
-    StageResult,
-    _save_ir_snapshot,
-    run_stages,
-)
 
 _log = logging.getLogger(__name__)
 
@@ -111,6 +104,10 @@ def lower_linalg_to_llvm_ir(
         )
 
     with ir.Location.unknown(ctx):
+        from compiler.pipeline import (  # noqa: E402
+            BUILTIN_STAGES,
+            run_stages,
+        )
         if skip_first_canonicalize:
             stages = BUILTIN_STAGES[1:]
         else:

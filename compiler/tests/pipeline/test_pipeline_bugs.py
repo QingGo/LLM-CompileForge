@@ -41,7 +41,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-_mlir_pkg = Path(__file__).resolve().parent.parent.parent / "llvm-project" / "build" / "tools" / "mlir" / "python_packages" / "mlir_core"
+_mlir_pkg = Path(__file__).resolve().parent.parent.parent.parent / "llvm-project" / "build" / "tools" / "mlir" / "python_packages" / "mlir_core"
 if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
     sys.path.insert(0, str(_mlir_pkg))
 
@@ -73,7 +73,7 @@ def test_vectorize_flattens_nested_module():
 
     # Need a lowered module to test
     lowered_path = (
-        Path(__file__).resolve().parent.parent
+        Path(__file__).resolve().parent.parent.parent.parent
         / "compiled"
         / "opt_125m_fresh"
         / "model.lowered.mlir"
@@ -158,7 +158,7 @@ def test_transform_ops_removed_after_vectorize():
     import mlir.ir as ir
 
     lowered_path = (
-        Path(__file__).resolve().parent.parent
+        Path(__file__).resolve().parent.parent.parent.parent
         / "compiled"
         / "opt_125m_fresh"
         / "model.lowered.mlir"
@@ -192,7 +192,7 @@ def test_bufferize_produces_memrefs():
     from mlir._mlir_libs import _mlirRegisterEverything
 
     lowered_path = (
-        Path(__file__).resolve().parent.parent
+        Path(__file__).resolve().parent.parent.parent.parent
         / "compiled"
         / "opt_125m_fresh"
         / "model.lowered.mlir"
@@ -242,7 +242,7 @@ def test_contract_lowering_outerproduct_finishes():
     from mlir._mlir_libs import _mlirRegisterEverything
 
     lowered_path = (
-        Path(__file__).resolve().parent.parent
+        Path(__file__).resolve().parent.parent.parent.parent
         / "compiled"
         / "opt_125m_fresh"
         / "model.lowered.mlir"
@@ -302,7 +302,7 @@ def test_mlir_executor_multi_function():
     from python_runtime.hal.pytorch_backend import PyTorchBackend
 
     mod_dir = (
-        Path(__file__).resolve().parent.parent.parent / "compiled" / "opt_125m_fresh"
+        Path(__file__).resolve().parent.parent.parent.parent / "compiled" / "opt_125m_fresh"
     )
     if not (mod_dir / "model.mlir").exists():
         pytest.skip("compiled model not found")

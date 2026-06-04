@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 # Ensure mlir-core is importable
-_mlir_pkg = Path(__file__).resolve().parent.parent.parent / "llvm-project" / "build" / "tools" / "mlir" / "python_packages" / "mlir_core"
+_mlir_pkg = Path(__file__).resolve().parent.parent.parent.parent / "llvm-project" / "build" / "tools" / "mlir" / "python_packages" / "mlir_core"
 if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
     sys.path.insert(0, str(_mlir_pkg))
 
