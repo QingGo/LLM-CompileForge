@@ -67,7 +67,6 @@ def test_embedding_dylib() -> float:
     with ir.Location.unknown(ctx):
         module = ir.Module.parse(lowered, ctx)
         lower_linalg_to_llvm_ir(module)
-    llvm_mlir = str(module)
     print("  [3/7] Fix residual unrealized_conversion_cast ...")
     _fixup_unrealized_casts_pass(module)
     fixed = str(module)

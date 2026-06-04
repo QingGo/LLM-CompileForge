@@ -155,6 +155,7 @@ class TestVerifyStageOutput:
         )
 
     def test_detects_func_return_change(self) -> None:
+        from compiler.pipeline.stages_utils import _verify_stage_output  # noqa: F811
         pytest.skip("_verify_stage_output behavior changed; test needs update")
 
         before = (

@@ -23,7 +23,7 @@ pytestmark = pytest.mark.xfail(
     raises=(RuntimeError, Exception),
 )
 
-from tests.lowering_test_helpers import (
+from tests.lowering_test_helpers import (  # noqa: E402
     ACTIVATION_MODULE,
     BINARY_MODULE,
     check_absent,

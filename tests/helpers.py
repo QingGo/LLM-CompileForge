@@ -121,6 +121,14 @@ def assert_tensors_close(
     )
 
 
+
+def cosine_similarity(a, b) -> float:
+    """Compute cosine similarity between two tensors. Returns a float in [-1, 1]."""
+    import torch
+    a_f = a.float().flatten()
+    b_f = b.float().flatten()
+    return torch.nn.functional.cosine_similarity(a_f.unsqueeze(0), b_f.unsqueeze(0)).item()
+
 def assert_cosine_above(
     a: Any,
     b: Any,

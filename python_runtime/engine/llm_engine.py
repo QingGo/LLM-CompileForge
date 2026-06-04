@@ -20,6 +20,7 @@ from typing import Any
 
 import torch
 
+from compiler.utils.logging import get_logger, log_request_lifecycle
 from python_runtime.engine._constants import (
     DEFAULT_BLOCK_SIZE,
     DEFAULT_CHUNK_SIZE,
@@ -30,7 +31,6 @@ from python_runtime.engine._constants import (
 from python_runtime.engine._inference_loop import InferenceLoop
 from python_runtime.engine._scheduling_bridge import SchedulingBridge
 from python_runtime.engine.batch import GenerationResult, SamplingParams
-from compiler.utils.logging import get_logger, log_request_lifecycle
 
 _log = get_logger("engine")
 

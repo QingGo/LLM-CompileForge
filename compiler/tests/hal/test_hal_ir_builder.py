@@ -13,7 +13,10 @@ from pathlib import Path
 
 import pytest
 
-_HAL_IR_PATH = Path(__file__).resolve().parent.parent.parent.parent / "compiled" / "opt_125m_fresh" / "generated" / "hal_ir.json"
+_HAL_IR_PATH = (
+    Path(__file__).resolve().parent.parent.parent.parent
+    / "compiled" / "opt_125m_fresh" / "generated" / "hal_ir.json"
+)
 
 
 @pytest.fixture(scope="module")

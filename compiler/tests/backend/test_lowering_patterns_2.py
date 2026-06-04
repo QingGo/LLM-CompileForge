@@ -19,7 +19,7 @@ pytestmark = pytest.mark.xfail(
     raises=(RuntimeError, Exception),
 )
 
-from tests.lowering_test_helpers import (
+from tests.lowering_test_helpers import (  # noqa: E402
     _has_vec_bindings,
     check_lowered,
     lower,

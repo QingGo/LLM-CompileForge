@@ -35,12 +35,12 @@ import os
 import sys
 from typing import Any
 
+from compiler.backend.compile_utils import _setup_mlir_path
 from compiler.hal.sf_decompose import (
     _decompose_layer_norm,
     _decompose_linear,
     _decompose_sdpa,
 )
-from compiler.backend.compile_utils import _setup_mlir_path
 
 _log = logging.getLogger(__name__)
 

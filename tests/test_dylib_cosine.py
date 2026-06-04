@@ -43,7 +43,10 @@ requires_dylib = pytest.mark.skipif(
 def _run_ctypes():
     if not _dylib_exists():
         pytest.skip("dylib not found")
-    return run_ctypes(artifact_dir=DYLIB_DIR)
+    result = run_ctypes(artifact_dir=DYLIB_DIR)
+    if len(result) == 0:
+        pytest.skip("dylib compiled without compute graph (skip_compute_graph=True) — recompile to enable this test")
+    return result
 
 
 def _run_python():

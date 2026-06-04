@@ -12,10 +12,10 @@ from typing import Any
 
 import torch
 
+from compiler.utils.logging import get_logger, log_request_lifecycle, log_step_begin, log_step_end
 from python_runtime.engine._scheduling_bridge import SchedulingBridge
 from python_runtime.engine.batch import GenerationResult, SamplingParams
 from python_runtime.engine.sampler import sample
-from compiler.utils.logging import get_logger, log_request_lifecycle, log_step_begin, log_step_end
 
 _log = get_logger("engine.inference")
 

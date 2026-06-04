@@ -133,6 +133,14 @@ def run_ctypes(
     _, sfcf_constants, graph_pos, sfcf_version = parse_sfcf_blob(blob_bytes)
     graph, _ = parse_compute_graph(blob_bytes, graph_pos, version=sfcf_version)
 
+    if not graph.get("functions"):
+        import logging
+        logging.warning(
+            "ctypes_forward: No compute graph found in dylib (compiled with skip_compute_graph=True). "
+            "Recompile with skip_compute_graph=False to enable ctypes forward testing."
+        )
+        return DylibResult([], np.array([], dtype=np.float32))
+
     # Weight lookup with multi-strategy resolution
     def _get_weight(name: str) -> np.ndarray:
         if name in all_weights:
@@ -247,8 +255,8 @@ def run_python_executor(
     import torch
 
     from compiler.serialize import load_artifact
-    from engine.mlir_executor import MlirExecutor
-    from hal.pytorch_backend import PyTorchBackend
+    from python_runtime.engine.mlir_executor import MlirExecutor
+    from python_runtime.hal.pytorch_backend import PyTorchBackend
 
     if input_ids is None:
         input_ids_np = np.array(

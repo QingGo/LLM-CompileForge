@@ -4,8 +4,8 @@ from compiler.exceptions import (
     CompileError,
     LinkError,
     LLCError,
-    MLIRTranslateError,
     MissingBindingsError,
+    MLIRTranslateError,
     PipelineStageError,
     ToolNotFoundError,
 )

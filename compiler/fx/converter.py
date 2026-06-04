@@ -14,6 +14,12 @@ import torch
 import torch.fx
 from torch.export import ExportedProgram
 
+from compiler.artifact import MlirFunction, MlirModule, MlirOp  # type: ignore[attr-defined]
+from compiler.dialect._op_defs import (
+    _LIST_ARG_ATTR,
+    _SCALAR_INT_POSITIONS,
+    _SCALAR_KWARG_NAMES,
+)
 from compiler.fx.split import (
     _detect_layer,
     _log_split_plan,
@@ -32,12 +38,6 @@ from compiler.fx.utils import (
     _symint_to_int,
     _symint_to_name,
     _type_from_fake,
-)
-from compiler.artifact import MlirFunction, MlirModule, MlirOp  # type: ignore[attr-defined]
-from compiler.dialect._op_defs import (
-    _LIST_ARG_ATTR,
-    _SCALAR_INT_POSITIONS,
-    _SCALAR_KWARG_NAMES,
 )
 
 _log = logging.getLogger(__name__)

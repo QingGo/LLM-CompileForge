@@ -16,7 +16,10 @@ import pytest
 from compiler.artifact import MlirOp, _parse_mlir_text
 from compiler.serialize import load_artifact
 
-_MODEL_DIR = _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "outputs" / "compiled" / "opt_125m_fresh"
+_MODEL_DIR = _PROJECT_ROOT = (
+    Path(__file__).resolve().parent.parent.parent.parent
+    / "outputs" / "compiled" / "opt_125m_fresh"
+)
 pytestmark = pytest.mark.skipif(
     not _MODEL_DIR.is_dir(),
     reason=f"Compiled model directory not found: {_MODEL_DIR}",

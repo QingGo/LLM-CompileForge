@@ -86,8 +86,27 @@ def parse_sfcf_blob(blob: bytes) -> tuple[dict[str, str], dict[str, np.ndarray[A
             arr = arr.squeeze()
         constants[name] = arr
 
-    return name_mapping, constants, pos, v
+    # ── Contract section (v4+) ──
+    compute_graph_pos = pos  # may be contract section if compute graph skipped
+    if v >= 4 and pos < len(blob):
+        _contract, pos = _parse_contract_section(blob, pos)
+    return name_mapping, constants, compute_graph_pos, v
 
+
+
+def _parse_contract_section(data: bytes, pos: int) -> tuple[dict[str, str], int]:
+    """Parse v4+ contract section: key-value string pairs."""
+    contract: dict[str, str] = {}
+    if pos + 4 > len(data):
+        return contract, pos
+    num_entries, pos = _read_u32(data, pos)
+    if num_entries > 100:
+        return contract, pos
+    for _ in range(num_entries):
+        key, pos = _read_str(data, pos)
+        val, pos = _read_str(data, pos)
+        contract[key] = val
+    return contract, pos
 
 
 def parse_compute_graph(data: bytes, pos: int, version: int = 3) -> tuple[dict[str, Any], int]:
@@ -99,13 +118,23 @@ def parse_compute_graph(data: bytes, pos: int, version: int = 3) -> tuple[dict[s
         version: SFCF format version. v3+ includes a consumed_internally
             flag byte before each output's rank byte. v2 defaults to False.
     """
-    num_funcs, pos = _read_u32(data, pos)
+    # Check if we have enough data and the first bytes look like a valid graph
+    if pos + 4 > len(data):
+        return {'functions': [], 'global_input': (0, 0), 'global_output': (0, 0)}, pos
+    num_funcs_raw = data[pos] | (data[pos+1] << 8) | (data[pos+2] << 16) | (data[pos+3] << 24)
+    # Heuristic: if num_funcs is unreasonably large (>100) or 0, likely not compute graph
+    if num_funcs_raw > 100 or num_funcs_raw == 0:
+        return {'functions': [], 'global_input': (0, 0), 'global_output': (0, 0)}, pos
+    num_funcs = num_funcs_raw
+    pos += 4
     functions = []
 
     for _ in range(num_funcs):
         symbol, pos = _read_str(data, pos)
         num_inputs, pos = _read_u32(data, pos)
         num_outputs, pos = _read_u32(data, pos)
+        if num_inputs > 100 or num_outputs > 1000:
+            break  # Unreasonable counts - likely not compute graph data
 
         inputs = []
         for _ in range(num_inputs):
@@ -122,8 +151,12 @@ def parse_compute_graph(data: bytes, pos: int, version: int = 3) -> tuple[dict[s
                 binding = ('global_input',)  # type: ignore[assignment]
             else:
                 raise ValueError(f"Unknown binding type {bt}")
+            if pos >= len(data):
+                break
             rank = data[pos]
             pos += 1
+            if pos + 4 > len(data):
+                break
             ndims, pos = _read_u32(data, pos)
             shape = []
             for _ in range(ndims):
@@ -138,8 +171,12 @@ def parse_compute_graph(data: bytes, pos: int, version: int = 3) -> tuple[dict[s
                 pos += 1
             else:
                 consumed_internally = False
+            if pos >= len(data):
+                break
             rank = data[pos]
             pos += 1
+            if pos + 4 > len(data):
+                break
             ndims, pos = _read_u32(data, pos)
             shape = []
             for _ in range(ndims):
