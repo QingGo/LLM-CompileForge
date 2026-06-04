@@ -64,7 +64,7 @@ enum Commands {
         model: String,
         #[arg(short, long)]
         prompt: String,
-        #[arg(short, long, default_value = "compiled")]
+        #[arg(short, long, default_value = "outputs/compiled")]
         compiled_dir: String,
         #[arg(long, default_value = "64")]
         max_tokens: usize,
@@ -87,13 +87,13 @@ enum Commands {
     },
     Info {
         model: String,
-        #[arg(short, long, default_value = "compiled")]
+        #[arg(short, long, default_value = "outputs/compiled")]
         compiled_dir: String,
     },
     #[command(name = "serve", about = "Start HTTP server with OpenAI-compatible API")]
     Serve {
         model: String,
-        #[arg(short, long, default_value = "compiled")]
+        #[arg(short, long, default_value = "outputs/compiled")]
         compiled_dir: String,
         #[arg(short, long, default_value_t = 8000)]
         port: u16,
@@ -158,7 +158,7 @@ fn main() -> Result<(), anyhow::Error> {
                     "Failed to load model '{}': {}\n\
                      Tried dylib: {}\n\
                      Suggestions:\n\
-                     - Run: python scripts/compile_dylib.py {} --model-name <name>\n\
+                     - Run: python compiler/compile_dylib.py {} --model-name <name>\n\
                      - Check outputs/compiled/{} exists and contains a .dylib file\n\
                      - Use --safetensors to point to the weights file",
                     model, e, dylib_path, ap, model,

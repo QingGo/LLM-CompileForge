@@ -21,7 +21,7 @@ from tests.helpers import has_mlir_bindings
 
 
 def _clean_pipeline_logs() -> None:
-    log_dir = Path("logs") / "pipeline"
+    log_dir = Path("outputs/logs") / "pipeline"
     for p in log_dir.glob("stats_test_*.txt"):
         p.unlink(missing_ok=True)
     for p in log_dir.glob("snapshot_test_*.mlir"):
@@ -70,7 +70,7 @@ class TestSaveIrStats:
             assert len(counts) >= 4, f"Expected at least 4 op types, got {len(counts)}"
             assert "func.func" in counts
 
-            log_dir = Path("logs") / "pipeline"
+            log_dir = Path("outputs/logs") / "pipeline"
             stats_files = list(log_dir.glob("stats_test_stats_*.txt"))
             assert len(stats_files) >= 1, "No stats file created"
             content = stats_files[0].read_text()
@@ -90,7 +90,7 @@ class TestSaveIrStats:
         _clean_pipeline_logs()
         try:
             _save_ir_stats(module, "test_top10")
-            log_dir = Path("logs") / "pipeline"
+            log_dir = Path("outputs/logs") / "pipeline"
             stats_files = list(log_dir.glob("stats_test_top10_*.txt"))
             assert len(stats_files) >= 1
             content = stats_files[0].read_text()
@@ -216,7 +216,7 @@ class TestStageRunVerification:
             assert snapshot_path.exists(), f"Snapshot not found: {snapshot_path}"
 
             stats_files = list(
-                Path("logs").glob("pipeline/stats_test_verify_fail_snapshot_*.txt")
+                Path("outputs/logs").glob("pipeline/stats_test_verify_fail_snapshot_*.txt")
             )
             assert len(stats_files) >= 1, "No companion stats file created"
         finally:
@@ -308,7 +308,7 @@ class TestEndToEndSnapshots:
         old_level = root_logger.level
         root_logger.setLevel(logging.DEBUG)
 
-        stages_dir = Path("logs") / "pipeline" / "stages"
+        stages_dir = Path("outputs/logs") / "pipeline" / "stages"
         shutil.rmtree(stages_dir, ignore_errors=True)
         try:
             results = run_stages(module, mlir_context, stages)
@@ -345,7 +345,7 @@ class TestEndToEndSnapshots:
         old_level = root_logger.level
         root_logger.setLevel(logging.DEBUG)
 
-        stages_dir = Path("logs") / "pipeline" / "stages"
+        stages_dir = Path("outputs/logs") / "pipeline" / "stages"
         shutil.rmtree(stages_dir, ignore_errors=True)
         try:
             run_stages(module, mlir_context, stages)

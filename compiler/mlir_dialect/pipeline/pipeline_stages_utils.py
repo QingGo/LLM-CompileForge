@@ -33,7 +33,7 @@ class _DeadStageTracker:
     """
 
     CONSECUTIVE_THRESHOLD = 3
-    STATE_FILE = Path("logs") / "pipeline" / "dead_stages.json"
+    STATE_FILE = Path("outputs/logs") / "pipeline" / "dead_stages.json"
 
     @classmethod
     def _load_state(cls) -> dict[str, int]:
@@ -117,7 +117,7 @@ def _save_ir_stats(ir_module: Any, stage_name: str, timestamp: str = "") -> dict
     if not timestamp:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
 
-    log_dir = Path("logs") / "pipeline"
+    log_dir = Path("outputs/logs") / "pipeline"
     log_dir.mkdir(parents=True, exist_ok=True)
     safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', stage_name)
     path = log_dir / f"stats_{safe_name}_{timestamp}.txt"
@@ -155,7 +155,7 @@ def _save_ir_snapshot(ir_module: Any, stage_name: str) -> str:
     Returns the path to the saved file.
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-    log_dir = Path("logs") / "pipeline"
+    log_dir = Path("outputs/logs") / "pipeline"
     log_dir.mkdir(parents=True, exist_ok=True)
     safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', stage_name)
     path = log_dir / f"snapshot_{safe_name}_{timestamp}.mlir"

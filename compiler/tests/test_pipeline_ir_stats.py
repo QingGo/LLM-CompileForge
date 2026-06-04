@@ -68,7 +68,7 @@ module {
 
 
 def _stages_dir() -> Path:
-    return Path("logs") / "pipeline" / "stages"
+    return Path("outputs/logs") / "pipeline" / "stages"
 
 
 def _clean_stages_dir() -> None:

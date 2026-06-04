@@ -231,7 +231,7 @@ def run_stages(
     _is_debug = logging.getLogger().isEnabledFor(logging.DEBUG)
 
     # Clean stages directory before starting
-    stages_dir = Path("logs") / "pipeline" / "stages"
+    stages_dir = Path("outputs/logs") / "pipeline" / "stages"
     shutil.rmtree(stages_dir, ignore_errors=True)
     stages_dir.mkdir(parents=True, exist_ok=True)
 
