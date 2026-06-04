@@ -12,6 +12,18 @@ kDynamic overflows) before they compound in the full model.
 
 import pytest
 
+try:
+    from mlir_sf._mlir_libs._sfDialectsNanobind import sf  # noqa: F401
+    _HAS_SF_DIALECT = True
+except ImportError:
+    _HAS_SF_DIALECT = False
+
+pytestmark = pytest.mark.xfail(
+    not _HAS_SF_DIALECT,
+    reason="sf-dialect C++ bindings not available — build: make build-so",
+    raises=RuntimeError,
+)
+
 from tests.lowering_test_helpers import (
     ACTIVATION_MODULE,
     BINARY_MODULE,
