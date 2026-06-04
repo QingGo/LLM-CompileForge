@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from compiler.mlir_dialect.compile_utils import _setup_mlir_path
+from compiler.mlir_dialect.lowering.compile_utils import _setup_mlir_path
 
 
 def _run_pattern(

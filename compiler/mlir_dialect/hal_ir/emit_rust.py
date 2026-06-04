@@ -11,9 +11,7 @@ import json
 import logging
 import os
 
-from compiler.mlir_dialect.hal_ir.op_implementations import OP_IMPLS  # noqa: F401
-
-__all__ = ["emit_rust", "OP_IMPLS"]
+__all__ = ["emit_rust"]
 
 _log = logging.getLogger(__name__)
 

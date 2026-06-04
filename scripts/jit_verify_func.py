@@ -29,7 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
-from compiler.mlir_dialect.compile_utils import _setup_mlir_path
+from compiler.mlir_dialect.lowering.compile_utils import _setup_mlir_path
 
 _log = logging.getLogger("jit_verify")
 
@@ -309,7 +309,6 @@ def _detect_jit_output_spec(
 
     Returns ``(shape, rank)`` where dynamic dims are represented as -1.
     """
-    import mlir.ir as ir
 
     module_str = str(module)
 
@@ -369,10 +368,8 @@ def lower_and_jit(
     Returns:
         Output numpy array.
     """
-    import time
     import signal
-    import ctypes as _ctypes
-    from ctypes import util as _cu
+    import time
 
     _setup_mlir_path()
 
@@ -444,7 +441,7 @@ def lower_and_jit(
         # ── Fix remaining casts ───────────────────────────────────
         _log.info("[4/7] Fixing unrealized casts ...")
         t_phase = time.time()
-        from compiler.mlir_dialect.fixups import _fixup_unrealized_casts_pass
+        from compiler.mlir_dialect.lowering.fixups import _fixup_unrealized_casts_pass
         _fixup_unrealized_casts_pass(module)
         _log.info("[4/7] Cast fixup done (%.2fs)", time.time() - t_phase)
 
@@ -606,7 +603,7 @@ def main() -> None:
 
     # 6. Report
     print(f"\n{'─' * 60}")
-    print(f"  JIT output:")
+    print("  JIT output:")
     print(f"    shape  = {list(jit_output.shape)}")
     print(f"    mean   = {jit_output.mean():.8f}")
     print(f"    std    = {jit_output.std():.8f}")
@@ -633,7 +630,7 @@ def main() -> None:
     )
     print(
         "  To compare with dylib output, run:\n"
-        f"    python scripts/diagnose_func12_ctypes.py\n"
+        "    python scripts/diagnose_func12_ctypes.py\n"
     )
 
 

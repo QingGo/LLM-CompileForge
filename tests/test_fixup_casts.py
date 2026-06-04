@@ -23,7 +23,7 @@ class TestMLIRFixupPass:
     def _run_pass(mlir_text: str) -> str:
         import mlir.ir as ir
 
-        from compiler.mlir_dialect.fixups import _fixup_unrealized_casts_pass
+        from compiler.mlir_dialect.lowering.fixups import _fixup_unrealized_casts_pass
 
         ctx = ir.Context()
         ctx.allow_unregistered_dialects = True

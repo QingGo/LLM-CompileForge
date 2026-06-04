@@ -225,16 +225,16 @@ class TestFloatOpsCoercion:
 
     def test_neg_f32_output(self) -> None:
         """neg output matches f32 input element type."""
-        from compiler.mlir_dialect.shape_inference import infer_output_shape
+        from compiler.mlir_dialect.shape.shape_inference import infer_output_shape
         out = infer_output_shape("neg", [(5,)], ["f32"])
         assert out[0][1] == "f32"
 
     def test_rsqrt_f32_output(self) -> None:
-        from compiler.mlir_dialect.shape_inference import infer_output_shape
+        from compiler.mlir_dialect.shape.shape_inference import infer_output_shape
         out = infer_output_shape("rsqrt", [(3, 4)], ["f32"])
         assert out[0][1] == "f32"
 
     def test_erf_f32_output(self) -> None:
-        from compiler.mlir_dialect.shape_inference import infer_output_shape
+        from compiler.mlir_dialect.shape.shape_inference import infer_output_shape
         out = infer_output_shape("erf", [(10,)], ["f32"])
         assert out[0][1] == "f32"

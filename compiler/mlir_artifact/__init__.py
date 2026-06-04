@@ -71,7 +71,7 @@ from compiler.mlir_artifact.serialize import (  # noqa: F401
     mlir_module_to_text,
     save_mlir_module_artifact,
 )
-from compiler.mlir_dialect.mlir_op_types import (  # noqa: F401
+from compiler.mlir_dialect.sf.mlir_op_types import (  # noqa: F401
     MlirFunction,
     MlirModule,
     MlirOp,

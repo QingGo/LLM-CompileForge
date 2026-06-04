@@ -9,8 +9,6 @@ import os
 import sys
 from typing import Any
 
-from scripts._cos import cosine_similarity  # noqa: F401 — re-exported for general use
-
 # ── MLIR bindings detection ──────────────────────────────────
 
 

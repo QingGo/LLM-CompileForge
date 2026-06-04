@@ -175,7 +175,7 @@ with ctx:
             f"""
 import sys, time; sys.path.insert(0, '.')
 import mlir.ir as ir, mlir.passmanager as pm
-from compiler.mlir_dialect.llvm_backend import mlir_module_to_llvm_ir
+from compiler.mlir_dialect.lowering.llvm_backend import mlir_module_to_llvm_ir
 
 lowered = open(r'{self.lowered_path}').read()
 ctx = ir.Context()

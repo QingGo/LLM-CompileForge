@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import mlir.ir as ir
 
-from compiler.mlir_dialect.mlir_op_types import (
+from compiler.mlir_dialect.sf.mlir_op_types import (
     MlirFunction,
     MlirModule,
     MlirOp,

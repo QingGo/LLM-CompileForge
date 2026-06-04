@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from compiler.mlir_dialect.mlir_op_types import (
+from compiler.mlir_dialect.sf.mlir_op_types import (
     MlirFunction,
     MlirModule,
     MlirOp,

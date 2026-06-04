@@ -1,7 +1,7 @@
-from setuptools import setup, Extension
-from nanobind import get_include as nb_get_include
 import sysconfig
-import sys
+
+from nanobind import get_include as nb_get_include
+from setuptools import Extension, setup
 
 sf_include = "include"
 sf_capi_include = "."

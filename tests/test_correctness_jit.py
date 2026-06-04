@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from compiler.mlir_dialect.compile_utils import _setup_mlir_path
+from compiler.mlir_dialect.lowering.compile_utils import _setup_mlir_path
 from scripts._cos import cosine_similarity as _cosine_similarity
 
 

@@ -38,7 +38,7 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.pop("CONDA_PREFIX", None)
 
 
-from compiler.mlir_dialect.compile_utils import _setup_mlir_path
+from compiler.mlir_dialect.lowering.compile_utils import _setup_mlir_path
 
 _setup_mlir_path()
 
@@ -226,7 +226,7 @@ def test_single_matmul_jit_vs_dylib():
     import mlir.passmanager as pm
     from mlir._mlir_libs import _mlirRegisterEverything
 
-    from compiler.mlir_dialect.compile_utils import compile_mlir_to_dylib
+    from compiler.mlir_dialect.lowering.compile_utils import compile_mlir_to_dylib
 
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True

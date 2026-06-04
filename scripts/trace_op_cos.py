@@ -17,7 +17,6 @@ import os
 import sys
 from typing import Any
 
-import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -38,7 +37,7 @@ from hal.pytorch_backend import PyTorchBackend
 from scripts._cos import cosine_similarity
 from scripts.ctypes_forward import run_ctypes
 from tests.op_correctness.registry import OpCase
-from tests.op_correctness.runner import generate_mlir, lower_and_jit, invoke_and_extract
+from tests.op_correctness.runner import generate_mlir, invoke_and_extract, lower_and_jit
 
 _log = logging.getLogger("trace_op_cos")
 

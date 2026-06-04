@@ -64,7 +64,7 @@ class TestCachePolicyRoundTrip:
 
         # Slabs
         assert len(recovered.slabs) == len(original.slabs)
-        for r_slab, o_slab in zip(recovered.slabs, original.slabs):
+        for r_slab, o_slab in zip(recovered.slabs, original.slabs, strict=False):
             assert r_slab.slab_id == o_slab.slab_id
             assert r_slab.storage == o_slab.storage
             assert r_slab.dims == o_slab.dims
@@ -73,7 +73,7 @@ class TestCachePolicyRoundTrip:
 
         # Intercepts
         assert len(recovered.intercepts) == len(original.intercepts)
-        for r_int, o_int in zip(recovered.intercepts, original.intercepts):
+        for r_int, o_int in zip(recovered.intercepts, original.intercepts, strict=False):
             assert r_int.slab_id == o_int.slab_id
             assert r_int.op_name == o_int.op_name
             assert r_int.direction == o_int.direction

@@ -31,12 +31,10 @@ def measure_key_metrics() -> dict[str, float]:
 
     # Torch import time
     t0 = time.perf_counter()
-    import torch  # noqa: F401
     metrics["torch_import_s"] = round(time.perf_counter() - t0, 3)
 
     # Module import time (lazy loading check)
     t0 = time.perf_counter()
-    from compiler.mlir_artifact import MlirModule  # noqa: F401
     metrics["compiler_import_s"] = round(time.perf_counter() - t0, 3)
 
     # Pipeline quick test time

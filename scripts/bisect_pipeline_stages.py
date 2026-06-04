@@ -19,7 +19,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from compiler.mlir_dialect.llvm_backend import (
+from compiler.mlir_dialect.lowering.llvm_backend import (
     _has_bindings,
 )
 from utils.logging import init_logging
@@ -37,12 +37,12 @@ TEST_NAME = "test_forward_matches_python_argmax"
 
 
 def _setup_mlir() -> None:
-    from compiler.mlir_dialect.compile_utils import _setup_mlir_path as _do_setup
+    from compiler.mlir_dialect.lowering.compile_utils import _setup_mlir_path as _do_setup
     _do_setup()
 
 
 def parse_stages() -> list:
-    from compiler.mlir_dialect.pipeline_stages import BUILTIN_STAGES, Stage
+    from compiler.mlir_dialect.pipeline.pipeline_stages import BUILTIN_STAGES, Stage
     return [Stage(**{f.name: getattr(s, f.name) for f in s.__dataclass_fields__.values()}) for s in BUILTIN_STAGES]
 
 
@@ -70,7 +70,7 @@ def compile_with_stages(
             text = f.read()
         module = ir.Module.parse(text, ctx)
 
-        from compiler.mlir_dialect.pipeline_stages import run_stages
+        from compiler.mlir_dialect.pipeline.pipeline_stages import run_stages
         results = run_stages(module, ctx, stages, log_dir=f"logs/bisect_{label}")
 
         # Check all stages succeeded (or warn_only failed, which is OK)
@@ -84,7 +84,7 @@ def compile_with_stages(
 
         llvm_ir = os.path.join(out_dir, f"model_{label}.ll")
 
-    from compiler.mlir_dialect.compile_utils import emit_llvm_ir_to_file, link_dylib, llc_compile
+    from compiler.mlir_dialect.lowering.compile_utils import emit_llvm_ir_to_file, link_dylib, llc_compile
     try:
         emit_llvm_ir_to_file(module, llvm_ir)
         obj_path = llc_compile(llvm_ir, output=os.path.join(out_dir, f"model_{label}.o"))

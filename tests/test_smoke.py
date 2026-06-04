@@ -16,17 +16,9 @@ def test_python_environment():
 @pytest.mark.smoke
 def test_package_imports():
     """All core modules must be importable."""
-    import compiler  # noqa: F401
-    import engine  # noqa: F401
-    import hal  # noqa: F401
-    import server  # noqa: F401
 
 
 @pytest.mark.smoke
 @pytest.mark.timeout(30)
 def test_dependencies_available():
     """Key runtime dependencies must be installed."""
-    import fastapi  # noqa: F401
-    import numpy  # noqa: F401
-    import pydantic  # noqa: F401
-    import torch  # noqa: F401

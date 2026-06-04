@@ -34,7 +34,7 @@ from compiler.fx_to_mlir_utils import (
     _type_from_fake,
 )
 from compiler.mlir_artifact import MlirFunction, MlirModule, MlirOp  # type: ignore[attr-defined]
-from compiler.mlir_dialect._op_defs import (
+from compiler.mlir_dialect.sf._op_defs import (
     _LIST_ARG_ATTR,
     _SCALAR_INT_POSITIONS,
     _SCALAR_KWARG_NAMES,

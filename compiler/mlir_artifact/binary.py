@@ -16,7 +16,7 @@ from typing import Any
 import torch
 
 from compiler.mlir_artifact._utils import _candidate_names
-from compiler.mlir_dialect.mlir_op_types import (
+from compiler.mlir_dialect.sf.mlir_op_types import (
     MlirModule,
 )
 

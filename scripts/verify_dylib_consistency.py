@@ -14,7 +14,7 @@ import sys
 
 import numpy as np
 
-from compiler.mlir_dialect.compile_utils import _setup_mlir_path
+from compiler.mlir_dialect.lowering.compile_utils import _setup_mlir_path
 from scripts.verify_weight_consistency import (
     check_parameter_binding,
     parse_compute_graph_outputs,

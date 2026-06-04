@@ -15,7 +15,7 @@ def parse_compute_graph_outputs(compiled_dir: str) -> list[dict]:
     """Parse the compute graph and return per-function output counts."""
     # Import from sibling script
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from scripts.ctypes_forward import parse_sfcf_blob, parse_compute_graph  # noqa: I001
+    from scripts.ctypes_forward import parse_compute_graph, parse_sfcf_blob  # noqa: I001
 
     bin_path = os.path.join(compiled_dir, "constants.bin")
     if not os.path.exists(bin_path):

@@ -31,7 +31,7 @@ import numpy as np
 _log = logging.getLogger(__name__)
 
 
-from compiler.mlir_dialect.compile_utils import _short_shape
+from compiler.mlir_dialect.lowering.compile_utils import _short_shape
 from scripts._cos import cosine_similarity
 
 # ── Python runtime weight loader ──────────────────────────────

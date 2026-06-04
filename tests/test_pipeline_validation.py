@@ -59,7 +59,7 @@ def test_no_arith_ops_after_lowering():
     mod, ctx, ir = _load_lowered("compiled/opt_125m_fresh")
     import mlir.passmanager as pm
 
-    from compiler.mlir_dialect.llvm_backend import (
+    from compiler.mlir_dialect.lowering.llvm_backend import (
         _tile_matmuls_per_func,
         lower_linalg_to_llvm_ir,
     )
@@ -117,7 +117,7 @@ def test_tile_sizes_within_bounds():
     mod, ctx, ir = _load_lowered("compiled/opt_125m_fresh")
     import mlir.passmanager as pm
 
-    from compiler.mlir_dialect.llvm_backend import _tile_matmuls_per_func
+    from compiler.mlir_dialect.lowering.llvm_backend import _tile_matmuls_per_func
 
     with ir.Location.unknown(ctx):
         pm.PassManager.parse(
@@ -161,7 +161,7 @@ def test_pipeline_timing():
     mod, ctx, ir = _load_lowered("compiled/opt_125m_fresh")
     import mlir.passmanager as pm
 
-    from compiler.mlir_dialect.llvm_backend import (
+    from compiler.mlir_dialect.lowering.llvm_backend import (
         _tile_matmuls_per_func,
         lower_linalg_to_llvm_ir,
         mlir_module_to_llvm_ir,
@@ -221,7 +221,7 @@ def test_fma_fusion_fires():
     mod, ctx, ir = _load_lowered("compiled/opt_125m_fresh")
     import mlir.passmanager as pm
 
-    from compiler.mlir_dialect.llvm_backend import (
+    from compiler.mlir_dialect.lowering.llvm_backend import (
         _tile_matmuls_per_func,
         lower_linalg_to_llvm_ir,
     )

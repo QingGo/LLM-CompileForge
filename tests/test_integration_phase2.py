@@ -18,7 +18,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from tests.helpers import assert_cosine_above, cosine_similarity, patch_transformers_torch  # noqa: F401
+from tests.helpers import assert_cosine_above  # noqa: F401
 
 # ── SmoothQuant on compiled model weights ────────────────
 

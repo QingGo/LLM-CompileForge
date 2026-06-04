@@ -11,7 +11,7 @@ import os
 import pytest
 import torch
 
-from compiler.mlir_dialect.compile_utils import _patch_transformers_torch
+from compiler.mlir_dialect.lowering.compile_utils import _patch_transformers_torch
 from tests.helpers import cosine_similarity
 
 

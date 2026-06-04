@@ -14,7 +14,7 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 
-from compiler.mlir_dialect.llvm_backend import compile_module_to_dylib, lower_linalg_to_llvm_ir  # noqa: E402
+from compiler.mlir_dialect.lowering.llvm_backend import compile_module_to_dylib, lower_linalg_to_llvm_ir  # noqa: E402
 
 COMPILED_DIR = "compiled/opt_125m_fresh"
 MODEL_NAME = "opt_125m"

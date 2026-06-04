@@ -20,7 +20,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts._cos import cosine_similarity  # noqa: F401 — kept for availability
 
 MODEL_DIR = Path("compiled/opt_125m_fresh")
 

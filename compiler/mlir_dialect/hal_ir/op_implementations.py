@@ -14,12 +14,6 @@ from compiler.mlir_dialect.hal_ir.rust_templates.binary_ops import (
     OP_ELEMENT_WISE,
     OP_MATMUL,
 )
-from compiler.mlir_dialect.hal_ir.rust_templates.boilerplate import (  # noqa: F401
-    BLAS_EXTERN,
-    HEADER,
-    OP_SHAPE_META,
-    STUB_CACHE,
-)
 from compiler.mlir_dialect.hal_ir.rust_templates.memory_ops import (
     OP_FILL,
     OP_GATHER,

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from compiler.mlir_dialect.shape_inference_pure import infer_output_shape
+from compiler.mlir_dialect.shape.shape_inference_pure import infer_output_shape
 
 
 @pytest.mark.unit

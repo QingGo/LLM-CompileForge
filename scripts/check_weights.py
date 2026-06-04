@@ -34,7 +34,7 @@ def _load_artifact_lazy(model_dir: str):
     return load_artifact(model_dir)
 
 
-from compiler.mlir_dialect.compile_utils import _short_shape
+from compiler.mlir_dialect.lowering.compile_utils import _short_shape
 from scripts._cos import cosine_similarity
 
 # ── Source loaders ──────────────────────────────────────────────

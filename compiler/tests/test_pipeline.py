@@ -13,7 +13,6 @@ The pattern is independent of torch, MLIR, or sf-dialect imports.
 
 import pytest
 
-
 # ── Model of the kwargs validation pattern in compile_mlir() ──────────
 
 def _compile_mlir_model(**kwargs: object) -> dict[str, object]:

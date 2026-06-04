@@ -20,7 +20,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from compiler.sfcf_parser import parse_compute_graph, parse_sfcf_blob  # noqa: I001
 
-
 # =====================================================================
 # Helpers
 # =====================================================================

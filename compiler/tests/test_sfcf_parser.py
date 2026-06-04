@@ -9,9 +9,9 @@ import struct
 
 from compiler.sfcf_parser import (
     _read_str,
+    _read_u8,
     _read_u32,
     _read_u64,
-    _read_u8,
     parse_sfcf_blob,
 )
 

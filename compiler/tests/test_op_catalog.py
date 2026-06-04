@@ -4,7 +4,7 @@ Tests that ``build_op_catalog()`` from ``compiler.mlir_dialect.op_catalog``
 returns a populated ``SfaOpCatalog`` with 30+ HAL operators grouped by kind.
 """
 
-from compiler.mlir_dialect.op_catalog import build_op_catalog
+from compiler.mlir_dialect.sf.op_catalog import build_op_catalog
 
 
 class TestBuildOpCatalog:
@@ -21,7 +21,7 @@ class TestBuildOpCatalog:
         """Every op in the catalog has a non-empty kind and name."""
         catalog = build_op_catalog()
         for op_def in catalog.ops:
-            assert op_def.name, f"Op has empty name"
+            assert op_def.name, "Op has empty name"
             assert op_def.kind, f"Op '{op_def.name}' has empty kind"
 
     def test_all_ops_have_params(self) -> None:

@@ -23,7 +23,7 @@ from compiler.mlir_artifact import (  # type: ignore[attr-defined]
     mlir_module_to_text,
     save_mlir_module_artifact,
 )
-from compiler.mlir_dialect.compile_utils import _setup_mlir_path
+from compiler.mlir_dialect.lowering.compile_utils import _setup_mlir_path
 
 
 def compile_mlir(
@@ -219,7 +219,7 @@ def _apply_mlir_passes(
     if kwargs:
         raise TypeError(f"Unexpected keyword arguments in _apply_mlir_passes: {kwargs}")
 
-    from compiler.mlir_dialect.compile_utils import _has_bindings
+    from compiler.mlir_dialect.lowering.compile_utils import _has_bindings
 
     # Track whether we have C++ pass availability for fallback logic
     _cpp_fusion_available = False
@@ -247,7 +247,7 @@ def _apply_mlir_passes(
                         module = mlir_module_to_ir_module(orig_mlir_mod, ctx=ctx)
                     else:
                         module = ir.Module.parse(mlir_text, ctx)
-                    from compiler.mlir_dialect.fixups import _walk_and_fix_tensor_constants
+                    from compiler.mlir_dialect.lowering.fixups import _walk_and_fix_tensor_constants
                     _walk_and_fix_tensor_constants(module)
                     pman = pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx)
                     pman.run(module.operation)
@@ -365,7 +365,7 @@ def _annotate_debug_weight_names(ir_mod: Any) -> None:
 
 def _post_lowering_canonicalize(mlir_text: str) -> str:
     """Run canonicalize pass on lowered MLIR text."""
-    from compiler.mlir_dialect.compile_utils import _has_bindings, _setup_mlir_path
+    from compiler.mlir_dialect.lowering.compile_utils import _has_bindings, _setup_mlir_path
 
     if _has_bindings():
         _setup_mlir_path()
@@ -384,7 +384,7 @@ def _post_lowering_canonicalize(mlir_text: str) -> str:
 
     # Fix arith.constant ops with scalar value + tensor result type
     try:
-        from compiler.mlir_dialect.fixups import _fixup_arith_tensor_constants_mlir
+        from compiler.mlir_dialect.lowering.fixups import _fixup_arith_tensor_constants_mlir
         mlir_text = _fixup_arith_tensor_constants_mlir(mlir_text)
     except Exception as e:
         raise RuntimeError(f"[pipeline] CRITICAL: arith.constant scalar→tensor fixup failed: {e}") from e

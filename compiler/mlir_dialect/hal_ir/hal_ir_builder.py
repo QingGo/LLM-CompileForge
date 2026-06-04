@@ -102,7 +102,7 @@ class HalIRBuilder:
 
         # Generate MLIR text from the built MlirModule
         try:
-            from compiler.mlir_artifact_serialize import mlir_module_to_text
+            from compiler.mlir_artifact import mlir_module_to_text
             self._mlir_text_output = mlir_module_to_text(self._mlir_module)
         except Exception as e:
             _log.warning("Failed to generate HAL IR MLIR text: %s", e)

@@ -20,7 +20,7 @@ _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
 
 
-from compiler.mlir_dialect.compile_utils import _patch_transformers_torch
+from compiler.mlir_dialect.lowering.compile_utils import _patch_transformers_torch
 
 
 def compile_opt125m(output_dir: str, apply_lowering: bool = False,

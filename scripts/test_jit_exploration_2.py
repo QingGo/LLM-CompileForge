@@ -57,7 +57,7 @@ def test_model_lowered_jit():
     # Run the full lower_linalg_to_llvm_ir pipeline
     print("  Running lower_linalg_to_llvm_ir pipeline...")
     try:
-        from compiler.mlir_dialect.llvm_backend import lower_linalg_to_llvm_ir
+        from compiler.mlir_dialect.lowering.llvm_backend import lower_linalg_to_llvm_ir
 
         t0 = time.time()
         llvm_text = lower_linalg_to_llvm_ir(module)

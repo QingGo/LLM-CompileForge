@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import struct
 import subprocess
 import sys
@@ -159,7 +158,6 @@ def run_path_b(
         (func_outputs: dict[func_idx -> np.ndarray], logits: np.ndarray)
     """
     import glob as _glob
-    import time
 
     # Clean up old dump files
     for f in _glob.glob("/tmp/hal_func_*.bin"):
@@ -276,7 +274,7 @@ def main() -> int:
     binary_path = args.binary
 
     print("=" * 72)
-    print(f"DIAG: HAL IR Path A vs Path B Accuracy Diagnostic")
+    print("DIAG: HAL IR Path A vs Path B Accuracy Diagnostic")
     print(f"  Artifact: {artifact_dir}")
     print(f"  Tokens: {tokens}")
     print("=" * 72)

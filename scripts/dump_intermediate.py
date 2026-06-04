@@ -5,8 +5,14 @@ Usage:
     python scripts/dump_intermediate.py --list <mlir_file> [function]
     python scripts/dump_intermediate.py <mlir_file> <function> <ssa_name>
 """
-import os, sys, ctypes, struct, tempfile, re
+import ctypes
+import os
+import re
+import struct
+import sys
+import tempfile
 from pathlib import Path
+
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -159,8 +165,8 @@ def _copy_region(src, dst, val_map):
 # ═══════════════════════════════════════════════════════════════════
 
 def _jit_run(mod) -> np.ndarray | None:
-    from compiler.mlir_dialect.llvm_backend import lower_linalg_to_llvm_ir
-    from compiler.mlir_dialect.compile_utils import _find_cc
+    from compiler.mlir_dialect.lowering.compile_utils import _find_cc
+    from compiler.mlir_dialect.lowering.llvm_backend import lower_linalg_to_llvm_ir
 
     try:
         lower_linalg_to_llvm_ir(mod)

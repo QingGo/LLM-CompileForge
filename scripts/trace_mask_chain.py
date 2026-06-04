@@ -431,24 +431,24 @@ def _test_single_op(
         return engine, out, torch.cumsum(torch.ones(batch, seq), dim=1)
 
     if op == "arange":
-        mlir = f"""module {{
-  func.func @main(%arg: tensor<1xi64>) -> tensor<?xi64> {{
+        mlir = """module {
+  func.func @main(%arg: tensor<1xi64>) -> tensor<?xi64> {
     %0 = "sf.arange"(%arg) : (tensor<1xi64>) -> tensor<?xi64>
     return %0 : tensor<?xi64>
-  }}
-}}"""
+  }
+}"""
         count = np.array([seq], dtype=np.int64)
         engine, shape = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [count], (seq,))
         return engine, out, torch.arange(seq, dtype=torch.int64).float()
 
     if op == "add":
-        mlir = f"""module {{
-  func.func @main(%a: tensor<1xi64>, %b: tensor<1xi64>) -> tensor<1xi64> {{
+        mlir = """module {
+  func.func @main(%a: tensor<1xi64>, %b: tensor<1xi64>) -> tensor<1xi64> {
     %0 = "sf.add"(%a, %b) : (tensor<1xi64>, tensor<1xi64>) -> tensor<1xi64>
     return %0 : tensor<1xi64>
-  }}
-}}"""
+  }
+}"""
         a = np.array([2], dtype=np.int64)
         b = np.array([3], dtype=np.int64)
         engine, shape = lower_and_jit(mlir)
@@ -544,12 +544,12 @@ def _test_single_op(
         return engine, out, torch.from_numpy(ref_4d)
 
     if op == "expand":
-        mlir = f"""module {{
-  func.func @main(%arg: tensor<?x1x?x?xf32>) -> tensor<?x1x?x?xf32> {{
+        mlir = """module {
+  func.func @main(%arg: tensor<?x1x?x?xf32>) -> tensor<?x1x?x?xf32> {
     %0 = "sf.expand"(%arg) : (tensor<?x1x?x?xf32>) -> tensor<?x1x?x?xf32>
     return %0 : tensor<?x1x?x?xf32>
-  }}
-}}"""
+  }
+}"""
         inp = causal_mask.unsqueeze(0).unsqueeze(0).numpy()  # [1, 1, 4, 4]
         engine, shape = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [inp], shape)

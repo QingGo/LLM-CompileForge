@@ -120,7 +120,7 @@ def compile_opt125m(output_dir: str) -> None:
     from transformers.models.opt.configuration_opt import OPTConfig  # type: ignore[import-untyped]
     from transformers.models.opt.modeling_opt import OPTForCausalLM  # type: ignore[import-untyped]
 
-    from compiler.mlir_dialect.compile_utils import _patch_transformers_torch
+    from compiler.mlir_dialect.lowering.compile_utils import _patch_transformers_torch
     from compiler.pipeline import compile_mlir
 
     _patch_transformers_torch()
@@ -171,7 +171,7 @@ def compile_tiny_llama(output_dir: str) -> None:
     from transformers.models.llama.configuration_llama import LlamaConfig  # type: ignore[import-untyped]
     from transformers.models.llama.modeling_llama import LlamaForCausalLM  # type: ignore[import-untyped]
 
-    from compiler.mlir_dialect.compile_utils import _patch_transformers_torch
+    from compiler.mlir_dialect.lowering.compile_utils import _patch_transformers_torch
     from compiler.pipeline import compile_mlir
 
     _patch_transformers_torch()
@@ -212,9 +212,8 @@ def compile_tiny_llama(output_dir: str) -> None:
 def compile_qwen(output_dir: str) -> None:
     """Compile Qwen model (placeholder — not fully tested)."""
     import torch
-    from torch.export import Dim as _Dim
 
-    from compiler.mlir_dialect.compile_utils import _patch_transformers_torch
+    from compiler.mlir_dialect.lowering.compile_utils import _patch_transformers_torch
     from compiler.pipeline import compile_mlir
 
     _patch_transformers_torch()

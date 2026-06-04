@@ -19,7 +19,7 @@ if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
 from compiler.pipeline import _apply_sf_to_linalg  # noqa: E402
 
 try:
-    from compiler.mlir_dialect.llvm_backend import _has_bindings as _has_vec_bindings  # noqa: F811
+    from compiler.mlir_dialect.lowering.llvm_backend import _has_bindings as _has_vec_bindings  # noqa: F811
 except ImportError:
     def _has_vec_bindings() -> bool:
         return False

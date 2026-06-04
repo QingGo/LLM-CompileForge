@@ -7,7 +7,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from compiler.mlir_dialect.compile_utils import _setup_mlir_path
+from compiler.mlir_dialect.lowering.compile_utils import _setup_mlir_path
 
 # Templates use ${var} syntax — replaced via .replace() not .format()
 # to avoid conflicts with MLIR's generic op format syntax { ... }.

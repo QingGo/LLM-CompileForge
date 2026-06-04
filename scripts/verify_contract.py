@@ -7,15 +7,13 @@ Verifies subproject contract obligations as defined in include/CONTRACT.md.
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Tuple
 
 # Type alias: (label, result, detail)
 # result ∈ {"PASS", "FAIL", "SKIP"}
-CheckResult = Tuple[str, str, str]
+CheckResult = tuple[str, str, str]
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 EXPECTED_SFA_MAGIC = 0x41464253
@@ -23,7 +21,7 @@ EXPECTED_SFA_VERSION = 1
 
 
 def _collect_results(
-    results: List[CheckResult], check_nums: set
+    results: list[CheckResult], check_nums: set
 ) -> None:
     """Run checks and collect results."""
     checks = [
@@ -52,7 +50,7 @@ def _collect_results(
 # ── Check 1: engine/ must not import from compiler ────────────────────
 
 
-def check1_engine_no_compiler_imports() -> Tuple[str, str, str]:
+def check1_engine_no_compiler_imports() -> tuple[str, str, str]:
     """Verify no 'from compiler' imports in engine/ directory."""
     label = "Check 1: engine/ has no 'from compiler' imports"
     engine_dir = PROJECT_ROOT / "engine"
@@ -78,7 +76,7 @@ def check1_engine_no_compiler_imports() -> Tuple[str, str, str]:
 # ── Check 2: runtime/src/hal/mod.rs must not have hardcoded compiled/ ─
 
 
-def check2_hal_no_hardcoded_compiled_path() -> Tuple[str, str, str]:
+def check2_hal_no_hardcoded_compiled_path() -> tuple[str, str, str]:
     """Verify no hardcoded 'compiled/' path in hal/mod.rs."""
     label = "Check 2: runtime/src/hal/mod.rs has no hardcoded 'compiled/'"
     hal_mod = PROJECT_ROOT / "runtime" / "src" / "hal" / "mod.rs"
@@ -104,7 +102,7 @@ def check2_hal_no_hardcoded_compiled_path() -> Tuple[str, str, str]:
 # ── Check 3: compiler/ sys.path.insert references sf-dialect ──────────
 
 
-def check3_compiler_syspath_insert() -> Tuple[str, str, str]:
+def check3_compiler_syspath_insert() -> tuple[str, str, str]:
     """Verify sys.path.insert calls in compiler/ reference sf-dialect."""
     label = "Check 3: compiler/ sys.path.insert references sf-dialect"
     compiler_dir = PROJECT_ROOT / "compiler"
@@ -160,7 +158,7 @@ def check3_compiler_syspath_insert() -> Tuple[str, str, str]:
 # ── Check 4: proto SfaAbiHeader magic/version match sfa.h ────────────
 
 
-def check4_proto_magic_version() -> Tuple[str, str, str]:
+def check4_proto_magic_version() -> tuple[str, str, str]:
     """Verify SFA_MAGIC and SFA_VERSION in compiler/sfa_abi.py match expected values."""
     label = "Check 4: Proto SfaAbiHeader magic/version match sfa.h"
     sfa_abi_path = PROJECT_ROOT / "compiler" / "sfa_abi.py"
@@ -219,7 +217,7 @@ def check4_proto_magic_version() -> Tuple[str, str, str]:
 # ── Check 5: hal_ir.json validates against schema ─────────────────────
 
 
-def check5_hal_ir_schema() -> Tuple[str, str, str]:
+def check5_hal_ir_schema() -> tuple[str, str, str]:
     """Validate hal_ir.json against include/hal_ir.schema.json."""
     label = "Check 5: hal_ir.json validates against schema"
     schema_path = PROJECT_ROOT / "include" / "hal_ir.schema.json"
@@ -240,7 +238,7 @@ def check5_hal_ir_schema() -> Tuple[str, str, str]:
     try:
         with open(hal_ir_path) as f:
             hal_ir_data = json.load(f)
-    except (json.JSONDecodeError, IOError) as e:
+    except (OSError, json.JSONDecodeError) as e:
         return label, "FAIL", f"Cannot parse {hal_ir_path.relative_to(PROJECT_ROOT)}: {e}"
 
     # Validate against JSON Schema
@@ -252,7 +250,7 @@ def check5_hal_ir_schema() -> Tuple[str, str, str]:
     try:
         with open(schema_path) as f:
             schema = json.load(f)
-    except (json.JSONDecodeError, IOError) as e:
+    except (OSError, json.JSONDecodeError) as e:
         return label, "FAIL", f"Cannot load schema: {e}"
 
     validator = jsonschema.Draft7Validator(schema)
@@ -274,7 +272,7 @@ def check5_hal_ir_schema() -> Tuple[str, str, str]:
 # ── Check 6: cache_policy in metadata.json parseable ──────────────────
 
 
-def check6_metadata_cache_policy() -> Tuple[str, str, str]:
+def check6_metadata_cache_policy() -> tuple[str, str, str]:
     """Verify cache_policy key in metadata.json is parseable."""
     label = "Check 6: cache_policy in metadata.json parseable"
 
@@ -289,7 +287,7 @@ def check6_metadata_cache_policy() -> Tuple[str, str, str]:
     try:
         with open(metadata_path) as f:
             metadata = json.load(f)
-    except (json.JSONDecodeError, IOError) as e:
+    except (OSError, json.JSONDecodeError) as e:
         return label, "FAIL", f"Cannot parse {metadata_path.relative_to(PROJECT_ROOT)}: {e}"
 
     if "cache_policy" not in metadata:
@@ -316,7 +314,7 @@ def check6_metadata_cache_policy() -> Tuple[str, str, str]:
 # ── Check 7: runtime/src/abi.rs must validate SFA ABI version ──────────
 
 
-def check7_version_validation() -> Tuple[str, str, str]:
+def check7_version_validation() -> tuple[str, str, str]:
     """Verify runtime/src/abi.rs validates SFA AbiHeader.version against SFA_VERSION."""
     label = "Check 7 (G4): runtime/src/abi.rs validates SFA ABI version"
     abi_rs = PROJECT_ROOT / "runtime" / "src" / "abi.rs"
@@ -352,7 +350,7 @@ def check7_version_validation() -> Tuple[str, str, str]:
 # ── Check 8: runtime/src/abi.rs must validate num_inputs ──────────────
 
 
-def check8_num_inputs_validation() -> Tuple[str, str, str]:
+def check8_num_inputs_validation() -> tuple[str, str, str]:
     """Verify runtime/src/abi.rs validates num_inputs == inputs.len()."""
     label = "Check 8 (G3): runtime/src/abi.rs validates num_inputs == inputs.len()"
     abi_rs = PROJECT_ROOT / "runtime" / "src" / "abi.rs"
@@ -408,7 +406,7 @@ def check8_num_inputs_validation() -> Tuple[str, str, str]:
 # ── Check 9: SfaInputGlobal must use field.rank (not hardcoded) ──────
 
 
-def check9_global_input_rank() -> Tuple[str, str, str]:
+def check9_global_input_rank() -> tuple[str, str, str]:
     """Verify SfaInputGlobal match arm uses field.rank, not hardcoded rank: 2."""
     label = "Check 9 (G1): SfaInputGlobal uses field.rank (not hardcoded)"
     abi_rs = PROJECT_ROOT / "runtime" / "src" / "abi.rs"
@@ -440,7 +438,7 @@ def check9_global_input_rank() -> Tuple[str, str, str]:
 # ── Check 10: compute_graph_runner.rs must assert buffer rank ─────────
 
 
-def check10_buffer_rank_assert() -> Tuple[str, str, str]:
+def check10_buffer_rank_assert() -> tuple[str, str, str]:
     """Verify compute_graph_runner.rs has debug_assert! checking buffer rank vs io_def.rank."""
     label = "Check 10 (G2): compute_graph_runner.rs asserts buffer rank matches io_def.rank"
     runner_rs = PROJECT_ROOT / "runtime" / "src" / "compute_graph_runner.rs"
@@ -466,7 +464,7 @@ def check10_buffer_rank_assert() -> Tuple[str, str, str]:
 # ── Check 11: SfaOpCatalog must have ≥30 ops ─────────────────────────
 
 
-def check11_op_catalog_completeness() -> Tuple[str, str, str]:
+def check11_op_catalog_completeness() -> tuple[str, str, str]:
     """Verify SfaOpCatalog has at least 30 registered HAL operators."""
     label = "Check 11: SfaOpCatalog ≥30 SfaOpDef entries"
     gen_proto = str(PROJECT_ROOT / "gen" / "proto" / "python")
@@ -499,7 +497,7 @@ def check11_op_catalog_completeness() -> Tuple[str, str, str]:
 # ── Check 12: runtime CachePolicy must use SfaCachePolicy proto ───────
 
 
-def check12_cache_policy_proto_usage() -> Tuple[str, str, str]:
+def check12_cache_policy_proto_usage() -> tuple[str, str, str]:
     """Verify runtime/src/kv_cache.rs has from_proto method using SfaCachePolicy."""
     label = "Check 12: runtime/src/kv_cache.rs has from_proto + SfaCachePolicy"
     kv_cache = PROJECT_ROOT / "runtime" / "src" / "kv_cache.rs"
@@ -537,7 +535,7 @@ def check12_cache_policy_proto_usage() -> Tuple[str, str, str]:
 # ── Check 13: KernelOp trait exists with 5+ impl blocks ─────────────
 
 
-def check13_kernel_op_trait() -> Tuple[str, str, str]:
+def check13_kernel_op_trait() -> tuple[str, str, str]:
     """Verify runtime/src/hal/primitives/traits.rs has pub trait KernelOp and ≥5 impl blocks."""
     label = "Check 13: KernelOp trait exists with ≥5 impl blocks"
     traits_rs = PROJECT_ROOT / "runtime" / "src" / "hal" / "primitives" / "traits.rs"
@@ -580,7 +578,7 @@ def check13_kernel_op_trait() -> Tuple[str, str, str]:
 # ── Check 14: hal_ir semantics proto with 20+ entries ────────────────
 
 
-def check14_hal_ir_semantics() -> Tuple[str, str, str]:
+def check14_hal_ir_semantics() -> tuple[str, str, str]:
     """Verify SfaHalOpSemantics defined in proto and default_hal_op_semantics() has ≥20 entries."""
     label = "Check 14: SfaHalOpSemantics defined in proto, ≥20 entries in default impl"
     proto_path = PROJECT_ROOT / "include" / "sfa_abi.proto"
@@ -655,7 +653,7 @@ def main() -> None:
         # --check-all (default)
         check_nums = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}
 
-    results: List[CheckResult] = []
+    results: list[CheckResult] = []
     _collect_results(results, check_nums)
 
     # Print results

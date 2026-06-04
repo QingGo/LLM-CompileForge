@@ -17,7 +17,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from compiler.mlir_dialect.compile_utils import (
+from compiler.mlir_dialect.lowering.compile_utils import (
     _compile_serveforge_free,
     _find_cc,
     _setup_mlir_path,
@@ -241,7 +241,7 @@ def _sfa_relink_dylib(
     and SFA data is compiled to .o files using ``_compile_blob_to_o``.
     All .o files are linked into the final dylib.
     """
-    from compiler.mlir_dialect.llvm_backend import (
+    from compiler.mlir_dialect.lowering.llvm_backend import (
         _compile_embedded_data,
         link_dylib,
         llc_compile,
@@ -303,18 +303,18 @@ def main() -> None:
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+    import compiler.sfa_abi as sfa_abi
+    import compiler.sfa_weights as sfa_weights
     from compiler.mlir_artifact import (
         _build_constants_binary,
         _build_name_mapping,
         _parse_mlir_text,
         mlir_module_to_ir_module,
     )
-    from compiler.mlir_dialect.llvm_backend import (
+    from compiler.mlir_dialect.lowering.llvm_backend import (
         compile_module_to_dylib,
         lower_linalg_to_llvm_ir,
     )
-    import compiler.sfa_abi as sfa_abi
-    import compiler.sfa_weights as sfa_weights
     # Step 1: Load model.mlir → MlirModule
     if DEBUG:
         print(f"  [debug] Step [1/5] starting: parse {mlir_path}")
@@ -438,7 +438,7 @@ def main() -> None:
             _existing = _orig_bin_path.read_bytes()
             _sfcf_off = _existing.find(b"SFCF")
             if _sfcf_off >= 0:
-                from compiler.sfcf_parser import parse_sfcf_blob, parse_compute_graph
+                from compiler.sfcf_parser import parse_compute_graph, parse_sfcf_blob
                 _nm, _const, _gpos, _ver = parse_sfcf_blob(_existing[_sfcf_off:])
                 _existing_graph, _ = parse_compute_graph(_existing[_sfcf_off:], _gpos, _ver)
                 # Map existing consumed_internally flags back to re-parsed functions
@@ -518,7 +518,7 @@ def main() -> None:
 
     for _pass_name, _pipeline_str in _pass_pipelines:
         if _pass_name in ("canonicalize", "cse"):
-            from compiler.mlir_dialect.fixups import _walk_and_fix_tensor_constants
+            from compiler.mlir_dialect.lowering.fixups import _walk_and_fix_tensor_constants
             _walk_and_fix_tensor_constants(ir_mod)
         try:
             _pman = pm.PassManager.parse(_pipeline_str, ctx_lower)
@@ -641,7 +641,7 @@ def main() -> None:
         print(f"   Fixed {_changes} tensor.empty ops with dynamic sizes")
 
     # Fix arith.constant ops: scalar value + tensor result → dense attr
-    from compiler.mlir_dialect.fixups import _fixup_arith_tensor_constants_mlir
+    from compiler.mlir_dialect.lowering.fixups import _fixup_arith_tensor_constants_mlir
     _before = lowered_text
     lowered_text = _fixup_arith_tensor_constants_mlir(lowered_text)
     if lowered_text != _before:
