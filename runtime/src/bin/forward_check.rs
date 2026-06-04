@@ -12,6 +12,8 @@
 mod block_manager;
 #[path = "../abi.rs"]
 mod abi;
+#[path = "../cache_policy.rs"]
+mod cache_policy;
 #[path = "../ciface_high.rs"]
 mod ciface_high;
 #[path = "../compute_graph.rs"]
@@ -22,8 +24,6 @@ mod error;
 mod compute_graph_runner;
 #[path = "../executor.rs"]
 mod executor;
-#[path = "../kernel_catalog.rs"]
-mod kernel_catalog;
 #[path = "../hal/mod.rs"]
 mod hal;
 #[path = "../kv_cache.rs"]

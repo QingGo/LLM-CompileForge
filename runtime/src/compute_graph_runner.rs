@@ -17,7 +17,7 @@ use crate::compute_graph::{ComputeGraph, FuncDef, InputBinding, IOTensorDef};
 use crate::hal::cpu::buffer::CpuBuffer as InnerCpuBuffer;
 use crate::hal::cpu::CpuBuffer;
 use crate::hal::traits;
-use crate::kv_cache::CachePolicy;
+use crate::cache_policy::CachePolicy;
 use crate::kv_cache_intercept::{intercept_consumed_input, intercept_consumed_output};
 use crate::sfa_tensor::{SFATensor, SFATensorRawAny};
 use crate::tensor::{Dtype, Tensor};
@@ -216,7 +216,7 @@ fn extract_output_tensor(
     seq_len: usize,
 ) -> Result<Tensor, anyhow::Error> {
     let shapes = &output_shapes[oi];
-    let has_negative = shapes.iter().any(|&s| s < 0);
+    let _has_negative = shapes.iter().any(|&s| s < 0);
 
     // Per-dimension fallback from io_def.shape (restored from 9fd2dd2).
     // When the dylib returns unresolved dynamic dimension markers
@@ -264,6 +264,42 @@ fn extract_output_tensor(
         fi, oi, shapes, actual_n, shape_usize,
     );
     Ok(Tensor::new_owned(shape_usize, out_vec, Dtype::F32))
+}
+
+/// Build SfaMemRef descriptors from input buffers, promoting rank-1 to
+/// rank-2 for ABI compatibility, then call executable.execute() and
+/// extract output tensors from the returned shapes.
+///
+/// Returns the extracted output shapes from executable.execute().
+fn build_sfa_and_execute(
+    func_def: &FuncDef,
+    executable: &dyn traits::Executable,
+    input_bufs: &[Box<dyn traits::Buffer>],
+    output_tensors: &[SFATensor],
+    stream: &dyn traits::Stream,
+) -> Result<Vec<Vec<i64>>, anyhow::Error> {
+    let input_sfa: Vec<crate::hal::sfa::SfaMemRef> =
+        input_bufs.iter().zip(func_def.inputs.iter()).map(|(b, (_binding, io_def))| {
+            let sfa = b.as_ref().as_sfa_memref();
+            let native_rank = sfa.rank();
+            if native_rank > io_def.rank {
+                warn!("rank promotion: buffer rank={} > io_def.rank={} for input", native_rank, io_def.rank);
+            }
+            if sfa.rank() == 1 {
+                let shape = sfa.sizes();
+                let ptr = sfa.data_ptr() as *mut std::ffi::c_void;
+                crate::hal::sfa::SfaMemRef::r2(ptr, [shape[0] as i64, 1], [1, 1], sfa.element_size())
+            } else {
+                sfa
+            }
+        }).collect();
+
+    let output_bufs: Vec<_> = output_tensors.iter().map(|t| t.as_buffer_ref()).collect();
+    let mut output_sfa: Vec<crate::hal::sfa::SfaMemRef> =
+        output_bufs.iter().map(|b| b.as_ref().as_sfa_memref()).collect();
+
+    let output_shapes = executable.execute(&func_def.symbol, stream, &input_sfa, &mut output_sfa)?;
+    Ok(output_shapes)
 }
 
 /// Walk every function in `compute_graph` in order.
@@ -328,58 +364,12 @@ pub fn run_function_graph(
             }
         }
 
-        // Build SfaMemRef descriptors from input buffers.
-        // IMPORTANT: use the buffer's native rank, NOT io_def.rank.
-        // The dylib's LLVM IR reads a fixed-size struct per argument —
-        // providing a smaller struct (e.g. rank 1 for an input the dylib
-        // expects as rank 4) causes out-of-bounds reads → SIGSEGV.
-        // A larger struct (rank 3 for rank 1) works because the dylib
-        // only reads the first expected-size bytes.  The per-input
-        // rank/dims in io_def are informational metadata for the compiler
-        // and for future per-input buffer allocation.
-        let input_sfa: Vec<crate::hal::sfa::SfaMemRef> =
-            input_bufs.iter().zip(func_def.inputs.iter()).map(|(b, (_binding, io_def))| {
-                let sfa = b.as_ref().as_sfa_memref();
-                let native_rank = sfa.rank();
-                if native_rank > io_def.rank {
-                    warn!("rank promotion: buffer rank={} > io_def.rank={} for input", native_rank, io_def.rank);
-                }
-                let out = if sfa.rank() == 1 {
-                    let shape = sfa.sizes();
-                    let ptr = sfa.data_ptr() as *mut std::ffi::c_void;
-                    crate::hal::sfa::SfaMemRef::r2(
-                        ptr,
-                        [shape[0] as i64, 1],
-                        [1, 1],
-                        sfa.element_size(),
-                    )
-                } else {
-                    sfa
-                };
-                debug_assert!(io_def.rank <= out.rank(),
-                    "io_def.rank {} exceeds final buffer rank {} — dylib may SIGSEGV",
-                    io_def.rank, out.rank());
-                out
-            }).collect();
-
-        // Pre-allocate output buffers sized from the compute graph metadata.
+        // Pre-allocate output buffers and execute.
         let seq_len = input_ids.len();
         let output_tensors = allocate_output_buffers(func_def, seq_len)?;
-
-        // Build boxed buffer refs from SFATensors (held alive for output_refs lifetime).
-        let output_bufs: Vec<_> = output_tensors
-            .iter()
-            .map(|t| t.as_buffer_ref())
-            .collect();
-
-        // Build mutable SfaMemRef descriptors for output buffers.
-        let mut output_sfa: Vec<crate::hal::sfa::SfaMemRef> =
-            output_bufs.iter().map(|b| b.as_ref().as_sfa_memref()).collect();
-
-        // SAFETY: executable.execute handles the ciface kernel call
-        // internally, including sret allocation, lookup_typed, and
-        // parsing output descriptors.
-        let output_shapes = executable.execute(&func_def.symbol, stream, &input_sfa, &mut output_sfa)?;
+        let output_shapes = build_sfa_and_execute(
+            func_def, executable, &input_bufs, &output_tensors, stream,
+        )?;
 
         // Extract Tensors from output buffers using the returned shapes.
         for (oi, _shapes) in output_shapes.iter().enumerate() {
@@ -395,73 +385,6 @@ pub fn run_function_graph(
     let result = &func_outputs[g_func][g_idx];
     Ok(result.to_owned())
 }
-
-/// Estimate the number of f32 elements for an output tensor.
-///
-/// The compute graph encodes dynamic dimensions as 0.  We assume the first
-/// dynamic dimension is batch (= 1) and subsequent dynamic dimensions are
-/// sequence length (= `seq_len`).
-fn estimate_output_numel(shape: &[u64], seq_len: usize) -> usize {
-    let mut numel: usize = 1;
-    let mut first_zero = true;
-    for &d in shape {
-        let dim = if d == 0 {
-            if first_zero {
-                first_zero = false;
-                1 // batch is always 1
-            } else {
-                seq_len
-            }
-        } else {
-            d as usize
-        };
-        numel = numel.saturating_mul(dim);
-    }
-    // Minimum sensible size: 16 elements (avoids empty-output issues).
-    numel.max(16)
-}
-
-/// Resolve both the shape (as Vec<usize>) and element count from the compute
-/// graph's output shape metadata, using the same dynamic-dimension logic.
-fn resolve_output_shape_and_numel(
-    shape: &[u64],
-    seq_len: usize,
-) -> (Vec<usize>, usize) {
-    let mut first_zero = true;
-    let shape_usize: Vec<usize> = shape
-        .iter()
-        .map(|&d| {
-            if d == 0 {
-                if first_zero {
-                    first_zero = false;
-                    1 // batch
-                } else {
-                    seq_len
-                }
-            } else {
-                d as usize
-            }
-        })
-        .collect();
-    let natural_numel: usize = shape_usize.iter().product();
-    // Bufferization packs all function results into a single rank-3 memref
-    // with fully dynamic shape. Allocate a flat rank-3 buffer for the sret
-    // parser (needs rank-3 to read correct descriptor size from dylib output).
-    if shape.len() == 3 && shape.iter().all(|&d| d == 0) {
-        let n = natural_numel.max(2_097_152); // 2M f32 = 8MB
-        (vec![n, 1, 1], n)
-    } else {
-        let numel = natural_numel.max(16);
-        // Ensure shape and numel are consistent: if numel was bumped above
-        // the natural product, adjust shape to [numel] (rank-1 fallback).
-        if numel != natural_numel {
-            (vec![numel], numel)
-        } else {
-            (shape_usize, natural_numel)
-        }
-    }
-}
-
 /// Determine whether a given output should be intercepted (consumed internally
 /// by the KV cache) based on the CachePolicy.
 ///
@@ -489,7 +412,7 @@ fn should_intercept_consumed(
 /// The SFA ABI encodes post-bufferization function metadata via protobuf:
 /// each function has a packed sret output, and input bindings use
 /// ``SfaInputField`` to encode weight names and SSA producer references.
-pub fn run_function_graph_from_abi(
+pub(crate) fn run_function_graph_from_abi(
     abi: &crate::abi::SfaAbiHeader,
     sfa_weight_provider: &crate::abi::SfaWeightProvider,
     executable: &dyn traits::Executable,
@@ -516,7 +439,7 @@ pub fn run_function_graph_from_abi(
 /// Same as [`run_function_graph_with_kv_intercept`] but builds the
 /// ComputeGraph from the SFA ABI header.
 #[allow(clippy::too_many_arguments)]
-pub fn run_function_graph_with_kv_intercept_from_abi(
+pub(crate) fn run_function_graph_with_kv_intercept_from_abi(
     abi: &crate::abi::SfaAbiHeader,
     sfa_weight_provider: &crate::abi::SfaWeightProvider,
     executable: &dyn traits::Executable,
@@ -643,36 +566,12 @@ pub fn run_function_graph_with_kv_intercept(
             input_bufs.push(buf);
         }
 
-        // Pre-allocate output buffers (same pattern as run_function_graph)
+        // Pre-allocate output buffers and execute (same pattern as run_function_graph).
         let seq_len = input_ids.len();
         let output_tensors = allocate_output_buffers(func_def, seq_len)?;
-
-        let output_bufs: Vec<_> = output_tensors
-            .iter()
-            .map(|t| t.as_buffer_ref())
-            .collect();
-
-        let input_sfa: Vec<crate::hal::sfa::SfaMemRef> =
-            input_bufs.iter().map(|b| {
-                let sfa = b.as_ref().as_sfa_memref();
-                if sfa.rank() == 1 {
-                    let shape = sfa.sizes();
-                    let ptr = sfa.data_ptr() as *mut std::ffi::c_void;
-                    crate::hal::sfa::SfaMemRef::r2(
-                        ptr,
-                        [shape[0] as i64, 1],
-                        [1, 1],
-                        sfa.element_size(),
-                    )
-                } else {
-                    sfa
-                }
-            }).collect();
-        let mut output_sfa: Vec<crate::hal::sfa::SfaMemRef> =
-            output_bufs.iter().map(|b| b.as_ref().as_sfa_memref()).collect();
-
-        let output_shapes =
-            executable.execute(&func_def.symbol, stream, &input_sfa, &mut output_sfa)?;
+        let output_shapes = build_sfa_and_execute(
+            func_def, executable, &input_bufs, &output_tensors, stream,
+        )?;
 
         for (oi, _shapes) in output_shapes.iter().enumerate() {
             let io_def = &func_def.outputs[oi];
@@ -705,7 +604,7 @@ pub fn run_function_graph_with_kv_intercept(
 mod tests {
     use super::*;
     use crate::compute_graph::IOTensorDef;
-    use crate::kv_cache::{CachePolicy, InterceptSpec};
+    use crate::cache_policy::{CachePolicy, InterceptSpec};
 
     /// When cache_policy.intercepts is populated, should_intercept_consumed
     /// must use the intercepts list (not consumed_internally).

@@ -372,7 +372,7 @@ pub use device::{CpuDevice, CpuEvent, CpuStream};
 pub use executable::CpuExecutable as Executable;
 pub use memref::MemRefDesc2;
 pub(crate) use memref::MemRefDescAny;
-pub use sret::{make_memref_descriptor, read_sret_descriptor};
+pub use sret::read_sret_descriptor;
 
 // ── Tests ─────────────────────────────────────────────────────────────
 

@@ -342,5 +342,5 @@ impl Scheduler {
 // ── Tests ───────────────────────────────────────────────────
 
 #[cfg(test)]
-#[path = "scheduler_tests.rs"]
+#[path = "tests/scheduler_tests.rs"]
 mod tests;

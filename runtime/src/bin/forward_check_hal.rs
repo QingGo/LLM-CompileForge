@@ -19,6 +19,8 @@
 mod block_manager;
 #[path = "../abi.rs"]
 mod abi;
+#[path = "../cache_policy.rs"]
+mod cache_policy;
 #[path = "../ciface_high.rs"]
 mod ciface_high;
 #[path = "../compute_graph.rs"]
@@ -35,8 +37,6 @@ mod global_input;
 mod hal;
 #[path = "../hal_runner/mod.rs"]
 mod hal_runner;
-#[path = "../kernel_catalog.rs"]
-mod kernel_catalog;
 #[path = "../kv_cache.rs"]
 mod kv_cache;
 #[path = "../kv_cache_intercept.rs"]

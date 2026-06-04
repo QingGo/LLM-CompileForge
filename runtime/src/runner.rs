@@ -51,9 +51,6 @@ pub struct RunnerConfig {
     pub max_tokens_per_request: usize,
     pub seed: u64,
     pub use_chat_template: bool,
-    /// Reserved: use KernelCatalog for fixed-shape AOT kernel dispatch.
-    /// Phase 0: always false (dynamic path only).
-    pub use_kernel_catalog: bool,
     /// Enable KV cache block table for decode requests.
     pub use_kv_cache: bool,
     /// Number of KV heads (required when use_kv_cache=true).
@@ -88,7 +85,6 @@ impl Default for RunnerConfig {
             max_tokens_per_request: 512,
             seed: 42,
             use_chat_template: true,
-            use_kernel_catalog: false,
             use_kv_cache: false,
             num_kv_heads: 0,
             head_dim: 0,
@@ -470,7 +466,6 @@ mod tests {
         let config = RunnerConfig::default();
         assert_eq!(config.max_batch_size, 8);
         assert_eq!(config.block_size, 16);
-        assert!(!config.use_kernel_catalog);
     }
 
     #[test]

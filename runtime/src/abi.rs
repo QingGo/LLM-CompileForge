@@ -29,13 +29,13 @@ pub use proto::OutputDescriptor;
 pub use proto::SfaAbiHeader;
 pub use proto::SfaCachePolicy;
 pub use proto::SfaFuncMeta;
+pub use proto::SfaHalOpSemanticEntry;
+pub use proto::SfaHalOpSemantics;
 pub use proto::SfaInputField;
 pub use proto::SfaInputKind;
 pub use proto::SfaInterceptSpec;
 pub use proto::SfaSlabSpec;
 pub use proto::SfaSsaRef;
-pub use proto::SfaHalOpSemantics;
-pub use proto::SfaHalOpSemanticEntry;
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -323,6 +323,43 @@ pub fn build_compute_graph(
         global_input,
         global_output,
     })
+}
+
+// ── Dylib loading ──────────────────────────────────────────────────
+
+/// Load compute graph and weight provider from sfa_abi + sfa_weights
+/// symbols embedded in the compiled dylib.
+///
+/// Also loads cache policy from sfa_cache_policy (proto), falling back
+/// to None for older models without the symbol.
+pub fn load_from_dylib(
+    dylib_path: &str,
+    safetensors_path: Option<&str>,
+) -> Result<(
+    crate::weight_loader::WeightProvider,
+    ComputeGraph,
+    Option<crate::cache_policy::CachePolicy>,
+), anyhow::Error> {
+    // SAFETY: Loading a compiled dylib produced by the SFA toolchain.
+    let lib = unsafe { libloading::Library::new(dylib_path)? };
+    let abi = unsafe { load_sfa_abi(&lib)? };
+    let sfa_wp = unsafe { load_sfa_weights(&lib)? };
+    let cache_policy_proto = unsafe { load_sfa_cache_policy(&lib)? };
+    let compute_graph = build_compute_graph(&abi, &sfa_wp)?;
+    let registry = crate::weight_loader::WeightRegistry {
+        name_mapping: sfa_wp.name_mapping,
+        constants: sfa_wp.constants,
+    };
+    let st_path = safetensors_path.map(std::path::Path::new);
+    let weight_provider = crate::weight_loader::WeightProvider::new(registry, st_path)?;
+    let cache_policy = match cache_policy_proto {
+        Some(p) => Some(
+            crate::cache_policy::CachePolicy::from_proto(&p)
+                .map_err(|e| anyhow::anyhow!("{}", e))?,
+        ),
+        None => None,
+    };
+    Ok((weight_provider, compute_graph, cache_policy))
 }
 
 // ── Tests ──────────────────────────────────────────────────────────

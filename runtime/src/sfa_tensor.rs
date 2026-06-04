@@ -417,7 +417,7 @@ impl SFATensor {
     pub fn clone_data(&self) -> Self {
         let numel = self.numel();
         let shape = self.shape();
-        let total_bytes = numel * self.elem_size;
+        let _total_bytes = numel * self.elem_size;
 
         if self.elem_size == 8 {
             let mut new_data = vec![0i64; numel];

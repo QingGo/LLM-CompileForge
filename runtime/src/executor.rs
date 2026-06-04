@@ -1,17 +1,17 @@
 use std::cell::RefCell;
 
+use crate::abi;
 use crate::block_manager::BlockManager;
 use crate::compute_graph::ComputeGraph;
 use crate::error::ExecutorError;
 use crate::hal::cpu::CpuDevice;
 use crate::hal::cpu::CpuStream;
-use crate::kernel_catalog::KernelCatalog;
 use crate::hal::traits;
 #[cfg(test)]
 pub(crate) use crate::hal::traits::Buffer;
-use crate::kv_cache::CachePolicy;
+use crate::cache_policy::CachePolicy;
 use crate::tensor::Tensor;
-use crate::weight_loader::{WeightProvider, WeightRegistry};
+use crate::weight_loader::WeightProvider;
 
 /// Load a pure-Rust HAL executable (no dylib dependency).
 ///
@@ -57,50 +57,11 @@ fn load_hal_rust_executable_from_dir(dylib_dir: &std::path::Path) -> Result<Box<
     ))
 }
 
-/// Try to load compute graph and weight provider from ``sfa_abi`` and
-/// ``sfa_weights`` symbols embedded in the compiled dylib.
-///
-/// Also attempts to load cache policy from the ``sfa_cache_policy``
-/// symbol (proto format).  Returns ``None`` if the symbol is absent
-/// (older models).
-///
-/// Returns ``Ok((WeightProvider, ComputeGraph, Option<CachePolicy>))``
-/// on success, or an error if either symbol is missing or the ABI data
-/// is malformed.
-fn try_load_sfa_abi(
-    dylib_path: &str,
-    safetensors_path: Option<&str>,
-) -> Result<(WeightProvider, ComputeGraph, Option<CachePolicy>), anyhow::Error> {
-    // SAFETY: Loading a compiled dylib produced by the SFA toolchain.
-    // The sfa_abi / sfa_weights symbols point to protobuf-encoded
-    // data embedded at compile time, decoded into owned Rust types.
-    let lib = unsafe { libloading::Library::new(dylib_path)? };
-    let abi = unsafe { crate::abi::load_sfa_abi(&lib)? };
-    let sfa_wp = unsafe { crate::abi::load_sfa_weights(&lib)? };
-    let cache_policy_proto = unsafe { crate::abi::load_sfa_cache_policy(&lib)? };
-    // build_compute_graph takes references to the decoded proto types
-    // and clones all data into the owned ComputeGraph.
-    let compute_graph = crate::abi::build_compute_graph(&abi, &sfa_wp)?;
-    let registry = WeightRegistry {
-        name_mapping: sfa_wp.name_mapping,
-        constants: sfa_wp.constants,
-    };
-    let st_path = safetensors_path.map(std::path::Path::new);
-    let weight_provider = WeightProvider::new(registry, st_path)?;
-    let cache_policy = match cache_policy_proto {
-        Some(p) => Some(CachePolicy::from_proto(&p).map_err(|e| anyhow::anyhow!("{}", e))?),
-        None => None,
-    };
-    Ok((weight_provider, compute_graph, cache_policy))
-}
-
 pub struct ModelExecutor {
     pub executable: Box<dyn traits::Executable>,
     pub weight_provider: WeightProvider,
     pub compute_graph: ComputeGraph,
     pub weight_cache: RefCell<std::collections::HashMap<String, Tensor>>,
-    #[allow(dead_code)]
-    pub catalog: Option<Box<dyn KernelCatalog>>,
     pub cache_policy: CachePolicy,
 }
 
@@ -161,7 +122,7 @@ impl ModelExecutor {
             usize,
             Option<&[u8]>,
         ) = if is_dylib {
-            match try_load_sfa_abi(dylib_path, safetensors_path) {
+            match abi::load_from_dylib(dylib_path, safetensors_path) {
                 Ok((wp, cg, cache_pol)) => {
                     log::info!(
                         "Loaded compute graph from sfa_abi: {} functions",
@@ -286,7 +247,6 @@ impl ModelExecutor {
             weight_provider,
             compute_graph,
             weight_cache: RefCell::new(std::collections::HashMap::new()),
-            catalog: None,
             cache_policy,
         })
     }
@@ -350,22 +310,6 @@ impl ModelExecutor {
         dump_layers(&func_outputs);
 
         Ok(result)
-    }
-
-    #[allow(dead_code)]
-    pub fn forward_decode_cached(
-        &self,
-        input_ids: &[u32],
-        position: u32,
-        block_manager: &mut BlockManager,
-        request_id: &str,
-    ) -> Result<Tensor, anyhow::Error> {
-        self.forward_with_kv(
-            input_ids,
-            &[position],
-            Some(block_manager),
-            Some(request_id),
-        )
     }
 }
 
@@ -433,5 +377,5 @@ fn write_npy(path: &str, data: &[f32], shape: &[usize]) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-#[path = "executor_tests.rs"]
+#[path = "tests/executor_tests.rs"]
 mod tests;

@@ -12,7 +12,7 @@ pub mod prep;
 pub mod shape_inference;
 pub mod types;
 
-#[cfg(test)]
+#[path = "../tests/hal_runner_tests.rs"]
 mod tests;
 
 pub use types::{HalIR, HalFunction, HalOp, HalRustRunner, HalTensorDef, HalWeightEntry};

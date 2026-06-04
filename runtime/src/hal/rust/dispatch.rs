@@ -10,7 +10,7 @@
 
 use crate::hal::sfa::SfaMemRef;
 
-use super::executable::HalRustExecutable;
+use super::executable::{sfa_as_f32_slice, sfa_as_f32_mut, build_shape_meta_from_sfa};
 
 /// Unified dispatch through the ``KernelOp`` trait registry.
 ///
@@ -25,13 +25,13 @@ pub fn dispatch_via_trait(
     let input_slices: Vec<&[f32]> = inputs
         .iter()
         // SAFETY: All inputs are f32 buffers (element_size == 4).
-        .map(|m| unsafe { HalRustExecutable::sfa_as_f32_slice(m) })
+        .map(|m| unsafe { sfa_as_f32_slice(m) })
         .collect();
     let output_shapes: Vec<Vec<i64>> = outputs
         .iter()
         .map(|m| m.sizes_i64())
         .collect();
-    let meta = HalRustExecutable::build_shape_meta_from_sfa(inputs, outputs);
+    let meta = build_shape_meta_from_sfa(inputs, outputs);
 
     let registry = crate::hal::primitives::traits::kernel_registry();
     let kernel = registry
@@ -40,7 +40,7 @@ pub fn dispatch_via_trait(
 
     if let Some(out_sfa) = outputs.first() {
         // SAFETY: Output buffer is pre-allocated as f32 by the runner.
-        let out_slice = unsafe { HalRustExecutable::sfa_as_f32_mut(out_sfa) };
+        let out_slice = unsafe { sfa_as_f32_mut(out_sfa) };
         kernel
             .execute_typed(&input_slices, out_slice, &meta)
             .map_err(|e| anyhow::anyhow!("{}: {}", op_name, e))?;
@@ -60,16 +60,16 @@ pub fn dispatch_matmul(
 ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
     let input_slices: Vec<&[f32]> = inputs
         .iter()
-        .map(|m| unsafe { HalRustExecutable::sfa_as_f32_slice(m) })
+        .map(|m| unsafe { sfa_as_f32_slice(m) })
         .collect();
     let output_shapes: Vec<Vec<i64>> = outputs
         .iter()
         .map(|m| m.sizes_i64())
         .collect();
-    let meta = HalRustExecutable::build_shape_meta_from_sfa(inputs, outputs);
+    let meta = build_shape_meta_from_sfa(inputs, outputs);
 
     if let Some(out_sfa) = outputs.first() {
-        let out_slice = unsafe { HalRustExecutable::sfa_as_f32_mut(out_sfa) };
+        let out_slice = unsafe { sfa_as_f32_mut(out_sfa) };
         crate::hal::hal_ops_cpu::matmul_cpu(&input_slices, out_slice, &meta)
             .map_err(|e| anyhow::anyhow!("matmul_cpu: {}", e))?;
     }
@@ -85,17 +85,17 @@ pub fn dispatch_element_wise(
 ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
     let input_slices: Vec<&[f32]> = inputs
         .iter()
-        .map(|m| unsafe { HalRustExecutable::sfa_as_f32_slice(m) })
+        .map(|m| unsafe { sfa_as_f32_slice(m) })
         .collect();
     let output_shapes: Vec<Vec<i64>> = outputs
         .iter()
         .map(|m| m.sizes_i64())
         .collect();
-    let mut meta = HalRustExecutable::build_shape_meta_from_sfa(inputs, outputs);
+    let mut meta = build_shape_meta_from_sfa(inputs, outputs);
     meta.kind = Some(kind.to_string());
 
     if let Some(out_sfa) = outputs.first() {
-        let out_slice = unsafe { HalRustExecutable::sfa_as_f32_mut(out_sfa) };
+        let out_slice = unsafe { sfa_as_f32_mut(out_sfa) };
         crate::hal::hal_ops_cpu::element_wise_cpu(&input_slices, out_slice, &meta)
             .map_err(|e| anyhow::anyhow!("element_wise_cpu: {}", e))?;
     }
@@ -110,16 +110,16 @@ pub fn dispatch_softmax(
 ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
     let input_slices: Vec<&[f32]> = inputs
         .iter()
-        .map(|m| unsafe { HalRustExecutable::sfa_as_f32_slice(m) })
+        .map(|m| unsafe { sfa_as_f32_slice(m) })
         .collect();
     let output_shapes: Vec<Vec<i64>> = outputs
         .iter()
         .map(|m| m.sizes_i64())
         .collect();
-    let meta = HalRustExecutable::build_shape_meta_from_sfa(inputs, outputs);
+    let meta = build_shape_meta_from_sfa(inputs, outputs);
 
     if let Some(out_sfa) = outputs.first() {
-        let out_slice = unsafe { HalRustExecutable::sfa_as_f32_mut(out_sfa) };
+        let out_slice = unsafe { sfa_as_f32_mut(out_sfa) };
         crate::hal::hal_ops_cpu::softmax_cpu(&input_slices, out_slice, &meta)
             .map_err(|e| anyhow::anyhow!("softmax_cpu: {}", e))?;
     }
@@ -134,16 +134,16 @@ pub fn dispatch_reshape(
 ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
     let input_slices: Vec<&[f32]> = inputs
         .iter()
-        .map(|m| unsafe { HalRustExecutable::sfa_as_f32_slice(m) })
+        .map(|m| unsafe { sfa_as_f32_slice(m) })
         .collect();
     let output_shapes: Vec<Vec<i64>> = outputs
         .iter()
         .map(|m| m.sizes_i64())
         .collect();
-    let meta = HalRustExecutable::build_shape_meta_from_sfa(inputs, outputs);
+    let meta = build_shape_meta_from_sfa(inputs, outputs);
 
     if let Some(out_sfa) = outputs.first() {
-        let out_slice = unsafe { HalRustExecutable::sfa_as_f32_mut(out_sfa) };
+        let out_slice = unsafe { sfa_as_f32_mut(out_sfa) };
         crate::hal::hal_ops_cpu::reshape_cpu(&input_slices, out_slice, &meta)
             .map_err(|e| anyhow::anyhow!("reshape_cpu: {}", e))?;
     }
@@ -159,17 +159,17 @@ pub fn dispatch_transpose(
 ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
     let input_slices: Vec<&[f32]> = inputs
         .iter()
-        .map(|m| unsafe { HalRustExecutable::sfa_as_f32_slice(m) })
+        .map(|m| unsafe { sfa_as_f32_slice(m) })
         .collect();
     let output_shapes: Vec<Vec<i64>> = outputs
         .iter()
         .map(|m| m.sizes_i64())
         .collect();
-    let mut meta = HalRustExecutable::build_shape_meta_from_sfa(inputs, outputs);
+    let mut meta = build_shape_meta_from_sfa(inputs, outputs);
     meta.kind = perm.map(|s| s.to_string());
 
     if let Some(out_sfa) = outputs.first() {
-        let out_slice = unsafe { HalRustExecutable::sfa_as_f32_mut(out_sfa) };
+        let out_slice = unsafe { sfa_as_f32_mut(out_sfa) };
         crate::hal::hal_ops_cpu::transpose_cpu(&input_slices, out_slice, &meta)
             .map_err(|e| anyhow::anyhow!("transpose_cpu: {}", e))?;
     }
@@ -185,17 +185,17 @@ pub fn dispatch_reduce(
 ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
     let input_slices: Vec<&[f32]> = inputs
         .iter()
-        .map(|m| unsafe { HalRustExecutable::sfa_as_f32_slice(m) })
+        .map(|m| unsafe { sfa_as_f32_slice(m) })
         .collect();
     let output_shapes: Vec<Vec<i64>> = outputs
         .iter()
         .map(|m| m.sizes_i64())
         .collect();
-    let mut meta = HalRustExecutable::build_shape_meta_from_sfa(inputs, outputs);
+    let mut meta = build_shape_meta_from_sfa(inputs, outputs);
     meta.kind = Some(kind.to_string());
 
     if let Some(out_sfa) = outputs.first() {
-        let out_slice = unsafe { HalRustExecutable::sfa_as_f32_mut(out_sfa) };
+        let out_slice = unsafe { sfa_as_f32_mut(out_sfa) };
         crate::hal::hal_ops_cpu::reduce_cpu(&input_slices, out_slice, &meta)
             .map_err(|e| anyhow::anyhow!("reduce_cpu: {}", e))?;
     }
@@ -210,16 +210,16 @@ pub fn dispatch_gather(
 ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
     let input_slices: Vec<&[f32]> = inputs
         .iter()
-        .map(|m| unsafe { HalRustExecutable::sfa_as_f32_slice(m) })
+        .map(|m| unsafe { sfa_as_f32_slice(m) })
         .collect();
     let output_shapes: Vec<Vec<i64>> = outputs
         .iter()
         .map(|m| m.sizes_i64())
         .collect();
-    let meta = HalRustExecutable::build_shape_meta_from_sfa(inputs, outputs);
+    let meta = build_shape_meta_from_sfa(inputs, outputs);
 
     if let Some(out_sfa) = outputs.first() {
-        let out_slice = unsafe { HalRustExecutable::sfa_as_f32_mut(out_sfa) };
+        let out_slice = unsafe { sfa_as_f32_mut(out_sfa) };
         crate::hal::hal_ops_cpu::gather_cpu(&input_slices, out_slice, &meta)
             .map_err(|e| anyhow::anyhow!("gather_cpu: {}", e))?;
     }
@@ -236,18 +236,18 @@ pub fn dispatch_fill(
 ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
     let input_slices: Vec<&[f32]> = inputs
         .iter()
-        .map(|m| unsafe { HalRustExecutable::sfa_as_f32_slice(m) })
+        .map(|m| unsafe { sfa_as_f32_slice(m) })
         .collect();
     let output_shapes: Vec<Vec<i64>> = outputs
         .iter()
         .map(|m| m.sizes_i64())
         .collect();
-    let mut meta = HalRustExecutable::build_shape_meta_from_sfa(inputs, outputs);
+    let mut meta = build_shape_meta_from_sfa(inputs, outputs);
     meta.kind = kind.map(|s| s.to_string());
     meta.value = value;
 
     if let Some(out_sfa) = outputs.first() {
-        let out_slice = unsafe { HalRustExecutable::sfa_as_f32_mut(out_sfa) };
+        let out_slice = unsafe { sfa_as_f32_mut(out_sfa) };
         crate::hal::hal_ops_cpu::fill_cpu(&input_slices, out_slice, &meta)
             .map_err(|e| anyhow::anyhow!("fill_cpu: {}", e))?;
     }
@@ -262,16 +262,16 @@ pub fn dispatch_shape_of(
 ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
     let input_slices: Vec<&[f32]> = inputs
         .iter()
-        .map(|m| unsafe { HalRustExecutable::sfa_as_f32_slice(m) })
+        .map(|m| unsafe { sfa_as_f32_slice(m) })
         .collect();
     let output_shapes: Vec<Vec<i64>> = outputs
         .iter()
         .map(|m| m.sizes_i64())
         .collect();
-    let meta = HalRustExecutable::build_shape_meta_from_sfa(inputs, outputs);
+    let meta = build_shape_meta_from_sfa(inputs, outputs);
 
     if let Some(out_sfa) = outputs.first() {
-        let out_slice = unsafe { HalRustExecutable::sfa_as_f32_mut(out_sfa) };
+        let out_slice = unsafe { sfa_as_f32_mut(out_sfa) };
         crate::hal::hal_ops_cpu::shape_of_cpu(&input_slices, out_slice, &meta)
             .map_err(|e| anyhow::anyhow!("shape_of_cpu: {}", e))?;
     }
@@ -286,16 +286,16 @@ pub fn dispatch_slice(
 ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
     let input_slices: Vec<&[f32]> = inputs
         .iter()
-        .map(|m| unsafe { HalRustExecutable::sfa_as_f32_slice(m) })
+        .map(|m| unsafe { sfa_as_f32_slice(m) })
         .collect();
     let output_shapes: Vec<Vec<i64>> = outputs
         .iter()
         .map(|m| m.sizes_i64())
         .collect();
-    let meta = HalRustExecutable::build_shape_meta_from_sfa(inputs, outputs);
+    let meta = build_shape_meta_from_sfa(inputs, outputs);
 
     if let Some(out_sfa) = outputs.first() {
-        let out_slice = unsafe { HalRustExecutable::sfa_as_f32_mut(out_sfa) };
+        let out_slice = unsafe { sfa_as_f32_mut(out_sfa) };
         crate::hal::hal_ops_cpu::slice_cpu(&input_slices, out_slice, &meta)
             .map_err(|e| anyhow::anyhow!("slice_cpu: {}", e))?;
     }
@@ -310,16 +310,16 @@ pub fn dispatch_unsqueeze(
 ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
     let input_slices: Vec<&[f32]> = inputs
         .iter()
-        .map(|m| unsafe { HalRustExecutable::sfa_as_f32_slice(m) })
+        .map(|m| unsafe { sfa_as_f32_slice(m) })
         .collect();
     let output_shapes: Vec<Vec<i64>> = outputs
         .iter()
         .map(|m| m.sizes_i64())
         .collect();
-    let meta = HalRustExecutable::build_shape_meta_from_sfa(inputs, outputs);
+    let meta = build_shape_meta_from_sfa(inputs, outputs);
 
     if let Some(out_sfa) = outputs.first() {
-        let out_slice = unsafe { HalRustExecutable::sfa_as_f32_mut(out_sfa) };
+        let out_slice = unsafe { sfa_as_f32_mut(out_sfa) };
         crate::hal::hal_ops_cpu::unsqueeze_cpu(&input_slices, out_slice, &meta)
             .map_err(|e| anyhow::anyhow!("unsqueeze_cpu: {}", e))?;
     }
@@ -335,17 +335,17 @@ pub fn dispatch_compare(
 ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
     let input_slices: Vec<&[f32]> = inputs
         .iter()
-        .map(|m| unsafe { HalRustExecutable::sfa_as_f32_slice(m) })
+        .map(|m| unsafe { sfa_as_f32_slice(m) })
         .collect();
     let output_shapes: Vec<Vec<i64>> = outputs
         .iter()
         .map(|m| m.sizes_i64())
         .collect();
-    let mut meta = HalRustExecutable::build_shape_meta_from_sfa(inputs, outputs);
+    let mut meta = build_shape_meta_from_sfa(inputs, outputs);
     meta.kind = Some(kind.to_string());
 
     if let Some(out_sfa) = outputs.first() {
-        let out_slice = unsafe { HalRustExecutable::sfa_as_f32_mut(out_sfa) };
+        let out_slice = unsafe { sfa_as_f32_mut(out_sfa) };
         crate::hal::hal_ops_cpu::compare_cpu(&input_slices, out_slice, &meta)
             .map_err(|e| anyhow::anyhow!("compare_cpu: {}", e))?;
     }
@@ -363,8 +363,8 @@ pub fn dispatch_concat(
         .map(|m| m.sizes_i64())
         .collect();
     if let (Some(inp), Some(out)) = (inputs.first(), outputs.first()) {
-        let in_slice = unsafe { HalRustExecutable::sfa_as_f32_slice(inp) };
-        let out_slice = unsafe { HalRustExecutable::sfa_as_f32_mut(out) };
+        let in_slice = unsafe { sfa_as_f32_slice(inp) };
+        let out_slice = unsafe { sfa_as_f32_mut(out) };
         let n = in_slice.len().min(out_slice.len());
         out_slice[..n].copy_from_slice(&in_slice[..n]);
     }

@@ -9,19 +9,21 @@ pub mod hal_runner;
 pub mod sfcf;
 pub mod ciface_high;
 pub mod block_manager;
+pub mod cache_policy;
 pub mod kv_cache;
 pub mod radix_cache;
 pub mod scheduler;
 pub mod types;
 
 #[cfg(test)]
+#[path = "tests/integration_tests.rs"]
 mod integration_tests;
 
 #[path = "sfa_tensor.rs"]
 mod sfa_tensor;
 
 #[cfg(test)]
-#[path = "kv_cache_tests.rs"]
+#[path = "tests/kv_cache_tests.rs"]
 mod kv_cache_tests;
 
 // Include compute_graph module (normally only in main.rs bin).

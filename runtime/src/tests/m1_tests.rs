@@ -195,7 +195,6 @@ mod integration_tests {
             max_tokens_per_request: 5,
             seed: 42,
             use_chat_template: false,
-            use_kernel_catalog: false,
             use_kv_cache: false,
             num_kv_heads: 0,
             head_dim: 0,
