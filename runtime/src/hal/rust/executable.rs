@@ -286,7 +286,7 @@ impl HalRustExecutable {
         }
 
         crate::hal::primitives::matmul_blas(in_slice, weight_slice, out_slice, &a_shape, &b_shape, true)
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+            .map_err(|e| anyhow::anyhow!("linear matmul error: {} (a_shape={:?}, b_shape={:?}, in_len={}, w_len={})", e, a_shape, b_shape, in_slice.len(), weight_slice.len()))?;
         Ok(())
     }
 
