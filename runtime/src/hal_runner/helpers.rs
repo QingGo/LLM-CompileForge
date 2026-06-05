@@ -138,14 +138,10 @@ pub(super) fn inject_function_weights(
                     };
                     SFATensor::from_vec_f32(data, weight_dims.clone())
                 } else {
-                    // SAFETY: desc.aligned points to valid f16 weight data.
                     let data: Vec<f32> = unsafe {
-                        let raw = desc.aligned as *const u16;
-                        let slice = std::slice::from_raw_parts(raw, n);
-                        slice
-                            .iter()
-                            .map(|&h| half::f16::from_bits(h).to_f32())
-                            .collect()
+                        crate::model::weight_loader::convert_weight_to_f32(
+                            desc.aligned, n, weight_dtype,
+                        )
                     };
                     SFATensor::from_vec_f32(data, weight_dims.clone())
                 };

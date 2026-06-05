@@ -12,6 +12,37 @@ use crate::model::error::ExecutorError;
 use crate::hal::cpu::MemRefDesc2;
 use crate::model::tensor::Dtype;
 
+/// Convert weight data from raw memory to f32 Vec.
+///
+/// Shared between compute_graph_runner (Path A) and hal_runner (Path B)
+/// to eliminate duplicated f16→f32 conversion logic (~30 LOC).
+///
+/// # Safety
+/// `aligned` must point to `numel` elements of the dtype's native size.
+pub unsafe fn convert_weight_to_f32(
+    aligned: *const c_void,
+    numel: usize,
+    dtype: Dtype,
+) -> Vec<f32> {
+    match dtype {
+        Dtype::F16 | Dtype::BF16 => {
+            let raw = aligned as *const u16;
+            let slice = std::slice::from_raw_parts(raw, numel);
+            slice.iter().map(|&h| half::f16::from_bits(h).to_f32()).collect()
+        }
+        Dtype::F32 => {
+            let raw = aligned as *const f32;
+            let slice = std::slice::from_raw_parts(raw, numel);
+            slice.to_vec()
+        }
+        _ => {
+            let raw = aligned as *const u16;
+            let slice = std::slice::from_raw_parts(raw, numel);
+            slice.iter().map(|&h| half::f16::from_bits(h).to_f32()).collect()
+        }
+    }
+}
+
 // ── Weight registry ────────────────────────────────────────────────
 
 pub struct WeightRegistry {

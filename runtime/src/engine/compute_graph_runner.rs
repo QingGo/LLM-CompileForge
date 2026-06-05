@@ -90,31 +90,10 @@ fn load_weight_tensor(
             .ok_or_else(|| anyhow::anyhow!("weight not found: {}", key))?;
         let n = desc.numel();
         let shape: Vec<usize> = desc.sizes.iter().map(|&d| d as usize).collect();
-        let data: Vec<f32> = match dtype {
-            Dtype::F16 | Dtype::BF16 => unsafe {
-                // SAFETY: The pointer comes from a valid MemRefDesc's aligned
-                // field. The data is in the safetensors mmap.
-                let raw = desc.aligned as *const u16;
-                let slice = std::slice::from_raw_parts(raw, n);
-                slice
-                    .iter()
-                    .map(|&h| f16::from_bits(h).to_f32())
-                    .collect()
-            },
-            Dtype::F32 => unsafe {
-                let raw = desc.aligned as *const f32;
-                let slice = std::slice::from_raw_parts(raw, n);
-                slice.to_vec()
-            },
-            _ => unsafe {
-                // Default: try f16 conversion for unknown dtypes
-                let raw = desc.aligned as *const u16;
-                let slice = std::slice::from_raw_parts(raw, n);
-                slice
-                    .iter()
-                    .map(|&h| f16::from_bits(h).to_f32())
-                    .collect()
-            },
+        // SAFETY: desc.aligned comes from a valid MemRefDesc pointing to
+        // safetensors mmap data. convert_weight_to_f32 handles dtype dispatch.
+        let data: Vec<f32> = unsafe {
+            crate::model::weight_loader::convert_weight_to_f32(desc.aligned, n, dtype)
         };
         let t = Tensor::new_owned(shape, data, Dtype::F32);
         cache.insert(key.to_string(), t.to_owned());
