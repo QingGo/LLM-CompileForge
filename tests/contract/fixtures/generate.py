@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from gen.proto.python.sfa_precision_pb2 import NumericalTestCase, PrecisionContract
+from gen.proto.python.sfa_precision_pb2 import PrecisionContract
 
 FIXTURES_DIR = Path(__file__).resolve().parent
 

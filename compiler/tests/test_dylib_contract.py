@@ -159,7 +159,7 @@ _INSERTVALUE_UNDEF_RE = re.compile(
 
 def _parse_ciface_body(ll_text: str, _func_name: str, start_pos: int) -> str:
     """Extract the body of a ciface wrapper function (from { to matching }).
-    
+
     start_pos is the position right after the opening '{' that the
     _CIFACE_DEF_RE already consumed.
     """
@@ -370,7 +370,7 @@ class TestDylibSymbolContract:
     def test_ciface_main_1a_symbol_exists(self, lib: ctypes.CDLL) -> None:
         """Key KV split function symbol must be exported."""
         try:
-            func = getattr(lib, "_mlir_ciface_main_1a")
+            func = lib._mlir_ciface_main_1a
             assert func is not None
         except AttributeError:
             pytest.fail("_mlir_ciface_main_1a not found in dylib symbols")
@@ -401,7 +401,7 @@ class TestDylibSymbolContract:
     def test_sfa_abi_symbol_exists(self, lib: ctypes.CDLL) -> None:
         """sfa_abi exported symbol must exist for proto deserialization."""
         try:
-            sym = getattr(lib, "sfa_abi")
+            sym = lib.sfa_abi
             assert sym is not None
         except AttributeError:
             pytest.fail("sfa_abi symbol not found in dylib")
@@ -409,7 +409,7 @@ class TestDylibSymbolContract:
     def test_sfa_abi_size_symbol_exists(self, lib: ctypes.CDLL) -> None:
         """sfa_abi_size exported symbol must exist."""
         try:
-            sym = getattr(lib, "sfa_abi_size")
+            sym = lib.sfa_abi_size
             assert sym is not None
         except AttributeError:
             pytest.fail("sfa_abi_size symbol not found in dylib")
@@ -417,7 +417,7 @@ class TestDylibSymbolContract:
     def test_sfa_weights_symbol_exists(self, lib: ctypes.CDLL) -> None:
         """sfa_weights exported symbol must exist."""
         try:
-            sym = getattr(lib, "sfa_weights")
+            sym = lib.sfa_weights
             assert sym is not None
         except AttributeError:
             pytest.fail("sfa_weights symbol not found in dylib")
@@ -425,7 +425,7 @@ class TestDylibSymbolContract:
     def test_sfa_weights_size_symbol_exists(self, lib: ctypes.CDLL) -> None:
         """sfa_weights_size exported symbol must exist."""
         try:
-            sym = getattr(lib, "sfa_weights_size")
+            sym = lib.sfa_weights_size
             assert sym is not None
         except AttributeError:
             pytest.fail("sfa_weights_size symbol not found in dylib")
@@ -492,17 +492,18 @@ class TestRuntimeSretContract:
     """
 
     def test_sret_descriptor_non_null_at_runtime(self) -> None:
-        import numpy as np
-        import tempfile
-        import os
         import sys
+        import tempfile
         from pathlib import Path
 
-        ROOT = Path(__file__).resolve().parent.parent.parent
-        sys.path.insert(0, str(ROOT))
+        import numpy as np
+
+        root = Path(__file__).resolve().parent.parent.parent
+        sys.path.insert(0, str(root))
 
         from compiler.tests.test_precision_contract import (
-            _compile_sf_to_dylib, _make_memref_struct,
+            _compile_sf_to_dylib,
+            _make_memref_struct,
         )
 
         # Minimal matmul model: input [1,2] @ weight [[1,2],[3,4]] = [7,10]

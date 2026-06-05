@@ -70,7 +70,6 @@ def _compile_sf_to_dylib(
     Returns path to .dylib.
     """
     import mlir.ir as ir
-
     from mlir_sf._mlir_libs._sfDialectsNanobind import sf  # type: ignore[import-untyped]
 
     from compiler.backend.fixups import _fixup_unrealized_casts_pass
