@@ -129,6 +129,9 @@ pub struct CpuExecutable {
     /// Cached function pointer for `serveforge_free` exported by the dylib.
     /// Eliminates per-call libloading symbol lookup and memory leak.
     free_fn: unsafe extern "C" fn(*mut c_void),
+    /// Number of functions in the compute graph (set after loading).
+    /// Default is 0 until the compute graph is parsed.
+    function_count: usize,
 }
 
 impl CpuExecutable {
@@ -141,14 +144,12 @@ impl CpuExecutable {
         &self.constants_data
     }
 
-    /// Construct a CpuExecutable from its raw parts (used by device.rs).
-    #[allow(dead_code)]
     pub(crate) fn new(
         inner: RawCpuExecutable,
         constants_data: Vec<u8>,
         free_fn: unsafe extern "C" fn(*mut c_void),
     ) -> Self {
-        Self { inner, constants_data, free_fn }
+        Self { inner, constants_data, free_fn, function_count: 0 }
     }
 }
 
@@ -389,7 +390,7 @@ impl traits::Executable for CpuExecutable {
         Ok(output_shapes)
     }
 
-    fn function_count(&self) -> usize { 1 }
+    fn function_count(&self) -> usize { self.function_count }
 
     fn module_data(&self) -> &[u8] {
         &self.constants_data

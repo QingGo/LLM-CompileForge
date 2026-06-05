@@ -5,7 +5,6 @@ use crate::cache::block::BlockManager;
 use crate::compute_graph::ComputeGraph;
 use crate::error::ExecutorError;
 use crate::hal::cpu::CpuDevice;
-use crate::hal::cpu::CpuStream;
 use crate::hal::traits;
 #[cfg(test)]
 pub(crate) use crate::hal::traits::Buffer;
@@ -263,7 +262,7 @@ impl ModelExecutor {
     pub fn forward_with_positions(&self, input_ids: &[u32], positions: &[u32]) -> Result<Tensor, anyhow::Error> {
         let num_funcs = self.compute_graph.functions.len();
         let mut func_outputs: Vec<Vec<Tensor>> = vec![Vec::new(); num_funcs];
-        let stream = CpuStream;
+        let stream: &dyn traits::Stream = &crate::hal::cpu::CpuStream;
 
         let result = crate::compute_graph_runner::run_function_graph(
             &self.compute_graph,
@@ -273,7 +272,7 @@ impl ModelExecutor {
             &mut func_outputs,
             input_ids,
             positions,
-            &stream,
+            stream,
         )?;
 
         dump_layers(&func_outputs);
@@ -291,7 +290,7 @@ impl ModelExecutor {
     ) -> Result<Tensor, anyhow::Error> {
         let num_funcs = self.compute_graph.functions.len();
         let mut func_outputs: Vec<Vec<Tensor>> = vec![Vec::new(); num_funcs];
-        let stream = CpuStream;
+        let stream: &dyn traits::Stream = &crate::hal::cpu::CpuStream;
 
         let result = crate::compute_graph_runner::run_function_graph_with_kv_intercept(
             &self.compute_graph,
@@ -301,7 +300,7 @@ impl ModelExecutor {
             &mut func_outputs,
             input_ids,
             positions,
-            &stream,
+            stream,
             block_manager,
             request_id,
             &self.cache_policy,
