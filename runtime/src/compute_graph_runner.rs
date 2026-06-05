@@ -855,20 +855,3 @@ mod tests {
     }
 }
 
-/// Trace: execute a single function and return immediately (for crash location).
-#[cfg(test)]
-mod crash_test {
-    use super::*;
-    use crate::executor::ModelExecutor;
-    
-    #[test]
-    fn trace_crash_point() {
-        let dylib = concat!(env!("CARGO_MANIFEST_DIR"), "/../outputs/compiled/opt_125m_fresh/libopt_125m.dylib");
-        if !std::path::Path::new(dylib).exists() { 
-            let dylib2 = concat!(env!("CARGO_MANIFEST_DIR"), "/../outputs/compiled/opt_125m_fresh/libopt_125m_fresh.dylib");
-            let dylib = dylib2;
-        }
-        let _ = dylib;
-        eprintln!("TRACE: test loaded");
-    }
-}
