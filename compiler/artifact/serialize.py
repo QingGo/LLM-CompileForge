@@ -51,7 +51,19 @@ def mlir_module_to_text(module: MlirModule) -> str:
         out_types = [tp for _, tp, _ in func.outputs]
         ret = out_types[0] if len(out_types) == 1 else f"({', '.join(out_types)})"
 
-        lines.append(f"  func.func @{func.name}({args_str}) -> {ret} {{")
+        # Embed consumed_internally flags in func attributes
+        consumed_indices = [
+            i for i, (_, _, is_consumed) in enumerate(func.outputs) if is_consumed
+        ]
+        func_attrs = ""
+        if consumed_indices:
+            flags = ", ".join(
+                "true" if i in consumed_indices else "false"
+                for i in range(len(func.outputs))
+            )
+            func_attrs = f" attributes {{sf.consumed_internally = [{flags}]}}"
+
+        lines.append(f"  func.func @{func.name}({args_str}) -> {ret}{func_attrs} {{")
 
         # Ops
         for op in func.ops:

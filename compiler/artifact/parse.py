@@ -49,34 +49,47 @@ def _parse_mlir_text(text: str) -> MlirModule:
                 current_func = None
             continue
 
-        # Function declaration: func.func @name(...) -> ... {
+        # Function declaration: func.func @name(...) -> ... attributes {...} {
         if stripped.startswith("func.func @"):
-            # Parse function name and signature
             rest = stripped[len("func.func @"):]
             name_end = rest.find("(")
             func_name = rest[:name_end].strip()
             args_str = rest[name_end + 1:rest.find(")")]
-            # Parse args: %arg0: tensor<...>, %arg1: tensor<...>
             inputs: list[tuple[str, str]] = []
             for arg in _split_comma(args_str):
                 arg = arg.strip()
                 if ":" in arg:
                     ssa, tp = arg.split(":", 1)
                     inputs.append((ssa.strip(), tp.strip()))
-            # Parse return type: -> type after )
             ret_start = rest.find("->")
             ret_types: list[str] = []
+            consumed_internally: list[bool] = []
             if ret_start > 0:
                 ret_part = rest[ret_start + 2:].strip()
+                # Check for 'attributes {...}' before the final '{'
+                attr_start = ret_part.find("attributes {")
+                if attr_start >= 0:
+                    attr_end = ret_part.index("}", attr_start) + 1
+                    attr_str = ret_part[attr_start + len("attributes "):attr_end]
+                    attrs = _parse_attrs(attr_str[1:-1])  # strip outer { }
+                    ci_raw = attrs.get("sf.consumed_internally", [])
+                    if isinstance(ci_raw, list):
+                        consumed_internally = [
+                            v if isinstance(v, bool) else (str(v).lower() == "true")
+                            for v in ci_raw
+                        ]
+                    ret_part = ret_part[:attr_start].strip() + " " + ret_part[attr_end:].strip()
                 if ret_part.endswith("{"):
                     ret_part = ret_part[:-1].strip()
                 if ret_part and ret_part != "()":
-                    # Could be single type or (type1, type2, ...)
                     if ret_part.startswith("("):
-                        ret_part = ret_part[1:-1]  # strip parens
+                        ret_part = ret_part[1:-1]
                     for tp in _split_comma(ret_part):
                         ret_types.append(tp.strip())
-            outputs: list[tuple[str, str, bool]] = [("", tp, False) for tp in ret_types]
+            outputs: list[tuple[str, str, bool]] = [
+                ("", tp, consumed_internally[i] if i < len(consumed_internally) else False)
+                for i, tp in enumerate(ret_types)
+            ]
             current_func = MlirFunction(name=func_name, inputs=inputs, outputs=outputs)
             ssa_to_name = {}
             ssa_types = {}

@@ -441,21 +441,7 @@ def main() -> None:
             for func in module.functions
         ],
     }
-    # Inject consumed_internally for KV split functions.
-    # These flags are lost in the MLIR text round-trip; recover them
-    # from function naming: main_{N}a functions produce K/V cache outputs.
-    import re
-    _kv_split = re.compile(r'.*_\d+a$')
-    for func_dict in pre_lowering["functions"]:
-        name = func_dict["name"]
-        if _kv_split.match(name):
-            outputs = func_dict["outputs"]
-            for i, out in enumerate(outputs):
-                if len(out) >= 3:
-                    outputs[i] = (out[0], out[1], True)
-                elif len(out) == 2:
-                    outputs[i] = (out[0], out[1], True)
-    lowered_arg_types = sfa_abi.parse_lowered_argument_types(str(lowered_path))
+    # Step 6: Embed SFA ABI + weights symbols into dylib
     lowered_output_types = sfa_abi.parse_lowered_output_types(str(lowered_path))
     func_metas = sfa_abi.merge_with_semantics(sigs, pre_lowering, lowered_arg_types, lowered_output_types)
     print(f"   Built {len(func_metas)} SfaFuncMeta entries")

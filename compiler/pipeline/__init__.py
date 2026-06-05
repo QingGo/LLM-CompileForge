@@ -135,8 +135,9 @@ def compile_mlir(
                 mf.weights = {wname: orig_func.weights[wname] for wname in orig_func.weights}
                 mf.param_weight_names = set(orig_func.param_weight_names)
                 mf.const_weight_names = set(orig_func.const_weight_names)
-                # Restore consumed_internally flags (lost during MLIR text round-trip
-                # because _parse_mlir_text defaults them to False)
+                # Restore consumed_internally flags (serialize/parse now preserves
+                # them via sf.consumed_internally MLIR attribute; this restore
+                # guards against legacy model.mlir without the attribute)
                 if len(orig_func.outputs) == len(mf.outputs):
                     mf.outputs = [
                         (mf_out[0], mf_out[1], orig_func.outputs[i][2])

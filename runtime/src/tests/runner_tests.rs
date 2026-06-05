@@ -11,7 +11,11 @@ fn compiled_executor() -> ModelExecutor {
         env!("CARGO_MANIFEST_DIR"),
         "/../outputs/compiled/opt_125m_fresh/libopt_125m_fresh.dylib"
     );
-    ModelExecutor::load(dylib, None)
+    let st_path = concat!(
+        env!("HOME"),
+        "/.cache/huggingface/hub/models--facebook--opt-125m/snapshots/27dcfa74d334bc871f3234de431e71c6eeba5dd6/model.safetensors"
+    );
+    ModelExecutor::load(dylib, Some(st_path))
         .unwrap_or_else(|_| panic!(
             "compiled model not found at {dylib}. Run `make test-pipeline-smoke` to compile it first."
         ))
