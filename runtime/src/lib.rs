@@ -32,6 +32,9 @@ mod abi;
 #[path = "compute_graph.rs"]
 mod compute_graph;
 
+#[path = "compute_graph_runner.rs"]
+pub mod compute_graph_runner;
+
 #[path = "global_input.rs"]
 mod global_input;
 
@@ -40,6 +43,12 @@ pub mod tensor;
 
 #[path = "weight_loader.rs"]
 pub mod weight_loader;
+
+pub mod executor;
+pub mod forward_check_runner;
+pub mod dump_weights_runner;
+#[cfg(feature = "hal-rust")]
+pub mod forward_check_hal_runner;
 
 #[cfg(feature = "python-bindings")]
 mod py_bindings {
