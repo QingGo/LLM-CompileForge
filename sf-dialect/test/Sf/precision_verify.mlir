@@ -1,4 +1,4 @@
-// RUN: %sf-opt --sf-lower-to-linalg %s | FileCheck %s
+// RUN: %sf-opt --sf-lower-to-linalg --canonicalize %s | FileCheck %s
 // Phase 5: sf-dialect lowering precision verification.
 // Verifies that sf→linalg lowering produces numerically correct output
 // by checking computed values in the lowered IR.
