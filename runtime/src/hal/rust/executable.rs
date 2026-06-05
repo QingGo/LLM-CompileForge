@@ -269,15 +269,21 @@ impl HalRustExecutable {
         let weight_sfa = &inputs[1];
         let out_sfa = outputs.first().ok_or_else(|| anyhow::anyhow!("linear: no output buffer"))?;
 
-        // SAFETY: Input buffer is f32 activation tensor.
-        let in_slice = unsafe { sfa_as_f32_slice(in_sfa) };
-        // SAFETY: Weight buffer is f32 linear weight matrix.
-        let weight_slice = unsafe { sfa_as_f32_slice(weight_sfa) };
-        // SAFETY: Output buffer pre-allocated by runner.
-        let out_slice = unsafe { sfa_as_f32_mut(out_sfa) };
-
         let a_shape = meta.input_shapes.first().cloned().unwrap_or_default();
         let b_shape = meta.input_shapes.get(1).cloned().unwrap_or_default();
+
+        let in_slice = unsafe { sfa_as_f32_slice(in_sfa) };
+        let weight_slice = unsafe { sfa_as_f32_slice(weight_sfa) };
+        let out_slice = unsafe { sfa_as_f32_mut(out_sfa) };
+
+        let total_in = a_shape.iter().product::<i64>() as usize;
+        let total_w = b_shape.iter().product::<i64>() as usize;
+        if in_slice.len() < total_in || weight_slice.len() < total_w {
+            return Err(anyhow::anyhow!(
+                "linear: shape mismatch — activation shape={:?} ({} elements, slice has {}), weight shape={:?} ({} elements, slice has {})",
+                a_shape, total_in, in_slice.len(), b_shape, total_w, weight_slice.len(),
+            ));
+        }
 
         crate::hal::primitives::matmul_blas(in_slice, weight_slice, out_slice, &a_shape, &b_shape, true)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
