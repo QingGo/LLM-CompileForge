@@ -11,7 +11,7 @@
 #[cfg(test)]
 #[allow(clippy::module_inception)]
 mod integration_tests {
-    use crate::block_manager::BlockManager;
+    use crate::cache::block::BlockManager;
     use crate::scheduler::Scheduler;
     use crate::types::{PrefixCacheHit, RequestState};
 

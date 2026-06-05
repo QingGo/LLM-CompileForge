@@ -15,7 +15,7 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use crate::block_manager::BlockManager;
+use crate::cache::block::BlockManager;
 use crate::types::{Batch, PrefixCacheHit, Request, RequestState, ScheduledRequest};
 
 // ── Priority queue entry for the waiting queue ──────────────

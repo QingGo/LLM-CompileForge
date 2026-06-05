@@ -7,7 +7,7 @@
 #[cfg(test)]
 #[allow(clippy::module_inception, clippy::expect_fun_call, clippy::manual_abs_diff)]
 mod e2e_tests {
-    use crate::block_manager::BlockManager;
+    use crate::cache::block::BlockManager;
     use crate::executor::ModelExecutor;
 
 

@@ -1,11 +1,11 @@
 //! KV-cache block with tensor storage.
 //!
 //! Provides [`KVCacheBlock`] which owns the actual key/value tensor data
-//! for a physical cache block.  The [`BlockManager`](crate::block_manager::BlockManager)
-//! uses this instead of bare [`Block`](crate::block_manager::Block) when the user
-//! creates it via [`new_with_cache`](crate::block_manager::BlockManager::new_with_cache).
+//! for a physical cache block.  The [`BlockManager`](crate::cache::block::BlockManager)
+//! uses this instead of bare [`Block`](crate::cache::block::Block) when the user
+//! creates it via [`new_with_cache`](crate::cache::block::BlockManager::new_with_cache).
 //!
-//! For cache policy types, see [`crate::cache_policy`].
+//! For cache policy types, see [`crate::cache::policy`].
 
 /// A physical KV cache block that owns its tensor data.
 #[derive(Debug, Clone)]

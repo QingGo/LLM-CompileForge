@@ -8,11 +8,14 @@
 use std::alloc::{self, Layout};
 use std::ptr::NonNull;
 
+use super::super::traits;
 use crate::tensor::{Dtype, Tensor};
+
+// ── RawBuffer (low-level allocator-backed buffer) ───────────────────────
 
 #[derive(Debug)]
 #[allow(dead_code)]
-pub struct CpuBuffer {
+pub(crate) struct RawBuffer {
     ptr: NonNull<u8>,
     size: usize,
     layout: Layout,
@@ -21,7 +24,7 @@ pub struct CpuBuffer {
 }
 
 #[allow(dead_code)]
-impl CpuBuffer {
+impl RawBuffer {
     pub fn empty() -> Self {
         Self {
             ptr: NonNull::dangling(),
@@ -42,7 +45,7 @@ impl CpuBuffer {
         }
     }
 
-    /// Create a CpuBuffer from a raw pointer and byte length.
+    /// Create a RawBuffer from a raw pointer and byte length.
     ///
     /// When `borrowed` is `true`, the caller retains ownership — Drop does
     /// nothing. When `borrowed` is `false`, Drop frees via `alloc::dealloc`.
@@ -68,7 +71,7 @@ impl CpuBuffer {
     pub fn as_slice(&self) -> &[u8] {
         debug_assert!(
             self.initialized,
-            "CpuBuffer::as_slice called on uninitialized memory"
+            "RawBuffer::as_slice called on uninitialized memory"
         );
         if self.size == 0 {
             &[]
@@ -108,11 +111,11 @@ impl CpuBuffer {
     pub fn view_as_f32(&self, n: usize) -> &[f32] {
         debug_assert!(
             self.initialized,
-            "CpuBuffer::view_as_f32 called on uninitialized memory"
+            "RawBuffer::view_as_f32 called on uninitialized memory"
         );
         debug_assert!(
             n * 4 <= self.size,
-            "CpuBuffer::view_as_f32: {} elements needs {} bytes, buffer has {}",
+            "RawBuffer::view_as_f32: {} elements needs {} bytes, buffer has {}",
             n,
             n * 4,
             self.size
@@ -146,23 +149,89 @@ impl CpuBuffer {
     }
 }
 
-impl Drop for CpuBuffer {
+impl Drop for RawBuffer {
     fn drop(&mut self) {
         if self.size > 0 && !self.borrowed {
             // SAFETY: `self.ptr` was allocated with `self.layout`
-            // in `CpuDevice::allocate`. No other references exist.
+            // in `RawCpuDevice::allocate`. No other references exist.
             unsafe { alloc::dealloc(self.ptr.as_ptr(), self.layout) };
         }
     }
 }
 
-// SAFETY: CpuBuffer owns a unique heap allocation with no interior
+// SAFETY: RawBuffer owns a unique heap allocation with no interior
 // mutability. Sending it transfers exclusive ownership.
-unsafe impl Send for CpuBuffer {}
+unsafe impl Send for RawBuffer {}
 
-// SAFETY: CpuBuffer is read-only after initialization. Synchronization
+// SAFETY: RawBuffer is read-only after initialization. Synchronization
 // is the caller's responsibility.
-unsafe impl Sync for CpuBuffer {}
+unsafe impl Sync for RawBuffer {}
+
+// ── CpuBuffer (high-level HAL Buffer wrapper) ───────────────────────────
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(crate) struct CpuBuffer {
+    inner: RawBuffer,
+    /// Element size in bytes (4 for f32, 8 for i64).
+    elem_size: usize,
+    /// Logical shape for MemRef descriptor construction.
+    dims: Vec<usize>,
+    /// Tensor rank for output descriptor parsing.
+    rank: u8,
+}
+
+impl CpuBuffer {
+    pub fn new(inner: RawBuffer) -> Self {
+        let size = inner.size();
+        Self { inner, elem_size: 4, dims: vec![size / 4], rank: 1 }
+    }
+
+    /// Create a buffer with explicit metadata for correct MemRef descriptor construction.
+    /// Used for non-f32 inputs (e.g. i64 GlobalInputs with element_size=8).
+    pub fn with_meta(inner: RawBuffer, elem_size: usize, dims: Vec<usize>) -> Self {
+        let rank = dims.len() as u8;
+        Self { inner, elem_size, dims, rank }
+    }
+
+    /// Access the inner RawBuffer (for HAL-internal use).
+    #[allow(dead_code)]
+    pub fn inner(&self) -> &RawBuffer { &self.inner }
+}
+
+impl traits::Buffer for CpuBuffer {
+    fn as_ptr(&self) -> *const u8 { self.inner.as_ptr() }
+    fn as_mut_ptr(&mut self) -> *mut u8 { self.inner.as_mut_ptr() }
+    fn len(&self) -> usize { self.inner.size() }
+
+    fn copy_from_host(&mut self, src: &[u8], _stream: &dyn traits::Stream) -> Result<(), anyhow::Error> {
+        let dst = self.inner.as_mut_slice();
+        let n = dst.len().min(src.len());
+        dst[..n].copy_from_slice(&src[..n]);
+        Ok(())
+    }
+
+    fn copy_to_host(&self, dst: &mut [u8], _stream: &dyn traits::Stream) -> Result<(), anyhow::Error> {
+        let src = self.inner.as_slice();
+        let n = dst.len().min(src.len());
+        dst[..n].copy_from_slice(&src[..n]);
+        Ok(())
+    }
+
+    fn element_size(&self) -> usize {
+        self.elem_size
+    }
+
+    fn shape(&self) -> Vec<usize> {
+        self.dims.clone()
+    }
+
+    fn rank(&self) -> u8 {
+        self.rank
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -177,7 +246,7 @@ mod tests {
     #[test]
     fn test_buffer_borrowed_flag_no_free() {
         let mut backing = [1u8, 2, 3, 4, 5, 6, 7, 8];
-        let buf = CpuBuffer::from_raw_parts(backing.as_mut_ptr(), 8, true)
+        let buf = RawBuffer::from_raw_parts(backing.as_mut_ptr(), 8, true)
             .expect("from_raw_parts with borrowed=true");
         // Verify data is readable
         assert_eq!(buf.as_slice(), &[1u8, 2, 3, 4, 5, 6, 7, 8]);
@@ -198,7 +267,7 @@ mod tests {
         assert!(!ptr.is_null(), "alloc should succeed");
         // SAFETY: ptr points to valid 16-byte allocation from above.
         unsafe { std::ptr::write_bytes(ptr, 0xAB, 16); }
-        let buf = CpuBuffer::from_raw_parts(ptr, 16, false)
+        let buf = RawBuffer::from_raw_parts(ptr, 16, false)
             .expect("from_raw_parts with borrowed=false");
         assert_eq!(buf.size(), 16);
         assert_eq!(buf.as_slice(), &[0xABu8; 16]);
@@ -208,7 +277,7 @@ mod tests {
     /// Verify that an empty buffer's Drop is a no-op (edge case).
     #[test]
     fn test_buffer_empty_drop_noop() {
-        let buf = CpuBuffer::empty();
+        let buf = RawBuffer::empty();
         assert!(buf.is_empty());
         assert_eq!(buf.size(), 0);
         // Drop here — should be safe (no-op for empty buffers)
@@ -217,7 +286,7 @@ mod tests {
     /// Verify that from_raw_parts rejects null pointers.
     #[test]
     fn test_buffer_from_raw_parts_rejects_null() {
-        let result = CpuBuffer::from_raw_parts(std::ptr::null_mut(), 8, true);
+        let result = RawBuffer::from_raw_parts(std::ptr::null_mut(), 8, true);
         assert!(result.is_err(), "null pointer should be rejected");
         assert_eq!(result.unwrap_err(), "null pointer");
     }

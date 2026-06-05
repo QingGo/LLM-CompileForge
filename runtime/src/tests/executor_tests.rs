@@ -237,7 +237,7 @@ fn test_desc_pointers_different_for_different_ranks() {
 fn test_kv_cache_concat_decode_flow() {
     // Simulates the decode flow: pre-write 4 cached positions, write 1 new
     // position, then verify concat has shape [1, 5, 768].
-    use crate::block_manager::BlockManager;
+    use crate::cache::block::BlockManager;
     let num_kv_heads = 12;
     let head_dim = 64;
     let hidden_dim = num_kv_heads * head_dim; // 768

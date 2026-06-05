@@ -12,13 +12,13 @@ use std::collections::HashMap;
 use half::f16;
 use log::warn;
 
-use crate::block_manager::BlockManager;
+use crate::cache::block::BlockManager;
 use crate::compute_graph::{ComputeGraph, FuncDef, InputBinding, IOTensorDef};
-use crate::hal::cpu::buffer::CpuBuffer as InnerCpuBuffer;
+use crate::hal::cpu::buffer::RawBuffer as InnerCpuBuffer;
 use crate::hal::cpu::CpuBuffer;
 use crate::hal::traits;
-use crate::cache_policy::CachePolicy;
-use crate::kv_cache_intercept::{intercept_consumed_input, intercept_consumed_output};
+use crate::cache::policy::CachePolicy;
+use crate::cache::intercept::{intercept_consumed_input, intercept_consumed_output};
 use crate::sfa_tensor::{SFATensor, SFATensorRawAny};
 use crate::tensor::{Dtype, Tensor};
 use crate::weight_loader::WeightProvider;
@@ -604,7 +604,7 @@ pub fn run_function_graph_with_kv_intercept(
 mod tests {
     use super::*;
     use crate::compute_graph::IOTensorDef;
-    use crate::cache_policy::{CachePolicy, InterceptSpec};
+    use crate::cache::policy::{CachePolicy, InterceptSpec};
 
     /// When cache_policy.intercepts is populated, should_intercept_consumed
     /// must use the intercepts list (not consumed_internally).

@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use crate::block_manager::BlockManager;
+use crate::cache::block::BlockManager;
 use crate::compute_graph::{ComputeGraph, IOTensorDef};
 use crate::tensor::{Dtype, Tensor};
 

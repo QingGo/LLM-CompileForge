@@ -9,7 +9,7 @@
 
 #[cfg(test)]
 mod kv_cache_integration {
-    use crate::block_manager::{BlockEntry, BlockManager};
+    use crate::cache::block::{BlockEntry, BlockManager};
 
     // ── Helpers ──────────────────────────────────────────────────
 

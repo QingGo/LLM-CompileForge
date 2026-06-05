@@ -4,9 +4,9 @@ use std::alloc::{self, Layout};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::traits;
+use super::super::traits;
 
-use super::CpuBuffer as HighCpuBuffer;
+use super::buffer::CpuBuffer;
 
 // ── RawCpuDevice (low-level allocator) ────────────────────────────────
 
@@ -29,9 +29,9 @@ impl RawCpuDevice {
         }
     }
 
-    pub fn allocate(&mut self, size: usize) -> super::buffer::CpuBuffer {
+    pub fn allocate(&mut self, size: usize) -> super::buffer::RawBuffer {
         if size == 0 {
-            return super::buffer::CpuBuffer::empty();
+            return super::buffer::RawBuffer::empty();
         }
         // SAFETY: `size > 0` per the check above. `Layout::from_size_align`
         // returns Err only on arithmetic overflow, which won't happen for
@@ -43,7 +43,7 @@ impl RawCpuDevice {
             alloc::handle_alloc_error(layout);
         };
         self.allocated_bytes += size;
-        super::buffer::CpuBuffer::from_raw(ptr, size, layout)
+        super::buffer::RawBuffer::from_raw(ptr, size, layout)
     }
 
     pub fn total_allocated(&self) -> usize {
@@ -80,7 +80,7 @@ impl traits::Device for CpuDevice {
         let mut d = RawCpuDevice::new();
         let buf = d.allocate(size);
         self.allocated.fetch_add(d.total_allocated(), Ordering::Relaxed);
-        Ok(Box::new(HighCpuBuffer::new(buf)))
+        Ok(Box::new(CpuBuffer::new(buf)))
     }
 
     fn create_stream(&self) -> Result<Box<dyn traits::Stream>, anyhow::Error> {
@@ -95,7 +95,7 @@ impl traits::Device for CpuDevice {
         let dylib_path = std::str::from_utf8(module_data)
             .map_err(|e| anyhow::anyhow!("module_data is not valid UTF-8 path: {}", e))?;
         let raw_exec =
-            super::executable::CpuExecutable::load(dylib_path)?;
+            super::executable::RawCpuExecutable::load(dylib_path)?;
         let constants_data = raw_exec.load_constants()?;
         // Cache serveforge_free symbol. Load BEFORE moving `raw_exec` into
         // CpuExecutable to satisfy the borrow checker.
@@ -106,7 +106,7 @@ impl traits::Device for CpuDevice {
                 unsafe { raw_exec.lib().get(b"serveforge_free")? };
             *sym
         };
-        Ok(Box::new(super::CpuExecutable::new(raw_exec, constants_data, free_fn)))
+        Ok(Box::new(super::executable::CpuExecutable::new(raw_exec, constants_data, free_fn)))
     }
 
     fn name(&self) -> &str {

@@ -4,14 +4,13 @@
 
 pub mod error;
 pub mod hal;
+pub mod debug;
 #[cfg(feature = "hal-rust")]
 pub mod hal_runner;
 pub mod sfcf;
 pub mod ciface_high;
-pub mod block_manager;
-pub mod cache_policy;
+pub mod cache;
 pub mod kv_cache;
-pub mod radix_cache;
 pub mod scheduler;
 pub mod types;
 
@@ -44,8 +43,8 @@ pub mod weight_loader;
 
 #[cfg(feature = "python-bindings")]
 mod py_bindings {
-    use crate::block_manager::BlockManager;
-    use crate::radix_cache::RadixCache;
+    use crate::cache::block::BlockManager;
+    use crate::cache::radix::RadixCache;
     use crate::scheduler::Scheduler;
     use crate::types::{Batch, PrefixCacheHit};
     use pyo3::prelude::*;

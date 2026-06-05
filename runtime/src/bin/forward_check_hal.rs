@@ -15,18 +15,27 @@
 //! Modules use `#[path]` to reference source files in src/ since this
 //! binary lives under src/bin/.
 
-#[path = "../block_manager.rs"]
-mod block_manager;
 #[path = "../abi.rs"]
 mod abi;
-#[path = "../cache_policy.rs"]
-mod cache_policy;
+#[path = "../cache/block.rs"]
+pub mod cache_block;
+#[path = "../cache/policy.rs"]
+pub mod cache_policy;
+#[path = "../cache/intercept.rs"]
+pub mod cache_intercept;
+mod cache {
+    pub use super::cache_block as block;
+    pub use super::cache_policy as policy;
+    pub use super::cache_intercept as intercept;
+}
 #[path = "../ciface_high.rs"]
 mod ciface_high;
 #[path = "../compute_graph.rs"]
 mod compute_graph;
 #[path = "../compute_graph_runner.rs"]
 mod compute_graph_runner;
+#[path = "../debug/mod.rs"]
+mod debug;
 #[path = "../error.rs"]
 mod error;
 #[path = "../executor.rs"]
@@ -39,8 +48,6 @@ mod hal;
 mod hal_runner;
 #[path = "../kv_cache.rs"]
 mod kv_cache;
-#[path = "../kv_cache_intercept.rs"]
-mod kv_cache_intercept;
 #[path = "../sfcf.rs"]
 mod sfcf;
 #[path = "../sfa_tensor.rs"]

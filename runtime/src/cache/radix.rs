@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use crate::block_manager::BlockManager;
+use crate::cache::block::BlockManager;
 
 /// A node in the Radix Tree representing a contiguous token subsequence.
 #[derive(Debug, Default)]
@@ -312,7 +312,7 @@ fn count_nodes(node: &RadixTreeNode) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block_manager::BlockManager;
+use crate::cache::block::BlockManager;
 
     fn setup() -> (RadixCache, BlockManager) {
         let bm = BlockManager::new(100, 16).unwrap();

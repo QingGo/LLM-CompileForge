@@ -338,7 +338,7 @@ pub fn load_from_dylib(
 ) -> Result<(
     crate::weight_loader::WeightProvider,
     ComputeGraph,
-    Option<crate::cache_policy::CachePolicy>,
+    Option<crate::cache::policy::CachePolicy>,
 ), anyhow::Error> {
     // SAFETY: Loading a compiled dylib produced by the SFA toolchain.
     let lib = unsafe { libloading::Library::new(dylib_path)? };
@@ -354,7 +354,7 @@ pub fn load_from_dylib(
     let weight_provider = crate::weight_loader::WeightProvider::new(registry, st_path)?;
     let cache_policy = match cache_policy_proto {
         Some(p) => Some(
-            crate::cache_policy::CachePolicy::from_proto(&p)
+            crate::cache::policy::CachePolicy::from_proto(&p)
                 .map_err(|e| anyhow::anyhow!("{}", e))?,
         ),
         None => None,
