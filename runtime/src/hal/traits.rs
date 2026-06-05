@@ -47,7 +47,6 @@ pub trait Device: Debug + Send + Sync {
 }
 
 /// Device memory buffer.
-#[allow(dead_code)]
 pub trait Buffer: Debug + Send + Sync {
     /// Read-only pointer to buffer data.
     /// For GPU buffers this returns a device pointer (not directly host-accessible).
@@ -112,7 +111,6 @@ pub trait Executable: Debug + Send + Sync {
     /// `stream` provides execution ordering (no-op for CPU).
     /// `inputs` and `outputs` are SfaMemRef descriptor arrays.
     /// Returns the actual output shapes (sizes) for each output.
-    #[allow(dead_code)]
     fn execute(
         &self,
         op_name: &str,
@@ -122,13 +120,11 @@ pub trait Executable: Debug + Send + Sync {
     ) -> Result<Vec<Vec<i64>>, anyhow::Error>;
 
     /// Number of functions / entry points in this module.
-    #[allow(dead_code)]
     fn function_count(&self) -> usize;
 
     /// Return the embedded constants data (serveforge_constants_data/size)
     /// as a byte slice. This is the raw binary blob containing weight
     /// registry, compute graph, and contract metadata.
-    #[allow(dead_code)]
     fn module_data(&self) -> &[u8];
 
     /// List of operation names this executable supports.
@@ -137,32 +133,6 @@ pub trait Executable: Debug + Send + Sync {
         &[]
     }
 
-    /// Register an expert kernel for a named operation.
-    /// Expert kernels override the default execution path for specific ops.
-    /// Default implementation returns an error — backends with expert
-    /// kernel support must override.
-    fn register_expert_kernel(
-        &mut self,
-        _op_name: &str,
-        _kernel: Box<dyn ExpertKernel>,
-    ) -> Result<(), anyhow::Error> {
-        anyhow::bail!("register_expert_kernel not supported by this backend")
-    }
-}
-
-/// An expert kernel — a specialized implementation for a single operation.
-///
-/// Expert kernels allow backends to register optimized or hardware-specific
-/// implementations for individual ops, overriding the default compiled
-/// kernel path.
-pub trait ExpertKernel: Debug + Send + Sync {
-    /// Execute this expert kernel with the given inputs and outputs.
-    fn execute(
-        &self,
-        stream: &dyn Stream,
-        inputs: &[&dyn Buffer],
-        outputs: &[&dyn Buffer],
-    ) -> Result<(), anyhow::Error>;
 }
 
 /// Synchronization event.

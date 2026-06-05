@@ -20,7 +20,7 @@ use crate::types::{Batch, PrefixCacheHit, Request, RequestState, ScheduledReques
 
 // ── Priority queue entry for the waiting queue ──────────────
 
-struct QueueEntry {
+pub(crate) struct QueueEntry {
     priority: i32,
     request: Request,
 }
@@ -53,8 +53,8 @@ pub struct Scheduler {
     max_tokens_per_step: usize,
     chunk_size: usize,
     use_kv_cache: bool,
-    waiting: BinaryHeap<QueueEntry>,
-    running: Vec<Request>,
+    pub(crate) waiting: BinaryHeap<QueueEntry>,
+    pub(crate) running: Vec<Request>,
     request_counter: usize,
 }
 
@@ -89,7 +89,6 @@ impl Scheduler {
         &mut self,
         prompt_tokens: Vec<u32>,
         priority: i32,
-        arrival_time: f64,
         max_tokens: usize,
         stop_token_ids: Vec<u32>,
         request_id: Option<String>,
@@ -102,7 +101,6 @@ impl Scheduler {
             rid.clone(),
             prompt_tokens,
             priority,
-            arrival_time,
             max_tokens,
             stop_token_ids,
         );
@@ -217,7 +215,6 @@ impl Scheduler {
                         request_id: req.request_id.clone(),
                         input_ids: chunk_ids,
                         positions,
-                        state: RequestState::Prefill,
                         block_table: blocks,
                         use_kv_cache: false,
                         kv_cache_block_table: Vec::new(),
@@ -251,7 +248,6 @@ impl Scheduler {
                             request_id: req.request_id.clone(),
                             input_ids: vec![last_token],
                             positions: vec![current_seq_len as u32],
-                            state: RequestState::Decode,
                             block_table: blocks.clone(),
                             use_kv_cache: true,
                             kv_cache_block_table: blocks,
@@ -271,7 +267,6 @@ impl Scheduler {
                             request_id: req.request_id.clone(),
                             input_ids: full_input_ids,
                             positions,
-                            state: RequestState::Decode,
                             block_table: blocks,
                             use_kv_cache: false,
                             kv_cache_block_table: Vec::new(),
@@ -292,16 +287,6 @@ impl Scheduler {
     }
 
     // ── Query helpers ───────────────────────────────────────
-
-    #[allow(dead_code)]
-    pub fn waiting_count(&self) -> usize {
-        self.waiting.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn running_count(&self) -> usize {
-        self.running.len()
-    }
 
     pub fn has_work(&self) -> bool {
         !self.waiting.is_empty() || !self.running.is_empty()

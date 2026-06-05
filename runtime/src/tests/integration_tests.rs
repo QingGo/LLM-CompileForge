@@ -30,26 +30,24 @@ mod integration_tests {
         let mut s = make_scheduler(32, 512, 256);
         let mut bm = make_bm();
 
-        let rid = s.add_request(vec![10, 20, 30], 0, 0.0, 2, vec![], Some("req_a".into()));
+        let rid = s.add_request(vec![10, 20, 30], 0, 2, vec![], Some("req_a".into()));
         assert_eq!(rid, "req_a");
 
         let batch = s.schedule(&mut bm, &[]);
         assert_eq!(batch.requests.len(), 1);
-        assert_eq!(batch.requests[0].state, RequestState::Prefill);
         assert_eq!(batch.requests[0].input_ids, vec![10, 20, 30]);
         assert_eq!(batch.requests[0].positions, vec![0, 1, 2]);
         assert_eq!(batch.requests[0].n_tokens, 3);
         assert!(!batch.requests[0].block_table.is_empty());
 
         let batch = s.schedule(&mut bm, &[]);
-        assert_eq!(batch.requests[0].state, RequestState::Decode);
         assert!(!s.record_output("req_a", 42));
 
         let _ = s.schedule(&mut bm, &[]);
         assert!(s.record_output("req_a", 99));
 
         let batch = s.schedule(&mut bm, &[]);
-        assert!(batch.is_empty());
+        assert!(batch.requests.is_empty());
         assert!(!s.has_work());
     }
 
@@ -58,20 +56,20 @@ mod integration_tests {
         let mut s = make_scheduler(32, 512, 256);
         let mut bm = make_bm();
 
-        s.add_request(vec![1, 2], 0, 0.0, 100, vec![13], Some("req".into()));
+        s.add_request(vec![1, 2], 0, 100, vec![13], Some("req".into()));
         let _ = s.schedule(&mut bm, &[]);
         let _ = s.schedule(&mut bm, &[]);
         assert!(s.record_output("req", 13));
 
         let batch = s.schedule(&mut bm, &[]);
-        assert!(batch.is_empty());
+        assert!(batch.requests.is_empty());
     }
 
     #[test]
     fn test_chunked_prefill_sequence() {
         let mut s = make_scheduler(32, 512, 4);
         let mut bm = make_bm();
-        s.add_request((0..10).collect(), 0, 0.0, 256, vec![], None);
+        s.add_request((0..10).collect(), 0, 256, vec![], None);
 
         let b1 = s.schedule(&mut bm, &[]);
         assert_eq!(b1.requests[0].n_tokens, 4);
@@ -86,7 +84,6 @@ mod integration_tests {
         assert_eq!(b3.requests[0].input_ids, vec![8, 9]);
 
         let b4 = s.schedule(&mut bm, &[]);
-        assert_eq!(b4.requests[0].state, RequestState::Decode);
     }
 
     #[test]
@@ -94,8 +91,8 @@ mod integration_tests {
         let mut s = make_scheduler(32, 50, 256);
         let mut bm = make_bm();
 
-        s.add_request((0..40).collect(), 0, 0.0, 256, vec![], Some("long".into()));
-        s.add_request(vec![1, 2, 3], 0, 0.0, 256, vec![], Some("short".into()));
+        s.add_request((0..40).collect(), 0, 256, vec![], Some("long".into()));
+        s.add_request(vec![1, 2, 3], 0, 256, vec![], Some("short".into()));
 
         let batch = s.schedule(&mut bm, &[]);
         assert_eq!(batch.requests.len(), 2);
@@ -103,7 +100,6 @@ mod integration_tests {
         assert!(total <= 50);
 
         let long = batch.requests.iter().find(|r| r.request_id == "long").unwrap();
-        assert_eq!(long.state, RequestState::Prefill);
 
         let short = batch.requests.iter().find(|r| r.request_id == "short").unwrap();
         assert_eq!(short.n_tokens, 3);
@@ -114,7 +110,7 @@ mod integration_tests {
         let mut s = make_scheduler(32, 512, 256);
         let mut bm = make_bm();
 
-        s.add_request(vec![1, 2, 3, 4, 5], 0, 0.0, 256, vec![], Some("r".into()));
+        s.add_request(vec![1, 2, 3, 4, 5], 0, 256, vec![], Some("r".into()));
 
         let b1 = s.schedule(&mut bm, &[]);
         let blocks_1 = b1.requests[0].block_table.clone();
@@ -128,9 +124,9 @@ mod integration_tests {
         let mut s = make_scheduler(1, 512, 256);
         let mut bm = make_bm();
 
-        s.add_request(vec![7], 10, 0.0, 256, vec![], Some("low".into()));
-        s.add_request(vec![3], 0, 0.0, 256, vec![], Some("high".into()));
-        s.add_request(vec![5], 5, 0.0, 256, vec![], Some("mid".into()));
+        s.add_request(vec![7], 10, 256, vec![], Some("low".into()));
+        s.add_request(vec![3], 0, 256, vec![], Some("high".into()));
+        s.add_request(vec![5], 5, 256, vec![], Some("mid".into()));
 
         let b1 = s.schedule(&mut bm, &[]);
         assert_eq!(b1.requests[0].request_id, "high");
@@ -140,23 +136,23 @@ mod integration_tests {
     fn test_has_work_transitions() {
         let mut s = make_scheduler(32, 512, 256);
         assert!(!s.has_work());
-        assert_eq!(s.waiting_count(), 0);
-        assert_eq!(s.running_count(), 0);
+        assert_eq!(s.waiting.len(), 0);
+        assert_eq!(s.running.len(), 0);
 
-        s.add_request(vec![1], 0, 0.0, 1, vec![], None);
+        s.add_request(vec![1], 0, 1, vec![], None);
         assert!(s.has_work());
-        assert_eq!(s.waiting_count(), 1);
-        assert_eq!(s.running_count(), 0);
+        assert_eq!(s.waiting.len(), 1);
+        assert_eq!(s.running.len(), 0);
 
         let mut bm = make_bm();
         let _ = s.schedule(&mut bm, &[]);
-        assert_eq!(s.running_count(), 1);
+        assert_eq!(s.running.len(), 1);
 
         let _ = s.schedule(&mut bm, &[]);
         s.record_output("req_1", 42);
         let _ = s.schedule(&mut bm, &[]);
         assert!(!s.has_work());
-        assert_eq!(s.running_count(), 0);
+        assert_eq!(s.running.len(), 0);
     }
 
     #[test]
@@ -169,9 +165,9 @@ mod integration_tests {
     fn test_custom_request_id_generation() {
         let mut s = make_scheduler(32, 512, 256);
 
-        let r1 = s.add_request(vec![1], 0, 0.0, 256, vec![], None);
-        let r2 = s.add_request(vec![2], 0, 0.0, 256, vec![], Some("my_id".into()));
-        let r3 = s.add_request(vec![3], 0, 0.0, 256, vec![], None);
+        let r1 = s.add_request(vec![1], 0, 256, vec![], None);
+        let r2 = s.add_request(vec![2], 0, 256, vec![], Some("my_id".into()));
+        let r3 = s.add_request(vec![3], 0, 256, vec![], None);
 
         assert_eq!(r1, "req_1");
         assert_eq!(r2, "my_id");
@@ -183,7 +179,7 @@ mod integration_tests {
         let mut s = make_scheduler(32, 512, 256);
         let mut bm = make_bm();
 
-        s.add_request(vec![1], 0, 0.0, 3, vec![], Some("t".into()));
+        s.add_request(vec![1], 0, 3, vec![], Some("t".into()));
 
         let _ = s.schedule(&mut bm, &[]);
         let _ = s.schedule(&mut bm, &[]);
@@ -204,8 +200,8 @@ mod integration_tests {
         let mut s = make_scheduler(32, 512, 256);
         let mut bm = make_bm();
 
-        s.add_request(vec![1, 2, 3], 0, 0.0, 256, vec![], Some("a".into()));
-        s.add_request(vec![4, 5, 6, 7, 8], 0, 0.0, 256, vec![], Some("b".into()));
+        s.add_request(vec![1, 2, 3], 0, 256, vec![], Some("a".into()));
+        s.add_request(vec![4, 5, 6, 7, 8], 0, 256, vec![], Some("b".into()));
 
         let batch = s.schedule(&mut bm, &[]);
         let manual_sum: usize = batch.requests.iter().map(|r| r.n_tokens).sum();
@@ -324,7 +320,7 @@ mod integration_tests {
         let cache_block = bm.allocate("_cache_owner", 64).unwrap();
         let cached_bid = cache_block[0];
 
-        s.add_request(vec![1, 2, 3, 4, 5, 6], 0, 0.0, 256, vec![], Some("hit".into()));
+        s.add_request(vec![1, 2, 3, 4, 5, 6], 0, 256, vec![], Some("hit".into()));
 
         let hits = vec![PrefixCacheHit {
             request_id: "hit".into(),
@@ -346,7 +342,7 @@ mod integration_tests {
 
         let cache_blocks = bm.allocate("_cache", 48).unwrap();
 
-        s.add_request(vec![1, 2, 3], 0, 0.0, 256, vec![], Some("full".into()));
+        s.add_request(vec![1, 2, 3], 0, 256, vec![], Some("full".into()));
 
         let hits = vec![PrefixCacheHit {
             request_id: "full".into(),
@@ -355,7 +351,6 @@ mod integration_tests {
         }];
 
         let batch = s.schedule(&mut bm, &hits);
-        assert_eq!(batch.requests[0].state, RequestState::Decode);
         assert_eq!(batch.requests[0].n_tokens, 1);
     }
 }

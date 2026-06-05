@@ -42,14 +42,6 @@ pub enum BlockEntry {
 }
 
 impl BlockEntry {
-    #[allow(dead_code)]
-    pub fn block_id(&self) -> usize {
-        match self {
-            BlockEntry::Plain(b) => b.block_id,
-            BlockEntry::Cached(b) => b.block_id,
-        }
-    }
-
     pub fn ref_count(&self) -> usize {
         match self {
             BlockEntry::Plain(b) => b.ref_count,
@@ -89,10 +81,6 @@ impl std::error::Error for OutOfMemoryError {}
 pub struct BlockManager {
     pub block_size: usize,
     pub num_blocks: usize,
-    #[allow(dead_code)]
-    pub num_kv_heads: Option<usize>,
-    #[allow(dead_code)]
-    pub head_dim: Option<usize>,
     pub blocks: HashMap<usize, BlockEntry>,
     pub free_blocks: Vec<usize>,
     pub block_tables: HashMap<String, Vec<usize>>,
@@ -113,8 +101,6 @@ impl BlockManager {
         Ok(Self {
             block_size,
             num_blocks,
-            num_kv_heads: None,
-            head_dim: None,
             blocks,
             free_blocks: (0..num_blocks).collect(),
             block_tables: HashMap::new(),
@@ -145,8 +131,6 @@ impl BlockManager {
         Ok(Self {
             block_size,
             num_blocks,
-            num_kv_heads: Some(num_kv_heads),
-            head_dim: Some(head_dim),
             blocks,
             free_blocks: (0..num_blocks).collect(),
             block_tables: HashMap::new(),
@@ -212,7 +196,6 @@ impl BlockManager {
     }
 
     /// Release a single physical block (used by RadixCache eviction).
-    #[allow(dead_code)]
     pub fn free_block(&mut self, block_id: usize) {
         let block = match self.blocks.get_mut(&block_id) {
             Some(b) => b,
@@ -250,7 +233,6 @@ impl BlockManager {
 
     /// Ensure a request has enough blocks to cover `target_tokens`.
     /// Used during prefill when cached blocks do not cover the full prompt.
-    #[allow(dead_code)]
     pub fn ensure_blocks(
         &mut self,
         request_id: &str,
@@ -288,7 +270,6 @@ impl BlockManager {
     // ── Prefix Cache via Block Sharing ──────────────────────
 
     /// Share prefix KV cache blocks between two requests.
-    #[allow(dead_code)]
     pub fn share_prefix(
         &mut self,
         src_request_id: &str,
@@ -333,25 +314,21 @@ impl BlockManager {
             .ok_or_else(|| format!("Unknown request_id: {}", request_id))
     }
 
-    #[allow(dead_code)]
     pub fn num_free_blocks(&self) -> usize {
         self.free_blocks.len()
     }
 
-    #[allow(dead_code)]
     pub fn num_allocated_blocks(&self) -> usize {
         self.num_blocks - self.free_blocks.len()
     }
 
     /// Increment reference count on a block (used by RadixCache on insert).
-    #[allow(dead_code)]
     pub fn increment_ref_count(&mut self, block_id: usize) {
         if let Some(block) = self.blocks.get_mut(&block_id) {
             *block.ref_count_mut() += 1;
         }
     }
 
-    #[allow(dead_code)]
     pub fn utilization(&self) -> f64 {
         if self.num_blocks == 0 {
             return 0.0;
@@ -475,7 +452,6 @@ impl BlockManager {
 
     /// Flush (zero out) all K/V data for a finished request and release
     /// its blocks back to the free pool.
-    #[allow(dead_code)]
     pub fn flush_request(&mut self, request_id: &str) {
         let block_ids = match self.block_tables.get(request_id) {
             Some(ids) => ids.clone(),

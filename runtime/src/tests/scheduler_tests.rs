@@ -22,16 +22,16 @@ fn test_invalid_params() {
 #[test]
 fn test_add_request_returns_id() {
     let mut s = Scheduler::new(32, 512, 256, false).unwrap();
-    let rid = s.add_request(vec![1, 2, 3], 0, 0.0, 256, vec![], None);
+    let rid = s.add_request(vec![1, 2, 3], 0, 256, vec![], None);
     assert!(rid.starts_with("req_"));
-    assert_eq!(s.waiting_count(), 1);
+    assert_eq!(s.waiting.len(), 1);
 }
 
 #[test]
 fn test_stop_token_termination() {
     let mut s = Scheduler::new(32, 512, 256, false).unwrap();
     let mut bm = BlockManager::new(1000, 16).unwrap();
-    let rid = s.add_request(vec![1, 2, 3], 0, 0.0, 256, vec![7, 8], None);
+    let rid = s.add_request(vec![1, 2, 3], 0, 256, vec![7, 8], None);
     s.schedule(&mut bm, &[]);  // move to running
     assert!(!s.running_request(&rid).unwrap().is_finished());
     s.record_output(&rid, 5);  // not a stop token
@@ -43,7 +43,7 @@ fn test_stop_token_termination() {
 #[test]
 fn test_add_request_with_custom_id() {
     let mut s = Scheduler::new(32, 512, 256, false).unwrap();
-    let rid = s.add_request(vec![1, 2], 0, 0.0, 256, vec![], Some("my_id".into()));
+    let rid = s.add_request(vec![1, 2], 0, 256, vec![], Some("my_id".into()));
     assert_eq!(rid, "my_id");
 }
 
@@ -52,17 +52,16 @@ fn test_empty_schedule_returns_empty_batch() {
     let mut s = Scheduler::new(32, 512, 256, false).unwrap();
     let mut bm = make_block_manager();
     let batch = s.schedule(&mut bm, &[]);
-    assert!(batch.is_empty());
+    assert!(batch.requests.is_empty());
 }
 
 #[test]
 fn test_single_request_prefill() {
     let mut s = Scheduler::new(32, 512, 256, false).unwrap();
     let mut bm = make_block_manager();
-    s.add_request(vec![1, 2, 3, 4, 5], 0, 0.0, 256, vec![], None);
+    s.add_request(vec![1, 2, 3, 4, 5], 0, 256, vec![], None);
     let batch = s.schedule(&mut bm, &[]);
     assert_eq!(batch.requests.len(), 1);
-    assert_eq!(batch.requests[0].state, RequestState::Prefill);
     assert_eq!(batch.requests[0].input_ids, vec![1, 2, 3, 4, 5]);
 }
 
@@ -70,36 +69,32 @@ fn test_single_request_prefill() {
 fn test_request_transitions_to_decode() {
     let mut s = Scheduler::new(32, 512, 256, false).unwrap();
     let mut bm = make_block_manager();
-    s.add_request(vec![1, 2, 3], 0, 0.0, 256, vec![], None);
+    s.add_request(vec![1, 2, 3], 0, 256, vec![], None);
 
     // First schedule: prefill all 3 tokens
     let batch = s.schedule(&mut bm, &[]);
     assert_eq!(batch.requests.len(), 1);
-    assert_eq!(batch.requests[0].state, RequestState::Prefill);
     assert_eq!(batch.requests[0].n_tokens, 3);
 
     // Second schedule: now in decode
     let batch = s.schedule(&mut bm, &[]);
     assert_eq!(batch.requests.len(), 1);
-    assert_eq!(batch.requests[0].state, RequestState::Decode);
 }
 
 #[test]
 fn test_scheduler_decode_single_token() {
     let mut s = Scheduler::new(32, 512, 256, true).unwrap(); // use_kv_cache=true
     let mut bm = BlockManager::new(1000, 16).unwrap();
-    s.add_request(vec![1, 2, 3, 4], 0, 0.0, 256, vec![], None);
+    s.add_request(vec![1, 2, 3, 4], 0, 256, vec![], None);
 
     // First schedule: prefill all 4 tokens
     let batch = s.schedule(&mut bm, &[]);
     assert_eq!(batch.requests.len(), 1);
-    assert_eq!(batch.requests[0].state, RequestState::Prefill);
     assert_eq!(batch.requests[0].input_ids, vec![1, 2, 3, 4]);
 
     // Second schedule: decode should send single token with position = current_seq_len
     let batch = s.schedule(&mut bm, &[]);
     assert_eq!(batch.requests.len(), 1);
-    assert_eq!(batch.requests[0].state, RequestState::Decode);
     assert!(batch.requests[0].use_kv_cache);
     assert_eq!(batch.requests[0].input_ids.len(), 1);
     // prompt_tokens.len()=4 + output_tokens.len()=0 = current_seq_len=4
@@ -123,12 +118,11 @@ fn test_chunked_prefill_splits_long_prompt() {
     let mut s = Scheduler::new(32, 512, 4, false).unwrap(); // chunk_size=4
     let mut bm = make_block_manager();
     let prompt: Vec<u32> = (0..10).collect();
-    s.add_request(prompt, 0, 0.0, 256, vec![], None);
+    s.add_request(prompt, 0, 256, vec![], None);
 
     // First step: 4 tokens (chunk_size)
     let batch = s.schedule(&mut bm, &[]);
     assert_eq!(batch.requests.len(), 1);
-    assert_eq!(batch.requests[0].state, RequestState::Prefill);
     assert_eq!(batch.requests[0].n_tokens, 4);
 
     // Second step: next 4 tokens
@@ -141,7 +135,6 @@ fn test_chunked_prefill_splits_long_prompt() {
 
     // Fourth step: decode
     let batch = s.schedule(&mut bm, &[]);
-    assert_eq!(batch.requests[0].state, RequestState::Decode);
 }
 
 #[test]
@@ -149,9 +142,9 @@ fn test_priority_queue_order() {
     let mut s = Scheduler::new(1, 512, 256, false).unwrap(); // batch_size=1 to test ordering
     let mut bm = make_block_manager();
 
-    s.add_request(vec![7], 0, 0.0, 256, vec![], None);
-    s.add_request(vec![2], 5, 0.0, 256, vec![], None);
-    s.add_request(vec![3], 10, 0.0, 256, vec![], None);
+    s.add_request(vec![7], 0, 256, vec![], None);
+    s.add_request(vec![2], 5, 256, vec![], None);
+    s.add_request(vec![3], 10, 256, vec![], None);
 
     // First admitted should be priority 0 (lowest value = highest priority)
     let batch = s.schedule(&mut bm, &[]);
@@ -164,7 +157,7 @@ fn test_finished_request_reaped() {
     let mut s = Scheduler::new(32, 512, 256, false).unwrap();
     let mut bm = make_block_manager();
 
-    let rid = s.add_request(vec![1], 0, 0.0, 256, vec![], None);
+    let rid = s.add_request(vec![1], 0, 256, vec![], None);
     let _ = s.schedule(&mut bm, &[]); // prefill
     let _ = s.schedule(&mut bm, &[]); // decode starts
 
@@ -180,14 +173,14 @@ fn test_finished_request_reaped() {
 
     // Next schedule should reap
     let batch = s.schedule(&mut bm, &[]);
-    assert!(batch.is_empty());
+    assert!(batch.requests.is_empty());
 }
 
 #[test]
 fn test_has_work() {
     let mut s = Scheduler::new(32, 512, 256, false).unwrap();
     assert!(!s.has_work());
-    s.add_request(vec![1], 0, 0.0, 256, vec![], None);
+    s.add_request(vec![1], 0, 256, vec![], None);
     assert!(s.has_work());
 }
 
@@ -202,7 +195,7 @@ fn prop_schedule_never_exceeds_batch_size() {
         let mut s = Scheduler::new(8, 512, 64, false).unwrap();
         for i in 0..n_requests {
             let prompt: Vec<u32> = (0..((i % 10) + 1) as u32).collect();
-            s.add_request(prompt, 0, 0.0, 64, vec![], None);
+            s.add_request(prompt, 0, 64, vec![], None);
         }
         let batch = s.schedule(&mut bm, &[]);
         assert!(batch.requests.len() <= 8,
@@ -233,7 +226,7 @@ fn prop_record_output_increments_tokens() {
     proptest!(|(n_tokens in 1..20usize)| {
         let mut bm = BlockManager::new(100, 16).unwrap();
         let mut s = Scheduler::new(4, 512, 64, false).unwrap();
-        s.add_request(vec![1, 2, 3], 0, 0.0, 256, vec![], None);
+        s.add_request(vec![1, 2, 3], 0, 256, vec![], None);
         s.schedule(&mut bm, &[]);
         let rid = s.running[0].request_id.clone();
         let initial = s.running[0].output_tokens.len();

@@ -172,7 +172,6 @@ mod py_bindings {
             &mut self,
             prompt_tokens: Vec<u32>,
             priority: i32,
-            arrival_time: f64,
             max_tokens: usize,
             stop_token_ids: Vec<u32>,
             request_id: Option<String>,
@@ -180,7 +179,6 @@ mod py_bindings {
             self.inner.add_request(
                 prompt_tokens,
                 priority,
-                arrival_time,
                 max_tokens,
                 stop_token_ids,
                 request_id,
@@ -229,11 +227,11 @@ mod py_bindings {
         }
 
         fn waiting_count(&self) -> usize {
-            self.inner.waiting_count()
+            self.inner.waiting.len()
         }
 
         fn running_count(&self) -> usize {
-            self.inner.running_count()
+            self.inner.running.len()
         }
 
         fn has_work(&self) -> bool {

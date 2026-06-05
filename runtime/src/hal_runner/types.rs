@@ -38,10 +38,7 @@ pub struct HalWeightEntry {
     pub name: String,
     #[serde(deserialize_with = "deserialize_shape_to_strings")]
     pub shape: Vec<String>,
-    #[allow(dead_code)]
     pub dtype: String,
-    #[allow(dead_code)]
-    pub hal_name: String,
     #[serde(default)]
     pub ssa: String,
 }
@@ -55,9 +52,6 @@ pub struct HalTensorDef {
     pub name: String,
     #[serde(default, deserialize_with = "deserialize_shape_to_strings")]
     pub shape: Vec<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub dtype: String,
     /// Whether this tensor is consumed internally within the function.
     /// When true, the tensor is NOT propagated to subsequent functions
     /// as a cross-function wire.

@@ -390,6 +390,10 @@ impl traits::Executable for CpuExecutable {
         Ok(output_shapes)
     }
 
+    /// Number of dylib entry points. Returns 0 because the actual function
+    /// count is stored in the compute graph (parsed separately during model
+    /// loading). Callers should use `compute_graph.functions.len()` instead.
+    /// See ModelExecutor::load_with_device() for how the count is determined.
     fn function_count(&self) -> usize { self.function_count }
 
     fn module_data(&self) -> &[u8] {

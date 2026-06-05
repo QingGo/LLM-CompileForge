@@ -405,70 +405,6 @@ fn should_intercept_consumed(
     }
 }
 
-/// Same as [`run_function_graph`] but builds the ComputeGraph from the
-/// SFA ABI header (``sfa_abi`` symbol in the compiled dylib) instead of
-/// parsing it from constants.bin.
-///
-/// The SFA ABI encodes post-bufferization function metadata via protobuf:
-/// each function has a packed sret output, and input bindings use
-/// ``SfaInputField`` to encode weight names and SSA producer references.
-pub(crate) fn run_function_graph_from_abi(
-    abi: &crate::abi::SfaAbiHeader,
-    sfa_weight_provider: &crate::abi::SfaWeightProvider,
-    executable: &dyn traits::Executable,
-    weight_provider: &WeightProvider,
-    weight_cache: &RefCell<HashMap<String, Tensor>>,
-    func_outputs: &mut [Vec<Tensor>],
-    input_ids: &[u32],
-    positions: &[u32],
-    stream: &dyn traits::Stream,
-) -> Result<Tensor, anyhow::Error> {
-    let compute_graph = crate::abi::build_compute_graph(abi, sfa_weight_provider)?;
-    run_function_graph(
-        &compute_graph,
-        executable,
-        weight_provider,
-        weight_cache,
-        func_outputs,
-        input_ids,
-        positions,
-        stream,
-    )
-}
-
-/// Same as [`run_function_graph_with_kv_intercept`] but builds the
-/// ComputeGraph from the SFA ABI header.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn run_function_graph_with_kv_intercept_from_abi(
-    abi: &crate::abi::SfaAbiHeader,
-    sfa_weight_provider: &crate::abi::SfaWeightProvider,
-    executable: &dyn traits::Executable,
-    weight_provider: &WeightProvider,
-    weight_cache: &RefCell<HashMap<String, Tensor>>,
-    func_outputs: &mut [Vec<Tensor>],
-    input_ids: &[u32],
-    positions: &[u32],
-    stream: &dyn traits::Stream,
-    block_manager: Option<&mut BlockManager>,
-    request_id: Option<&str>,
-    cache_policy: &CachePolicy,
-) -> Result<Tensor, anyhow::Error> {
-    let compute_graph = crate::abi::build_compute_graph(abi, sfa_weight_provider)?;
-    run_function_graph_with_kv_intercept(
-        &compute_graph,
-        executable,
-        weight_provider,
-        weight_cache,
-        func_outputs,
-        input_ids,
-        positions,
-        stream,
-        block_manager,
-        request_id,
-        cache_policy,
-    )
-}
-
 /// Same as [`run_function_graph`] but with KV cache intercept callbacks.
 ///
 /// Iterates all `FuncDef`s in order, with the same dispatch logic as
@@ -820,7 +756,7 @@ mod tests {
         };
         abi.funcs.push(f1);
         let sfa_wp = SfaWeightProvider {
-            name_mapping: HashMap::new(), constants: HashMap::new(), num_constants: 0,
+            name_mapping: HashMap::new(), constants: HashMap::new(),
         };
         let graph = build_compute_graph(&abi, &sfa_wp).unwrap();
         // Verify IOTensorDef ranks populated from proto
@@ -837,8 +773,8 @@ mod tests {
         let wp = crate::weight_loader::WeightProvider::new(registry, None).unwrap();
         let wc = std::cell::RefCell::new(HashMap::new());
         let mut func_outputs: Vec<Vec<Tensor>> = vec![Vec::new(); 2];
-        let result = run_function_graph_from_abi(
-            &abi, &sfa_wp, &mock, &wp, &wc, &mut func_outputs,
+        let result = run_function_graph(
+            &graph, &mock, &wp, &wc, &mut func_outputs,
             &[42], &[0], &crate::hal::cpu::CpuStream,
         );
         assert!(result.is_ok());

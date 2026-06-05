@@ -79,13 +79,6 @@ impl traits::Executable for MockExecutable {
     fn supported_ops(&self) -> &[&str] {
         &["mock"]
     }
-    fn register_expert_kernel(
-        &mut self,
-        _op_name: &str,
-        _kernel: Box<dyn traits::ExpertKernel>,
-    ) -> Result<(), anyhow::Error> {
-        Ok(())
-    }
 }
 
 impl traits::Device for MockDevice {
@@ -363,119 +356,6 @@ fn test_kv_model_loads_and_forwards() {
     assert!(n > 16, "expected >16 functions (split model)");
     assert!(ci > 0, "expected consumed_internally=True outputs");
     eprintln!("PASS: KV model loads with {n} functions, {ci} consumed_internally");
-}
-
-// ── ExpertKernel trait tests ───────────────────────────────────────
-
-/// A minimal ExpertKernel implementation for testing the trait.
-#[derive(Debug)]
-struct MultiplyByTwoKernel;
-
-impl traits::ExpertKernel for MultiplyByTwoKernel {
-    fn execute(
-        &self,
-        _stream: &dyn traits::Stream,
-        inputs: &[&dyn traits::Buffer],
-        outputs: &[&dyn traits::Buffer],
-    ) -> Result<(), anyhow::Error> {
-        if let (Some(inp), Some(out)) = (inputs.first(), outputs.first()) {
-            let n = inp.len().min(out.len()) / 4;
-            unsafe {
-                let inp_slice = std::slice::from_raw_parts(inp.as_ptr() as *const f32, n);
-                let out_slice = std::slice::from_raw_parts_mut(out.as_ptr() as *mut f32, n);
-                for i in 0..n {
-                    out_slice[i] = inp_slice[i] * 2.0;
-                }
-            }
-            Ok(())
-        } else {
-            anyhow::bail!("MultiplyByTwoKernel needs at least 1 input and 1 output")
-        }
-    }
-}
-
-#[test]
-fn test_expert_kernel_trait() {
-    // Verify that an ExpertKernel can be created and boxed.
-    let kernel: Box<dyn traits::ExpertKernel> = Box::new(MultiplyByTwoKernel);
-    let stream = MockStream;
-
-    let mut input_data = vec![1.0f32, 2.0, 3.0, 4.0];
-    let mut output_data = vec![0.0f32; 4];
-    let input = MockBuffer(
-        unsafe {
-            std::slice::from_raw_parts_mut(
-                input_data.as_mut_ptr() as *mut u8,
-                input_data.len() * 4,
-            )
-        }
-        .to_vec(),
-    );
-    let output = MockBuffer(
-        unsafe {
-            std::slice::from_raw_parts_mut(
-                output_data.as_mut_ptr() as *mut u8,
-                output_data.len() * 4,
-            )
-        }
-        .to_vec(),
-    );
-
-    let inputs: [&dyn traits::Buffer; 1] = [&input];
-    let outputs: [&dyn traits::Buffer; 1] = [&output];
-    kernel.execute(&stream, &inputs, &outputs).expect("expert kernel should execute");
-
-    // Verify output = input * 2
-    let out_slice = unsafe {
-        std::slice::from_raw_parts(output.as_ptr() as *const f32, 4)
-    };
-    assert!((out_slice[0] - 2.0).abs() < 1e-6);
-    assert!((out_slice[1] - 4.0).abs() < 1e-6);
-    assert!((out_slice[2] - 6.0).abs() < 1e-6);
-    assert!((out_slice[3] - 8.0).abs() < 1e-6);
-}
-
-/// An executable that uses the DEFAULT trait implementations for
-/// supported_ops() and register_expert_kernel().
-#[derive(Debug)]
-struct MinimalExecutable {
-    count: usize,
-    data: Vec<u8>,
-}
-
-impl traits::Executable for MinimalExecutable {
-    fn execute(
-        &self,
-        _op_name: &str,
-        _stream: &dyn traits::Stream,
-        _inputs: &[crate::hal::sfa::SfaMemRef],
-        _outputs: &mut [crate::hal::sfa::SfaMemRef],
-    ) -> Result<Vec<Vec<i64>>, anyhow::Error> {
-        Ok(vec![vec![0i64]])
-    }
-    fn function_count(&self) -> usize { self.count }
-    fn module_data(&self) -> &[u8] { &self.data }
-}
-
-#[test]
-fn test_supported_ops_default() {
-    let exe = MinimalExecutable { count: 1, data: vec![] };
-    let ops = exe.supported_ops();
-    // Default implementation returns &[]
-    assert!(ops.is_empty(), "default supported_ops should return empty slice");
-}
-
-#[test]
-fn test_register_expert_kernel_default() {
-    let mut exe = MinimalExecutable { count: 1, data: vec![] };
-    let kernel: Box<dyn traits::ExpertKernel> = Box::new(MultiplyByTwoKernel);
-    let result = exe.register_expert_kernel("matmul", kernel);
-    // Default implementation returns Err
-    assert!(result.is_err(), "default register_expert_kernel should error");
-    assert!(
-        result.unwrap_err().to_string().contains("not supported"),
-        "error should mention 'not supported'"
-    );
 }
 
 // ── function_count validation (hal-rust helper) ──

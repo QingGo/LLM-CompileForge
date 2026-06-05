@@ -185,7 +185,6 @@ impl InferenceRunner {
         let rid = self.scheduler.add_request(
             input_ids,
             0,                          // priority
-            0.0,                        // arrival_time (wall clock TBD)
             sampling.max_tokens.unwrap_or(self.config.max_tokens_per_request),
             stop_ids,
             None,
@@ -366,7 +365,6 @@ impl InferenceRunner {
     }
 
     /// True if there are any pending or running requests.
-    #[allow(dead_code)]
     pub fn has_work(&self) -> bool {
         self.scheduler.has_work()
     }

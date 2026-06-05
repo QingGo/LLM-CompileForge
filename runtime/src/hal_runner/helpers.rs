@@ -12,28 +12,6 @@ use crate::hal_runner::types::{HalFunction, HalIR, HalTensorDef};
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-/// Zero-fill output buffers after a failed op execution.
-#[allow(dead_code)]
-pub(super) fn zero_fill_outputs(
-    output_vecs: &mut [Vec<u8>],
-    output_bufs: &[Box<dyn traits::Buffer>],
-    fi: usize,
-    oi: usize,
-    _op_name: &str,
-) -> Vec<Vec<i64>> {
-    for (idx, out_vec) in output_vecs.iter_mut().enumerate() {
-        out_vec.fill(0);
-        log::trace!(
-            "hal_runner: zero-filled func[{}] op[{}] output[{}] ({} bytes)",
-            fi, oi, idx, out_vec.len(),
-        );
-    }
-    output_bufs
-        .iter()
-        .map(|b| b.shape().iter().map(|&d| d as i64).collect())
-        .collect()
-}
-
 /// Estimate the number of f32 elements for a tensor with the given
 /// HAL IR shape representation (strings with "?" for dynamic dims).
 ///
@@ -104,94 +82,6 @@ pub(super) fn find_main_output(
     }
 
     best.map(|(output, tensor)| (output.name.clone(), tensor.clone_data()))
-}
-
-/// Fallback shape builder for op outputs: converts the declared shape
-/// strings to a `Vec<usize>`, substituting `"?` and `"-1"` with 1 (batch).
-/// Uses `numel` as the flat fallback when the shape is all-dynamic.
-#[allow(dead_code)]
-pub(super) fn fallback_shape(shape: &[String], numel: usize) -> Vec<usize> {
-    let dims: Vec<usize> = shape
-        .iter()
-        .map(|d| {
-            if d == "?" || d == "-1" {
-                1
-            } else {
-                d.parse::<usize>().unwrap_or(1)
-            }
-        })
-        .collect();
-    if dims.is_empty() || dims.iter().all(|&d| d == 0) {
-        vec![numel]
-    } else {
-        dims
-    }
-}
-
-/// Find the shape definition for a tensor name in a function's
-/// input, output, or weight list.
-#[allow(dead_code)]
-pub(super) fn find_output_shape(function: &HalFunction, name: &str) -> (Vec<String>, bool) {
-    for output in &function.outputs {
-        if output.name == name {
-            return (output.shape.clone(), false);
-        }
-    }
-    for input in &function.inputs {
-        if input.name == name {
-            return (input.shape.clone(), false);
-        }
-    }
-    // Check weight list for invisible constant SSAs (e.g. %1 for position emb).
-    for weight_entry in &function.weights {
-        if weight_entry.ssa == name {
-            return (weight_entry.shape.clone(), false);
-        }
-    }
-    (vec!["?".to_string()], false)
-}
-
-/// Find the shape for any SSA name in a function (inputs + outputs).
-#[allow(dead_code)]
-pub(super) fn find_any_shape(function: &HalFunction, name: &str) -> Vec<String> {
-    find_output_shape(function, name).0
-}
-
-/// Try to find a matching tensor from prior function outputs for the
-/// given function input definition.  Uses shape matching when names
-/// don't directly correspond (the common case across functions).
-#[allow(dead_code)]
-pub(super) fn find_matching_output(
-    hal_ir: &HalIR,
-    _current_func: &HalFunction,
-    input_def: &HalTensorDef,
-    ssa_map: &HashMap<String, SFATensor>,
-    seq_len: usize,
-) -> Option<SFATensor> {
-    let input_numel = estimate_numel_from_shape(&input_def.shape, seq_len);
-
-    // Search all prior functions' outputs for a tensor with matching
-    // numel and compatible shape.
-    for func in &hal_ir.functions {
-        for output in &func.outputs {
-            if output.name == input_def.name {
-                // Same name — direct match (should already be in map).
-                return ssa_map.get(&output.name).map(|t| t.clone_data());
-            }
-
-            let output_numel = estimate_numel_from_shape(&output.shape, seq_len);
-
-            // Check if the output is in the SSA map and has matching size.
-            if output_numel == input_numel && ssa_map.contains_key(&output.name) {
-                // Also check shape compatibility (same rank, or both 1D).
-                if output.shape.len() == input_def.shape.len() {
-                    return ssa_map.get(&output.name).map(|t| t.clone_data());
-                }
-            }
-        }
-    }
-
-    None
 }
 
 // ── compute_output_shape ──────────────────────────────────────────────

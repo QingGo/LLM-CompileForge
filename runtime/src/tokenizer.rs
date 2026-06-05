@@ -30,14 +30,6 @@ impl ChatMessage {
             content: content.to_string(),
         }
     }
-
-    #[allow(dead_code)]
-    pub fn assistant(content: &str) -> Self {
-        Self {
-            role: "assistant".to_string(),
-            content: content.to_string(),
-        }
-    }
 }
 
 const QWEN_CHAT_TEMPLATE: &str = r#"
@@ -154,15 +146,6 @@ impl Tokenizer {
 
     pub fn vocab_size(&self) -> usize {
         self.inner.get_vocab_size(true)
-    }
-
-    #[allow(dead_code)]
-    pub fn bos_token_id(&self) -> Option<u32> {
-        self.inner
-            .get_vocab(true)
-            .get("bos_token")
-            .copied()
-            .or_else(|| self.inner.token_to_id("<s>"))
     }
 
     pub fn has_chat_template(&self) -> bool {

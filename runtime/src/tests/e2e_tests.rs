@@ -7,15 +7,7 @@
 #[cfg(test)]
 #[allow(clippy::module_inception, clippy::expect_fun_call, clippy::manual_abs_diff)]
 mod e2e_tests {
-    use crate::cache::block::BlockManager;
-    use crate::executor::ModelExecutor;
-
-
-    const COMPILED_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../outputs/compiled/opt_125m_fresh");
-
-    // ── KV-cache model constants ──────────────────────────────────────────
-    #[allow(dead_code)]
-    const PROMPT_TEXT: &str = "The capital of France is";
+use crate::cache::block::BlockManager;
     const PROMPT_IDS: &[u32] = &[2, 133, 812, 9, 1470, 16];
     const EXPECTED_TOKENS: &[u32] = &[5, 812, 9, 5, 1515];
     const KV_COMPILED_DIR: &str =

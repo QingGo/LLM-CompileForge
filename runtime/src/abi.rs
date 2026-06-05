@@ -53,9 +53,6 @@ pub struct SfaWeightProvider {
     pub name_mapping: HashMap<String, String>,
     /// Embedded constant tensors (compiler-synthesized, e.g. masks).
     pub constants: HashMap<String, ConstantTensor>,
-    /// Number of constant blobs in the binary (metadata use only).
-    #[allow(dead_code)]
-    pub num_constants: u32,
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -154,7 +151,6 @@ pub unsafe fn load_sfa_weights(
         name_mapping.insert(entry.compiled_name.clone(), entry.hf_key.clone());
     }
 
-    let num_constants = wd.constant_entries.len() as u32;
     let mut constants = HashMap::with_capacity(wd.constant_entries.len());
     for entry in &wd.constant_entries {
         let dtype = Dtype::from_code(entry.dtype_code as u8)
@@ -173,7 +169,6 @@ pub unsafe fn load_sfa_weights(
     Ok(SfaWeightProvider {
         name_mapping,
         constants,
-        num_constants,
     })
 }
 
@@ -424,7 +419,6 @@ mod tests {
         let wp = SfaWeightProvider {
             name_mapping: HashMap::new(),
             constants: HashMap::new(),
-            num_constants: 0,
         };
         let graph = build_compute_graph(&header, &wp).unwrap();
 
@@ -479,7 +473,6 @@ mod tests {
         let wp = SfaWeightProvider {
             name_mapping: HashMap::new(),
             constants: HashMap::new(),
-            num_constants: 0,
         };
         let graph = build_compute_graph(&header, &wp).unwrap();
 

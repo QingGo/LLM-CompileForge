@@ -97,17 +97,6 @@ impl Tensor {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn from_borrowed(shape: Vec<usize>, data: &'static [f32], dtype: Dtype) -> Self {
-        debug_assert_eq!(data.len(), shape.iter().product::<usize>());
-        Self {
-            data: TensorData::Borrowed(data),
-            shape,
-            dtype,
-        }
-    }
-
-    #[allow(dead_code)]
     pub fn scalar(value: f32) -> Self {
         Self {
             data: TensorData::Owned(Arc::new(vec![value])),

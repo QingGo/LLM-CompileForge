@@ -104,17 +104,6 @@ fn test_memref_desc3() {
 }
 
 #[test]
-fn test_kernel_fn_arity() {
-    // SAFETY: k3 is only used for arity() test (never called), so a
-    // non-null placeholder is sufficient. `1usize` cast avoids
-    // transmute_null_to_fn UB.
-    let k3 = KernelFn::Arity3(unsafe {
-        std::mem::transmute::<usize, CifaceFn3>(1usize)
-    });
-    assert_eq!(k3.arity(), 3);
-}
-
-#[test]
 fn test_buffer_as_mut_slice() {
     let mut d = RawCpuDevice::new();
     let mut buf = d.allocate(16);

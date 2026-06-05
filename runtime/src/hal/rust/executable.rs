@@ -797,28 +797,4 @@ mod tests {
             let _ = Vec::from_raw_parts(out_ptr as *mut u8, 16, 16);
         }
     }
-
-    #[test]
-    fn test_hal_rust_executable_register_expert_kernel() {
-        // Verify that register_expert_kernel works (default impl errors).
-        // Use the trait method directly via the Executable import.
-        let mut exe = HalRustExecutable::new(1);
-        let result = traits::Executable::register_expert_kernel(
-            &mut exe, "test_op", Box::new(NoopExpertKernel),
-        );
-        assert!(result.is_err(), "default register_expert_kernel should error");
-    }
-
-    #[derive(Debug)]
-    struct NoopExpertKernel;
-    impl traits::ExpertKernel for NoopExpertKernel {
-        fn execute(
-            &self,
-            _stream: &dyn traits::Stream,
-            _inputs: &[&dyn traits::Buffer],
-            _outputs: &[&dyn traits::Buffer],
-        ) -> Result<(), anyhow::Error> {
-            Ok(())
-        }
-    }
 }

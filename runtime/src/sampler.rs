@@ -30,7 +30,6 @@ impl Default for SamplerConfig {
 }
 
 impl SamplerConfig {
-    #[allow(dead_code)]
     pub fn greedy() -> Self {
         Self {
             temperature: 0.0,

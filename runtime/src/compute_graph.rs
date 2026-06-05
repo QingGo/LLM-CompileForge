@@ -11,7 +11,6 @@ use crate::sfcf;
 
 #[derive(Debug, Clone)]
 pub enum InputBinding {
-    #[allow(dead_code)]
     Weight(String),
     Ssa { producer_func: usize, output_idx: usize },
     GlobalInput,
@@ -43,7 +42,6 @@ impl IOTensorDef {
 
 #[derive(Debug, Clone)]
 pub struct FuncDef {
-    #[allow(dead_code)]
     pub index: usize,
     pub symbol: String,
     pub num_inputs: usize,

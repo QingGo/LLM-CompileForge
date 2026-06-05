@@ -290,7 +290,6 @@ impl SFATensor {
     ///
     /// # Panics
     /// Panics if `data.len() != product(shape)` or `shape.len()` not in 1..=4.
-    #[allow(dead_code)]
     pub fn from_vec_i64(mut data: Vec<i64>, shape: Vec<usize>) -> Self {
         let rank = shape.len();
         assert!(rank >= 1 && rank <= 4, "rank must be 1..=4, got {}", rank);
@@ -331,7 +330,6 @@ impl SFATensor {
     /// The caller is responsible for ensuring `raw` pointers remain valid
     /// for the lifetime of this tensor (if `Ownership::Borrowed`) or that
     /// the `OwnedBuf` / deleter correctly frees the memory.
-    #[allow(dead_code)]
     pub fn from_raw_parts(
         raw: SFATensorRawAny,
         device: Device,
@@ -356,7 +354,6 @@ impl SFATensor {
     }
 
     /// Create a scalar (rank-0) tensor from a single `f32` value.
-    #[allow(dead_code)]
     pub fn scalar_f32(value: f32) -> Self {
         let data = vec![value];
         let mut t = Self::from_vec_f32(data, vec![1]);
