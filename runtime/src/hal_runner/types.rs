@@ -52,11 +52,19 @@ pub struct HalTensorDef {
     pub name: String,
     #[serde(default, deserialize_with = "deserialize_shape_to_strings")]
     pub shape: Vec<String>,
+    /// Data type of this tensor (e.g. "f32", "i64", "f16").
+    /// Defaults to "f32" if not specified in HAL IR.
+    #[serde(default = "default_dtype")]
+    pub dtype: String,
     /// Whether this tensor is consumed internally within the function.
     /// When true, the tensor is NOT propagated to subsequent functions
     /// as a cross-function wire.
     #[serde(default)]
     pub consumed_internally: bool,
+}
+
+fn default_dtype() -> String {
+    "f32".to_string()
 }
 
 /// Deserialize shape arrays that may contain strings ("?") or integers (1).
