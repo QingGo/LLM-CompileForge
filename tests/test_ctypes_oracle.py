@@ -44,7 +44,7 @@ def test_ctypes_npy_dump_valid() -> None:
             capture_output=True,
             text=True,
             timeout=60,
-            cwd="rust",
+            cwd="runtime",
             env=env,
         )
         if result.returncode != 0:

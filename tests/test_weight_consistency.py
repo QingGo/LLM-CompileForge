@@ -67,7 +67,7 @@ def test_dump_weights_binary_builds() -> None:
         ["cargo", "build", "--bin", "dump_weights"],
         capture_output=True,
         text=True,
-        cwd="rust",
+        cwd="runtime",
     )
     assert result.returncode == 0
 
@@ -94,7 +94,7 @@ def test_dump_weights_produces_valid_npy() -> None:
             ],
             capture_output=True,
             text=True,
-            cwd="rust",
+            cwd="runtime",
         )
         assert result.returncode == 0, f"dump_weights failed:\n{result.stderr}"
 

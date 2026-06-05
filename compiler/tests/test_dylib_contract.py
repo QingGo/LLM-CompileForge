@@ -476,3 +476,81 @@ class TestMemRefDescriptorLayout:
         assert desc.offset == 0
         assert desc.sizes[0] == 10
         assert desc.strides[0] == 1
+
+
+# ── Runtime sret validation: compile mini model, ctypes call, verify descriptors ─
+
+@pytest.mark.integration
+@pytest.mark.timeout(120)
+class TestRuntimeSretContract:
+    """Verify sret descriptors at RUNTIME by compiling and calling via ctypes.
+
+    The LLVM IR tests above verify compile-time patterns. This test
+    actually compiles a single-op model to a dylib, calls the ciface
+    function via ctypes, and reads the sret output buffer to verify
+    allocated and aligned pointers are non-null at runtime.
+    """
+
+    def test_sret_descriptor_non_null_at_runtime(self) -> None:
+        import numpy as np
+        import tempfile
+        import os
+        import sys
+        from pathlib import Path
+
+        ROOT = Path(__file__).resolve().parent.parent.parent
+        sys.path.insert(0, str(ROOT))
+
+        from compiler.tests.test_precision_contract import (
+            _compile_sf_to_dylib, _make_memref_struct,
+        )
+
+        # Minimal matmul model: input [1,2] @ weight [[1,2],[3,4]] = [7,10]
+        sf_mlir = """module {
+  func.func @main_0(%input: tensor<1x2xf32>, %weight: tensor<2x2xf32>) -> tensor<1x2xf32> {
+    %0 = "sf.matmul"(%input, %weight) : (tensor<1x2xf32>, tensor<2x2xf32>) -> tensor<1x2xf32>
+    return %0 : tensor<1x2xf32>
+  }
+}"""
+        input_data = np.array([[1.0, 2.0]], dtype=np.float32)
+        weight_data = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+
+        with tempfile.TemporaryDirectory() as td:
+            dylib_path = _compile_sf_to_dylib(sf_mlir, td, "test_sret")
+            lib = ctypes.CDLL(dylib_path)
+
+            inp_mr = _make_memref_struct(
+                input_data.ctypes.data, input_data.ndim, input_data.shape)
+            w_mr = _make_memref_struct(
+                weight_data.ctypes.data, weight_data.ndim, weight_data.shape)
+
+            sret_buf = (ctypes.c_uint8 * 1024)()
+            lib._mlir_ciface_main_0(
+                ctypes.byref(sret_buf),
+                ctypes.byref(inp_mr),
+                ctypes.byref(w_mr),
+            )
+
+            # Read sret descriptor fields directly from the buffer
+            # offset 0: allocated (8 bytes, void*)
+            # offset 8: aligned   (8 bytes, void*)
+            # offset 16: offset   (8 bytes, i64)
+            # offset 24: sizes[0] (8 bytes, i64)
+            allocated_ptr = ctypes.c_void_p.from_buffer(sret_buf, 0)
+            aligned_ptr = ctypes.c_void_p.from_buffer(sret_buf, 8)
+
+            # Contract: both allocated and aligned must be non-null
+            assert allocated_ptr.value is not None, (
+                "sret contract violation: allocated pointer is null"
+            )
+            assert aligned_ptr.value is not None, (
+                "sret contract violation: aligned pointer is null"
+            )
+            # They may differ (aligned is the aligned version of allocated)
+            # but both must be valid pointers
+            assert allocated_ptr.value != 0, (
+                f"sret contract violation: allocated={allocated_ptr.value:#x}"
+            )
+            assert aligned_ptr.value != 0, (
+                f"sret contract violation: aligned={aligned_ptr.value:#x}"
+            )
