@@ -442,6 +442,7 @@ def main() -> None:
         ],
     }
     # Step 6: Embed SFA ABI + weights symbols into dylib
+    lowered_arg_types = sfa_abi.parse_lowered_argument_types(str(lowered_path))
     lowered_output_types = sfa_abi.parse_lowered_output_types(str(lowered_path))
     func_metas = sfa_abi.merge_with_semantics(sigs, pre_lowering, lowered_arg_types, lowered_output_types)
     print(f"   Built {len(func_metas)} SfaFuncMeta entries")
