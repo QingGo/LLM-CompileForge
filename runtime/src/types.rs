@@ -86,6 +86,7 @@ pub struct ScheduledRequest {
     pub request_id: String,
     pub input_ids: Vec<u32>,
     pub positions: Vec<u32>,
+    pub state: RequestState,
     pub block_table: Vec<usize>,
     pub use_kv_cache: bool,
     pub kv_cache_block_table: Vec<usize>,

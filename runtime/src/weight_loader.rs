@@ -257,6 +257,14 @@ impl WeightProvider {
         }, info.dtype))
     }
 
+    pub fn name_mapping(&self) -> &HashMap<String, String> {
+        &self.registry.name_mapping
+    }
+
+    pub fn constants(&self) -> &HashMap<String, ConstantTensor> {
+        &self.registry.constants
+    }
+
     /// Look up a CachedTensorInfo by compiled weight name for dtype inspection.
     #[allow(dead_code)]
     pub(crate) fn get_weight_info(&self, compiled_name: &str) -> Option<&CachedTensorInfo> {

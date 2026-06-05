@@ -82,13 +82,13 @@ fn test_generate_deterministic() {
     };
     let mut runner =
         InferenceRunner::new(exec, tokenizer, config.clone()).expect("create runner");
-    let result1 = runner.generate("Paris", 1.0, 0).expect("generate v1");
+    let result1 = runner.generate("Paris", 0.0, 1.0, 0).expect("generate v1");
 
     let exec2 = compiled_executor();
     let tokenizer2 = dummy_tokenizer();
     let mut runner2 =
         InferenceRunner::new(exec2, tokenizer2, config).expect("create runner");
-    let result2 = runner2.generate("Paris", 1.0, 0).expect("generate v2");
+    let result2 = runner2.generate("Paris", 0.0, 1.0, 0).expect("generate v2");
 
     assert_eq!(
         result1.tokens, result2.tokens,
