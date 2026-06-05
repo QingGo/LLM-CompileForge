@@ -16,7 +16,7 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 use crate::cache::block::BlockManager;
-use crate::types::{Batch, PrefixCacheHit, Request, RequestState, ScheduledRequest};
+use crate::engine::types::{Batch, PrefixCacheHit, Request, RequestState, ScheduledRequest};
 
 // ── Priority queue entry for the waiting queue ──────────────
 
@@ -330,5 +330,5 @@ impl Scheduler {
 // ── Tests ───────────────────────────────────────────────────
 
 #[cfg(test)]
-#[path = "tests/scheduler_tests.rs"]
+#[path = "../tests/scheduler_tests.rs"]
 mod tests;

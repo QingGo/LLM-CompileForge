@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::sfa_tensor::SFATensor;
+use crate::model::sfa_tensor::SFATensor;
 use crate::hal_runner::types::HalFunction;
 use crate::hal_runner::types::HalOp;
 
@@ -18,7 +18,7 @@ pub(crate) fn compute_output_shape(
     out_idx: usize,
     ssa_shapes: &HashMap<String, Vec<usize>>,
     ssa_map: &HashMap<String, SFATensor>,
-    ssa_dtypes: &HashMap<String, crate::tensor::Dtype>,
+    ssa_dtypes: &HashMap<String, crate::model::tensor::Dtype>,
     function: &HalFunction,
     _seq_len: usize,
 ) -> (usize, Vec<usize>) {
@@ -76,7 +76,7 @@ fn shape_of_reshape(
     _out_idx: usize,
     ssa_shapes: &HashMap<String, Vec<usize>>,
     ssa_map: &HashMap<String, SFATensor>,
-    ssa_dtypes: &HashMap<String, crate::tensor::Dtype>,
+    ssa_dtypes: &HashMap<String, crate::model::tensor::Dtype>,
     _function: &HalFunction,
 ) -> (usize, Vec<usize>) {
     let input_numel = op
@@ -337,7 +337,7 @@ mod tests {
             ops: vec![],
         };
         let ssa_map: HashMap<String, SFATensor> = HashMap::new();
-        let ssa_dtypes: HashMap<String, crate::tensor::Dtype> = HashMap::new();
+        let ssa_dtypes: HashMap<String, crate::model::tensor::Dtype> = HashMap::new();
         compute_output_shape(&op, 0, &ssa_shapes, &ssa_map, &ssa_dtypes, &function, 4)
     }
 
@@ -375,7 +375,7 @@ mod tests {
             weights: vec![], weight_inputs: std::collections::HashMap::new(), ops: vec![],
         };
         let ssa_map: HashMap<String, SFATensor> = HashMap::new();
-        let ssa_dtypes: HashMap<String, crate::tensor::Dtype> = HashMap::new();
+        let ssa_dtypes: HashMap<String, crate::model::tensor::Dtype> = HashMap::new();
         let (numel, shape) = compute_output_shape(&op, 0, &ssa_shapes, &ssa_map, &ssa_dtypes, &function, 4);
         assert_eq!(shape, vec![1, 1, 50272]);
         assert_eq!(numel, 50272);
@@ -400,7 +400,7 @@ mod tests {
             weights: vec![], weight_inputs: std::collections::HashMap::new(), ops: vec![],
         };
         let ssa_map: HashMap<String, SFATensor> = HashMap::new();
-        let ssa_dtypes: HashMap<String, crate::tensor::Dtype> = HashMap::new();
+        let ssa_dtypes: HashMap<String, crate::model::tensor::Dtype> = HashMap::new();
         let (numel, shape) = compute_output_shape(&op, 0, &ssa_shapes, &ssa_map, &ssa_dtypes, &function, 4);
         assert_eq!(shape, vec![4, 768]);
         assert_eq!(numel, 3072);

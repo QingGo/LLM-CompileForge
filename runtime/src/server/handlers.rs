@@ -10,8 +10,8 @@ use axum::Json;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use crate::runner::InferenceRunner;
-use crate::sampler::SamplerConfig;
+use crate::engine::runner::InferenceRunner;
+use crate::engine::sampler::SamplerConfig;
 
 use super::streaming::{build_chat_prompt, v1_chat_completions_stream};
 use super::types::{ChatCompletionRequest, CompletionRequest, HealthResponse};

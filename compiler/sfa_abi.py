@@ -436,7 +436,23 @@ def merge_with_semantics(
         # If lowered output types are available, replace with per-output descriptors
         if lowered_output_types and func["name"] in lowered_output_types:
             lot = lowered_output_types[func["name"]]
-            output_descs = [{"rank": rank, "dims": dims} for rank, dims in lot]
+            output_descs = [{"rank": rank, "dims": dims, "consumed_internally": False}
+                           for rank, dims in lot]
+
+        # Propagate consumed_internally from pre-lowering outputs.
+        # After bufferization there is only 1 packed output per function.
+        # If ANY pre-lowering output is consumed_internally, mark the
+        # packed output as consumed so the runtime knows to intercept it.
+        # Propagate consumed_internally from pre-lowering outputs.
+        # After bufferization there is only 1 packed output per function.
+        # If ANY pre-lowering output is consumed_internally, mark the
+        # packed output as consumed so the runtime knows to intercept it.
+        pre_outputs = func.get("outputs", [])
+        if pre_outputs and output_descs:
+            any_consumed = any(
+                len(out) > 2 and out[2] for out in pre_outputs
+            )
+            output_descs[0]["consumed_internally"] = any_consumed
 
         # Populate rank/dims from lowered MLIR arg types when available
         if lowered_arg_types and func["name"] in lowered_arg_types:
@@ -501,5 +517,6 @@ def serialize_abi(func_metas: list[dict[str, Any]]) -> bytes:
             out_desc = func_meta.outputs.add()
             out_desc.rank = od["rank"]
             out_desc.dims.extend(od["dims"])
+            out_desc.consumed_internally = od.get("consumed_internally", False)
 
     return bytes(header.SerializeToString())

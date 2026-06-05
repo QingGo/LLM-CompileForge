@@ -13,15 +13,15 @@ use half::f16;
 use log::warn;
 
 use crate::cache::block::BlockManager;
-use crate::compute_graph::{ComputeGraph, FuncDef, InputBinding, IOTensorDef};
+use crate::model::compute_graph::{ComputeGraph, FuncDef, InputBinding, IOTensorDef};
 use crate::hal::cpu::buffer::RawBuffer as InnerCpuBuffer;
 use crate::hal::cpu::CpuBuffer;
 use crate::hal::traits;
 use crate::cache::policy::CachePolicy;
 use crate::cache::intercept::{intercept_consumed_input, intercept_consumed_output};
-use crate::sfa_tensor::{SFATensor, SFATensorRawAny};
-use crate::tensor::{Dtype, Tensor};
-use crate::weight_loader::WeightProvider;
+use crate::model::sfa_tensor::{SFATensor, SFATensorRawAny};
+use crate::model::tensor::{Dtype, Tensor};
+use crate::model::weight_loader::WeightProvider;
 
 // ---- Helper functions shared by run_function_graph and run_function_graph_with_kv_intercept ----
 
@@ -36,7 +36,7 @@ fn build_global_input_buffer(
     bi: usize,
     sfa_tensors: &mut Vec<SFATensor>,
 ) -> Result<Box<dyn traits::Buffer>, anyhow::Error> {
-    let tensor = crate::global_input::fill_global_input(input_ids, positions, io_def, bi)?;
+    let tensor = crate::model::global_input::fill_global_input(input_ids, positions, io_def, bi)?;
 
     // Extract data pointer from the SFATensor's raw descriptor.
     let data_ptr: *mut u8 = match &tensor.raw {
@@ -539,7 +539,7 @@ pub fn run_function_graph_with_kv_intercept(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compute_graph::IOTensorDef;
+    use crate::model::compute_graph::IOTensorDef;
     use crate::cache::policy::{CachePolicy, InterceptSpec};
 
     /// When cache_policy.intercepts is populated, should_intercept_consumed
@@ -659,11 +659,11 @@ mod tests {
 
     // ── SFA ABI integration tests (proto-based) ─────────────────────
 
-    use crate::abi::{
+    use crate::model::abi::{
         proto::{sfa_input_field::Binding, SfaInputField, SfaInputKind, SfaSsaRef, OutputDescriptor},
         SfaWeightProvider, build_compute_graph,
     };
-    use crate::abi::proto::{SfaAbiHeader, SfaFuncMeta};
+    use crate::model::abi::proto::{SfaAbiHeader, SfaFuncMeta};
 
     /// Minimal mock Executable for testing ABI-based execution.
     #[derive(Debug)]
@@ -692,7 +692,6 @@ mod tests {
         }
 
         fn function_count(&self) -> usize { self.num_funcs }
-        fn module_data(&self) -> &[u8] { &[] }
     }
 
     /// Mock executable that records every SfaMemRef rank passed to execute().
@@ -718,7 +717,6 @@ mod tests {
             Ok(vec![vec![0i64; 0]; outputs.len()])
         }
         fn function_count(&self) -> usize { self.num_funcs }
-        fn module_data(&self) -> &[u8] { &[] }
     }
 
     /// Per-input rank from io_def MUST be used when constructing SfaMemRef.
@@ -726,14 +724,14 @@ mod tests {
     /// mismatch causes the load to read wrong bytes → SIGSEGV.
     #[test]
     fn test_ssa_sfa_memref_rank_matches_io_def() {
-        let mut abi = SfaAbiHeader { magic: crate::abi::SFA_MAGIC, version: 1, funcs: vec![] };
+        let mut abi = SfaAbiHeader { magic: crate::model::abi::SFA_MAGIC, version: 1, funcs: vec![] };
         let mut f0 = SfaFuncMeta {
             symbol: "f0".to_string(), num_inputs: 1, output_rank: 2,
             input_fields: vec![SfaInputField {
                 kind: SfaInputKind::SfaInputGlobal as i32, binding: None,
                 rank: 2, dims: vec![1, 4],
             }],
-            outputs: vec![OutputDescriptor { rank: 2, dims: vec![1, 768] }],
+            outputs: vec![OutputDescriptor { rank: 2, dims: vec![1, 768], consumed_internally: false }],
         };
         abi.funcs.push(f0);
         let mut f1 = SfaFuncMeta {
@@ -752,7 +750,7 @@ mod tests {
                     rank: 4, dims: vec![1, 1, 16, 16],
                 },
             ],
-            outputs: vec![OutputDescriptor { rank: 2, dims: vec![1, 768] }],
+            outputs: vec![OutputDescriptor { rank: 2, dims: vec![1, 768], consumed_internally: false }],
         };
         abi.funcs.push(f1);
         let sfa_wp = SfaWeightProvider {
@@ -767,10 +765,10 @@ mod tests {
         // Run execution and capture SfaMemRef ranks.
         let captured = std::sync::Mutex::new(Vec::<usize>::new());
         let mock = RankCapturingExecutable::new(2, &captured);
-        let registry = crate::weight_loader::WeightRegistry {
+        let registry = crate::model::weight_loader::WeightRegistry {
             name_mapping: HashMap::new(), constants: HashMap::new(),
         };
-        let wp = crate::weight_loader::WeightProvider::new(registry, None).unwrap();
+        let wp = crate::model::weight_loader::WeightProvider::new(registry, None).unwrap();
         let wc = std::cell::RefCell::new(HashMap::new());
         let mut func_outputs: Vec<Vec<Tensor>> = vec![Vec::new(); 2];
         let result = run_function_graph(

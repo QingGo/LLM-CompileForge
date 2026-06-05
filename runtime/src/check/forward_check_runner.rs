@@ -66,7 +66,7 @@ fn run_forward(
     println!("[forward_check] dylib: {}", dylib_path.display());
     println!("[forward_check] safetensors: {}", safetensors_path);
 
-    let executor = crate::executor::ModelExecutor::load(
+    let executor = crate::engine::executor::ModelExecutor::load(
         &dylib_path.to_string_lossy(),
         Some(&safetensors_path),
     )

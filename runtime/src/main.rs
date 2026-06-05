@@ -4,28 +4,14 @@
 //!   serveforge run <model> --prompt <text> [--tokenizer <path>] [--safetensors <path>]
 //!   serveforge info <model>
 
-mod abi;
+mod model;
+mod engine;
 mod cache;
-mod ciface_high;
 mod cli;
-mod compute_graph;
 mod debug;
-mod error;
-mod compute_graph_runner;
-mod executor;
 mod hal;
 mod kv_cache;
-mod runner;
-mod sampler;
-mod scheduler;
 mod server;
-mod sfcf;
-mod sfa_tensor;
-mod tensor;
-mod tokenizer;
-mod types;
-mod weight_loader;
-mod global_input;
 
 use std::sync::Arc;
 
@@ -77,7 +63,7 @@ fn main() -> Result<(), anyhow::Error> {
             log::info!("Loading model from: {}", artifact_path.display());
             log::info!("Prompt: {}", prompt);
 
-            let executor = executor::ModelExecutor::load(
+            let executor = engine::executor::ModelExecutor::load(
                 &dylib_path,
                 st_path_opt,
             )
@@ -103,7 +89,7 @@ fn main() -> Result<(), anyhow::Error> {
             );
 
             let tok = if no_chat_template {
-                tokenizer::Tokenizer::from_file(&tok_path)
+                engine::tokenizer::Tokenizer::from_file(&tok_path)
                     .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?
             } else {
                 let cfg_path = tokenizer_config.clone().or_else(|| {
@@ -115,17 +101,17 @@ fn main() -> Result<(), anyhow::Error> {
                     }
                 });
                 let cfg_ref = cfg_path.as_deref();
-                tokenizer::Tokenizer::from_file_with_chat_template(&tok_path, cfg_ref)
+                engine::tokenizer::Tokenizer::from_file_with_chat_template(&tok_path, cfg_ref)
                     .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?
             };
 
-            let runner_config = runner::RunnerConfig {
+            let runner_config = engine::runner::RunnerConfig {
                 max_tokens_per_request: max_tokens,
                 seed,
                 use_chat_template: !no_chat_template,
                 ..Default::default()
             };
-            let mut runner = runner::InferenceRunner::new(
+            let mut runner = engine::runner::InferenceRunner::new(
                 executor,
                 tok,
                 runner_config,
@@ -174,7 +160,7 @@ fn load_model_and_run_serve(model: &str, compiled_dir: &str, port: u16) -> Resul
 
     log::info!("Loading model from: {}", artifact_path.display());
 
-    let executor = executor::ModelExecutor::load(&dylib_path, st_path_ref).map_err(|e| {
+    let executor = engine::executor::ModelExecutor::load(&dylib_path, st_path_ref).map_err(|e| {
         let ap = artifact_path.display();
         anyhow::anyhow!(
             "Failed to load model '{}': {}\n\
@@ -202,14 +188,14 @@ fn load_model_and_run_serve(model: &str, compiled_dir: &str, port: u16) -> Resul
     } else {
         None
     };
-    let tok = tokenizer::Tokenizer::from_file_with_chat_template(&tok_path, cfg_ref)
+    let tok = engine::tokenizer::Tokenizer::from_file_with_chat_template(&tok_path, cfg_ref)
         .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
 
-    let runner_config = runner::RunnerConfig {
+    let runner_config = engine::runner::RunnerConfig {
         use_chat_template: false,
         ..Default::default()
     };
-    let runner = runner::InferenceRunner::new(executor, tok, runner_config)
+    let runner = engine::runner::InferenceRunner::new(executor, tok, runner_config)
         .map_err(|e| anyhow::anyhow!("Failed to create runner: {}", e))?;
 
     let runner = Arc::new(Mutex::new(runner));

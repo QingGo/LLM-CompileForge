@@ -23,6 +23,7 @@ message SfaFuncMeta {
 message OutputDescriptor {
   uint32 rank = 1;
   repeated uint64 dims = 2;     // 0 = dynamic dimension
+  bool consumed_internally = 3; // true = output consumed by KV cache (not exposed as SSA)
 }
 
 // Describes the kind and binding of each function input argument.

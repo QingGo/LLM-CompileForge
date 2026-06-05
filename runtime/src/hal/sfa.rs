@@ -3,7 +3,7 @@
 //! ``SfaMemRef`` wraps per-rank raw descriptors (binary-compatible with
 //! ``include/sfa.h`` and MLIR memref structs) plus element-size metadata.
 //!
-//! The raw structs are imported from ``crate::sfa_tensor`` where they are
+//! The raw structs are imported from ``crate::model::sfa_tensor`` where they are
 //! defined as ``#[repr(C)]`` types matching the LLVM dialect memref layout:
 //!
 //!   struct<(ptr, ptr, i64, array<RANK x i64>, array<RANK x i64>)>
@@ -14,7 +14,7 @@
 use std::ffi::c_void;
 
 use crate::hal::cpu::memref::{MemRefDescAny, MemRefDesc1, MemRefDesc2, MemRefDesc3, MemRefDesc4};
-use crate::sfa_tensor::{SFATensorRaw1, SFATensorRaw2, SFATensorRaw3, SFATensorRaw4};
+use crate::model::sfa_tensor::{SFATensorRaw1, SFATensorRaw2, SFATensorRaw3, SFATensorRaw4};
 
 // ── Type aliases (matching include/sfa.h naming) ────────────────────
 

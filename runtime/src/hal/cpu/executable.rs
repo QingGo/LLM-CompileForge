@@ -2,7 +2,7 @@
 
 use std::ffi::c_void;
 
-use crate::error::ExecutorError;
+use crate::model::error::ExecutorError;
 
 use super::kernel::{CifaceFn1, CifaceFn2, CifaceFn3, CifaceFn4, CifaceFn5, CifaceFn6, CifaceFn7, CifaceFn8, KernelFn};
 use super::super::traits;
@@ -48,36 +48,6 @@ impl RawCpuExecutable {
         Ok(*sym)
     }
 
-    /// Read the embedded constants data (serveforge_constants_data/size)
-    /// from the loaded dynamic library. This is the raw binary blob
-    /// containing the weight registry, compute graph, and contract.
-    pub fn load_constants(&self) -> Result<Vec<u8>, anyhow::Error> {
-        let data_ptr: *const u8 = {
-            // SAFETY: Symbol lookup from a loaded dylib returns a valid pointer
-            // if the dylib exports the named symbol.
-            let sym: libloading::Symbol<*const std::ffi::c_void> = unsafe {
-                self.lib.get(b"serveforge_constants_data")
-                    .map_err(|e| anyhow::anyhow!("missing serveforge_constants_data: {}", e))?
-            };
-            *sym as *const u8
-        };
-        let size_val: u64 = {
-            // SAFETY: Same as above — symbol lookup from a loaded dylib.
-            let sym = unsafe {
-                self.lib.get::<*const u64>(b"serveforge_constants_size")
-                    .map_err(|e| anyhow::anyhow!("missing serveforge_constants_size: {}", e))?
-            };
-            // SAFETY: Dereferencing a symbol pointer that was just successfully
-            // looked up from the dylib.
-            unsafe { *(*sym) }
-        };
-        // SAFETY: data_ptr and size_val come from the dylib's exported constants.
-        // The dylib guarantees the data region is at least size_val bytes.
-        let data: &[u8] =
-            unsafe { std::slice::from_raw_parts(data_ptr, size_val as usize) };
-        Ok(data.to_vec())
-    }
-
     /// Look up a kernel function by symbol name with a specific arity.
     pub fn lookup_typed(
         &self,
@@ -110,7 +80,7 @@ impl RawCpuExecutable {
                 // SAFETY: libloading::get() looks up a raw symbol; transmute
                 // is safe because the symbol was just successfully resolved.
                 let sym: libloading::Symbol<*const ()> = unsafe { self.lib.get(name.as_bytes()) }?;
-                Ok(KernelFn::HighArity(crate::ciface_high::FnPtr(
+                Ok(KernelFn::HighArity(crate::model::ciface_high::FnPtr(
                     // SAFETY: transmute from *const () to fn ptr is safe here
                     // because *sym was resolved from a valid dylib symbol.
                     unsafe { std::mem::transmute::<*const (), unsafe extern "C" fn()>(*sym) }
@@ -125,31 +95,20 @@ impl RawCpuExecutable {
 #[derive(Debug)]
 pub struct CpuExecutable {
     inner: RawCpuExecutable,
-    constants_data: Vec<u8>,
     /// Cached function pointer for `serveforge_free` exported by the dylib.
     /// Eliminates per-call libloading symbol lookup and memory leak.
     free_fn: unsafe extern "C" fn(*mut c_void),
-    /// Number of functions in the compute graph (set after loading).
-    /// Default is 0 until the compute graph is parsed.
-    function_count: usize,
 }
 
 impl CpuExecutable {
     #[allow(dead_code)]
     pub fn inner(&self) -> &RawCpuExecutable { &self.inner }
 
-    /// Access the cached constants data embedded in the dylib.
-    #[allow(dead_code)]
-    pub fn module_data(&self) -> &[u8] {
-        &self.constants_data
-    }
-
     pub(crate) fn new(
         inner: RawCpuExecutable,
-        constants_data: Vec<u8>,
         free_fn: unsafe extern "C" fn(*mut c_void),
     ) -> Self {
-        Self { inner, constants_data, free_fn, function_count: 0 }
+        Self { inner, free_fn }
     }
 }
 
@@ -195,7 +154,7 @@ impl traits::Executable for CpuExecutable {
         // The kernel is a _mlir_ciface_* function that reads input descriptors
         // and writes output descriptors to the sret buffer.
         unsafe {
-            crate::ciface_high::call_high_arity(raw_ptr, &all_args);
+            crate::model::ciface_high::call_high_arity(raw_ptr, &all_args);
         }
         // Step 5: Parse sret output descriptors, copy data to output
         // buffers, collect shapes and dylib-allocated pointers to free.
@@ -391,12 +350,7 @@ impl traits::Executable for CpuExecutable {
     }
 
     /// Number of dylib entry points. Returns 0 because the actual function
-    /// count is stored in the compute graph (parsed separately during model
-    /// loading). Callers should use `compute_graph.functions.len()` instead.
-    /// See ModelExecutor::load_with_device() for how the count is determined.
-    fn function_count(&self) -> usize { self.function_count }
-
-    fn module_data(&self) -> &[u8] {
-        &self.constants_data
-    }
+    /// count is stored in the compute graph (parsed via proto ABI during
+    /// model loading). Callers should use `compute_graph.functions.len()`.
+    fn function_count(&self) -> usize { 0 }
 }

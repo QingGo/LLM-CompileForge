@@ -13,8 +13,8 @@
 
 use std::collections::HashMap;
 
-use crate::error::HalExecutionError;
-use crate::tensor::Dtype;
+use crate::model::error::HalExecutionError;
+use crate::model::tensor::Dtype;
 
 // ── Re-export OpShapeMeta for convenience ──────────────────────────────
 pub use crate::hal::hal_ops_cpu::OpShapeMeta;

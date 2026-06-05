@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 
 use crate::cache::block::BlockManager;
-use crate::compute_graph::{ComputeGraph, IOTensorDef};
-use crate::tensor::{Dtype, Tensor};
+use crate::model::compute_graph::{ComputeGraph, IOTensorDef};
+use crate::model::tensor::{Dtype, Tensor};
 
 /// Called after parsing a `consumed_internally` output from the sret
 /// buffer during output-parsing in `forward_with_kv`.

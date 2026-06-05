@@ -81,39 +81,20 @@ pub(crate) fn build_shape_meta_from_sfa(
 
 /// A pure-Rust HAL executable that dispatches to generated CPU kernels.
 ///
-/// # Type parameters
-///
-/// ``N`` — number of functions (entry points) in the model forward pass.
-///   Set to the function count from the compute graph.
+/// ``function_count`` is the number of functions (entry points) in the
+/// model forward pass, set from the compute graph.
 #[derive(Debug)]
 pub struct HalRustExecutable {
     function_count: usize,
-    /// SFCF blob (serveforge_constants_data) containing weight registry,
-    /// compute graph, and contract metadata. Read from ``constants.bin``
-    /// at model-load time; returned by ``module_data()`` so the caller can
-    /// parse the compute graph and weight mappings without needing a dylib.
-    blob: Vec<u8>,
 }
 
 impl HalRustExecutable {
-    /// Create a new ``HalRustExecutable`` with no embedded blob.
+    /// Create a new ``HalRustExecutable``.
     ///
     /// ``function_count`` is the number of functions in the model's
     /// compute graph (typically 28 for a KV-cache model).
-    ///
-    /// ``module_data()`` returns an empty slice — only suitable for tests
-    /// or backends that load weights via an alternative mechanism.
     pub fn new(function_count: usize) -> Self {
-        Self { function_count, blob: Vec::new() }
-    }
-
-    /// Create a ``HalRustExecutable`` with the SFCF constants blob.
-    ///
-    /// Use this constructor when ``module_data()`` must return real
-    /// weight-registry / compute-graph data (e.g. for the hal-rust
-    /// integration path in ``ModelExecutor::load_with_device``).
-    pub fn with_blob(function_count: usize, blob: Vec<u8>) -> Self {
-        Self { function_count, blob }
+        Self { function_count }
     }
 
     // ── Op handlers ───────────────────────────────────────────────
@@ -194,9 +175,9 @@ impl HalRustExecutable {
             let out_slice = unsafe { sfa_as_f32_mut(out_sfa) };
 
             let index_dtype = if indices_sfa.element_size() == 8 {
-                crate::tensor::Dtype::I64
+                crate::model::tensor::Dtype::I64
             } else {
-                crate::tensor::Dtype::F32
+                crate::model::tensor::Dtype::F32
             };
 
             eprintln!(
@@ -693,10 +674,6 @@ impl traits::Executable for HalRustExecutable {
     fn function_count(&self) -> usize {
         self.function_count
     }
-
-    fn module_data(&self) -> &[u8] {
-        &self.blob
-    }
 }
 
 #[cfg(test)]
@@ -747,12 +724,6 @@ mod tests {
 
         let exe2 = HalRustExecutable::new(28);
         assert_eq!(exe2.function_count(), 28);
-    }
-
-    #[test]
-    fn test_hal_rust_executable_module_data_empty() {
-        let exe = HalRustExecutable::new(1);
-        assert!(exe.module_data().is_empty());
     }
 
     #[test]

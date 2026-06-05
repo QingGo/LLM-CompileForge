@@ -62,7 +62,7 @@ mod m1_tests {
 /// Then compare with HF reference using Python.
 #[cfg(test)]
 mod integration_tests {
-    use crate::executor::ModelExecutor;
+    use crate::engine::executor::ModelExecutor;
 
     fn find_safetensors() -> Option<String> {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
@@ -178,7 +178,7 @@ mod integration_tests {
 
         // Use test tokenizer (minimal BPE for unit tests)
         let tok_path = format!("{}/../tests/data/test_tokenizer.json", manifest_dir);
-        let tokenizer = match crate::tokenizer::Tokenizer::from_file(&tok_path) {
+        let tokenizer = match crate::engine::tokenizer::Tokenizer::from_file(&tok_path) {
             Ok(t) => t,
             Err(e) => {
                 eprintln!("SKIP: no test tokenizer: {}", e);
@@ -186,7 +186,7 @@ mod integration_tests {
             }
         };
 
-        let config = crate::runner::RunnerConfig {
+        let config = crate::engine::runner::RunnerConfig {
             max_batch_size: 4,
             max_tokens_per_step: 128,
             chunk_size: 64,
@@ -200,7 +200,7 @@ mod integration_tests {
             head_dim: 0,
         };
 
-        let mut runner = match crate::runner::InferenceRunner::new(executor, tokenizer, config) {
+        let mut runner = match crate::engine::runner::InferenceRunner::new(executor, tokenizer, config) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("SKIP: failed to create runner: {}", e);
@@ -210,7 +210,7 @@ mod integration_tests {
 
         // Add a simple prompt — "a b" — which the test tokenizer can encode
         // (test tokenizer has a=4, b=5, <s>=0, </s>=2)
-        let sampling = crate::sampler::SamplerConfig {
+        let sampling = crate::engine::sampler::SamplerConfig {
             temperature: 0.0,
             top_p: 1.0,
             top_k: 0,

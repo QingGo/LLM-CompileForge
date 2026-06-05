@@ -2,60 +2,30 @@
 //!
 //! Enabled with ``--features python-bindings``.
 
-pub mod error;
+pub mod model;
+pub mod engine;
+pub mod check;
 pub mod hal;
 pub mod debug;
 #[cfg(feature = "hal-rust")]
 pub mod hal_runner;
-pub mod sfcf;
-pub mod ciface_high;
 pub mod cache;
 pub mod kv_cache;
-pub mod scheduler;
-pub mod types;
 
 #[cfg(test)]
 #[path = "tests/integration_tests.rs"]
 mod integration_tests;
 
-#[path = "sfa_tensor.rs"]
-mod sfa_tensor;
-
 #[cfg(test)]
 #[path = "tests/kv_cache_tests.rs"]
 mod kv_cache_tests;
-
-// Include compute_graph module (normally only in main.rs bin).
-#[path = "abi.rs"]
-mod abi;
-
-#[path = "compute_graph.rs"]
-mod compute_graph;
-
-#[path = "compute_graph_runner.rs"]
-pub mod compute_graph_runner;
-
-#[path = "global_input.rs"]
-mod global_input;
-
-#[path = "tensor.rs"]
-pub mod tensor;
-
-#[path = "weight_loader.rs"]
-pub mod weight_loader;
-
-pub mod executor;
-pub mod forward_check_runner;
-pub mod dump_weights_runner;
-#[cfg(feature = "hal-rust")]
-pub mod forward_check_hal_runner;
 
 #[cfg(feature = "python-bindings")]
 mod py_bindings {
     use crate::cache::block::BlockManager;
     use crate::cache::radix::RadixCache;
-    use crate::scheduler::Scheduler;
-    use crate::types::{Batch, PrefixCacheHit};
+    use crate::engine::scheduler::Scheduler;
+    use crate::engine::types::{Batch, PrefixCacheHit};
     use pyo3::prelude::*;
     use pyo3::types::{PyDict, PyList};
 

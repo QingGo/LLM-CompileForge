@@ -8,7 +8,7 @@
 #[allow(clippy::module_inception, clippy::expect_fun_call, clippy::manual_abs_diff)]
 mod e2e_tests {
 use crate::cache::block::BlockManager;
-    use crate::executor::ModelExecutor;
+    use crate::engine::executor::ModelExecutor;
     const PROMPT_IDS: &[u32] = &[2, 133, 812, 9, 1470, 16];
     const EXPECTED_TOKENS: &[u32] = &[5, 812, 9, 5, 1515];
     const KV_COMPILED_DIR: &str =

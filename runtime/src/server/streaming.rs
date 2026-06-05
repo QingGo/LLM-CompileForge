@@ -8,8 +8,8 @@ use futures::stream::{self, Stream, StreamExt};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use crate::runner::InferenceRunner;
-use crate::sampler::SamplerConfig;
+use crate::engine::runner::InferenceRunner;
+use crate::engine::sampler::SamplerConfig;
 
 /// Build a chat prompt from messages using a simple fallback format.
 /// Since OPT-125m has no chat template, use "role: content\n" format.

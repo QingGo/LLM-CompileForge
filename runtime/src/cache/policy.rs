@@ -177,7 +177,7 @@ impl CachePolicy {
         self.slabs.is_empty()
     }
 
-    pub fn from_proto(p: &crate::abi::proto::SfaCachePolicy) -> Result<Self, String> {
+    pub fn from_proto(p: &crate::model::abi::proto::SfaCachePolicy) -> Result<Self, String> {
         let slabs: Vec<SlabSpec> = p
             .slabs
             .iter()
@@ -317,9 +317,9 @@ mod tests {
 
     #[test]
     fn test_cache_policy_from_proto_llama() {
-        let proto = crate::abi::proto::SfaCachePolicy {
+        let proto = crate::model::abi::proto::SfaCachePolicy {
             slabs: vec![
-                crate::abi::proto::SfaSlabSpec {
+                crate::model::abi::proto::SfaSlabSpec {
                     name: "k".to_string(),
                     slab_type: "paged".to_string(),
                     layout: "BNLD".to_string(),
@@ -330,7 +330,7 @@ mod tests {
                     num_heads: 8,
                     head_dim: 64,
                 },
-                crate::abi::proto::SfaSlabSpec {
+                crate::model::abi::proto::SfaSlabSpec {
                     name: "v".to_string(),
                     slab_type: "paged".to_string(),
                     layout: "BNLD".to_string(),
@@ -343,7 +343,7 @@ mod tests {
                 },
             ],
             intercepts: vec![
-                crate::abi::proto::SfaInterceptSpec {
+                crate::model::abi::proto::SfaInterceptSpec {
                     slab_id: "k".to_string(),
                     op_name_pattern: "scaled_dot_product_attention".to_string(),
                     intercept_type: "read_write".to_string(),
@@ -351,7 +351,7 @@ mod tests {
                     layer: "sequential".to_string(),
                     param_indices: vec![1, 1],
                 },
-                crate::abi::proto::SfaInterceptSpec {
+                crate::model::abi::proto::SfaInterceptSpec {
                     slab_id: "v".to_string(),
                     op_name_pattern: "scaled_dot_product_attention".to_string(),
                     intercept_type: "read_write".to_string(),
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_cache_policy_from_proto_empty() {
-        let proto = crate::abi::proto::SfaCachePolicy {
+        let proto = crate::model::abi::proto::SfaCachePolicy {
             slabs: vec![],
             intercepts: vec![],
             block_size: 0,
@@ -418,8 +418,8 @@ mod tests {
 
     #[test]
     fn test_cache_policy_from_proto_default_dtype() {
-        let proto = crate::abi::proto::SfaCachePolicy {
-            slabs: vec![crate::abi::proto::SfaSlabSpec {
+        let proto = crate::model::abi::proto::SfaCachePolicy {
+            slabs: vec![crate::model::abi::proto::SfaSlabSpec {
                 name: "k".to_string(),
                 slab_type: "paged".to_string(),
                 layout: "".to_string(),
@@ -443,9 +443,9 @@ mod tests {
 
     #[test]
     fn test_cache_policy_from_proto_intercept_defaults() {
-        let proto = crate::abi::proto::SfaCachePolicy {
+        let proto = crate::model::abi::proto::SfaCachePolicy {
             slabs: vec![],
-            intercepts: vec![crate::abi::proto::SfaInterceptSpec {
+            intercepts: vec![crate::model::abi::proto::SfaInterceptSpec {
                 slab_id: "k".to_string(),
                 op_name_pattern: "attention".to_string(),
                 intercept_type: "write".to_string(),

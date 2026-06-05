@@ -12,8 +12,6 @@ pub enum ExecutorError {
     #[error("SFCF parse error: {0}")]
     SfcfParse(String),
 
-    #[error("missing compute graph section in SFCF data")]
-    MissingComputeGraph,
 }
 
 #[derive(Debug, thiserror::Error)]

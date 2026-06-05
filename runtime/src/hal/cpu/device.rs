@@ -96,7 +96,6 @@ impl traits::Device for CpuDevice {
             .map_err(|e| anyhow::anyhow!("module_data is not valid UTF-8 path: {}", e))?;
         let raw_exec =
             super::executable::RawCpuExecutable::load(dylib_path)?;
-        let constants_data = raw_exec.load_constants()?;
         // Cache serveforge_free symbol. Load BEFORE moving `raw_exec` into
         // CpuExecutable to satisfy the borrow checker.
         let free_fn: unsafe extern "C" fn(*mut std::ffi::c_void) = {
@@ -106,7 +105,7 @@ impl traits::Device for CpuDevice {
                 unsafe { raw_exec.lib().get(b"serveforge_free")? };
             *sym
         };
-        Ok(Box::new(super::executable::CpuExecutable::new(raw_exec, constants_data, free_fn)))
+        Ok(Box::new(super::executable::CpuExecutable::new(raw_exec, free_fn)))
     }
 
     fn name(&self) -> &str {

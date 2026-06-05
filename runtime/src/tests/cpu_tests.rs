@@ -363,7 +363,7 @@ fn test_sfa_abi_proto_one_output_per_function() {
     unsafe {
         let lib = libloading::Library::new(dylib_path)
             .expect("failed to load dylib");
-        let abi = crate::abi::load_sfa_abi(&lib)
+        let abi = crate::model::abi::load_sfa_abi(&lib)
             .expect("failed to load sfa_abi");
         assert_eq!(abi.funcs.len(), 16, "16 functions expected");
         // After _fixup_output_names fix, main_0 has 211 outputs (one per result)

@@ -13,9 +13,9 @@ use std::collections::HashMap;
 
 use prost::Message;
 
-use crate::compute_graph::{ComputeGraph, FuncDef, InputBinding, IOTensorDef};
-use crate::tensor::Dtype;
-use crate::weight_loader::ConstantTensor;
+use crate::model::compute_graph::{ComputeGraph, FuncDef, InputBinding, IOTensorDef};
+use crate::model::tensor::Dtype;
+use crate::model::weight_loader::ConstantTensor;
 
 // ── Prost-generated proto types ──────────────────────────────────────
 
@@ -280,7 +280,7 @@ pub fn build_compute_graph(
                 .map(|od| IOTensorDef {
                     rank: od.rank as u8,
                     shape: od.dims.clone(),
-                    consumed_internally: false,
+                    consumed_internally: od.consumed_internally,
                 })
                 .collect()
         } else {
@@ -331,7 +331,7 @@ pub fn load_from_dylib(
     dylib_path: &str,
     safetensors_path: Option<&str>,
 ) -> Result<(
-    crate::weight_loader::WeightProvider,
+    crate::model::weight_loader::WeightProvider,
     ComputeGraph,
     Option<crate::cache::policy::CachePolicy>,
 ), anyhow::Error> {
@@ -341,12 +341,12 @@ pub fn load_from_dylib(
     let sfa_wp = unsafe { load_sfa_weights(&lib)? };
     let cache_policy_proto = unsafe { load_sfa_cache_policy(&lib)? };
     let compute_graph = build_compute_graph(&abi, &sfa_wp)?;
-    let registry = crate::weight_loader::WeightRegistry {
+    let registry = crate::model::weight_loader::WeightRegistry {
         name_mapping: sfa_wp.name_mapping,
         constants: sfa_wp.constants,
     };
     let st_path = safetensors_path.map(std::path::Path::new);
-    let weight_provider = crate::weight_loader::WeightProvider::new(registry, st_path)?;
+    let weight_provider = crate::model::weight_loader::WeightProvider::new(registry, st_path)?;
     let cache_policy = match cache_policy_proto {
         Some(p) => Some(
             crate::cache::policy::CachePolicy::from_proto(&p)

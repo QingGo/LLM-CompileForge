@@ -94,38 +94,38 @@ fn convert_to_f32(data: &[u8], dtype: &str) -> Result<Vec<f32>, Box<dyn std::err
 
 /// Convert a ConstantTensor to f32 (all dtypes promote to f32 for npy).
 fn constant_to_f32(
-    ct: &crate::weight_loader::ConstantTensor,
+    ct: &crate::model::weight_loader::ConstantTensor,
 ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
     match ct.dtype {
-        crate::tensor::Dtype::F32 => Ok(ct
+        crate::model::tensor::Dtype::F32 => Ok(ct
             .data
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect()),
-        crate::tensor::Dtype::F16 => Ok(ct
+        crate::model::tensor::Dtype::F16 => Ok(ct
             .data
             .chunks_exact(2)
             .map(|c| half::f16::from_bits(u16::from_le_bytes([c[0], c[1]])).to_f32())
             .collect()),
-        crate::tensor::Dtype::BF16 => Ok(ct
+        crate::model::tensor::Dtype::BF16 => Ok(ct
             .data
             .chunks_exact(2)
             .map(|c| half::bf16::from_bits(u16::from_le_bytes([c[0], c[1]])).to_f32())
             .collect()),
-        crate::tensor::Dtype::I64 => Ok(ct
+        crate::model::tensor::Dtype::I64 => Ok(ct
             .data
             .chunks_exact(8)
             .map(|c| {
                 i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]) as f32
             })
             .collect()),
-        crate::tensor::Dtype::I32 => Ok(ct
+        crate::model::tensor::Dtype::I32 => Ok(ct
             .data
             .chunks_exact(4)
             .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32)
             .collect()),
-        crate::tensor::Dtype::I8 => Ok(ct.data.iter().map(|&b| b as i8 as f32).collect()),
-        crate::tensor::Dtype::U8 => Ok(ct.data.iter().map(|&b| b as f32).collect()),
+        crate::model::tensor::Dtype::I8 => Ok(ct.data.iter().map(|&b| b as i8 as f32).collect()),
+        crate::model::tensor::Dtype::U8 => Ok(ct.data.iter().map(|&b| b as f32).collect()),
     }
 }
 
@@ -268,7 +268,7 @@ pub fn run(
     let lib = unsafe { libloading::Library::new(&dylib_path) }
         .map_err(|e| format!("Failed to load dylib '{}': {}", dylib_path.display(), e))?;
     let (registry, _graph_pos, _sfcf_version) =
-        crate::weight_loader::load_registry_from_dylib(&lib)?;
+        crate::model::weight_loader::load_registry_from_dylib(&lib)?;
     println!(
         "[dump_weights] name_mapping: {} entries, constants: {} entries",
         registry.name_mapping.len(),

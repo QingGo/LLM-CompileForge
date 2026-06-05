@@ -1,8 +1,8 @@
 //! Tests for the InferenceRunner — moved from runner.rs (still a submodule of runner).
 
 use super::*;
-use crate::executor::ModelExecutor;
-use crate::tokenizer::Tokenizer;
+use crate::engine::executor::ModelExecutor;
+use crate::engine::tokenizer::Tokenizer;
 
 /// Create a ModelExecutor that loads from the opt_125m_fresh compiled model.
 /// Panics with clear instructions if the compiled model is not found.
@@ -133,7 +133,7 @@ fn test_runner_kv_cache_initialization() {
 /// requests when the runner config enables KV cache.
 #[test]
 fn test_scheduler_kv_cache_flag() {
-    let mut s = crate::scheduler::Scheduler::new(8, 128, 64, true)
+    let mut s = crate::engine::scheduler::Scheduler::new(8, 128, 64, true)
         .expect("scheduler with kv cache");
     let rid = s.add_request(vec![1, 2, 3, 4], 0, 10, vec![], None);
 
@@ -154,7 +154,7 @@ fn test_scheduler_kv_cache_flag() {
     // Force all prefill to complete
     let batch2 = s.schedule(&mut bm, &[]);
     for req in &batch2.requests {
-        assert!(req.state == crate::types::RequestState::Decode);
+        assert!(req.state == crate::engine::types::RequestState::Decode);
         assert!(req.use_kv_cache, "decode should have use_kv_cache=true");
     }
 }

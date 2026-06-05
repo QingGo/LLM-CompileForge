@@ -5,5 +5,5 @@
 extern crate llm_serveforge_runtime;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    llm_serveforge_runtime::forward_check_runner::run()
+    llm_serveforge_runtime::check::forward_check_runner::run()
 }

@@ -3,7 +3,7 @@
 //! Controlled by the ``DUMP_LAYERS`` environment variable — when set to a
 //! directory path, forward pass outputs are written as ``func_{n}_{m}.npy``.
 
-use crate::tensor::Tensor;
+use crate::model::tensor::Tensor;
 
 /// Write intermediate layer outputs to .npy files when `DUMP_LAYERS` env is set.
 ///

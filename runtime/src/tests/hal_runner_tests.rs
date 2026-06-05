@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use super::*;
 use crate::hal::traits;
 use crate::hal::traits::Executable as _;
-use crate::tensor::Dtype;
+use crate::model::tensor::Dtype;
 
 /// Minimal buffer backed by raw bytes (for testing).
 #[derive(Debug)]
@@ -807,7 +807,7 @@ fn test_linear_output_shape_lm_head() {
     };
 
     let ssa_map: std::collections::HashMap<String, SFATensor> = HashMap::new();
-    let ssa_dtypes: HashMap<String, crate::tensor::Dtype> = HashMap::new();
+    let ssa_dtypes: HashMap<String, crate::model::tensor::Dtype> = HashMap::new();
 
     let (numel, shape) = compute_output_shape(
         &op, 0, &ssa_shapes, &ssa_map, &ssa_dtypes, &function, 4,
@@ -852,7 +852,7 @@ fn test_linear_output_shape_ffn_fc2() {
     };
 
     let ssa_map: std::collections::HashMap<String, SFATensor> = HashMap::new();
-    let ssa_dtypes: HashMap<String, crate::tensor::Dtype> = HashMap::new();
+    let ssa_dtypes: HashMap<String, crate::model::tensor::Dtype> = HashMap::new();
 
     let (numel, shape) = compute_output_shape(
         &op, 0, &ssa_shapes, &ssa_map, &ssa_dtypes, &function, 4,
@@ -885,7 +885,7 @@ fn test_attention_pipeline_shape_propagation() {
         weight_inputs: HashMap::new(), ops: vec![],
     };
     let mut ssa_map: std::collections::HashMap<String, SFATensor> = HashMap::new();
-    let mut ssa_dtypes: HashMap<String, crate::tensor::Dtype> = HashMap::new();
+    let mut ssa_dtypes: HashMap<String, crate::model::tensor::Dtype> = HashMap::new();
     let mut ssa_shapes: HashMap<String, Vec<usize>> = HashMap::new();
 
     // Input: [1, 4, 768] hidden state after layer_norm
@@ -923,9 +923,9 @@ fn test_attention_pipeline_shape_propagation() {
     ssa_map.insert("%dim1".to_string(), SFATensor::from_vec_f32(vec![4.0f32], vec![1]));
     ssa_shapes.insert("%dim0".to_string(), vec![1]);
     ssa_shapes.insert("%dim1".to_string(), vec![1]);
-    ssa_dtypes.insert("%dim0".to_string(), crate::tensor::Dtype::F32);
-    ssa_dtypes.insert("%dim1".to_string(), crate::tensor::Dtype::F32);
-    ssa_dtypes.insert("%q".to_string(), crate::tensor::Dtype::F32);
+    ssa_dtypes.insert("%dim0".to_string(), crate::model::tensor::Dtype::F32);
+    ssa_dtypes.insert("%dim1".to_string(), crate::model::tensor::Dtype::F32);
+    ssa_dtypes.insert("%q".to_string(), crate::model::tensor::Dtype::F32);
     let (_, q_4d_shape) = compute_output_shape(&q_reshape, 0, &ssa_shapes, &ssa_map, &ssa_dtypes, &function, 4);
     assert_eq!(q_4d_shape, vec![1, 4, 12, 64], "Q reshape shape mismatch");
     ssa_shapes.insert("%q_4d".to_string(), q_4d_shape);
@@ -997,7 +997,7 @@ fn test_attention_pipeline_shape_propagation() {
 /// and that as_buffer_ref() provides correct metadata and data access.
 #[test]
 fn test_ssa_map_sfa_tensor_roundtrip() {
-    use crate::sfa_tensor::SFATensor;
+    use crate::model::sfa_tensor::SFATensor;
 
     let mut ssa_map: std::collections::HashMap<String, SFATensor> =
         std::collections::HashMap::new();
@@ -1077,7 +1077,7 @@ fn test_ssa_map_sfa_tensor_roundtrip() {
 /// Verify SFATensor scalar (rank-0) works in SSA map.
 #[test]
 fn test_ssa_map_sfa_tensor_scalar() {
-    use crate::sfa_tensor::SFATensor;
+    use crate::model::sfa_tensor::SFATensor;
 
     let mut ssa_map: std::collections::HashMap<String, SFATensor> =
         std::collections::HashMap::new();

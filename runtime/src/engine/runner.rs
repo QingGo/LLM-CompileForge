@@ -17,11 +17,11 @@
 use std::collections::HashMap;
 
 use crate::cache::block::BlockManager;
-use crate::executor::ModelExecutor;
+use crate::engine::executor::ModelExecutor;
 use crate::cache::radix::RadixCache;
-use crate::sampler::{Sampler, SamplerConfig};
-use crate::scheduler::Scheduler;
-use crate::tokenizer::{ChatMessage, Tokenizer};
+use crate::engine::sampler::{Sampler, SamplerConfig};
+use crate::engine::scheduler::Scheduler;
+use crate::engine::tokenizer::{ChatMessage, Tokenizer};
 
 /// A single result from one step for one request.
 #[derive(Debug, Clone)]
@@ -102,7 +102,7 @@ pub struct InferenceRunner {
     tokenizer: Tokenizer,
     config: RunnerConfig,
     /// Cache prefix hits from the previous step (fed into scheduler).
-    cache_hits: Vec<crate::types::PrefixCacheHit>,
+    cache_hits: Vec<crate::engine::types::PrefixCacheHit>,
     /// Track per-request last logits position for logits→token extraction.
     #[allow(dead_code)]
     last_positions: HashMap<String, usize>,
@@ -199,7 +199,7 @@ impl InferenceRunner {
         if !matched_blocks.is_empty() {
             // Assign cached blocks to the new request
             self.block_manager.assign_cached_blocks(&rid, &matched_blocks);
-            self.cache_hits.push(crate::types::PrefixCacheHit {
+            self.cache_hits.push(crate::engine::types::PrefixCacheHit {
                 request_id: rid.clone(),
                 matched_blocks,
                 matched_tokens,
@@ -391,5 +391,5 @@ impl SamplerConfig {
     }
 }
 #[cfg(test)]
-#[path = "tests/runner_tests.rs"]
+#[path = "../tests/runner_tests.rs"]
 mod tests;

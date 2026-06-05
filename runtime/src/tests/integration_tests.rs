@@ -12,8 +12,8 @@
 #[allow(clippy::module_inception)]
 mod integration_tests {
     use crate::cache::block::BlockManager;
-    use crate::scheduler::Scheduler;
-    use crate::types::{PrefixCacheHit, RequestState};
+    use crate::engine::scheduler::Scheduler;
+    use crate::engine::types::{PrefixCacheHit, RequestState};
 
     fn make_bm() -> BlockManager {
         BlockManager::new(1000, 16).unwrap()

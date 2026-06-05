@@ -9,7 +9,7 @@ use std::alloc::{self, Layout};
 use std::ptr::NonNull;
 
 use super::super::traits;
-use crate::tensor::{Dtype, Tensor};
+use crate::model::tensor::{Dtype, Tensor};
 
 // ── RawBuffer (low-level allocator-backed buffer) ───────────────────────
 

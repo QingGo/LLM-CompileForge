@@ -4,8 +4,8 @@
 //! Extracted from `compute_graph_runner.rs` and `executor.rs` to eliminate
 //! ~80 lines of duplicate code that was identical in both files.
 
-use crate::compute_graph::IOTensorDef;
-use crate::sfa_tensor::SFATensor;
+use crate::model::compute_graph::IOTensorDef;
+use crate::model::sfa_tensor::SFATensor;
 
 /// Build a MemRef descriptor and raw buffer for a GlobalInput binding.
 ///
@@ -80,8 +80,8 @@ pub fn fill_global_input(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compute_graph::IOTensorDef;
-    use crate::sfa_tensor::SFATensorRawAny;
+    use crate::model::compute_graph::IOTensorDef;
+    use crate::model::sfa_tensor::SFATensorRawAny;
 
     #[test]
     fn test_fill_global_input_returns_sfa_tensor() {

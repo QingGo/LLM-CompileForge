@@ -36,9 +36,7 @@ pub trait Device: Debug + Send + Sync {
     fn create_event(&self) -> Result<Box<dyn Event>, anyhow::Error>;
 
     /// Compile a serialized compute module into an executable.
-    /// `module_data` contains the compiler-generated IR (SFCF binary
-    /// with compute graph + constants; for CPU the .dylib path is
-    /// derived from the module metadata).
+    /// For CPU backends, `module_data` is the .dylib file path as UTF-8.
     fn compile(&self, module_data: &[u8]) -> Result<Box<dyn Executable>, anyhow::Error>;
 
     /// Human-readable device name (for logging and debugging).
@@ -121,11 +119,6 @@ pub trait Executable: Debug + Send + Sync {
 
     /// Number of functions / entry points in this module.
     fn function_count(&self) -> usize;
-
-    /// Return the embedded constants data (serveforge_constants_data/size)
-    /// as a byte slice. This is the raw binary blob containing weight
-    /// registry, compute graph, and contract metadata.
-    fn module_data(&self) -> &[u8];
 
     /// List of operation names this executable supports.
     /// Default returns empty slice (unknown/unconstrained).

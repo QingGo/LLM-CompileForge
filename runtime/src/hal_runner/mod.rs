@@ -19,9 +19,9 @@ pub use types::{HalIR, HalFunction, HalOp, HalRustRunner, HalTensorDef, HalWeigh
 
 use crate::hal::traits;
 use crate::hal::traits::Buffer;
-use crate::sfa_tensor::SFATensor;
-use crate::tensor::{Dtype, Tensor};
-use crate::weight_loader::WeightProvider;
+use crate::model::sfa_tensor::SFATensor;
+use crate::model::tensor::{Dtype, Tensor};
+use crate::model::weight_loader::WeightProvider;
 
 use crate::hal_runner::helpers::{
     inject_function_weights,
@@ -303,7 +303,7 @@ pub fn run_hal_function_graph(
                     Ok(Ok(shapes)) => shapes,
                     Ok(Err(e)) => {
                         return Err(anyhow::anyhow!(
-                            "{}", crate::error::HalExecutionError::OpFailed {
+                            "{}", crate::model::error::HalExecutionError::OpFailed {
                                 func_idx: fi, op_idx: oi, op_name, message: e.to_string(),
                             }
                         ));
@@ -317,7 +317,7 @@ pub fn run_hal_function_graph(
                             "unknown panic".to_string()
                         };
                         return Err(anyhow::anyhow!(
-                            "{}", crate::error::HalExecutionError::OpPanic {
+                            "{}", crate::model::error::HalExecutionError::OpPanic {
                                 func_idx: fi, op_idx: oi, op_name, panic_msg: msg,
                             }
                         ));
@@ -366,8 +366,8 @@ pub fn run_hal_function_graph(
 
 /// Build the default HAL operator semantics contract with 23 entries
 /// covering all op categories handled by the Rust runtime dispatch.
-pub fn default_hal_op_semantics() -> crate::abi::SfaHalOpSemantics {
-    use crate::abi::SfaHalOpSemanticEntry;
+pub fn default_hal_op_semantics() -> crate::model::abi::SfaHalOpSemantics {
+    use crate::model::abi::SfaHalOpSemanticEntry;
 
     let entries = vec![
         // ── matmul ──
@@ -578,7 +578,7 @@ pub fn default_hal_op_semantics() -> crate::abi::SfaHalOpSemantics {
         },
     ];
 
-    crate::abi::SfaHalOpSemantics { entries }
+    crate::model::abi::SfaHalOpSemantics { entries }
 }
 
 /// Validate a loaded `HalIR` against the HAL operator semantic contract.
@@ -591,12 +591,12 @@ pub fn default_hal_op_semantics() -> crate::abi::SfaHalOpSemantics {
 /// `log::warn!`. Validation is non-fatal — only warnings are emitted.
 pub fn validate_hal_ir_against_semantics(
     hal_ir: &HalIR,
-    semantics: &crate::abi::SfaHalOpSemantics,
+    semantics: &crate::model::abi::SfaHalOpSemantics,
 ) -> Vec<String> {
     use std::collections::HashSet;
 
     // Build lookup: op_name → SfaHalOpSemanticEntry
-    let mut sem_map: std::collections::HashMap<&str, &crate::abi::SfaHalOpSemanticEntry> =
+    let mut sem_map: std::collections::HashMap<&str, &crate::model::abi::SfaHalOpSemanticEntry> =
         std::collections::HashMap::with_capacity(semantics.entries.len());
     for entry in &semantics.entries {
         sem_map.entry(&entry.op_name).or_insert(entry);

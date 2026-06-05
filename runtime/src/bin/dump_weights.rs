@@ -31,5 +31,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         i += 1;
     }
 
-    llm_serveforge_runtime::dump_weights_runner::run(compiled_dir, output_dir)
+    llm_serveforge_runtime::check::dump_weights_runner::run(compiled_dir, output_dir)
 }

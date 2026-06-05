@@ -1,6 +1,6 @@
 //! Gather operation — embedding lookup / indexed load.
 
-use crate::tensor::Dtype;
+use crate::model::tensor::Dtype;
 
 /// Gather rows from a weight table by indices stored as raw bytes.
 ///

@@ -2,7 +2,7 @@ use super::*;
 use crate::hal::cpu::MemRefDesc2;
 use crate::hal::cpu::MemRefDescAny;
 use crate::hal::traits::{self, Executable as _};
-use crate::tensor::Dtype;
+use crate::model::tensor::Dtype;
 
 /// A mock device that records its compile() call for validation.
 #[derive(Debug)]
@@ -61,12 +61,11 @@ impl traits::Stream for MockStream {
 #[derive(Debug)]
 struct MockExecutable {
     function_count: usize,
-    module_data: Vec<u8>,
 }
 
 impl MockExecutable {
     fn new(count: usize) -> Self {
-        Self { function_count: count, module_data: Vec::new() }
+        Self { function_count: count }
     }
 }
 
@@ -75,7 +74,6 @@ impl traits::Executable for MockExecutable {
         Ok(Vec::new())
     }
     fn function_count(&self) -> usize { self.function_count }
-    fn module_data(&self) -> &[u8] { &self.module_data }
     fn supported_ops(&self) -> &[&str] {
         &["mock"]
     }
@@ -358,66 +356,5 @@ fn test_kv_model_loads_and_forwards() {
     eprintln!("PASS: KV model loads with {n} functions, {ci} consumed_internally");
 }
 
-// ── function_count validation (hal-rust helper) ──
 
-#[cfg(feature = "hal-rust")]
-#[test]
-fn test_function_count_validation() {
-    let dir = std::env::temp_dir().join("_test_func_count_val");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(dir.join("generated")).unwrap();
-
-    // Create constants.bin (basic dummy content)
-    std::fs::write(dir.join("constants.bin"), b"dummy").unwrap();
-
-    // Case 1: hal_ir.json with null num_functions
-    std::fs::write(
-        dir.join("generated").join("hal_ir.json"),
-        r#"{"num_functions": null}"#,
-    )
-    .unwrap();
-    let result = super::load_hal_rust_executable_from_dir(&dir);
-    assert!(
-        result.is_err(),
-        "should reject null num_functions"
-    );
-    let err = result.unwrap_err().to_string();
-    assert!(
-        err.contains("num_functions") || err.contains("missing") || err.contains("invalid"),
-        "error should mention num_functions or missing/invalid, got: {err}",
-    );
-
-    // Case 2: hal_ir.json with missing num_functions key
-    std::fs::write(
-        dir.join("generated").join("hal_ir.json"),
-        r#"{"other_key": 42}"#,
-    )
-    .unwrap();
-    let result = super::load_hal_rust_executable_from_dir(&dir);
-    assert!(
-        result.is_err(),
-        "should reject missing num_functions key"
-    );
-    let err = result.unwrap_err().to_string();
-    assert!(
-        err.contains("num_functions") || err.contains("missing"),
-        "error should mention num_functions or missing, got: {err}",
-    );
-
-    // Case 3: hal_ir.json with valid num_functions (should succeed)
-    std::fs::write(
-        dir.join("generated").join("hal_ir.json"),
-        r#"{"num_functions": 2}"#,
-    )
-    .unwrap();
-    let result = super::load_hal_rust_executable_from_dir(&dir);
-    assert!(
-        result.is_ok(),
-        "should accept valid num_functions, got: {:?}",
-        result.err(),
-    );
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&dir);
-}
 

@@ -7,8 +7,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::sfa_tensor::SFATensor;
-use crate::tensor::{Dtype, Tensor};
+use crate::model::sfa_tensor::SFATensor;
+use crate::model::tensor::{Dtype, Tensor};
 use crate::hal_runner::helpers::estimate_numel_from_shape;
 use crate::hal_runner::types::{HalFunction, HalIR};
 

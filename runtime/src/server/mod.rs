@@ -14,7 +14,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 
-use crate::runner::InferenceRunner;
+use crate::engine::runner::InferenceRunner;
 
 /// Start the HTTP server on the given port.
 pub async fn run(

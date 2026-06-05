@@ -55,7 +55,7 @@ pub enum KernelFn {
     Arity6(CifaceFn6),
     Arity7(CifaceFn7),
     Arity8(CifaceFn8),
-    HighArity(crate::ciface_high::FnPtr),
+    HighArity(crate::model::ciface_high::FnPtr),
 }
 
 impl KernelFn {

@@ -101,7 +101,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Load ModelExecutor (Path A) for WeightProvider access.
-    let executor = crate::executor::ModelExecutor::load(
+    let executor = crate::engine::executor::ModelExecutor::load(
         &dylib_path.to_string_lossy(),
         Some(&safetensors_path),
     )

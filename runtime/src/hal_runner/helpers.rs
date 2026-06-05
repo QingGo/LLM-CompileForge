@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 
 use crate::hal::traits;
-use crate::sfa_tensor::SFATensor;
-use crate::weight_loader::WeightProvider;
+use crate::model::sfa_tensor::SFATensor;
+use crate::model::weight_loader::WeightProvider;
 use crate::hal_runner::types::{HalFunction, HalIR, HalTensorDef};
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -107,7 +107,7 @@ pub(super) fn inject_function_weights(
     function: &HalFunction,
     ssa_map: &mut HashMap<String, SFATensor>,
     ssa_shapes: &mut HashMap<String, Vec<usize>>,
-    ssa_dtypes: &mut HashMap<String, crate::tensor::Dtype>,
+    ssa_dtypes: &mut HashMap<String, crate::model::tensor::Dtype>,
 ) {
     if let Some(wp) = weight_provider {
         // Case (a): weights list with inline SSA names.
@@ -117,11 +117,11 @@ pub(super) fn inject_function_weights(
             }
             if let Some((desc, _dtype)) = wp.get_weight_memref(&weight_entry.name) {
                 let n = desc.numel();
-                let weight_dtype = crate::tensor::Dtype::from_hal_str(&weight_entry.dtype);
+                let weight_dtype = crate::model::tensor::Dtype::from_hal_str(&weight_entry.dtype);
                 let weight_dims: Vec<usize> = weight_entry.shape.iter().map(|d| {
                     if d == "?" || d == "-1" { 1 } else { d.parse::<usize>().unwrap_or(1) }
                 }).collect();
-                let t = if weight_dtype == crate::tensor::Dtype::I64 {
+                let t = if weight_dtype == crate::model::tensor::Dtype::I64 {
                     // SAFETY: desc.aligned points to valid i64 weight data.
                     let data: Vec<i64> = unsafe {
                         let raw = desc.aligned as *const i64;
@@ -129,7 +129,7 @@ pub(super) fn inject_function_weights(
                         slice.to_vec()
                     };
                     SFATensor::from_vec_i64(data, weight_dims.clone())
-                } else if weight_dtype == crate::tensor::Dtype::F32
+                } else if weight_dtype == crate::model::tensor::Dtype::F32
                     && weight_entry.name.starts_with("_const_") {
                     let data: Vec<f32> = unsafe {
                         let raw = desc.aligned as *const f32;
@@ -167,8 +167,8 @@ pub(super) fn inject_function_weights(
                 let n = desc.numel();
                 let weight_dtype = function.inputs.iter()
                     .find(|i| i.name == *ssa_name)
-                    .map(|i| crate::tensor::Dtype::from_hal_str(&i.dtype))
-                    .unwrap_or(crate::tensor::Dtype::F32);
+                    .map(|i| crate::model::tensor::Dtype::from_hal_str(&i.dtype))
+                    .unwrap_or(crate::model::tensor::Dtype::F32);
                 let input_dims: Vec<usize> = function.inputs.iter()
                     .find(|i| i.name == *ssa_name)
                     .map(|input_def| {
@@ -177,7 +177,7 @@ pub(super) fn inject_function_weights(
                         }).collect()
                     })
                     .unwrap_or_else(|| vec![n]);
-                let t = if weight_dtype == crate::tensor::Dtype::I64 {
+                let t = if weight_dtype == crate::model::tensor::Dtype::I64 {
                     // SAFETY: desc.aligned points to valid i64 weight data.
                     let data: Vec<i64> = unsafe {
                         let raw = desc.aligned as *const i64;
@@ -185,7 +185,7 @@ pub(super) fn inject_function_weights(
                         slice.to_vec()
                     };
                     SFATensor::from_vec_i64(data, input_dims.clone())
-                } else if weight_dtype == crate::tensor::Dtype::F32
+                } else if weight_dtype == crate::model::tensor::Dtype::F32
                     && compiled_name.starts_with("_const_") {
                     let data: Vec<f32> = unsafe {
                         let raw = desc.aligned as *const f32;
