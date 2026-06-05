@@ -207,6 +207,7 @@ def _make_mlir_for_case(case: NumericalTestCase) -> str:
 
 
 @pytest.mark.integration
+@pytest.mark.timeout(120)
 class TestPrecisionContract:
     """Verify compiled dylib numerical output matches precision contract."""
 
