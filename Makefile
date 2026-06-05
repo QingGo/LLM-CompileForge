@@ -36,9 +36,9 @@ GEN_DIR := $(PROJECT_ROOT)/gen/proto
 proto-gen:
 	mkdir -p $(GEN_DIR)/python $(GEN_DIR)/rust
 	# Python
-	protoc --proto_path=$(PROTO_DIR) --python_out=$(GEN_DIR)/python $(PROTO_DIR)/sfa_abi.proto
-	# Rust (prost: package sfa → sfa/sfa.rs)
-	protoc --proto_path=$(PROTO_DIR) --prost_out=$(GEN_DIR)/rust $(PROTO_DIR)/sfa_abi.proto
+	protoc --proto_path=$(PROTO_DIR) --python_out=$(GEN_DIR)/python $(PROTO_DIR)/sfa_abi.proto $(PROTO_DIR)/sfa_precision.proto
+	# Rust (prost: package sfa → sfa/sfa.rs — single invocation for shared package)
+	protoc --proto_path=$(PROTO_DIR) --prost_out=$(GEN_DIR)/rust $(PROTO_DIR)/sfa_abi.proto $(PROTO_DIR)/sfa_precision.proto
 	# init for Python import
 	touch $(GEN_DIR)/python/__init__.py
 

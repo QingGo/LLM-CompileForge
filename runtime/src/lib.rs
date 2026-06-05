@@ -20,6 +20,10 @@ mod integration_tests;
 #[path = "tests/kv_cache_tests.rs"]
 mod kv_cache_tests;
 
+#[cfg(test)]
+#[path = "tests/contract_determinism_tests.rs"]
+mod contract_determinism_tests;
+
 #[cfg(feature = "python-bindings")]
 mod py_bindings {
     use crate::cache::block::BlockManager;

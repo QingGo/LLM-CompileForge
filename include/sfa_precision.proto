@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package sfa;
+
+// Semantic precision contract for LLM-CompileForge compiled models.
+// Defines numerical correctness test vectors that both compiler and runtime
+// subprojects import and verify independently against their own artifacts.
+//
+// Usage:
+//   Compiler: compile mini model → ctypes call dylib → compare output against cases
+//   Runtime:  MockExecutable returns case.expected_output → verify executor pipeline
+//   E2E:      Run full pipeline → compare against cases (same vectors, full path)
+
+message NumericalTestCase {
+  string name = 1;                 // "matmul_2x2_f32"
+  repeated float input_data = 2;   // flattened input tensor values
+  repeated int64 input_shape = 3;  // input tensor dimensions
+  repeated float weight_data = 4;  // flattened weight tensor values (for compiler compilation)
+  repeated int64 weight_shape = 5; // weight tensor dimensions
+  repeated float expected_output = 6;  // flattened expected output values
+  repeated int64 expected_shape = 7;   // expected output dimensions
+  double min_cosine = 8;           // compiler-side precision threshold (cosine similarity)
+  double max_abs_error = 9;        // runtime-side per-element error threshold
+}
+
+// Top-level precision contract container.
+// Embedded in dylib or distributed as standalone test fixture.
+message PrecisionContract {
+  string version = 1;              // "1.0"
+  repeated NumericalTestCase cases = 2;
+}
