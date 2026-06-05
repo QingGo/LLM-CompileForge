@@ -23,7 +23,7 @@ logs/
 *.dylib
 *.bin
 compile_commands.json
-runtime/src/bin/
+# runtime/src/bin/ source files are tracked; compiled binaries in runtime/target/
 repro.mlir
 *.log
 docs/tutorial/
