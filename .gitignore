@@ -32,3 +32,4 @@ gen/
 .opencode/
 docs/
 .agent_memory.md
+.session_handoff.md
