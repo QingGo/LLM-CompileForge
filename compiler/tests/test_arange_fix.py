@@ -142,3 +142,55 @@ class TestArangeFix:
             assert np.array_equal(actual, expected), (
                 f"sf.arange(5)[3]: expected {expected.tolist()}, got {actual.tolist()}"
             )
+
+    def test_arange_f32_static(self):
+        """sf.arange(dense<0.0>:f32) with static output tensor<4xi64> → [0,1,2,3]."""
+        mlir = """module {
+  func.func @main_0() -> tensor<4xi64> {
+    %c0 = arith.constant dense<0.0> : tensor<1xf32>
+    %a = "sf.arange"(%c0) : (tensor<1xf32>) -> tensor<4xi64>
+    return %a : tensor<4xi64>
+  }
+}"""
+        with tempfile.TemporaryDirectory() as td:
+            dylib = _compile(mlir, td, "test3")
+            lib = ctypes.CDLL(dylib)
+            sret = (ctypes.c_uint8 * 4096)()
+            lib._mlir_ciface_main_0.argtypes = [ctypes.c_void_p]
+            lib._mlir_ciface_main_0.restype = None
+            lib._mlir_ciface_main_0(ctypes.byref(sret))
+            sb = bytes(sret)
+            al = struct.unpack_from("<Q", sb, 8)[0]
+            sz = struct.unpack_from("<q", sb, 24)[0]
+            assert sz == 4, f"Expected size 4, got {sz}"
+            actual = np.array((ctypes.c_int64 * sz).from_address(al), dtype=np.int64)
+            expected = np.array([0, 1, 2, 3], dtype=np.int64)
+            assert np.array_equal(actual, expected), (
+                f"sf.arange(0.0)[4]: expected {expected.tolist()}, got {actual.tolist()}"
+            )
+
+    def test_arange_f32_nonzero_static(self):
+        """sf.arange(dense<2.0>:f32) with static output tensor<3xi64> → [2,3,4]."""
+        mlir = """module {
+  func.func @main_0() -> tensor<3xi64> {
+    %c2 = arith.constant dense<2.0> : tensor<1xf32>
+    %a = "sf.arange"(%c2) : (tensor<1xf32>) -> tensor<3xi64>
+    return %a : tensor<3xi64>
+  }
+}"""
+        with tempfile.TemporaryDirectory() as td:
+            dylib = _compile(mlir, td, "test4")
+            lib = ctypes.CDLL(dylib)
+            sret = (ctypes.c_uint8 * 4096)()
+            lib._mlir_ciface_main_0.argtypes = [ctypes.c_void_p]
+            lib._mlir_ciface_main_0.restype = None
+            lib._mlir_ciface_main_0(ctypes.byref(sret))
+            sb = bytes(sret)
+            al = struct.unpack_from("<Q", sb, 8)[0]
+            sz = struct.unpack_from("<q", sb, 24)[0]
+            assert sz == 3, f"Expected size 3, got {sz}"
+            actual = np.array((ctypes.c_int64 * sz).from_address(al), dtype=np.int64)
+            expected = np.array([2, 3, 4], dtype=np.int64)
+            assert np.array_equal(actual, expected), (
+                f"sf.arange(2.0)[3]: expected {expected.tolist()}, got {actual.tolist()}"
+            )

@@ -1,81 +1,309 @@
-# LLM-ServeForge
+# LLM-CompileForge
 
-Hardware-agnostic LLM inference compiler & runtime — Phase 1 MVP.
+**Hardware-Agnostic LLM Inference Compiler & Runtime — Phase 1 MVP**
 
-**Core idea**: Build vLLM/SGLang-level serving capabilities on a minimal HAL (Hardware Abstraction Layer) so any AI accelerator can get production-grade inference by implementing just 3 interfaces: Device, Buffer, OpExecutor.
+[中文文档](README_CN.md) | [Contributing](CONTRIBUTING.md)
 
-## Quick Start
+---
 
-```bash
-# Install
-source .venv/bin/activate
-uv sync
+LLM-CompileForge is a **compiler-first LLM inference system** built on MLIR. It compiles HuggingFace models into native shared libraries (`.dylib`/`.so`) that run on any hardware through a minimal **Hardware Abstraction Layer (HAL)**. Only 3 interfaces — `Device`, `Buffer`, `OpExecutor` — stand between your AI accelerator and production-grade serving.
 
-# Run tests
-make lint && make test-unit
+**Not another vLLM clone.** LLM-CompileForge is a new category: an MLIR-centric compiler OS that covers training & inference, cloud & edge, text & multimodal — all hardware-agnostic.
 
-# Start server
-python -c "
-from server.app import create_app, create_engine
-import uvicorn
-engine = create_engine()
-app = create_app(engine)
-uvicorn.run(app, port=8000)
-"
+## Why?
 
-# Call the API
-curl http://localhost:8000/health
-```
+AI chip fragmentation is imminent. Every new accelerator forces framework developers to rewrite backends from scratch. LLM-CompileForge inverts this: **implement 3 HAL interfaces once, and all models compile & run at top performance forever.**
+
+| Traditional Approach | LLM-CompileForge |
+|---|---|
+| 2–4 person-months per chip | < 2 person-weeks per chip |
+| Manual kernel rewriting | MLIR compiler automation |
+| Framework-locked | Any model, any hardware |
+| Python-bound | AOT-compiled Rust binaries for edge/confidential computing |
 
 ## Architecture
 
-```
-PyTorch Model → torch.export → FX Graph → Custom IR → Optimized IR
-                                                         │
-API Server → Scheduler → BlockManager → Executor → HAL → CPU/GPU
+```mermaid
+graph TB
+    subgraph Frontend["📦 Frontends"]
+        HF["🤗 HuggingFace"]
+        PT["PyTorch<br/>torch.export"]
+        API["OpenAI REST API"]
+    end
+
+    subgraph Compiler["⚙️ MLIR Compiler Core"]
+        direction TB
+        FX["FX Graph"]
+        SF["sf Dialect<br/>(28 custom ops)"]
+        OPT["Optimization Passes<br/>CSE · DCE · Fusion · Quantize"]
+        LOWER["sf→linalg→LLVM Lowering"]
+    end
+
+    subgraph HAL["🔌 Hardware Abstraction Layer"]
+        direction LR
+        DEV["Device"]
+        BUF["Buffer"]
+        EXEC["OpExecutor"]
+    end
+
+    subgraph Backends["🖥️ Backends"]
+        CPU["CPU<br/>(Accelerate/OpenBLAS)"]
+        GPU["GPU<br/>(CUDA — planned)"]
+        ASIC["Custom ASIC<br/>(any vendor)"]
+    end
+
+    subgraph Runtime["🚀 Rust Runtime"]
+        direction TB
+        SCHED["Scheduler<br/>Continuous Batching<br/>Chunked Prefill"]
+        KV["KV Cache<br/>PagedAttention<br/>Radix Tree Prefix Cache"]
+        EXECUTOR["Executor<br/>Path A (dylib) | Path B (HAL IR)"]
+        SERVER["API Server<br/>OpenAI Compatible"]
+    end
+
+    HF --> PT
+    PT --> FX
+    FX --> SF
+    SF --> OPT
+    OPT --> LOWER
+    LOWER --> Backends
+    DEV --> CPU
+    BUF --> GPU
+    EXEC --> ASIC
+    HAL --> Runtime
+    API --> SERVER
 ```
 
-### Modules
+## Compilation Pipeline
 
-| Module | Purpose |
-|--------|---------|
-| `hal/` | Hardware Abstraction Layer — Device, Buffer, OpExecutor (16 ops) |
-| `compiler/` | AOT compiler: FX Graph → IR → optimization passes (CSE, DCE, ConstantFold, FuseRMSNorm, FuseSiLU) |
-| `engine/` | Runtime: Scheduler (Continuous Batching + Chunked Prefill), BlockManager (PagedAttention), Sampler |
-| `server/` | FastAPI server with OpenAI-compatible `/v1/completions` and `/v1/chat/completions` |
+```mermaid
+flowchart LR
+    subgraph Step1["Step 1: Export"]
+        A["🤗 HF Model<br/>opt-125m / Llama"] --> B["torch.export"]
+        B --> C["FX Graph<br/>(ATen ops)"]
+    end
+
+    subgraph Step2["Step 2: MLIR Dialect"]
+        C --> D["fx_graph_to_mlir()<br/>sf dialect emission"]
+        D --> E["model.mlir<br/>+ metadata.json<br/>+ constants.bin"]
+    end
+
+    subgraph Step3["Step 3: Lowering"]
+        E --> F["sf→linalg<br/>(C++ pass)"]
+        F --> G["linalg→LLVM<br/>(canonicalize · tile ·<br/>bufferize · cf · llvm)"]
+        G --> H["mlir-translate → .ll"]
+        H --> I["llc → .o → .dylib"]
+    end
+
+    subgraph Step4["Step 4: Runtime"]
+        I --> J["Rust libloading"]
+        J --> K["Inference<br/>forward pass"]
+    end
+
+    style Step1 fill:#e3f2fd,stroke:#1976d2
+    style Step2 fill:#e8f5e9,stroke:#388e3c
+    style Step3 fill:#fff3e0,stroke:#f57c00
+    style Step4 fill:#fce4ec,stroke:#c62828
+```
+
+## Inference Flow (Sequence)
+
+```mermaid
+sequenceDiagram
+    actor Client
+    participant Server as 🖥️ API Server
+    participant Engine as ⚙️ LLM Engine
+    participant Scheduler as 📋 Scheduler
+    participant KV as 💾 KV Cache
+    participant Executor as 🔧 Executor
+    participant HAL as 🔌 HAL (dylib / HAL IR)
+
+    Client->>Server: POST /v1/completions
+    Server->>Engine: generate(prompt, params)
+    Engine->>Scheduler: add_request()
+
+    loop Continuous Batching
+        Scheduler->>Scheduler: merge prefill + decode batches
+        Scheduler->>KV: allocate/map blocks
+        Scheduler->>Executor: execute(batch, kv_blocks)
+
+        alt Path A (dylib)
+            Executor->>HAL: ciface FFI → entire function
+        else Path B (HAL IR)
+            Executor->>HAL: op-by-op dispatch (634 ops)
+        end
+
+        HAL-->>Executor: logits tensor
+        Executor-->>Scheduler: output tokens
+        Scheduler->>KV: update cache
+        Scheduler-->>Engine: new tokens
+    end
+
+    Engine->>Server: stream tokens
+    Server-->>Client: SSE token stream
+```
+
+## Current Status
+
+| Metric | Value |
+|---|---|
+| **Path A (dylib) vs HF cosine** | cos_sim = 1.000000 ✅ |
+| **Models supported** | opt-125m, tiny-llama |
+| **Compilation time (opt-125m)** | ~4 min (llc O0 dominates) |
+| **Inference correctness** | Token-exact greedy match ✅ |
+| **HAL operators** | 28 ops (reduce, element_wise, gather, matmul, attention...) |
+| **Test suite** | 298+ unit tests, integration + baseline tests |
+| **KV Cache** | PagedAttention with Radix Tree prefix cache |
+
+## Project Structure
+
+```
+LLM-CompileForge/
+├── compiler/              # Python compiler: FX Graph → MLIR → .dylib
+│   ├── fx/                #   FX Graph → sf dialect conversion
+│   ├── pipeline/          #   Compilation orchestration (compile_mlir)
+│   ├── backend/           #   LLVM backend (lowering pipeline + llc)
+│   ├── passes/            #   MLIR optimization passes
+│   ├── dialect/           #   sf dialect Python definitions
+│   └── artifact/          #   MlirModule I/O
+├── runtime/               # Rust runtime: scheduler, executor, KV cache
+│   ├── src/hal/           #   HAL Rust backend (Path B op processors)
+│   ├── src/hal_runner/    #   HAL IR graph executor
+│   ├── src/hal/primitives/#   Low-level kernels (matmul, attention...)
+│   └── src/executor.rs    #   Inference step loop
+├── python_runtime/        # Python runtime: HAL, Engine, Server
+│   ├── hal/               #   HAL ABCs (Device, Buffer, OpExecutor)
+│   ├── engine/            #   LLM Engine, scheduler, sampler
+│   └── server/            #   FastAPI OpenAI-compatible server
+├── sf-dialect/            # C++ MLIR dialect: sf ops + lowering passes
+├── include/               # Contract layer: sfa.h + sfa_abi.proto
+├── kernels/               # PyTorch kernel implementations
+│   ├── flash_attention.py
+│   ├── rms_norm.py
+│   └── quantize/
+└── tests/                 # End-to-end & integration tests
+```
+
+## Quick Start
+
+### Prerequisites
+
+- Python 3.10 (managed by [uv](https://github.com/astral-sh/uv))
+- Rust toolchain (`rustc`, `cargo`)
+- macOS (primary dev platform) / Linux (CI-tested)
+
+### Setup
+
+```bash
+# 1. Clone with submodules (LLVM/MLIR)
+git clone --recurse-submodules https://github.com/silentlin/LLM-CompileForge.git
+cd LLM-CompileForge
+
+# 2. One-command setup (installs uv, creates venv, builds LLVM)
+bash scripts/setup.sh
+
+# 3. Activate environment
+source .venv/bin/activate
+
+# 4. Run unit tests (should pass in ~6s)
+make test-unit
+```
 
 ### Compile a Model
 
 ```bash
-# Compile facebook/opt-125m from local HF cache
-python scripts/compile.py opt-125m
-
-# Compile tiny test Llama model  
-python scripts/compile.py tiny-llama
+# Full pipeline: compile opt-125m → .dylib → Rust binary
+make build-all MODEL=opt-125m
+# or for tiny-llama
+make build-all MODEL=tiny-llama
 ```
 
-Artifacts are saved to `./compiled/<model>/`:
-- `model.mlir` — Standard MLIR text (canonical artifact format)
-- `weights.pth` — Model weights
-- `metadata.json` — Compilation metadata
+This produces:
+- `outputs/compiled/opt_125m_fresh/model.mlir` — MLIR artifact
+- `outputs/compiled/opt_125m_fresh/libopt_125m.dylib` — Compiled shared library
+- `runtime/target/release/serveforge` — Rust inference binary
+
+### Run Inference
+
+```bash
+# Start API server
+make serve MODEL=opt-125m
+
+# In another terminal:
+curl http://localhost:8000/health
+curl -X POST http://localhost:8000/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Hello, world!", "max_tokens": 50}'
+
+# Or run a single prompt via CLI
+make run-prompt PROMPT="The meaning of life is" MAX_TOKENS=32
+```
+
+## Two Execution Paths
+
+LLM-CompileForge supports two execution modes, selected at compile time:
+
+| | Path A (dylib) | Path B (HAL IR) |
+|---|---|---|
+| **Execution unit** | Entire function (single FFI) | Op-by-op dispatch (634 Rust calls) |
+| **Runner** | `compute_graph_runner.rs` | `hal_runner.rs` |
+| **Executable** | `CpuExecutable` (loads .dylib) | `HalRustExecutable` (pure Rust) |
+| **Feature flag** | Default | `--features hal-rust` |
+| **Correctness** | cos_sim = 1.0 ✅ | NaN (WIP — type tracking) |
+| **Purpose** | Production serving | Validation & new hardware bring-up |
+
+## Feedback Loops
+
+| Level | Command | Purpose | Budget |
+|---|---|---|---|
+| L0 | `make lint` | ruff + mypy | <2s |
+| L1 | `make test-unit` | 298+ unit tests | <6s |
+| L1.5 | `make test-forward-smoke` | Forward NaN check | <5s |
+| L2 | `make test-pipeline-smoke` | Pipeline + Rust integration | <90s |
+| L3 | `make profile` | Performance baseline | <5min |
+| Full | `make build-all` | End-to-end compilation + inference | ~5min |
 
 ## Development
 
 ```bash
-make lint          # ruff + mypy
-make test-unit     # pytest -m unit (171 tests)
-make test-integration  # pytest -m integration
-make smoke         # Quick health check
-make profile       # Performance baseline
+make lint          # Static analysis (ruff + mypy)
+make test-unit     # Fast unit tests
+make test-fast     # lint + unit + pipeline quick + smoke
+make test-all      # Full test suite
+make verify-dylib-fresh  # Check dylib freshness
 ```
 
-## Known Limitations (Phase 1)
+Bug fix workflow:
+1. Write a unit test that reproduces the bug (must fail before the fix)
+2. Implement the fix
+3. `make lint && make test-unit`
+4. `make smoke`
 
-- Static shape AOT compilation — models run at the export input shape
-- Single-machine, single-process execution
-- PyTorch backend only (custom Triton/CUDA kernels planned for Phase 2)
-- Server concurrency via `asyncio.Lock` (background engine loop planned for Phase 2)
+## Design Principles
+
+1. **Contract-Driven**: All sub-projects depend only on `include/sfa.h` + `include/sfa_abi.proto`. No cross-project implementation dependencies.
+2. **Compile-First, Hand-Write When Necessary**: MLIR passes handle 90% of optimizations; HAL backends inject hand-tuned kernels for the last 10%.
+3. **Rust Core, Python Shell**: Safety-critical runtime in Rust; flexible ecosystem interface in Python.
+4. **Train-Infer Unified**: Same IR, same HAL, same runtime — different compilation outputs.
+5. **Sub-Project Independence**: Each sub-project (sf-dialect, compiler, runtime) is independently testable against the contract alone.
+
+## Phase 1 Scope (Current)
+
+- [x] Rust HAL core (Device, Buffer, OpExecutor — 28 ops)
+- [x] MLIR fusion passes (RMSNorm-MatMul, SiLU-Mul)
+- [x] torch.export → FX Graph → sf dialect compilation
+- [x] sf→linalg→LLVM→.dylib lowering pipeline
+- [x] PagedAttention KV Cache with Radix Tree prefix cache
+- [x] Continuous Batching + Chunked Prefill scheduler
+- [x] OpenAI-compatible REST API server
+- [x] Path A inference (cos_sim = 1.0 vs HF)
+- [ ] Path B inference (NaN → WIP)
+- [ ] NVIDIA GPU backend (CUDA)
+- [ ] Quantization toolchain (AWQ, SmoothQuant)
 
 ## License
 
-MIT
+Apache 2.0 © 2026 — see [LICENSE](LICENSE) for full text.
+
+## Acknowledgments
+
+Built on the shoulders of [LLVM/MLIR](https://mlir.llvm.org/), [PyTorch](https://pytorch.org/), and the open-source LLM serving community.
