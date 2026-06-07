@@ -5,6 +5,9 @@
 
 use std::collections::HashMap;
 
+use crate::model::sfa_tensor::SFATensor;
+use crate::model::tensor::Tensor;
+
 // ── HAL IR types ───────────────────────────────────────────────────────
 
 /// Parsed HAL IR for a model.
@@ -153,13 +156,24 @@ where
 /// the full model forward pass through a `traits::Executable`.
 pub struct HalRustRunner {
     pub hal_ir: HalIR,
+    /// GraphRunner internal SSA store (trait impl state).
+    #[doc(hidden)]
+    pub(crate) gr_ssa_map: std::cell::RefCell<HashMap<String, SFATensor>>,
+    /// GraphRunner internal SSA shapes (trait impl state).
+    #[doc(hidden)]
+    pub(crate) gr_ssa_shapes: std::cell::RefCell<HashMap<String, Vec<usize>>>,
+    /// GraphRunner internal SSA dtypes (trait impl state).
+    #[doc(hidden)]
+    pub(crate) gr_ssa_dtypes: std::cell::RefCell<HashMap<String, crate::model::tensor::Dtype>>,
+    /// GraphRunner weight cache (trait impl state).
+    #[doc(hidden)]
+    pub(crate) gr_weight_cache: std::cell::RefCell<HashMap<String, Tensor>>,
 }
 
 impl HalRustRunner {
     /// Parse a HAL IR JSON string.
     pub fn from_json(json_str: &str) -> Result<Self, anyhow::Error> {
         let hal_ir: HalIR = serde_json::from_str(json_str)?;
-        // Validate against semantic contract on startup (warnings only).
         let semantics = super::default_hal_op_semantics();
         let warnings = super::validate_hal_ir_against_semantics(
             &hal_ir, &semantics,
@@ -167,7 +181,13 @@ impl HalRustRunner {
         for w in &warnings {
             log::warn!("{}", w);
         }
-        Ok(Self { hal_ir })
+        Ok(Self {
+            hal_ir,
+            gr_ssa_map: std::cell::RefCell::new(HashMap::new()),
+            gr_ssa_shapes: std::cell::RefCell::new(HashMap::new()),
+            gr_ssa_dtypes: std::cell::RefCell::new(HashMap::new()),
+            gr_weight_cache: std::cell::RefCell::new(HashMap::new()),
+        })
     }
 
     /// Load HAL IR from a JSON file.

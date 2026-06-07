@@ -19,15 +19,23 @@ Usage:
 import ctypes
 import faulthandler
 import os
+import struct
 import sys
+from typing import Any
 
 import numpy as np
 
 from compiler.sfcf_parser import (
     make_memref_descriptor,
-    parse_compute_graph,
-    parse_sfcf_blob,
     parse_sret_outputs,
+)
+
+from gen.proto.python.sfa_abi_pb2 import (  # type: ignore[attr-defined]
+    SfaAbiHeader,
+    SfaWeightData,
+    SFA_INPUT_GLOBAL,
+    SFA_INPUT_WEIGHT,
+    SFA_INPUT_SSA,
 )
 
 faulthandler.enable()
@@ -38,6 +46,85 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # =====================================================================
 # Helpers
 # =====================================================================
+
+
+def _find_shape_source(
+    func_def: dict[str, Any], out_def: dict[str, Any]
+) -> tuple | None:
+    """Find an SSA input whose static shape matches the output's known dims.
+
+    Used to infer correct output shapes when the compiled kernel writes
+    invalid sizes to the sret buffer. Returns ``(producer_func, producer_out)``
+    of the matching SSA input, or ``None`` if no match.
+    """
+    out_rank = out_def["rank"]
+    out_shape = out_def["shape"]
+    for inp in func_def["inputs"]:
+        binding = inp["binding"]
+        if binding[0] != "ssa" or inp["rank"] != out_rank:
+            continue
+        in_shape = inp["shape"]
+        # Check that known (non-zero) dims are compatible
+        if all(
+            in_shape[i] == out_shape[i] or in_shape[i] == 0 or out_shape[i] == 0
+            for i in range(out_rank)
+        ):
+            return binding
+    return None
+
+
+def _fix_output_shapes(
+    func_def: dict[str, Any],
+    outputs: list[np.ndarray],
+    func_outputs: list[list[np.ndarray]],
+    sret_bytes: bytes,
+) -> None:
+    """Fix up any outputs whose dynamic dims resolved to the fallback value of 1.
+
+    The compiled dylib may write invalid (negative) sizes for dynamic dimensions
+    in the sret buffer.  ``parse_sret_outputs`` falls back to the static shape
+    from the proto, which has ``0`` for dynamic dims, and then to ``1``.
+
+    This function detects such outputs and re-reads the data from the sret
+    buffer's *aligned* pointer, using the shape of the matching SSA input.
+    """
+    for oi, (out_arr, out_def) in enumerate(
+        zip(outputs, func_def["outputs"])
+    ):
+        out_shape = out_def["shape"]
+        if out_arr.ndim == 0:
+            continue
+        if all(d > 0 for d in out_shape):
+            continue  # no dynamic dims
+        needs_fix = any(
+            i < len(out_shape) and out_shape[i] == 0 and out_arr.shape[i] == 1
+            for i in range(out_arr.ndim)
+        )
+        if not needs_fix:
+            continue
+
+        shape_src = _find_shape_source(func_def, out_def)
+        if shape_src is None:
+            continue
+
+        pf, oi_src = shape_src[1], shape_src[2]
+        if pf >= len(func_outputs) or oi_src >= len(func_outputs[pf]):
+            continue
+
+        src_arr = func_outputs[pf][oi_src]
+
+        # Locate the output descriptor in the sret buffer
+        offset = 0
+        for o in range(oi):
+            offset += 24 + 16 * func_def["outputs"][o]["rank"]
+
+        aligned = struct.unpack_from("<Q", sret_bytes, offset + 8)[0]
+        if aligned == 0 or src_arr.size == 0:
+            continue
+
+        n = int(np.prod(src_arr.shape))
+        buf = (ctypes.c_float * n).from_address(aligned)
+        outputs[oi] = np.array(buf, dtype=np.float32).reshape(src_arr.shape)
 
 
 
@@ -76,6 +163,95 @@ class DylibResult:
 
     def __len__(self) -> int:
         return len(self._func_outputs)
+
+
+def _read_proto_symbol(lib: ctypes.CDLL, name: str, size_name: str) -> bytes:
+    data_ptr = ctypes.cast(
+        ctypes.addressof(ctypes.c_int64.in_dll(lib, name)),
+        ctypes.c_void_p,
+    )
+    size_ptr = ctypes.cast(
+        ctypes.addressof(ctypes.c_int64.in_dll(lib, size_name)),
+        ctypes.POINTER(ctypes.c_uint64),
+    )
+    return bytes((ctypes.c_uint8 * size_ptr[0]).from_address(data_ptr.value))
+
+
+def _load_graph_from_proto(
+    lib: ctypes.CDLL,
+    sfcf_constants: dict[str, np.ndarray],
+) -> dict[str, Any]:
+    abi_bytes = _read_proto_symbol(lib, "sfa_abi", "sfa_abi_size")
+    abi = SfaAbiHeader()
+    abi.ParseFromString(abi_bytes)
+
+    weights_bytes = _read_proto_symbol(lib, "sfa_weights", "sfa_weights_size")
+    weights = SfaWeightData()
+    weights.ParseFromString(weights_bytes)
+
+    for ce in weights.constant_entries:
+        dtype_map = {0: np.float32, 1: np.float16, 2: np.float16,
+                     3: np.int64, 4: np.int32, 5: np.int8, 6: np.uint8}
+        np_dtype = dtype_map.get(ce.dtype_code, np.float32)
+        shape = list(ce.shape) if ce.shape else [1]
+        raw = ce.data
+        arr = np.frombuffer(raw, dtype=np_dtype).reshape(shape)
+        if arr.dtype != np.float32:
+            arr = arr.astype(np.float32)
+        sfcf_constants[ce.name] = arr
+
+    functions: list[dict[str, Any]] = []
+    for fm in abi.funcs:
+        inputs: list[dict[str, Any]] = []
+        for fld in fm.input_fields:
+            binding: tuple
+            if fld.kind == SFA_INPUT_GLOBAL:
+                binding = ("global_input",)
+            elif fld.kind == SFA_INPUT_WEIGHT:
+                binding = ("weight", fld.weight_name)
+            elif fld.kind == SFA_INPUT_SSA:
+                binding = ("ssa", fld.ssa.producer_func, fld.ssa.producer_out)
+            else:
+                binding = ("global_input",)
+            inputs.append({
+                "binding": binding,
+                "rank": fld.rank,
+                "shape": list(fld.dims) if fld.dims else [0, 0],
+            })
+        outputs: list[dict[str, Any]] = []
+        for od in fm.outputs:
+            outputs.append({
+                "rank": od.rank,
+                "shape": list(od.dims) if od.dims else [0, 0],
+                "consumed_internally": False,
+            })
+        functions.append({
+            "symbol": fm.symbol,
+            "num_inputs": fm.num_inputs,
+            "num_outputs": len(fm.outputs),
+            "inputs": inputs,
+            "outputs": outputs,
+        })
+
+    global_input = (0, 0)
+    for fi, fm in enumerate(abi.funcs):
+        for ii, fld in enumerate(fm.input_fields):
+            if fld.kind == SFA_INPUT_GLOBAL:
+                global_input = (fi, ii)
+                break
+        if global_input != (0, 0) or fm.input_fields:
+            pass
+    if global_input == (0, 0) and functions:
+        for ii, fld in enumerate(abi.funcs[0].input_fields):
+            if fld.kind == SFA_INPUT_GLOBAL:
+                global_input = (0, ii)
+                break
+    global_output = (len(functions) - 1, 0) if functions else (0, 0)
+    return {
+        "functions": functions,
+        "global_input": global_input,
+        "global_output": global_output,
+    }
 
 
 def run_ctypes(
@@ -117,21 +293,10 @@ def run_ctypes(
         ws.get("tied_weights", {}) or artifact.metadata.get("tied_weights", {})
     )
 
-    # Load dylib + parse SFCF blob
+    # Load dylib + read proto symbols (sfa_abi, sfa_weights)
     lib = ctypes.CDLL(dylib_path)
-    data_ptr = ctypes.cast(
-        ctypes.addressof(ctypes.c_int64.in_dll(lib, "serveforge_constants_data")),
-        ctypes.c_void_p,
-    )
-    size_ptr = ctypes.cast(
-        ctypes.addressof(ctypes.c_int64.in_dll(lib, "serveforge_constants_size")),
-        ctypes.POINTER(ctypes.c_uint64),
-    )
-    blob_bytes = bytes(
-        (ctypes.c_uint8 * size_ptr[0]).from_address(data_ptr.value)
-    )
-    _, sfcf_constants, graph_pos, sfcf_version = parse_sfcf_blob(blob_bytes)
-    graph, _ = parse_compute_graph(blob_bytes, graph_pos, version=sfcf_version)
+    sfcf_constants: dict[str, np.ndarray] = {}
+    graph = _load_graph_from_proto(lib, sfcf_constants)
 
     if not graph.get("functions"):
         import logging
@@ -224,7 +389,9 @@ def run_ctypes(
         kernel.argtypes = [ctypes.c_void_p] * len(all_args)
         kernel.restype = None
         kernel(*all_args)
-        outputs = parse_sret_outputs(bytes(sret), func_def["outputs"])
+        sret_bytes = bytes(sret)
+        outputs = parse_sret_outputs(sret_bytes, func_def["outputs"])
+        _fix_output_shapes(func_def, outputs, func_outputs, sret_bytes)
         func_outputs[fi] = outputs
 
     go_func, go_idx = graph["global_output"]

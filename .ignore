@@ -6,7 +6,6 @@
 !compiled/
 !llvm-project/
 !sf-dialect/build/
-!.opencode/
 !outputs/
 !logs/
 !*.so
@@ -19,3 +18,7 @@
 !*.log
 !docs/tutorial/
 !gen/
+!.omo/
+!.opencode/
+!docs/
+!.agent_memory.md

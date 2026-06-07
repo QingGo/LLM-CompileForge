@@ -46,7 +46,10 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _find_tool(name: str) -> str:
-    candidates = [name, str(ROOT / "llvm-project" / "build" / "bin" / name)]
+    candidates = [name]
+    if name in ("cc", "clang"):
+        candidates.insert(0, "/usr/local/opt/llvm/bin/clang")
+    candidates.append(str(ROOT / "llvm-project" / "build" / "bin" / name))
     for c in candidates:
         if Path(c).is_file():
             return str(c)
@@ -149,28 +152,41 @@ def _get_sret_output(sret_buf: ctypes.Array, ndim: int) -> np.ndarray:
     return np.array([data_ptr[i] for i in range(num_elts)], dtype=np.float32).reshape(shape)
 
 
+def _call_dylib(
+    dylib_path: str,
+    input_arrays: list[np.ndarray],
+    output_ndim: int = 2,
+    symbol: str = "_mlir_ciface_main_0",
+) -> np.ndarray:
+    lib = ctypes.CDLL(dylib_path)
+    kernel = getattr(lib, symbol)
+
+    memrefs = []
+    for arr in input_arrays:
+        a = np.asarray(arr, dtype=np.float32)
+        memrefs.append(_make_memref_struct(a.ctypes.data, a.ndim, a.shape))
+
+    sret_buf = (ctypes.c_uint8 * 131072)()
+    args = [ctypes.byref(sret_buf)] + [ctypes.byref(m) for m in memrefs]
+
+    kernel.argtypes = [ctypes.c_void_p] * len(args)
+    kernel.restype = None
+    kernel(*args)
+    return _get_sret_output(sret_buf, output_ndim)
+
+
 def _call_single_op_dylib(
     dylib_path: str,
     input_data: np.ndarray,
     weight_data: np.ndarray,
     output_ndim: int = 2,
 ) -> np.ndarray:
-    """Load dylib via ctypes, call _mlir_ciface_main_0, return output."""
-    lib = ctypes.CDLL(dylib_path)
-
-    inp = np.asarray(input_data, dtype=np.float32)
-    w = np.asarray(weight_data, dtype=np.float32)
-
-    inp_memref = _make_memref_struct(inp.ctypes.data, inp.ndim, inp.shape)
-    w_memref = _make_memref_struct(w.ctypes.data, w.ndim, w.shape)
-
-    sret_buf = (ctypes.c_uint8 * 1024)()
-    lib._mlir_ciface_main_0(
-        ctypes.byref(sret_buf),
-        ctypes.byref(inp_memref),
-        ctypes.byref(w_memref),
+    return _call_dylib(
+        dylib_path,
+        [np.asarray(input_data, dtype=np.float32),
+         np.asarray(weight_data, dtype=np.float32)],
+        output_ndim=output_ndim,
     )
-    return _get_sret_output(sret_buf, output_ndim)
 
 
 # ── MLIR template for single matmul ──────────────────────────────────
@@ -200,6 +216,32 @@ def _make_mlir_for_case(case: NumericalTestCase) -> str:
 }}"""
     else:
         raise ValueError(f"Unknown op type in case: {name}")
+
+
+# ── SDPA-specific MLIR generation ──────────────────────────────────
+
+def _make_sdpa_mlir(
+    q_shape: tuple[int, ...],
+    k_shape: tuple[int, ...],
+    v_shape: tuple[int, ...],
+    out_shape: tuple[int, ...],
+    scale: float | None = None,
+) -> str:
+    q_type = f"tensor<{'x'.join(str(d) for d in q_shape)}xf32>"
+    k_type = f"tensor<{'x'.join(str(d) for d in k_shape)}xf32>"
+    v_type = f"tensor<{'x'.join(str(d) for d in v_shape)}xf32>"
+    out_type = f"tensor<{'x'.join(str(d) for d in out_shape)}xf32>"
+
+    attrs = ""
+    if scale is not None:
+        attrs = f" {{scale = {scale} : f64}}"
+
+    return f"""module {{
+  func.func @main_0(%q: {q_type}, %k: {k_type}, %v: {v_type}) -> {out_type} {{
+    %0 = "sf.scaled_dot_product_attention"(%q, %k, %v){attrs} : ({q_type}, {k_type}, {v_type}) -> {out_type}
+    return %0 : {out_type}
+  }}
+}}"""
 
 
 # ── Tests ─────────────────────────────────────────────────────────────
@@ -265,3 +307,240 @@ class TestPrecisionContract:
             assert cos >= case.min_cosine, (
                 f"{case.name}: cosine={cos:.6f} < {case.min_cosine}"
             )
+
+
+# ── SDPA precision tests ─────────────────────────────────────────
+
+@pytest.mark.integration
+@pytest.mark.timeout(120)
+class TestSdpaPrecision:
+
+    def _compile_and_run_sdpa(
+        self,
+        q: np.ndarray,
+        k: np.ndarray,
+        v: np.ndarray,
+        scale: float | None = None,
+    ) -> np.ndarray:
+        sf_mlir = _make_sdpa_mlir(q.shape, k.shape, v.shape, q.shape, scale=scale)
+        with tempfile.TemporaryDirectory() as td:
+            dylib_path = _compile_sf_to_dylib(sf_mlir, td, "test_sdpa")
+            return _call_dylib(
+                dylib_path,
+                [q, k, v],
+                output_ndim=q.ndim,
+            )
+
+    def test_sdpa_small_no_mask(self) -> None:
+        import torch.nn.functional as F  # noqa: N812
+
+        shape = (1, 2, 4, 8)
+        rng = np.random.RandomState(42)
+        q_np = rng.randn(*shape).astype(np.float32)
+        k_np = rng.randn(*shape).astype(np.float32)
+        v_np = rng.randn(*shape).astype(np.float32)
+
+        d_k = shape[-1]
+        scale = 1.0 / np.sqrt(d_k)
+
+        actual = self._compile_and_run_sdpa(q_np, k_np, v_np, scale=scale)
+
+        import torch
+        q_t = torch.from_numpy(q_np)
+        k_t = torch.from_numpy(k_np)
+        v_t = torch.from_numpy(v_np)
+        expected = F.scaled_dot_product_attention(
+            q_t, k_t, v_t, scale=scale,
+        ).numpy().astype(np.float32)
+
+        cos = _cosine_similarity(actual, expected)
+        assert cos >= 0.9999, (
+            f"SDPA small no-mask: cos={cos:.8f} < 0.9999\n"
+            f"Expected[:6]={expected.ravel()[:6].tolist()}\n"
+            f"Actual[:6]={actual.ravel()[:6].tolist()}"
+        )
+
+    def test_sdpa_real_shape_no_mask(self) -> None:
+        import torch.nn.functional as F  # noqa: N812
+
+        shape = (2, 12, 4, 64)
+        rng = np.random.RandomState(42)
+        q_np = rng.randn(*shape).astype(np.float32)
+        k_np = rng.randn(*shape).astype(np.float32)
+        v_np = rng.randn(*shape).astype(np.float32)
+
+        d_k = shape[-1]
+        scale = 1.0 / np.sqrt(d_k)
+
+        actual = self._compile_and_run_sdpa(q_np, k_np, v_np, scale=scale)
+
+        import torch
+        q_t = torch.from_numpy(q_np)
+        k_t = torch.from_numpy(k_np)
+        v_t = torch.from_numpy(v_np)
+        expected = F.scaled_dot_product_attention(
+            q_t, k_t, v_t, scale=scale,
+        ).numpy().astype(np.float32)
+
+        cos = _cosine_similarity(actual, expected)
+        assert cos >= 0.9999, (
+            f"SDPA real shape no-mask: cos={cos:.8f} < 0.9999\n"
+            f"Expected[:6]={expected.ravel()[:6].tolist()}\n"
+            f"Actual[:6]={actual.ravel()[:6].tolist()}"
+        )
+
+
+# ── Wave 2: per-op precision tests ─────────────────────────────────
+
+def _make_single_op_mlir(
+    op_name: str,
+    input_shapes: list[tuple[int, ...]],
+    output_shape: tuple[int, ...],
+    attrs: str = "",
+) -> str:
+    input_types = [f"tensor<{'x'.join(str(d) for d in s)}xf32>" for s in input_shapes]
+    out_type = f"tensor<{'x'.join(str(d) for d in output_shape)}xf32>"
+    params = ", ".join(f"%arg{i}: {t}" for i, t in enumerate(input_types))
+    args = ", ".join(f"%arg{i}" for i in range(len(input_types)))
+    types = ", ".join(input_types)
+    return f"""module {{
+  func.func @main_0({params}) -> {out_type} {{
+    %0 = "{op_name}"({args}) {attrs}: ({types}) -> {out_type}
+    return %0 : {out_type}
+  }}
+}}"""
+
+
+def _run_op_dylib_test(
+    op_name: str,
+    input_shapes: list[tuple[int, ...]],
+    output_shape: tuple[int, ...],
+    torch_fn,
+    attrs: str = "",
+    dylib_name: str = "test_op",
+) -> tuple[float, np.ndarray, np.ndarray]:
+    rng = np.random.RandomState(42)
+    inputs = [rng.randn(*s).astype(np.float32) for s in input_shapes]
+    sf_mlir = _make_single_op_mlir(op_name, input_shapes, output_shape, attrs)
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            dylib_path = _compile_sf_to_dylib(sf_mlir, td, dylib_name)
+        except subprocess.CalledProcessError as e:
+            pytest.skip(f"{op_name}: compilation failed — stderr: {e.stderr[-200:] if e.stderr else 'N/A'}")
+        actual = _call_dylib(
+            dylib_path, inputs,
+            output_ndim=len(output_shape),
+        )
+    import torch
+    torch_inputs = [torch.from_numpy(a) for a in inputs]
+    expected = torch_fn(*torch_inputs)
+    if isinstance(expected, torch.Tensor):
+        expected = expected.numpy().astype(np.float32)
+    cos = _cosine_similarity(actual, expected)
+    return cos, actual, expected
+
+
+@pytest.mark.integration
+@pytest.mark.timeout(120)
+class TestOpPrecision:
+
+    def test_linear_small_2d(self) -> None:
+        import torch.nn.functional as F  # noqa: N812
+        cos, actual, expected = _run_op_dylib_test(
+            "sf.linear", [(4, 8), (4, 8)], (4, 4),
+            lambda x, w: F.linear(x, w),
+            dylib_name="test_linear",
+        )
+        assert cos >= 0.9999, (
+            f"linear 2d: cos={cos:.8f} < 0.9999\n"
+            f"Expected[:6]={expected.ravel()[:6].tolist()}\n"
+            f"Actual[:6]={actual.ravel()[:6].tolist()}"
+        )
+
+    def test_linear_real_3d(self) -> None:
+        import torch.nn.functional as F  # noqa: N812
+        cos, actual, expected = _run_op_dylib_test(
+            "sf.linear", [(1, 12, 768), (768, 768)], (1, 12, 768),
+            lambda x, w: F.linear(x, w),
+            dylib_name="test_linear3d",
+        )
+        assert cos >= 0.9999, (
+            f"linear 3d: cos={cos:.8f} < 0.9999\n"
+            f"Expected[:6]={expected.ravel()[:6].tolist()}\n"
+            f"Actual[:6]={actual.ravel()[:6].tolist()}"
+        )
+
+    def test_silu_small(self) -> None:
+        import torch.nn.functional as F  # noqa: N812
+        cos, actual, expected = _run_op_dylib_test(
+            "sf.silu", [(4, 8)], (4, 8),
+            lambda x: F.silu(x),
+            dylib_name="test_silu",
+        )
+        assert cos >= 0.9999, (
+            f"silu: cos={cos:.8f} < 0.9999\n"
+            f"Expected[:6]={expected.ravel()[:6].tolist()}\n"
+            f"Actual[:6]={actual.ravel()[:6].tolist()}"
+        )
+
+    def test_layer_norm_small(self) -> None:
+        import torch.nn.functional as F  # noqa: N812
+        cos, actual, expected = _run_op_dylib_test(
+            "sf.layer_norm", [(2, 4), (4,), (4,)], (2, 4),
+            lambda x, w, b: F.layer_norm(x, (4,), weight=w, bias=b, eps=1e-5),
+            dylib_name="test_ln",
+        )
+        assert cos >= 0.9999, (
+            f"layer_norm: cos={cos:.8f} < 0.9999\n"
+            f"Expected[:6]={expected.ravel()[:6].tolist()}\n"
+            f"Actual[:6]={actual.ravel()[:6].tolist()}"
+        )
+
+    def test_layer_norm_real(self) -> None:
+        import torch.nn.functional as F  # noqa: N812
+        cos, actual, expected = _run_op_dylib_test(
+            "sf.layer_norm", [(1, 12, 768), (768,), (768,)], (1, 12, 768),
+            lambda x, w, b: F.layer_norm(x, (768,), weight=w, bias=b, eps=1e-5),
+            dylib_name="test_ln_real",
+        )
+        assert cos >= 0.9999, (
+            f"layer_norm real: cos={cos:.8f} < 0.9999\n"
+            f"Expected[:6]={expected.ravel()[:6].tolist()}\n"
+            f"Actual[:6]={actual.ravel()[:6].tolist()}"
+        )
+
+    def test_add_small(self) -> None:
+        cos, actual, expected = _run_op_dylib_test(
+            "sf.add", [(4, 8), (4, 8)], (4, 8),
+            lambda a, b: a + b,
+            dylib_name="test_add",
+        )
+        assert cos >= 0.9999, (
+            f"add: cos={cos:.8f} < 0.9999\n"
+            f"Expected[:6]={expected.ravel()[:6].tolist()}\n"
+            f"Actual[:6]={actual.ravel()[:6].tolist()}"
+        )
+
+    def test_mul_small(self) -> None:
+        cos, actual, expected = _run_op_dylib_test(
+            "sf.mul", [(4, 8), (4, 8)], (4, 8),
+            lambda a, b: a * b,
+            dylib_name="test_mul",
+        )
+        assert cos >= 0.9999, (
+            f"mul: cos={cos:.8f} < 0.9999\n"
+            f"Expected[:6]={expected.ravel()[:6].tolist()}\n"
+            f"Actual[:6]={actual.ravel()[:6].tolist()}"
+        )
+
+    def test_relu_small(self) -> None:
+        cos, actual, expected = _run_op_dylib_test(
+            "sf.relu", [(4, 8)], (4, 8),
+            lambda x: x.clamp(min=0),
+            dylib_name="test_relu",
+        )
+        assert cos >= 0.9999, (
+            f"relu: cos={cos:.8f} < 0.9999\n"
+            f"Expected[:6]={expected.ravel()[:6].tolist()}\n"
+            f"Actual[:6]={actual.ravel()[:6].tolist()}"
+        )

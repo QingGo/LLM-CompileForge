@@ -70,21 +70,57 @@ pub fn matmul_blas(
     let lda = k;
     let ldc = n;
 
-    // Compute batch size: product of all leading dims (before last 2)
-    let batch: usize = a_shape[..a_shape.len() - 2].iter().map(|&d| d as usize).product();
+    // Compute batch size: product of all leading dims (before last 2).
+    // Use the maximum of A and B leading-dims product to handle rank promotion
+    // where one operand has extra leading dims. When one operand has fewer
+    // leading dims than the other, its data is broadcast (reused) across the
+    // extra batches.
+    let a_batch: usize = a_shape[..a_shape.len().saturating_sub(2)]
+        .iter()
+        .map(|&d| d as usize)
+        .product();
+    let b_batch: usize = b_shape[..b_shape.len().saturating_sub(2)]
+        .iter()
+        .map(|&d| d as usize)
+        .product();
+    let batch = a_batch.max(b_batch);
+
     let a_stride: usize = (m * k) as usize;
-    let b_stride: usize = if transpose_b {
-        (n * if trans_b == CBLAS_NO_TRANS { k } else { k }) as usize
-    } else {
-        (k * n) as usize
-    };
+    // b_stride: per-batch stride for B. The BLAS call accesses exactly k*n
+    // elements from B regardless of transpose flag, so stride is k*n.
+    let b_stride: usize = (k * n) as usize;
     let out_stride: usize = (m * n) as usize;
     let fallback_to_naive = ldb < k.max(1);
 
     for batch_idx in 0..batch {
-        let a_offset = batch_idx * a_stride;
-        let b_offset = batch_idx * b_stride;
+        // Broadcasting: when one operand has fewer batches, cycle through
+        // its data (batch_idx % batch_size). Batching matches standard
+        // tensor broadcasting semantics (NumPy/PyTorch).
+        let a_offset = (batch_idx % a_batch.max(1)) * a_stride;
+        let b_offset = (batch_idx % b_batch.max(1)) * b_stride;
         let out_offset = batch_idx * out_stride;
+
+        // Bounds check: verify each operand has enough elements for at least
+        // one full matrix slice at its wrapped offset. Broadcast offsets cycle
+        // within their allocation, so they only need to hold one slice.
+        if a_offset + a_stride > a.len() {
+            return Err(format!(
+                "matmul_blas: A has insufficient data (offset {} + stride {} > len {}); a_shape={:?}",
+                a_offset, a_stride, a.len(), a_shape,
+            ));
+        }
+        if b_offset + b_stride > b.len() {
+            return Err(format!(
+                "matmul_blas: B has insufficient data (offset {} + stride {} > len {}); b_shape={:?}",
+                b_offset, b_stride, b.len(), b_shape,
+            ));
+        }
+        if out_offset + out_stride > out.len() {
+            return Err(format!(
+                "matmul_blas: Out has insufficient data (offset {} + stride {} > len {})",
+                out_offset, out_stride, out.len(),
+            ));
+        }
 
         if fallback_to_naive {
             matmul_naive(
@@ -94,6 +130,10 @@ pub fn matmul_blas(
                 m as usize, k as usize, n as usize, false,
             );
         } else {
+            // SAFETY: cblas_sgemm reads exactly m*k elements from A starting
+            // at a[a_offset], k*n elements from B starting at b[b_offset], and
+            // writes m*n elements to C starting at out[out_offset]. Bounds are
+            // verified above: a_offset+a_stride <= a.len(), same for B and out.
             unsafe {
                 cblas_sgemm(
                     CBLAS_ROW_MAJOR,

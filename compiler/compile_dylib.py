@@ -218,7 +218,7 @@ def main() -> None:
             if wname in func.weights:
                 sfa_constants[wname] = func.weights[wname]
 
-    const_bin = _build_constants_binary(module, name_mapping or {}, skip_compute_graph=True)
+    const_bin = _build_constants_binary(module, name_mapping or {}, skip_compute_graph=False)
     bin_path = compiled_path / "constants.bin"
     bin_path.write_bytes(const_bin)
     print(f"   Written {len(const_bin)} bytes to {bin_path}")

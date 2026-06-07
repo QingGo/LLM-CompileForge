@@ -87,9 +87,12 @@ def parse_sfcf_blob(blob: bytes) -> tuple[dict[str, str], dict[str, np.ndarray[A
         constants[name] = arr
 
     # ── Contract section (v4+) ──
-    compute_graph_pos = pos  # may be contract section if compute graph skipped
-    if v >= 4 and pos < len(blob):
-        _contract, pos = _parse_contract_section(blob, pos)
+    compute_graph_pos = pos
+    if v >= 4 and pos + 4 <= len(blob):
+        try:
+            _contract, pos = _parse_contract_section(blob, pos)
+        except (UnicodeDecodeError, struct.error, IndexError):
+            pass
     return name_mapping, constants, compute_graph_pos, v
 
 

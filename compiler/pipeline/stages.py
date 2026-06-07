@@ -139,6 +139,17 @@ def _strip_sf_attrs_canon_action(module: Any) -> None:
         _log.info("  Stripped %d sf.*/llvm.emit_c_interface attrs", stripped_count)
 
 
+def _insert_identity_copies_action(module: Any) -> None:
+    """Insert tensor.insert_slice copies for identity pass-through returns.
+
+    Delegates to :func:`compiler.pipeline.actions.insert_identity_copies_action`.
+    Must run BEFORE bufferization (C3) so that tensor.empty +
+    tensor.insert_slice are properly lowered by the bufferization pass.
+    """
+    from compiler.pipeline.actions import insert_identity_copies_action as _action
+    _action(module)
+
+
 # The flattened equivalent of the LLVM lowering stages below is
 # available as LINALG_TO_LLVM_PIPELINE in compile_utils.py.
 # Keep the two definitions in sync.
@@ -153,6 +164,7 @@ BUILTIN_STAGES: list[Stage] = [
     # ── Phase C: bufferization ──
     Stage("C1-interface", action=_emit_c_interface_action, timeout=5.0),
     Stage("C2-strip-sf-attrs", action=_strip_sf_attrs_canon_action, timeout=30.0),
+    Stage("C2.5-insert-identity-copies", action=_insert_identity_copies_action, timeout=30.0),
     Stage("C3-bufferize", (
         "one-shot-bufferize{bufferize-function-boundaries allow-unknown-ops"
         " function-boundary-type-conversion=identity-layout-map},"

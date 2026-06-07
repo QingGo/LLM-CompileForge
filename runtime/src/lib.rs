@@ -28,6 +28,10 @@ mod contract_determinism_tests;
 #[path = "tests/contract_precision_tests.rs"]
 mod contract_precision_tests;
 
+#[cfg(all(test, feature = "hal-rust"))]
+#[path = "tests/hal_dispatch_test.rs"]
+mod hal_dispatch_test;
+
 #[cfg(feature = "python-bindings")]
 mod py_bindings {
     use crate::cache::block::BlockManager;

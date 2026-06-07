@@ -133,39 +133,42 @@ struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
     if (outType.getRank() != 1) return failure();
     auto eltType = getElementTypeOrSelf(rt);
 
-    // Extract first element from input and cast to index type
+    // Extract first element from input — this is the START value
     auto inType = ::mlir::dyn_cast<::mlir::RankedTensorType>(input.getType());
     SmallVector<Value> zeroIdx;
     if (inType) for (int64_t _i = 0; _i < inType.getRank(); ++_i)
       zeroIdx.push_back(arith::ConstantIndexOp::create(rewriter, loc, 0));
-    Value scalarVal = tensor::ExtractOp::create(rewriter, loc,
+    Value startVal = tensor::ExtractOp::create(rewriter, loc,
         getElementTypeOrSelf(input.getType()), input, zeroIdx);
-    auto scalarType = scalarVal.getType();
-    Value nIdx;
-    if (scalarType.isInteger(64)) {
-      // Input already i64 → direct index cast
-      nIdx = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), scalarVal);
-    } else if (isa<FloatType>(scalarType)) {
-      // Input is f32 → fptoui + index cast
-      Value nI64 = arith::FPToUIOp::create(rewriter, loc, rewriter.getI64Type(), scalarVal);
-      nIdx = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), nI64);
+    auto startType = startVal.getType();
+
+    // Determine loop bound (output size) and dynamic size for EmptyOp
+    Value loopBound;
+    SmallVector<int64_t> outShape;
+    SmallVector<Value> dynSizes;
+    int64_t staticOutDim = outType.getDimSize(0);
+    if (staticOutDim != ShapedType::kDynamic) {
+      // Static output: use declared size
+      loopBound = arith::ConstantIndexOp::create(rewriter, loc, staticOutDim);
+      outShape = {staticOutDim};
     } else {
-      llvm::errs() << "  [sf.arange] unsupported input type: " << scalarType << "\n";
-      return failure();
+      // Dynamic output: use input value as size (legacy behavior — correct
+      // dynamic sizing requires dyn_shape operands which are not yet wired).
+      if (startType.isInteger(64)) {
+        loopBound = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), startVal);
+      } else if (isa<FloatType>(startType)) {
+        Value nI64 = arith::FPToSIOp::create(rewriter, loc, rewriter.getI64Type(), startVal);
+        loopBound = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), nI64);
+      } else {
+        return failure();
+      }
+      outShape = {ShapedType::kDynamic};
+      dynSizes.push_back(loopBound);
     }
 
-    // Create empty tensor with dynamic output type.
-    // Always use tensor<?xf32> even when outType is tensor<1xf32>, because
-    // the arange length depends on the input VALUE at runtime (not its type).
-    // Using the declared static type (e.g. tensor<1xf32>) causes canonicalize
-    // to specialize to the wrong concrete size, creating shape mismatches.
-    SmallVector<int64_t> dynShape = {ShapedType::kDynamic};
-    Value rawEmpty = tensor::EmptyOp::create(rewriter, loc, dynShape, eltType, ValueRange{nIdx});
+    Value rawEmpty = tensor::EmptyOp::create(rewriter, loc, outShape, eltType, dynSizes);
 
-    // Initialize with zeros — tensor::EmptyOp produces uninitialized memory,
-    // and the scf.for loop only fills positions [0, nIdx), leaving gaps
-    // if the loop doesn't converge or if downstream uses uninitialized elements
-    // before the loop completes. Fill with 0.0 to prevent NaN propagation.
+    // Initialize with zeros
     Value zeroInit;
     if (isa<FloatType>(eltType)) {
       zeroInit = arith::ConstantOp::create(rewriter, loc, eltType,
@@ -177,22 +180,41 @@ struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
     auto fillOp = linalg::FillOp::create(rewriter, loc, ValueRange{zeroInit}, ValueRange{rawEmpty});
     Value empty = fillOp.getResult(0);
 
-    // scf.for %i = 0 to N
+    // scf.for %i = 0 to outputSize: insert startVal + i at position i
     Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
-    auto forOp = scf::ForOp::create(rewriter, loc, c0, nIdx, c1, empty);
+    auto forOp = scf::ForOp::create(rewriter, loc, c0, loopBound, c1, empty);
     Value iv = forOp.getInductionVar();
 
     rewriter.setInsertionPointToStart(forOp.getBody());
-    // Region iter arg (not init value) — required for bufferization correctness
     Value iterArg = forOp.getBody()->getArgument(1);
     Value ivI64 = arith::IndexCastOp::create(rewriter, loc, rewriter.getI64Type(), iv);
     Value outVal;
     if (eltType.isInteger(64)) {
-      outVal = tensor::InsertOp::create(rewriter, loc, iterArg.getType(), ivI64, iterArg, iv);
+      // startVal (i64 or f32) + ivI64 (i64) → insert at position iv
+      Value startI64;
+      if (startType.isInteger(64)) {
+        startI64 = startVal;
+      } else if (isa<FloatType>(startType)) {
+        startI64 = arith::FPToSIOp::create(rewriter, loc, rewriter.getI64Type(), startVal);
+      } else {
+        return failure();
+      }
+      Value valI64 = arith::AddIOp::create(rewriter, loc, startI64, ivI64);
+      outVal = tensor::InsertOp::create(rewriter, loc, iterArg.getType(), valI64, iterArg, iv);
     } else if (isa<FloatType>(eltType)) {
-      Value ivF32 = arith::UIToFPOp::create(rewriter, loc, eltType, ivI64);
-      outVal = tensor::InsertOp::create(rewriter, loc, iterArg.getType(), ivF32, iterArg, iv);
+      // startVal (f32) + ivF32 (f32) → insert at position iv
+      Value startF32;
+      if (isa<FloatType>(startType)) {
+        startF32 = startVal;
+      } else if (startType.isInteger(64)) {
+        startF32 = arith::SIToFPOp::create(rewriter, loc, eltType, startVal);
+      } else {
+        return failure();
+      }
+      Value ivF32 = arith::SIToFPOp::create(rewriter, loc, eltType, ivI64);
+      Value valF32 = arith::AddFOp::create(rewriter, loc, startF32, ivF32);
+      outVal = tensor::InsertOp::create(rewriter, loc, iterArg.getType(), valF32, iterArg, iv);
     } else {
       return failure();
     }

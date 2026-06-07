@@ -2,7 +2,8 @@
 
 """Custom stage actions for the MLIR lowering pipeline.
 
-Currently contains only the tiling action (transform-dialect based).
+Currently contains the tiling action (transform-dialect based), the
+identity-copies insertion action, and framework for other custom actions.
 FMA fusion is handled by llc -O3. Matmul output filling is handled by
 C++ lowering patterns in SfLowerMatmul.cpp.
 """
@@ -81,3 +82,98 @@ def tile_matmuls_action(module: Any, tile_k: int = 64) -> None:
                 func.operation.erase()
                 block.append(cloned)
                 break
+
+
+def insert_identity_copies_action(module: Any) -> None:
+    """Insert ``tensor.insert_slice`` copies for identity pass-through returns.
+
+    In tensor semantics, ``func.return %arg0`` is a valid zero-copy reference.
+    But after bufferization, the output memref is never allocated or written,
+    producing garbage values at runtime.
+
+    This action walks all ``func.func`` ops, finds ``func.return`` operands
+    that are direct ``BlockArgument`` values, and inserts a
+    ``tensor.empty`` + ``tensor.insert_slice`` pair to force a materialized copy.
+
+    Only inserts copies for identity pass-throughs. Computed output values
+    (results of ops like ``linalg.matmul``, ``linalg.add``, etc.) are left
+    untouched.
+    """
+    import mlir.dialects.func as func
+    import mlir.dialects.tensor as tensor
+    import mlir.ir as ir
+
+    ctx = module.operation.context
+    total_inserted = 0
+
+    main_block = module.operation.regions[0].blocks[0]
+    for func_op in list(main_block):
+        if str(func_op.operation.name) != "func.func":
+            continue
+
+        func_region = func_op.operation.regions[0]
+        func_body = func_region.blocks[0]
+        func_args = list(func_body.arguments)
+
+        if not func_args:
+            continue
+
+        return_op = None
+        for op in func_body.operations:
+            if str(op.operation.name) == "func.return":
+                return_op = op
+                break
+
+        if return_op is None:
+            continue
+
+        with ctx, ir.Location.unknown(ctx):
+            modified = False
+            new_operands = list(return_op.operation.operands)
+
+            for idx, operand in enumerate(new_operands):
+                if not isinstance(operand, ir.BlockArgument):
+                    continue
+
+                block_arg = operand
+                arg_type = block_arg.type
+                if not isinstance(arg_type, ir.RankedTensorType):
+                    continue
+
+                shape = arg_type.shape
+                element_type = arg_type.element_type
+
+                ip = ir.InsertionPoint(return_op.operation)
+
+                empty = tensor.empty(sizes=list(shape), element_type=element_type, ip=ip)
+                rank = len(shape)
+                offsets = [0] * rank
+                sizes = list(shape)
+                strides = [1] * rank
+
+                copied = tensor.insert_slice(
+                    source=block_arg,
+                    dest=empty,
+                    static_offsets=offsets,
+                    static_sizes=sizes,
+                    static_strides=strides,
+                    offsets=[],
+                    sizes=[],
+                    strides=[],
+                    ip=ip,
+                )
+
+                new_operands[idx] = copied
+                modified = True
+
+            if modified:
+                ip = ir.InsertionPoint(return_op.operation)
+                func.ReturnOp(operands_=new_operands, ip=ip)
+                return_op.operation.erase()
+                total_inserted += 1
+
+    if total_inserted > 0:
+        _log.info(
+            "  insert_identity_copies: inserted copies in %d function(s)",
+            total_inserted,
+        )

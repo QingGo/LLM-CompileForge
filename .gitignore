@@ -14,7 +14,6 @@ runtime/target/
 benchmark_results.json
 llvm-project/
 sf-dialect/build/
-.opencode/
 outputs/
 logs/
 *.so
@@ -29,3 +28,7 @@ repro.mlir
 docs/tutorial/
 gen/
 .DS_Store
+.omo/
+.opencode/
+docs/
+.agent_memory.md

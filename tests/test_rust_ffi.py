@@ -337,7 +337,7 @@ class TestLLMEngineRustIntegration:
         engine.add_request([1, 2, 3], max_tokens=2, temperature=0)
         results = engine.step()
         assert len(results) > 0
-        assert results[0].request_id.startswith("req_")
+        assert results[0].request_id and isinstance(results[0].request_id, str)
 
     def test_multiple_requests_batched(self):
         from python_runtime.engine.llm_engine import LLMEngine

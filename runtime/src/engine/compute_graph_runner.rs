@@ -515,6 +515,161 @@ pub fn run_function_graph_with_kv_intercept(
     Ok(result.to_owned())
 }
 
+// ── ComputeGraphRunner (GraphRunner impl) ───────────────────────────────
+
+use crate::engine::graph_runner::GraphRunner;
+
+/// Global input specification for [`ComputeGraphRunner`].
+///
+/// Bundles the runtime buffers and metadata needed to construct a
+/// global-input tensor (input_ids, position_ids) for a particular
+/// function input slot.
+#[derive(Debug, Clone)]
+pub struct CGGlobalInputSpec<'a> {
+    pub input_ids: &'a [u32],
+    pub positions: &'a [u32],
+    pub io_def: &'a IOTensorDef,
+    /// Byte index of this input within the function's input list (used
+    /// by `fill_global_input` for rank selection).
+    pub bi: usize,
+}
+
+/// Output buffer specification for [`ComputeGraphRunner`].
+#[derive(Debug, Clone)]
+pub struct CGOutputSpec {
+    pub shape: Vec<usize>,
+    pub dtype: Dtype,
+}
+
+/// Internal state for compute-graph execution, implementing [`GraphRunner`].
+///
+/// Holds weight provider, weight cache, and the per-function output tensor
+/// registry (SSA) used to wire data between functions.
+pub struct ComputeGraphRunner<'a> {
+    /// Weight provider for f16→f32 weight loading.
+    pub weight_provider: &'a WeightProvider,
+
+    /// Per-run weight cache (avoids reloading the same weight tensor
+    /// across multiple function invocations).
+    pub weight_cache: std::cell::RefCell<HashMap<String, Tensor>>,
+
+    /// Per-function output tensors — indexed by `[func_index][output_index]`.
+    /// This is the SSA wire store for cross-function data flow.
+    pub func_outputs: std::cell::RefCell<Vec<Vec<Tensor>>>,
+}
+
+impl<'a> ComputeGraphRunner<'a> {
+    /// Create a runner for `num_funcs` functions.
+    pub fn new(
+        weight_provider: &'a WeightProvider,
+        num_funcs: usize,
+    ) -> Self {
+        Self {
+            weight_provider,
+            weight_cache: std::cell::RefCell::new(HashMap::new()),
+            func_outputs: std::cell::RefCell::new(vec![Vec::new(); num_funcs]),
+        }
+    }
+}
+
+impl GraphRunner for ComputeGraphRunner<'_> {
+    type InputSpec = CGGlobalInputSpec<'static>;
+    type OutputSpec = CGOutputSpec;
+
+    fn load_weight_tensor(
+        &self,
+        name: &str,
+        _dtype: Dtype,
+    ) -> Result<Tensor, anyhow::Error> {
+        // Delegate to the existing free-function helper (line 78).
+        load_weight_tensor(name, self.weight_provider, &self.weight_cache, &IOTensorDef::new(1, vec![0], false))
+    }
+
+    fn allocate_output_buffer(
+        &self,
+        shape: &[usize],
+        _dtype: Dtype,
+    ) -> Result<Box<dyn traits::Buffer>, anyhow::Error> {
+        let numel: usize = shape.iter().product::<usize>().max(1);
+        let len = numel * 4;
+        let data = vec![0.0f32; numel];
+        let raw = InnerCpuBuffer::from_raw_parts(
+            data.leak().as_mut_ptr() as *mut u8,
+            len,
+            false,
+        )
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+        Ok(Box::new(CpuBuffer::with_meta(raw, 4, shape.to_vec())))
+    }
+
+    fn build_global_input(
+        &self,
+        spec: &Self::InputSpec,
+    ) -> Result<Tensor, anyhow::Error> {
+        // Use the existing global input filler, then extract f32 data.
+        let tensor = crate::model::global_input::fill_global_input(
+            spec.input_ids,
+            spec.positions,
+            spec.io_def,
+            spec.bi,
+        )?;
+        let numel = tensor.numel();
+        let ptr = tensor.data_ptr() as *const f32;
+        let data = unsafe { std::slice::from_raw_parts(ptr, numel) }.to_vec();
+
+        // Resolve dynamic dims to real values for the shape.
+        let rank = spec.io_def.rank as usize;
+        let shape: Vec<usize> = (0..rank)
+            .map(|i| {
+                if spec.io_def.shape[i] == 0 {
+                    if i == 0 {
+                        1
+                    } else {
+                        spec.input_ids.len()
+                    }
+                } else {
+                    spec.io_def.shape[i] as usize
+                }
+            })
+            .collect();
+
+        Ok(Tensor::new_owned(shape, data, Dtype::F32))
+    }
+
+    fn wire_ssa_output(&mut self, name: &str, tensor: Tensor) {
+        // Store in func_outputs using encoded func_idx, output_idx from name.
+        // Name format: "f{func_idx}_o{output_idx}" or fallback to func 0.
+        let (func_idx, output_idx) = parse_ssa_name(name);
+        let mut outputs = self.func_outputs.borrow_mut();
+        while outputs.len() <= func_idx {
+            outputs.push(Vec::new());
+        }
+        while outputs[func_idx].len() <= output_idx {
+            outputs[func_idx].push(Tensor::scalar(0.0));
+        }
+        outputs[func_idx][output_idx] = tensor;
+    }
+
+    fn get_ssa_input(&self, name: &str) -> Option<Tensor> {
+        let (func_idx, output_idx) = parse_ssa_name(name);
+        let outputs = self.func_outputs.borrow();
+        outputs
+            .get(func_idx)
+            .and_then(|fv| fv.get(output_idx))
+            .cloned()
+    }
+}
+
+/// Parse an SSA name like "f2_o1" → (func_idx=2, output_idx=1).
+/// Falls back to (0, 0) on parse failure.
+fn parse_ssa_name(name: &str) -> (usize, usize) {
+    let trimmed = name.trim_start_matches('%').trim_start_matches("f");
+    let parts: Vec<&str> = trimmed.splitn(2, "_o").collect();
+    let func_idx = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let output_idx = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    (func_idx, output_idx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

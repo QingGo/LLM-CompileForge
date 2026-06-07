@@ -263,7 +263,7 @@ test-patterns: $(VENV)
 	$(PYTHON) -m pytest tests/test_lowering_patterns.py -v --tb=short --timeout=2
 test-smoke: lint test-unit test-model test-patterns
 test-fixup: $(VENV)
-	$(PYTEST) tests/test_fixup_casts.py -v --tb=short --timeout=10
+	$(PYTEST) compiler/tests/backend/test_fixup_casts.py -v --tb=short --timeout=10
 test-ctypes-oracle: $(VENV)
 	$(PYTEST) tests/test_ctypes_oracle.py -v --tb=short --timeout=30
 test-rust-unit: $(VENV)
@@ -323,8 +323,8 @@ test-lower: $(VENV)
 	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" $(PYTHON) tests/test_lowering_diag.py
 test-pipeline-quick: $(VENV)
 	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" \
-	$(PYTEST) tests/test_pipeline_validation.py::test_no_arith_ops_after_lowering \
-	         tests/test_pipeline_validation.py::test_tile_sizes_within_bounds \
+	$(PYTEST) compiler/tests/pipeline/test_pipeline_validation.py::test_no_arith_ops_after_lowering \
+	         compiler/tests/pipeline/test_pipeline_validation.py::test_tile_sizes_within_bounds \
 	         tests/test_forward_correctness.py::test_tiny_llama_compiles \
 	         tests/test_forward_correctness.py::test_tiny_llama_config \
 	         tests/test_forward_correctness.py::test_opt125m_compile_and_forward_cosine \
@@ -367,7 +367,7 @@ test-rust-integ: $(VENV)
 test-pipeline-smoke: $(VENV)
 	$(PYTHON) tests/test_pipeline_smoke.py outputs/compiled/opt_125m_fresh --timeout 120
 test-pipeline-validate: $(VENV)
-	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" $(PYTHON) -m pytest tests/test_pipeline_validation.py -v --tb=short --timeout=60
+	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" $(PYTHON) -m pytest compiler/tests/pipeline/test_pipeline_validation.py -v --tb=short --timeout=60
 test-compile-full: $(VENV)
 	DYLD_LIBRARY_PATH="$(MLIR_LIBS_PATH)" $(PYTHON) -m pytest tests/test_compile_full.py -v --tb=short --timeout=300
 test-consistency: $(VENV)

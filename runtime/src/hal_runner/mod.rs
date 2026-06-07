@@ -652,3 +652,105 @@ pub fn validate_hal_ir_against_semantics(
 
     warnings
 }
+
+// ── GraphRunner impl for HalRustRunner ──────────────────────────────────
+
+use crate::engine::graph_runner::GraphRunner;
+
+/// Global input specification for the HAL IR runner.
+///
+/// Bundles runtime buffers and the SSA name of the input slot.
+pub struct HalInputSpec<'a> {
+    pub input_ids: &'a [u32],
+    pub positions: &'a [u32],
+    pub ssa_name: &'a str,
+    pub dtype: Dtype,
+    pub shape: Vec<usize>,
+}
+
+/// Output buffer specification for the HAL IR runner.
+pub struct HalOutputSpec {
+    pub shape: Vec<usize>,
+    pub dtype: Dtype,
+    pub ssa_name: String,
+}
+
+impl GraphRunner for HalRustRunner {
+    type InputSpec = HalInputSpec<'static>;
+    type OutputSpec = HalOutputSpec;
+
+    fn load_weight_tensor(&self, name: &str, _dtype: Dtype) -> Result<Tensor, anyhow::Error> {
+        // Check internal weight cache first.
+        let cache = self.gr_weight_cache.borrow();
+        if let Some(t) = cache.get(name) {
+            return Ok(t.to_owned());
+        }
+        // Fall back to ssa_map (weights injected by inject_function_weights).
+        let ssa = self.gr_ssa_map.borrow();
+        if let Some(sfa) = ssa.get(name) {
+            return sfa_to_tensor(sfa);
+        }
+        anyhow::bail!("weight '{}' not found in HalRustRunner", name)
+    }
+
+    fn allocate_output_buffer(
+        &self,
+        shape: &[usize],
+        dtype: Dtype,
+    ) -> Result<Box<dyn Buffer>, anyhow::Error> {
+        let numel: usize = shape.iter().product::<usize>().max(1);
+        let elem_size = dtype.element_size();
+        let byte_len = numel * elem_size;
+        let data = vec![0u8; byte_len];
+        let raw = crate::hal::cpu::buffer::RawBuffer::from_raw_parts(
+            data.leak().as_mut_ptr(),
+            byte_len,
+            false,
+        )
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+        Ok(Box::new(crate::hal::cpu::CpuBuffer::with_meta(
+            raw,
+            elem_size,
+            shape.to_vec(),
+        )))
+    }
+
+    fn build_global_input(&self, spec: &Self::InputSpec) -> Result<Tensor, anyhow::Error> {
+        let numel: usize = spec.shape.iter().product::<usize>().max(1);
+        let elem_size = spec.dtype.element_size();
+        if elem_size == 8 {
+            let data: Vec<f32> = if spec.ssa_name == "%arg0" {
+                spec.input_ids.iter().map(|&id| id as f32).collect()
+            } else {
+                spec.positions.iter().map(|&p| p as f32).collect()
+            };
+            Ok(Tensor::new_owned(spec.shape.clone(), data, Dtype::F32))
+        } else {
+            let data = vec![0.0f32; numel];
+            Ok(Tensor::new_owned(spec.shape.clone(), data, spec.dtype))
+        }
+    }
+
+    fn wire_ssa_output(&mut self, name: &str, tensor: Tensor) {
+        let data = tensor.as_slice().to_vec();
+        let sfa = SFATensor::from_vec_f32(data, tensor.shape.clone());
+        let shape = tensor.shape.clone();
+        let dtype = tensor.dtype;
+        self.gr_ssa_map.borrow_mut().insert(name.to_string(), sfa);
+        self.gr_ssa_shapes.borrow_mut().insert(name.to_string(), shape);
+        self.gr_ssa_dtypes.borrow_mut().insert(name.to_string(), dtype);
+    }
+
+    fn get_ssa_input(&self, name: &str) -> Option<Tensor> {
+        let ssa = self.gr_ssa_map.borrow();
+        ssa.get(name).and_then(|sfa| sfa_to_tensor(sfa).ok())
+    }
+}
+
+fn sfa_to_tensor(sfa: &SFATensor) -> Result<Tensor, anyhow::Error> {
+    let numel = sfa.numel();
+    let ptr = sfa.data_ptr() as *const f32;
+    let data = unsafe { std::slice::from_raw_parts(ptr, numel) }.to_vec();
+    let shape = sfa.shape();
+    Ok(Tensor::new_owned(shape, data, Dtype::F32))
+}
