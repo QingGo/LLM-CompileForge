@@ -51,6 +51,7 @@ def _parse_mlir_text(text: str) -> MlirModule:
 
         # Function declaration: func.func @name(...) -> ... attributes {...} {
         if stripped.startswith("func.func @"):
+            weight_names_attr: list[str] = []
             rest = stripped[len("func.func @"):]
             name_end = rest.find("(")
             func_name = rest[:name_end].strip()
@@ -78,6 +79,9 @@ def _parse_mlir_text(text: str) -> MlirModule:
                             v if isinstance(v, bool) else (str(v).lower() == "true")
                             for v in ci_raw
                         ]
+                    wn_raw = attrs.get("sf.weight_names", [])
+                    if isinstance(wn_raw, list):
+                        weight_names_attr = [str(v) for v in wn_raw]
                     ret_part = ret_part[:attr_start].strip() + " " + ret_part[attr_end:].strip()
                 if ret_part.endswith("{"):
                     ret_part = ret_part[:-1].strip()
@@ -91,6 +95,8 @@ def _parse_mlir_text(text: str) -> MlirModule:
                 for i, tp in enumerate(ret_types)
             ]
             current_func = MlirFunction(name=func_name, inputs=inputs, outputs=outputs)
+            if weight_names_attr:
+                current_func.weight_names = weight_names_attr
             ssa_to_name = {}
             ssa_types = {}
             continue

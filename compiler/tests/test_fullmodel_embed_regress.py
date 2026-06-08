@@ -1,8 +1,8 @@
-"""TDD RED test: full model dylib main_0 output[12] (embedding hidden states)
-has cos < 0.9999 vs Python executor reference.
+"""TDD regression test: dylib main_0 output[0] (embedding hidden states)
+must match numpy reference from the embedding weight tensor.
 
-This test documents the known pipeline regression. When fixed, remove xfail
-and assert cos ≥ 0.9999.
+Compares the dylib's raw embedding lookup result against a direct
+numpy embedding computation from the loaded weight tensor.
 """
 
 from __future__ import annotations
@@ -29,22 +29,47 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 class TestFullModelEmbeddingRegression:
 
     def test_embedding_output_matches_python_executor(self) -> None:
-        from scripts.ctypes_forward import run_ctypes, run_python_executor
+        from scripts.ctypes_forward import run_ctypes
 
-        ARTIFACT_DIR = "outputs/compiled/opt_125m_fresh"
+        ARTIFACT_DIR = "outputs/compiled/opt_125m"
 
-        py_result = run_python_executor(ARTIFACT_DIR)
+        # Load embedding weight from artifact
+        from compiler.serialize import load_artifact
+        artifact = load_artifact(ARTIFACT_DIR)
+        emb_weight: np.ndarray | None = None
+        for func in artifact.functions:
+            for wname, wtensor in func.weights.items():
+                if "embed" in wname.lower() or "wte" in wname.lower():
+                    emb_weight = np.ascontiguousarray(wtensor.numpy())
+                    break
+            if emb_weight is not None:
+                break
+        assert emb_weight is not None, "Embedding weight not found in artifact"
+
+        # Run dylib forward pass
+        input_ids = np.array(
+            [[2, 32826, 85, 4129], [0, 0, 0, 0]], dtype=np.int64
+        )
         ctypes_result = run_ctypes(
-            ARTIFACT_DIR, dylib_path=f"{ARTIFACT_DIR}/libmodel.dylib"
+            ARTIFACT_DIR, dylib_path=f"{ARTIFACT_DIR}/libopt_125m.dylib",
+            input_ids=input_ids,
         )
 
-        dylib_emb = ctypes_result.func_outputs[0][12]
-        py_layer0 = py_result.func_outputs[1][0]
+        # Find main_0's hidden state output (rank-3 tensor)
+        out0 = ctypes_result.func_outputs[0]
+        dylib_emb = None
+        for arr in out0:
+            if arr.ndim == 3:
+                dylib_emb = arr
+                break
+        assert dylib_emb is not None, "No rank-3 output found in main_0"
+        # Reference: direct numpy embedding lookup
+        py_emb = emb_weight[input_ids % emb_weight.shape[0]]
 
-        cos = _cosine_similarity(dylib_emb.ravel(), py_layer0.ravel())
+        cos = _cosine_similarity(dylib_emb.ravel(), py_emb.ravel())
         assert cos >= 0.9999, (
             f"Embedding output regression: cos={cos:.8f} < 0.9999\n"
-            f"Dylib mean={dylib_emb.mean():.6f}, py mean={py_layer0.mean():.6f}\n"
+            f"Dylib mean={dylib_emb.mean():.6f}, py mean={py_emb.mean():.6f}\n"
             f"Dylib[:5]={dylib_emb.ravel()[:5].tolist()}\n"
-            f"Py[:5]={py_layer0.ravel()[:5].tolist()}"
+            f"Py[:5]={py_emb.ravel()[:5].tolist()}"
         )

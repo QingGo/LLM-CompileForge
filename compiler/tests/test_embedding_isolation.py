@@ -104,7 +104,7 @@ class TestEmbeddingIsolation:
         """sf.embedding compiled as standalone dylib matches numpy reference."""
         rng = np.random.RandomState(42)
         weight = rng.randn(vocab, hidden).astype(np.float32)
-        indices = np.array([[2, 3, 1, 5], [0, 0, 0, 0]], dtype=np.int64)[:batch, :seq]
+        indices = rng.randint(0, vocab, size=(batch, seq), dtype=np.int64)
 
         mlir = f"""module {{
   func.func @main_0(%ids: tensor<{batch}x{seq}xi64>, %w: tensor<{vocab}x{hidden}xf32>) -> tensor<{batch}x{seq}x{hidden}xf32> {{
