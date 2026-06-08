@@ -38,8 +38,6 @@ struct SfChainWrapperPass
     SmallVector<StringRef> chainOrder;
     for (auto attr : orderAttr)
       chainOrder.push_back(mlir::cast<StringAttr>(attr).getValue());
-    if (chainOrder.size() < 2)
-      return;
 
     // Build name → FuncOp map
     llvm::StringMap<func::FuncOp> nameToFunc;
@@ -49,8 +47,30 @@ struct SfChainWrapperPass
       if (op.getSymName() == "main_0")
         main0 = op;
     }
-    if (!main0)
+
+    if (chainOrder.size() < 2) {
+      // Single-function: generate pass-through main()
+      if (chainOrder.size() == 1) {
+        auto it = nameToFunc.find(chainOrder[0]);
+        if (it == nameToFunc.end())
+          return;
+        auto func = it->second;
+        auto loc = module.getLoc();
+        auto mainType = func.getFunctionType();
+        OpBuilder builder(ctx);
+        builder.setInsertionPointToEnd(module.getBody());
+        auto mainFunc = builder.create<func::FuncOp>(loc, "main", mainType);
+        mainFunc.setVisibility(SymbolTable::Visibility::Private);
+        auto *entryBlock = mainFunc.addEntryBlock();
+        builder.setInsertionPointToStart(entryBlock);
+        SmallVector<Value> callArgs;
+        for (auto arg : entryBlock->getArguments())
+          callArgs.push_back(arg);
+        auto callOp = builder.create<func::CallOp>(loc, func, callArgs);
+        builder.create<func::ReturnOp>(loc, callOp.getResults());
+      }
       return;
+    }
 
     SmallVector<func::FuncOp> funcs;
     for (auto name : chainOrder) {
