@@ -194,3 +194,58 @@ class TestArangeFix:
             assert np.array_equal(actual, expected), (
                 f"sf.arange(2.0)[3]: expected {expected.tolist()}, got {actual.tolist()}"
             )
+
+    def test_arange_dynamic_f32_nonzero(self):
+        """sf.arange(2.0) with dynamic output tensor<?xi64> + dyn_shape=[4] → [2,3,4,5]."""
+        mlir = """module {
+  func.func @main_0() -> tensor<?xi64> {
+    %c2 = arith.constant dense<2.0> : tensor<1xf32>
+    %sz = arith.constant dense<4> : tensor<1xi64>
+    %a = "sf.arange"(%c2, %sz) : (tensor<1xf32>, tensor<1xi64>) -> tensor<?xi64>
+    return %a : tensor<?xi64>
+  }
+}"""
+        with tempfile.TemporaryDirectory() as td:
+            dylib = _compile(mlir, td, "test_dyn1")
+            lib = ctypes.CDLL(dylib)
+            sret = (ctypes.c_uint8 * 4096)()
+            lib._mlir_ciface_main_0.argtypes = [ctypes.c_void_p]
+            lib._mlir_ciface_main_0.restype = None
+            lib._mlir_ciface_main_0(ctypes.byref(sret))
+            sb = bytes(sret)
+            al = struct.unpack_from("<Q", sb, 8)[0]
+            sz = struct.unpack_from("<q", sb, 24)[0]
+            # Dynamic output: sz is positive (actual size), NOT start value
+            actual = np.array((ctypes.c_int64 * sz).from_address(al), dtype=np.int64)
+            expected = np.array([2, 3, 4, 5], dtype=np.int64)
+            assert sz == 4, f"Expected dynamic size 4, got {sz}"
+            assert np.array_equal(actual, expected), (
+                f"sf.arange(2.0)[?](dyn=[4]): expected {expected.tolist()}, got {actual.tolist()}"
+            )
+
+    def test_arange_dynamic_i64_nonzero(self):
+        """sf.arange(5) with dynamic output tensor<?xi64> + dyn_shape=[3] → [5,6,7]."""
+        mlir = """module {
+  func.func @main_0() -> tensor<?xi64> {
+    %c5 = arith.constant dense<5> : tensor<1xi64>
+    %sz = arith.constant dense<3> : tensor<1xi64>
+    %a = "sf.arange"(%c5, %sz) : (tensor<1xi64>, tensor<1xi64>) -> tensor<?xi64>
+    return %a : tensor<?xi64>
+  }
+}"""
+        with tempfile.TemporaryDirectory() as td:
+            dylib = _compile(mlir, td, "test_dyn2")
+            lib = ctypes.CDLL(dylib)
+            sret = (ctypes.c_uint8 * 4096)()
+            lib._mlir_ciface_main_0.argtypes = [ctypes.c_void_p]
+            lib._mlir_ciface_main_0.restype = None
+            lib._mlir_ciface_main_0(ctypes.byref(sret))
+            sb = bytes(sret)
+            al = struct.unpack_from("<Q", sb, 8)[0]
+            sz = struct.unpack_from("<q", sb, 24)[0]
+            actual = np.array((ctypes.c_int64 * sz).from_address(al), dtype=np.int64)
+            expected = np.array([5, 6, 7], dtype=np.int64)
+            assert sz == 3, f"Expected dynamic size 3, got {sz}"
+            assert np.array_equal(actual, expected), (
+                f"sf.arange(5)[?](dyn=[3]): expected {expected.tolist()}, got {actual.tolist()}"
+            )
