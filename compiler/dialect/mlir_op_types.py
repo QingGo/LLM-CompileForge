@@ -46,6 +46,7 @@ class MlirModule:
     functions: list[MlirFunction] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     chain_order: list[str] = field(default_factory=list)
+    exec_plan_data: list[int] = field(default_factory=list)
 
     @property
     def main(self) -> MlirFunction:

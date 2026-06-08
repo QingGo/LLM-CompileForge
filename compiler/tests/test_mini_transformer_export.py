@@ -294,3 +294,57 @@ class TestChainOrder:
                 f"chain_order not monotonic at index {i}: "
                 f"{chain[i-1]} (#{nums[i-1]}) → {chain[i]} (#{nums[i]})"
             )
+
+
+class TestExecPlanData:
+    """sf.exec_plan_data encoding correctness."""
+
+    @pytest.mark.parametrize("layers", [1, 2])
+    def test_exec_plan_structure(self, layers):
+        """exec_plan_data must encode per-step input bindings correctly."""
+        config = MiniConfig(layers=layers, causal_mask=False)
+        torch.manual_seed(42)
+        model = MiniTransformer(config).eval()
+        input_ids = torch.tensor([[2, 3, 1, 5], [0, 0, 0, 0]], dtype=torch.int64)
+        with torch.no_grad():
+            exported = torch.export.export(model, (input_ids,))
+        from compiler.fx.converter import fx_graph_to_mlir
+        from compiler.artifact import mlir_module_to_ir_module
+        import mlir.ir as ir
+        from mlir_sf._mlir_libs._sfDialectsNanobind import sf
+
+        mlir_mod = fx_graph_to_mlir(exported)
+        ctx = ir.Context()
+        ctx.allow_unregistered_dialects = True
+        sf.register_dialects(ctx._CAPIPtr, load=True)
+        ir_mod = mlir_module_to_ir_module(mlir_mod, ctx)
+
+        plan_attr = ir_mod.operation.attributes.get("sf.exec_plan_data")
+        assert plan_attr is not None, "sf.exec_plan_data must be set on module"
+        data = [int(attr) for attr in plan_attr]
+        assert len(data) >= 4, f"exec_plan_data too short: {len(data)}"
+
+        num_steps = data[0]
+        num_global = data[1]
+        assert num_steps >= 1
+        assert num_global >= 1
+
+        idx = 2
+        for step in range(num_steps):
+            assert idx < len(data), f"truncated at step {step}"
+            step_num_inputs = data[idx]
+            idx += 1
+            for _ in range(step_num_inputs):
+                assert idx + 2 < len(data), f"truncated at step {step} input"
+                src = data[idx]
+                a = data[idx + 1]
+                b = data[idx + 2]
+                idx += 3
+                assert src in (0, 1), f"bad source type {src} at step {step}"
+                if src == 0:
+                    assert a < num_global, f"global_idx {a} >= {num_global}"
+                else:
+                    assert src == 1
+                    assert a < num_steps, f"step_ref {a} >= {num_steps}"
+        # Must have consumed all data
+        assert idx == len(data), f"trailing data: {len(data) - idx} elements"

@@ -189,7 +189,7 @@ def _make_multi_functions(
     param_names: set[str],
     const_names: set[str],
     base_name: str,
-) -> tuple[list[MlirFunction], list[str]]:
+) -> tuple[list[MlirFunction], list[str], list[int]]:
     """Split mlir_ops at sentinel boundaries into separate MlirFunction objects.
 
     If a block's first op is ``scaled_dot_product_attention`` (SD-PA), it is
@@ -436,4 +436,50 @@ def _make_multi_functions(
         ))
 
     chain_order = [f.name for f in funcs]
-    return funcs, chain_order
+
+    # Build per-step input bindings as flat integer array.
+    # Encoding: GLOBAL_INPUT(global_idx, 0), STEP_OUTPUT(1, step, out_idx)
+    exec_plan_data: list[int] = []
+    # Count global inputs: input_ids SSA names + all weight names from main_0
+    global_names = [name for name, _ in global_inputs]
+    global_names += funcs[0].weight_names  # main_0's weight args in order
+    exec_plan_data.append(len(funcs))  # num_steps
+    exec_plan_data.append(len(global_names))  # num_global_inputs
+
+    for fi, func in enumerate(funcs):
+        step_inputs: list[tuple[int, int, int]] = []
+        for name, _ in func.inputs:
+            key = name.lstrip("%")
+            if fi == 0:
+                # All main_0 inputs are global
+                try:
+                    gi = global_names.index(key)
+                except ValueError:
+                    gi = global_names.index(name)  # try with %
+                step_inputs.append((0, gi, 0))
+            else:
+                prod = producer.get(key)
+                if prod is not None and prod > 0:
+                    # SSA from another function
+                    # Find output index in producer function
+                    producer_func = funcs[prod]
+                    out_idx = 0
+                    for oi, (oname, _, _) in enumerate(producer_func.outputs):
+                        if oname.lstrip("%") == key:
+                            out_idx = oi
+                            break
+                    step_inputs.append((1, prod, out_idx))
+                elif prod == 0 and key in weights:
+                    # Weight from main_0 — consumed weights are at beginning,
+                    # exported weights in alphabetical SSA order (return order).
+                    # All are in funcs[0].weight_names at known positions.
+                    pass  # weights are handled via global_inputs in main_0
+                else:
+                    # Cross-function non-weight SSA
+                    step_inputs.append((1, prod if prod else 0, 0))
+        # Encode step
+        exec_plan_data.append(len(step_inputs))
+        for src, a, b in step_inputs:
+            exec_plan_data.extend([src, a, b])
+
+    return funcs, chain_order, exec_plan_data

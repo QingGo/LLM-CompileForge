@@ -395,6 +395,10 @@ def mlir_module_to_ir_module(module: MlirModule, ctx: Any = None) -> Any:
         if module.chain_order:
             name_attrs = [_ir.StringAttr.get(n) for n in module.chain_order]
             ir_mod.operation.attributes["sf.chain_order"] = _ir.ArrayAttr.get(name_attrs)
+        if module.exec_plan_data:
+            int_attrs = [_ir.IntegerAttr.get(_ir.IntegerType.get_signless(64), v)
+                         for v in module.exec_plan_data]
+            ir_mod.operation.attributes["sf.exec_plan_data"] = _ir.ArrayAttr.get(int_attrs)
 
         return ir_mod
 

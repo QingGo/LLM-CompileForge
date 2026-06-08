@@ -310,7 +310,7 @@ def fx_graph_to_mlir(
         )
     else:
         # Multi-function: split by function boundaries computed by _split_into_functions
-        functions, chain_order = _make_multi_functions(
+        functions, chain_order, exec_plan_data = _make_multi_functions(
             mlir_ops, func_inputs, func_outputs, weights,
             param_names, const_names, function_name,
         )
@@ -319,6 +319,7 @@ def fx_graph_to_mlir(
             functions=functions,
             metadata=meta,
             chain_order=chain_order,
+            exec_plan_data=exec_plan_data,
         )
 
 
