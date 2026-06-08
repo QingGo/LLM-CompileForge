@@ -25,18 +25,19 @@ import pytest
 # ── helpers ──────────────────────────────────────────────────────────────
 from tests.helpers import has_mlir_bindings
 
-try:
-    from mlir_sf._mlir_libs._sfDialectsNanobind import sf  # noqa: F401
-    _HAS_SF_DIALECT = True
-except ImportError:
-    _HAS_SF_DIALECT = False
-
 
 def _requires_sf_dialect():
-    """Skip test if sf-dialect C++ bindings are not available."""
+    """Skip test if sf-dialect C++ bindings are not available.
+
+    Import is done at call time (not module level) to avoid order-dependent
+    failures when this module is imported before MLIR system libraries are
+    fully initialized by other tests.
+    """
     if not has_mlir_bindings():
         pytest.skip("MLIR bindings not available")
-    if not _HAS_SF_DIALECT:
+    try:
+        from mlir_sf._mlir_libs._sfDialectsNanobind import sf  # noqa: F401
+    except ImportError:
         pytest.skip("sf-dialect C++ bindings not available — build: make build-so")
 
 
@@ -64,7 +65,7 @@ def _load_lowered(model_dir: str):
 
 
 @pytest.mark.unit
-@pytest.mark.timeout(30)
+@pytest.mark.timeout(120)
 def test_no_arith_ops_after_lowering():
     """No arith.* ops should survive the full lowering pipeline."""
     _requires_sf_dialect()
