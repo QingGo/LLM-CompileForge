@@ -38,7 +38,11 @@ def mlir_module_to_text(module: MlirModule) -> str:
     This is the reverse of _parse_mlir_text — generates model.mlir format.
     """
     lines: list[str] = []
-    lines.append("module {")
+    attrs = ""
+    if module.chain_order:
+        names = ", ".join(f'"{n}"' for n in module.chain_order)
+        attrs = f' attributes {{sf.chain_order = [{names}]}}'
+    lines.append(f"module{attrs} {{")
 
     for func in module.functions:
         # Function arguments
@@ -55,13 +59,17 @@ def mlir_module_to_text(module: MlirModule) -> str:
         consumed_indices = [
             i for i, (_, _, is_consumed) in enumerate(func.outputs) if is_consumed
         ]
-        func_attrs = ""
+        func_attr_parts: list[str] = []
         if consumed_indices:
             flags = ", ".join(
                 "true" if i in consumed_indices else "false"
                 for i in range(len(func.outputs))
             )
-            func_attrs = f" attributes {{sf.consumed_internally = [{flags}]}}"
+            func_attr_parts.append(f'sf.consumed_internally = [{flags}]')
+        if func.weight_names:
+            names = ", ".join(f'"{n}"' for n in func.weight_names)
+            func_attr_parts.append(f'sf.weight_names = [{names}]')
+        func_attrs = f" attributes {{{'; '.join(func_attr_parts)}}}" if func_attr_parts else ""
 
         lines.append(f"  func.func @{func.name}({args_str}) -> {ret}{func_attrs} {{")
 

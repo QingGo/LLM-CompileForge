@@ -76,6 +76,50 @@ message SfaConstant {
   bytes data = 4;             // raw element bytes
 }
 
+// ── Execution Plan (field numbers 20-29) ──────────────────────────
+// Declares the sequential function call graph for multi-function modules.
+// Produced by the Python compiler (split.py), consumed by the C++ chain
+// wrapper pass (SfChainWrapper.cpp) and Path B Rust runtime.
+//
+// Separates concerns: the producer (Python) knows the correct ordering
+// and dataflow edges; the consumer (C++/Rust) reads the plan without
+// deriving it from naming conventions or string sorting.
+
+message ExecutionPlan {
+  // Global input arg names for the combined entry point (main()).
+  // In order: [input_ids, weight_1, weight_2, ...].
+  // Corresponds to sf.weight_names on main_0 after weight promotion.
+  repeated string global_inputs = 20;
+
+  // Sequential execution steps. Index 0 runs first, then 1, etc.
+  repeated ExecutionStep steps = 21;
+}
+
+message ExecutionStep {
+  string func_name = 1;
+
+  // One EdgeInput per function argument, in func arg order.
+  // Arg 0 is always the hidden state (STEP_OUTPUT from previous step,
+  // or GLOBAL_INPUT for main_0's input_ids).
+  repeated EdgeInput inputs = 2;
+}
+
+message EdgeInput {
+  EdgeSource source = 1;
+  uint32 source_index = 2;
+  // GLOBAL_INPUT: index into ExecutionPlan.global_inputs
+  // STEP_OUTPUT:   output index of the referenced step (0-based)
+  //   The step is always the step at source_index_offset below current,
+  //   OR an earlier step explicitly referenced when a later function
+  //   consumes main_0 outputs directly (e.g., final_norm weights).
+  uint32 producer_step = 3;  // only meaningful for STEP_OUTPUT
+}
+
+enum EdgeSource {
+  GLOBAL_INPUT = 0;
+  STEP_OUTPUT = 1;
+}
+
 // ── Cache policy types (field numbers 200+) ───────────────────────
 
 // Describes one contiguous cache storage region.

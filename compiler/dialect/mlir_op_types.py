@@ -36,6 +36,7 @@ class MlirFunction:
     weights: dict[str, Any] = field(default_factory=dict)
     param_weight_names: set[str] = field(default_factory=set)
     const_weight_names: set[str] = field(default_factory=set)
+    weight_names: list[str] = field(default_factory=list)  # Ordered weight arg names for this function
 
 
 @dataclass
@@ -44,6 +45,7 @@ class MlirModule:
 
     functions: list[MlirFunction] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    chain_order: list[str] = field(default_factory=list)
 
     @property
     def main(self) -> MlirFunction:

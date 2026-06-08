@@ -189,7 +189,7 @@ def _make_multi_functions(
     param_names: set[str],
     const_names: set[str],
     base_name: str,
-) -> list[MlirFunction]:
+) -> tuple[list[MlirFunction], list[str]]:
     """Split mlir_ops at sentinel boundaries into separate MlirFunction objects.
 
     If a block's first op is ``scaled_dot_product_attention`` (SD-PA), it is
@@ -217,10 +217,18 @@ def _make_multi_functions(
         blocks.append(current)
 
     if len(blocks) <= 1:
+        # Single function: collect weight names in ops order
+        single_weight_names = []
+        for op in mlir_ops:
+            if op.op_name == "weight":
+                wname = op.attributes.get("name", "")
+                if wname:
+                    single_weight_names.append(wname)
         return [MlirFunction(
             name=base_name, inputs=global_inputs, outputs=global_outputs,
             ops=mlir_ops, weights=weights,
             param_weight_names=param_names, const_weight_names=const_names,
+            weight_names=single_weight_names,
         )]
 
     # Build type map: SSA name → MLIR type string (normalize % prefix)
@@ -298,8 +306,15 @@ def _make_multi_functions(
 
         # Function inputs with proper types
         f_inputs: list[tuple[str, str]]
+        ordered_weights: list[str] = []
+        _ssa_to_wname: dict[str, str] = {}
         if fi == 0:
             f_inputs = list(global_inputs)
+            for op in block:
+                if op.op_name == "weight" and op.results:
+                    wname = op.attributes.get("name", "")
+                    if wname:
+                        _ssa_to_wname[op.results[0].lstrip("%")] = wname
         else:
             f_inputs = []
             # Build producer order map: SSA name → (func_idx, op_sequence_number)
@@ -334,7 +349,10 @@ def _make_multi_functions(
             for val, _ in nw_sorted:
                 if not type_map.get(val, "").startswith("tensor<1x"):
                     f_inputs.append((f"%{val}", type_map.get(val, "tensor<f32>")))
-            # Then weights
+            # Then weights — sorted by SSA name to ensure deterministic ordering.
+            # Record the ordered weight names for this function so downstream
+            # tools and tests can construct correct input tensors.
+            ordered_weights = [val for val, _ in sorted(w_0, key=lambda x: x[0])]
             for val, _ in sorted(w_0, key=lambda x: x[0]):
                 f_inputs.append((f"%{val}", type_map.get(val, "tensor<f32>")))
             # Finally sym_size scalars
@@ -374,6 +392,21 @@ def _make_multi_functions(
             if v_ssa:
                 kv_to_mark.add(v_ssa)
 
+        # For main_0, weight_names ordering: consumed weights first
+        # (emission order), then exported weights in return order
+        # (alphabetical by SSA name, matching f_outputs).
+        if fi == 0:
+            exported_weight_ssa = [
+                v for v in sorted(exported) if v in _ssa_to_wname
+            ]
+            consumed_weight_ssa = [
+                k for k in _ssa_to_wname if k not in set(exported_weight_ssa)
+            ]
+            ordered_weights = (
+                [_ssa_to_wname[v] for v in consumed_weight_ssa]
+                + [_ssa_to_wname[v] for v in exported_weight_ssa]
+            )
+
         f_outputs: list[tuple[str, str, bool]] = []
         for v in sorted(exported):
             consumed = v in kv_to_mark
@@ -399,6 +432,8 @@ def _make_multi_functions(
             weights={k: v for k, v in weights.items() if k in weight_refs_per_func[fi]},
             param_weight_names=param_names & weight_refs_per_func[fi],
             const_weight_names=const_names & weight_refs_per_func[fi],
+            weight_names=ordered_weights,
         ))
 
-    return funcs
+    chain_order = [f.name for f in funcs]
+    return funcs, chain_order

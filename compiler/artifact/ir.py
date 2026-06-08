@@ -120,12 +120,16 @@ def _build_mlir_function(func: MlirFunction, ir_mod: Any, ctx: Any) -> tuple[Any
         arg_types.append(_type_str_to_ir_type(tp))
 
     func_type = _ir.FunctionType.get(arg_types, [])
+    func_attrs: dict[str, ir.Attribute] = {
+        "function_type": _ir.TypeAttr.get(func_type),
+        "sym_name": _ir.StringAttr.get(func.name),
+    }
+    if func.weight_names:
+        name_attrs = [_ir.StringAttr.get(n) for n in func.weight_names]
+        func_attrs["sf.weight_names"] = _ir.ArrayAttr.get(name_attrs)
     func_op = _ir.Operation.create(
         "func.func",
-        attributes={
-            "function_type": _ir.TypeAttr.get(func_type),
-            "sym_name": _ir.StringAttr.get(func.name),
-        },
+        attributes=func_attrs,
         regions=1,
     )
     ir_mod.body.append(func_op.operation)
@@ -386,6 +390,11 @@ def mlir_module_to_ir_module(module: MlirModule, ctx: Any = None) -> Any:
             output_values = _resolve_output_values(func, ssa_map)
             _build_return_op(output_values, func.outputs, body_blk)
             _update_function_type(func_op, arg_values, output_values)
+
+        # Attach chain_order as module attribute for the wrapper pass
+        if module.chain_order:
+            name_attrs = [_ir.StringAttr.get(n) for n in module.chain_order]
+            ir_mod.operation.attributes["sf.chain_order"] = _ir.ArrayAttr.get(name_attrs)
 
         return ir_mod
 
