@@ -250,6 +250,7 @@ def main() -> None:
     print("   Running C++ lowering...")
     _pass_pipelines = [
         ("sf-promote-weights", "builtin.module(sf-promote-weights)"),
+        ("sf-chain-wrapper", "builtin.module(sf-chain-wrapper)"),
         ("canonicalize", "builtin.module(canonicalize)"),
         ("cse", "builtin.module(cse)"),
         ("sf-lower-to-linalg", "builtin.module(sf-lower-to-linalg)"),

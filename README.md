@@ -146,7 +146,9 @@ sequenceDiagram
 
 | Metric | Value |
 |---|---|
-| **Path A (dylib) vs HF cosine** | cos_sim = 1.000000 ✅ |
+| **Path A (dylib) vs HF cosine** | cos_sim = 0.999999 ✅ (Python executor); compiler pipeline verified at 207-param scale |
+| **Path A (dylib with KV cache)** | KV infrastructure tests pass; numerical cos comparison pending |
+| **Path B (HAL IR)** | Build infrastructure incomplete — hal_ops_cpu.rs not generated |
 | **Models supported** | opt-125m, tiny-llama |
 | **Compilation time (opt-125m)** | ~4 min (llc O0 dominates) |
 | **Inference correctness** | Token-exact greedy match ✅ |
@@ -248,7 +250,7 @@ LLM-CompileForge supports two execution modes, selected at compile time:
 | **Runner** | `compute_graph_runner.rs` | `hal_runner.rs` |
 | **Executable** | `CpuExecutable` (loads .dylib) | `HalRustExecutable` (pure Rust) |
 | **Feature flag** | Default | `--features hal-rust` |
-| **Correctness** | cos_sim = 1.0 ✅ | NaN (WIP — type tracking) |
+| **Correctness** | cos_sim = 0.999999 ✅ (compiler-verified via Python executor, 35 tests GREEN) | Build infrastructure incomplete (hal_ops_cpu.rs not generated) |
 | **Purpose** | Production serving | Validation & new hardware bring-up |
 
 ## Feedback Loops
@@ -295,8 +297,8 @@ Bug fix workflow:
 - [x] PagedAttention KV Cache with Radix Tree prefix cache
 - [x] Continuous Batching + Chunked Prefill scheduler
 - [x] OpenAI-compatible REST API server
-- [x] Path A inference (cos_sim = 1.0 vs HF)
-- [ ] Path B inference (NaN → WIP)
+- [x] Path A inference (cos_sim = 0.999999 vs HF, 35 compiler tests GREEN)
+- [ ] Path B inference (build pipeline incomplete — hal_ops_cpu.rs generation needed)
 - [ ] NVIDIA GPU backend (CUDA)
 - [ ] Quantization toolchain (AWQ, SmoothQuant)
 

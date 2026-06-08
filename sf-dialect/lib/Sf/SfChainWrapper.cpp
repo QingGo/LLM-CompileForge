@@ -30,7 +30,6 @@ struct SfChainWrapperPass
     auto module = getOperation();
     auto *ctx = &getContext();
 
-    // Read execution order from Python-split set module attribute.
     auto orderAttr = module->getAttrOfType<ArrayAttr>("sf.chain_order");
     if (!orderAttr)
       return;
@@ -60,7 +59,8 @@ struct SfChainWrapperPass
         OpBuilder builder(ctx);
         builder.setInsertionPointToEnd(module.getBody());
         auto mainFunc = builder.create<func::FuncOp>(loc, "main", mainType);
-        mainFunc.setVisibility(SymbolTable::Visibility::Private);
+        // Do NOT set Private — public visibility is required for
+        // llvm.emit_c_interface and _mlir_ciface_main export.
         auto *entryBlock = mainFunc.addEntryBlock();
         builder.setInsertionPointToStart(entryBlock);
         SmallVector<Value> callArgs;
@@ -131,11 +131,28 @@ struct SfChainWrapperPass
         auto it = nameToReturnIdx.find(argName);
         if (it != nameToReturnIdx.end()) {
           callArgs.push_back(main0Call.getResult(it->second));
-        } else {
+        } else if (!argName.empty()) {
           func.emitError("wrapper: cannot map arg ") << a
               << " ('" << argName << "') — not in main_0 weight_names";
           signalPassFailure();
           return;
+        } else {
+          // Non-weight SSA arg (sym_size, mask, etc.): match by type
+          auto expectedType = funcType.getInput(a);
+          bool found = false;
+          for (unsigned r = 1; r < main0Call.getNumResults(); ++r) {
+            if (main0Call.getResult(r).getType() == expectedType) {
+              callArgs.push_back(main0Call.getResult(r));
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
+            func.emitError("wrapper: cannot map arg ") << a
+                << " (non-weight SSA, no type match)";
+            signalPassFailure();
+            return;
+          }
         }
       }
 
