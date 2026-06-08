@@ -30,7 +30,7 @@ struct SfChainWrapperPass
     auto module = getOperation();
     auto *ctx = &getContext();
 
-    auto orderAttr = module->getAttrOfType<ArrayAttr>("sf.chain_order");
+    auto orderAttr = module->getAttrOfType<ArrayAttr>("chain_order");
     if (!orderAttr)
       return;
 

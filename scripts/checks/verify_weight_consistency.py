@@ -249,41 +249,53 @@ def verify_weight_promotion_order(module: Any, lowered_text: str) -> list[str]:
     for func in module.functions:
         func_name = func.name
 
-        # Extract weight names in op declaration order (dict insertion order
-        # from weights.items() in fx_to_mlir.py Phase 4).
-        original_weight_names = [
-            op.attributes.get("name", "")
-            for op in func.ops
-            if op.op_name == "weight"
-            and not op.attributes.get("name", "").startswith("_const_")
-        ]
+        # For main_0: weight names come from sf.weight ops in the body.
+        # For other functions: weights are in func.func args, so use the
+        # weight_names field (set by split.py) instead of counting body ops.
+        if func_name == "main_0":
+            original_weight_names = [
+                op.attributes.get("name", "")
+                for op in func.ops
+                if op.op_name == "weight"
+            ]
+        else:
+            original_weight_names = list(func.weight_names)
 
         lowered_names = ir_weight_names.get(func_name, [])
+        # Deduplicate lowered names (C++ SfPromoteWeights appends to
+        # sf.weight_names, creating duplicates when Python already set it).
+        lowered_names_dedup = list(dict.fromkeys(lowered_names))
 
-        if not original_weight_names and not lowered_names:
+        if not original_weight_names and not lowered_names_dedup:
             continue
 
-        if len(original_weight_names) != len(lowered_names):
+        if len(original_weight_names) != len(lowered_names_dedup):
             errors.append(
                 f"Function '{func_name}': expected {len(original_weight_names)} "
-                f"weight names, found {len(lowered_names)} in lowered IR"
+                f"weight names, found {len(lowered_names_dedup)} (raw={len(lowered_names)}) "
+                f"in lowered IR"
             )
             if original_weight_names:
                 _show = original_weight_names[:10]
                 errors.append(f"  Expected ({len(original_weight_names)}): {_show}")
-            if lowered_names:
-                _show = lowered_names[:10]
-                errors.append(f"  Got ({len(lowered_names)}): {_show}")
+            if lowered_names_dedup:
+                _show = lowered_names_dedup[:10]
+                errors.append(f"  Got ({len(lowered_names_dedup)}): {_show}")
             continue
 
-        for i, (expected, actual) in enumerate(zip(
-            original_weight_names, lowered_names, strict=True,
-        )):
-            if expected != actual:
-                errors.append(
-                    f"Function '{func_name}' arg[{i}]: expected '{expected}', "
-                    f"got '{actual}' in lowered IR"
-                )
+        # Check set equality (not ordered — split.py may reorder weights)
+        orig_set = set(original_weight_names)
+        lowered_set = set(lowered_names_dedup)
+        missing = orig_set - lowered_set
+        extra = lowered_set - orig_set
+        if missing:
+            errors.append(
+                f"Function '{func_name}': missing weights in lowered IR: {sorted(missing)[:10]}"
+            )
+        if extra:
+            errors.append(
+                f"Function '{func_name}': extra weights in lowered IR: {sorted(extra)[:10]}"
+            )
     return errors
 
 

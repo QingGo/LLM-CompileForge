@@ -337,8 +337,11 @@ def _apply_sf_to_linalg(mlir_text: str, orig_mlir_mod: Any = None) -> str:
             ir_mod = mlir_module_to_ir_module(orig_mlir_mod, ctx=ctx)
         else:
             ir_mod = ir.Module.parse(mlir_text, ctx)
+        # Run chain-wrapper BEFORE any other pass (preserves chain_order attr)
+        pman_wrap = pm.PassManager.parse("builtin.module(sf-chain-wrapper)", ctx)
+        pman_wrap.run(ir_mod.operation)
         pman = pm.PassManager.parse(
-            "builtin.module(sf-promote-weights,sf-chain-wrapper,canonicalize,cse,sf-lower-to-linalg)",
+            "builtin.module(sf-promote-weights,canonicalize,cse,sf-lower-to-linalg)",
             ctx)
         pman.enable_verifier(True)
         pman.enable_timing()

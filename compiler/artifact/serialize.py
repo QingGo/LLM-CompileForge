@@ -41,7 +41,7 @@ def mlir_module_to_text(module: MlirModule) -> str:
     attrs = ""
     if module.chain_order:
         names = ", ".join(f'"{n}"' for n in module.chain_order)
-        attrs = f' attributes {{sf.chain_order = [{names}]}}'
+        attrs = f' attributes {{chain_order = [{names}]}}'
     lines.append(f"module{attrs} {{")
 
     for func in module.functions:

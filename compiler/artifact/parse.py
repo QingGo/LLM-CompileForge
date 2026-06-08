@@ -29,6 +29,7 @@ def _parse_mlir_text(text: str) -> MlirModule:
     for large files and gives us direct control over the AST structure.
     """
     functions: list[MlirFunction] = []
+    chain_order: list[str] = []
     current_func: MlirFunction | None = None
     ssa_to_name: dict[str, str] = {}  # SSA → weight name
     ssa_types: dict[str, str] = {}  # SSA → MLIR type
@@ -42,6 +43,20 @@ def _parse_mlir_text(text: str) -> MlirModule:
 
         # Module / function boundaries
         if stripped == "module {":
+            continue
+
+        # Module attributes: module attributes {chain_order = [...]} {
+        if stripped.startswith("module attributes {") and stripped.endswith("{"):
+            attr_block = stripped[len("module attributes "):-1].strip()
+            if attr_block.startswith("{") and attr_block.endswith("}"):
+                # Find chain_order = [...] inside attr block
+                import re as _re2
+                co_match = _re2.search(r'chain_order\s*=\s*\[(.*?)\]', attr_block)
+                if co_match:
+                    names_str = co_match.group(1)
+                    chain_order = [
+                        n.strip().strip('"') for n in _split_comma(names_str)
+                    ]
             continue
         if stripped == "}":
             if current_func is not None:
@@ -145,7 +160,7 @@ def _parse_mlir_text(text: str) -> MlirModule:
                 f"SSA names (check fx_to_mlir.py output handling)."
             )
 
-    return MlirModule(functions=functions)
+    return MlirModule(functions=functions, chain_order=chain_order)
 
 
 def _parse_mlir_op(
