@@ -3,12 +3,38 @@
 
 include "mlir/Pass/PassBase.td"
 
+def SfChainWrapper : Pass<"sf-chain-wrapper", "mlir::ModuleOp"> {
+  let summary = "Generate a main() wrapper that chains main_0→main_1→...→main_N";
+  let description = [{
+    Runs after sf-lower-to-linalg (tensor level, before bufferize).
+    Generates a `main` function that:
+    1. Calls main_0 with all inputs → gets hidden + weight identity copies
+    2. For each layer function main_{i} (i>0), calls it with the previous
+       function's hidden output + the appropriate weight copies from main_0.
+    3. Returns the final function's output.
+
+    Weight partitioning: main_0's weight returns are partitioned across
+    layer functions in order. Each layer function's weight arg count
+    determines how many weights it consumes. The wrapper tracks a running
+    offset into main_0's weight returns.
+
+    This makes the compiled dylib self-contained: callers only need a
+    single `_mlir_ciface_main` entry point.
+  }];
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+  ];
+}
+
 def SfPromoteWeights : Pass<"sf-promote-weights", "mlir::ModuleOp"> {
   let summary = "Promote sf.weight and sf.constant ops to func arguments";
   let description = [{
     Pre-processing pass that converts `sf.weight` and `sf.constant` ops into
     function arguments. Must run before `sf-lower-to-linalg`. The Rust runtime
     provides these tensors via the function call interface.
+
+    Sets `sf.weight_names` on main_0 with the ordered list of all promoted
+    weight names.
   }];
   let dependentDialects = [
     "mlir::func::FuncDialect",

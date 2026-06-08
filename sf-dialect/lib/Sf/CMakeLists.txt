@@ -15,6 +15,7 @@ add_mlir_dialect_library(SfDialect
   SfOps.cpp
   SfPromoteWeights.cpp
   SfaContractPass.cpp
+  SfChainWrapper.cpp
   SfShapeInference.cpp
   SfStripGEPNuw.cpp
 

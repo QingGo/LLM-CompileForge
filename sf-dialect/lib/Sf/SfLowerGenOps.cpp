@@ -152,18 +152,27 @@ struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
       loopBound = arith::ConstantIndexOp::create(rewriter, loc, staticOutDim);
       outShape = {staticOutDim};
     } else {
-      // Dynamic output: use input value as size (legacy behavior — correct
-      // dynamic sizing requires dyn_shape operands which are not yet wired).
-      if (startType.isInteger(64)) {
-        loopBound = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), startVal);
-      } else if (isa<FloatType>(startType)) {
-        Value nI64 = arith::FPToSIOp::create(rewriter, loc, rewriter.getI64Type(), startVal);
-        loopBound = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), nI64);
+      // Dynamic output: use dyn_shape[0] if available; otherwise query tensor.dim
+      if (!op.getDynShape().empty()) {
+        Value shapeOp = op.getDynShape()[0];
+        // Extract scalar from tensor<1xi64> shape operand
+        Value extracted = tensor::ExtractOp::create(rewriter, loc,
+            getElementTypeOrSelf(shapeOp.getType()), shapeOp, zeroIdx);
+        loopBound = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), extracted);
       } else {
-        return failure();
+        // No dyn_shape — create empty tensor first, then query dim at runtime
+        outShape = {ShapedType::kDynamic};
+        // Use a placeholder size of 1 for EmptyOp; actual loop bound comes from tensor.dim
+        dynSizes.push_back(arith::ConstantIndexOp::create(rewriter, loc, 1));
+        Value placeholder = tensor::EmptyOp::create(rewriter, loc, outShape, eltType, dynSizes);
+        loopBound = rewriter.create<tensor::DimOp>(loc, placeholder, 0);
+        // Reset dynSizes for the actual output tensor
+        dynSizes.clear();
       }
       outShape = {ShapedType::kDynamic};
-      dynSizes.push_back(loopBound);
+      if (dynSizes.empty()) {
+        dynSizes.push_back(loopBound);
+      }
     }
 
     Value rawEmpty = tensor::EmptyOp::create(rewriter, loc, outShape, eltType, dynSizes);

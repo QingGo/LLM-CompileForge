@@ -15,6 +15,7 @@ std::unique_ptr<mlir::Pass> createSfFuseRmsNormPass();
 std::unique_ptr<mlir::Pass> createSfFuseQKVPass();
 std::unique_ptr<mlir::Pass> createSfFuseAttentionPass();
 std::unique_ptr<mlir::Pass> createSfaContractVerify();
+std::unique_ptr<mlir::Pass> createSfChainWrapper();
 
 } // namespace sf
 } // namespace mlir

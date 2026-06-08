@@ -137,11 +137,12 @@ struct SfLowerToLinalgPass
           }
         }
         if (auto arangeOp = dyn_cast<sf::ArangeOp>(op)) {
-          size_t numDims = 1 + arangeOp.getDynShape().size();
           auto resultTy = dyn_cast<RankedTensorType>(op->getResult(0).getType());
-          if (resultTy && resultTy.getRank() < (int64_t)numDims) {
+          // dyn_shape operands specify runtime dimension values, NOT additional
+          // dimensions. Arange is always 1D — only promote from scalar/unknown rank.
+          if (resultTy && resultTy.getRank() == 0) {
             auto newTy = RankedTensorType::get(
-                SmallVector<int64_t>(numDims, ShapedType::kDynamic),
+                SmallVector<int64_t>(1, ShapedType::kDynamic),
                 resultTy.getElementType());
             op->getResult(0).setType(newTy);
             llvm::errs() << "  [sf-lower-to-linalg] fix arange type: "

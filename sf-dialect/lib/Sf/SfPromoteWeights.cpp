@@ -1,6 +1,8 @@
 #include "Sf/SfPasses.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/StringMap.h"
 
 #define GEN_PASS_DEF_SFPROMOTEWEIGHTS
 #include "Sf/SfPasses.h.inc"
@@ -40,41 +42,68 @@ struct SfPromoteWeightsPass
     llvm::errs() << "  [sf-promote-weights] found " << weightOps.size()
                  << " weight ops\n";
 
-    // Phase 1b: promote each weight op (outside the walk)
-    unsigned promoted = 0;
+    // Phase 1b: promote each weight op, preserving sf.weight_names order
+    // when the attribute was already set by Python.
+    // Group ops by parent function.
+    llvm::MapVector<func::FuncOp, SmallVector<sf::WeightOp>> funcToOps;
     for (auto op : weightOps) {
       auto parentFunc = op->template getParentOfType<func::FuncOp>();
-      if (!parentFunc) continue;
-
-      auto resultType = op.getResult().getType();
-      if (!isa<RankedTensorType>(resultType)) continue;
-
-      auto loc = op.getLoc();
-      Block &entry = parentFunc.getBody().front();
-      Value newArg = entry.insertArgument(
-          entry.getNumArguments(), resultType, loc);
-
-      // Collect weight name for downstream verification
-      if (auto nameAttr = op->getAttrOfType<StringAttr>("name")) {
-        auto existing =
-            parentFunc->getAttrOfType<ArrayAttr>("sf.weight_names");
-        SmallVector<Attribute> names;
-        if (existing)
-          names.assign(existing.begin(), existing.end());
-        names.push_back(nameAttr);
-        parentFunc->setAttr("sf.weight_names",
-                            ArrayAttr::get(&this->getContext(), names));
+      if (parentFunc)
+        funcToOps[parentFunc].push_back(op);
+    }
+    unsigned promoted = 0;
+    for (auto &[parentFunc, ops] : funcToOps) {
+      auto wnames = parentFunc->getAttrOfType<ArrayAttr>("sf.weight_names");
+      if (wnames) {
+        // Reorder ops to match weight_names (consumed first, exported in
+        // return order).  Preserves Python-set ordering for callers.
+        llvm::StringMap<sf::WeightOp> nameToOp;
+        for (auto op : ops)
+          if (auto na = op->getAttrOfType<StringAttr>("name"))
+            nameToOp[na.getValue()] = op;
+        SmallVector<sf::WeightOp> orderedOps;
+        for (auto attr : wnames) {
+          auto name = mlir::cast<StringAttr>(attr).getValue();
+          auto it = nameToOp.find(name);
+          if (it != nameToOp.end()) {
+            orderedOps.push_back(it->second);
+            nameToOp.erase(it);
+          }
+        }
+        for (auto &[_, op] : nameToOp)
+          orderedOps.push_back(op);
+        ops = std::move(orderedOps);
       }
+      for (auto op : ops) {
+        auto resultType = op.getResult().getType();
+        if (!isa<RankedTensorType>(resultType)) continue;
 
-      auto origType = parentFunc.getFunctionType();
-      SmallVector<Type> newInputs(origType.getInputs());
-      newInputs.push_back(resultType);
-      parentFunc.setType(
-          FunctionType::get(&this->getContext(), newInputs, origType.getResults()));
+        auto loc = op.getLoc();
+        Block &entry = parentFunc.getBody().front();
+        Value newArg = entry.insertArgument(
+            entry.getNumArguments(), resultType, loc);
 
-      op.replaceAllUsesWith(newArg);
-      op.erase();
-      ++promoted;
+        if (auto nameAttr = op->getAttrOfType<StringAttr>("name")) {
+          auto existing =
+              parentFunc->getAttrOfType<ArrayAttr>("sf.weight_names");
+          SmallVector<Attribute> names;
+          if (existing)
+            names.assign(existing.begin(), existing.end());
+          names.push_back(nameAttr);
+          parentFunc->setAttr("sf.weight_names",
+                              ArrayAttr::get(&this->getContext(), names));
+        }
+
+        auto origType = parentFunc.getFunctionType();
+        SmallVector<Type> newInputs(origType.getInputs());
+        newInputs.push_back(resultType);
+        parentFunc.setType(
+            FunctionType::get(&this->getContext(), newInputs, origType.getResults()));
+
+        op.replaceAllUsesWith(newArg);
+        op.erase();
+        ++promoted;
+      }
     }
 
     LLVM_DEBUG(llvm::dbgs() << "[sf-promote-weights] Promoted "
