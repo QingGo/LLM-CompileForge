@@ -189,42 +189,6 @@ def _parse_sret_outputs(sret_bytes, output_ranks):
     return results
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  SSA chain runner — uses compiler's sf.weight_names for arg mapping
-# ══════════════════════════════════════════════════════════════════════
-
-def _parse_function_weight_names(lowered_mlir: str) -> dict[str, list[str]]:
-    """Parse per-function sf.weight_names from lowered MLIR.
-
-    Each function after sf-promote-weights + sf-lower-to-linalg has an
-    sf.weight_names attribute listing the weight names in argument order.
-    Returns {func_name: [weight_name, ...]}.
-    """
-    result: dict[str, list[str]] = {}
-    current_func: str | None = None
-    for line in lowered_mlir.split('\n'):
-        m = re.match(r'\s*func\.func @(main_\d+)', line)
-        if m:
-            current_func = m.group(1)
-        wm = re.search(r'(?:debug_weight_names|sf\.weight_names)\s*=\s*\[(.*?)\]', line)
-        if wm and current_func:
-            names = [n.strip().strip('"') for n in wm.group(1).split(',')]
-            result[current_func] = list(dict.fromkeys(names))  # deduplicate (C++ may append duplicates)
-    return result
-
-
-def _run_ssa_chain(lib, all_inputs):
-    sret0 = _call_ciface(lib, "_mlir_ciface_main_0", all_inputs)
-    ranks0 = [3, 1, 1, 2, 2, 2, 2, 1, 2, 1, 2, 1, 1, 1, 1]
-    out0 = _parse_sret_outputs(sret0, ranks0)
-    m1_in = [out0[0]] + out0[3:15]
-    sret1 = _call_ciface(lib, "_mlir_ciface_main_1", m1_in)
-    out1 = _parse_sret_outputs(sret1, [3])
-    m2_in = [out1[0], out0[13], out0[14]]
-    sret2 = _call_ciface(lib, "_mlir_ciface_main_2", m2_in)
-    out2 = _parse_sret_outputs(sret2, [3])
-    return out2[0]
-
 
 # ══════════════════════════════════════════════════════════════════════
 @pytest.mark.integration
