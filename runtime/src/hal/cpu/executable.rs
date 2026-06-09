@@ -139,9 +139,13 @@ impl traits::Executable for CpuExecutable {
             .map(|desc| desc.as_input_ptr())
             .collect();
 
-        // Step 3: Allocate sret buffer for output descriptors
-        const SRET_BUF_SIZE: usize = 131072;
-        let mut sret: Vec<u8> = vec![0u8; SRET_BUF_SIZE];
+        // Step 3: Allocate sret buffer for output descriptors.
+        // Compute from output ranks: 24 + 16 * rank bytes per descriptor.
+        let sret_size: usize = outputs.iter()
+            .map(|o| 24 + 16 * o.rank() as usize)
+            .sum::<usize>()
+            .max(4096);
+        let mut sret: Vec<u8> = vec![0u8; sret_size];
         let sret_ptr = sret.as_mut_ptr() as *mut c_void;
 
         // Step 4: Build argument list and call the ciface kernel
@@ -172,10 +176,10 @@ impl traits::Executable for CpuExecutable {
 
             // ── Pass 1: parse + copy ──────────────────────────────
             for (oi, output_sfa) in outputs.iter().enumerate() {
-                if sret_offset >= SRET_BUF_SIZE - 24 {
+                if sret_offset >= sret.len().saturating_sub(24) {
                     anyhow::bail!(
                         "sret overflow at output {} (offset {} >= {})",
-                        oi, sret_offset, SRET_BUF_SIZE,
+                        oi, sret_offset, sret.len(),
                     );
                 }
 

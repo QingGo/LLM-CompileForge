@@ -194,7 +194,8 @@ def _jit_run(mod) -> np.ndarray | None:
             return None
 
         lib = ctypes.CDLL(str(dylib))
-        sret = (ctypes.c_uint8 * 131072)()
+        # Single packed rank-3 output descriptor: 24 + 16*3 = 72 bytes
+        sret = (ctypes.c_uint8 * max(72 * 4, 4096))()
         lib._mlir_ciface_main(ctypes.byref(sret))
 
         return _parse_sret(sret, mod)

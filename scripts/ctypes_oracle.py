@@ -26,6 +26,7 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from compiler.sfcf_parser import (  # noqa: E402
+    compute_sret_size,
     make_memref_descriptor,
     parse_compute_graph,
     parse_sfcf_blob,
@@ -36,18 +37,7 @@ from scripts._cos import cosine_similarity  # noqa: E402
 
 
 class CtypesOracle:
-    """Load artifact weights + Python executor reference, compare any dylib against it.
-
-    On init, parses the SFCF blob from the original compiled dylib and caches the
-    compute graph.  Each call to ``compare(dylib_path)`` opens the test dylib,
-    resolves kernel symbols against the cached graph, runs the forward pass via
-    ctypes, and returns the cosine similarity against the Python executor reference.
-    """
-
-    # Matches ctypes_forward.py's default input
-    INPUT_IDS = np.array([[2, 32826, 85, 4129], [0, 0, 0, 0]], dtype=np.int64)
-    # 128KB for sret output buffer (matches ctypes_forward.py)
-    SRET_SIZE = 131072
+    """Oracle that runs compiled .dylib via ctypes and compares outputs."""
 
     def __init__(self, artifact_dir: str = "./outputs/compiled/opt_125m_fresh"):
         self.artifact_dir = os.path.abspath(artifact_dir)
@@ -390,7 +380,8 @@ class CtypesOracle:
                 input_descs.append(desc)
                 input_args.append(ctypes.byref(desc))
 
-            sret = (ctypes.c_uint8 * self.SRET_SIZE)()
+            sret_size = compute_sret_size(func_def.get("outputs", []))
+            sret = (ctypes.c_uint8 * sret_size)()
             all_args = [ctypes.byref(sret)] + input_args
             kernel.argtypes = [ctypes.c_void_p] * len(all_args)
             kernel.restype = None

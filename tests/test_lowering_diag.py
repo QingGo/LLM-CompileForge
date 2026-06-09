@@ -8,6 +8,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from compiler.backend.compile_utils import _setup_mlir_path
+from compiler.pipeline.lowering import SF_LOWERING_PIPELINE
 
 # Templates use ${var} syntax — replaced via .replace() not .format()
 # to avoid conflicts with MLIR's generic op format syntax { ... }.
@@ -142,7 +143,7 @@ def run_test(name: str, mlir_text: str, timeout_s: int = 5) -> tuple[bool, str]:
         try:
             pman = pm.PassManager.parse(
                 "builtin.module("
-                "sf-promote-weights,canonicalize,cse,sf-lower-to-linalg"
+                + SF_LOWERING_PIPELINE +
                 ")", ctx)
             pman.enable_verifier(True)
             t0 = time.time()

@@ -332,8 +332,9 @@ fn test_sret_second_descriptor_misalignment_reproduces_0xc00() {
 
     // Simulate: first output read as rank=1 (40 bytes), offset moves to 40
     // Second output at offset 40: read as rank=1 another 40 bytes.
-    // The real sret buffer is 131072 bytes; extend our test buffer.
-    sret_buf.resize(131072, 0);
+    // Two rank-1 output descriptors = 2 * (24 + 16*1) = 80 bytes.
+    // Extend with headroom for safe offset calculations.
+    sret_buf.resize(4096, 0);
     let slice2 = &sret_buf[40..80];
     let result = unsafe { sret::read_sret_descriptor(slice2, 1) };
     // With the old buggy code, aligned would be 0xc00 (3072).

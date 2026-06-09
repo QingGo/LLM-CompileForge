@@ -19,6 +19,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
+from compiler.sfcf_parser import DEFAULT_SRET_SIZE
 
 
 def _cos(a: np.ndarray, b: np.ndarray) -> float:
@@ -117,7 +118,7 @@ class TestEmbeddingIsolation:
             lib = ctypes.CDLL(dylib)
             in_m = _memref(indices.ctypes.data, 2, indices.shape)
             w_m = _memref(weight.ctypes.data, 2, weight.shape)
-            sret = (ctypes.c_uint8 * 131072)()
+            sret = (ctypes.c_uint8 * DEFAULT_SRET_SIZE)()
             args = [ctypes.byref(sret), ctypes.byref(in_m), ctypes.byref(w_m)]
             lib._mlir_ciface_main_0.argtypes = [ctypes.c_void_p] * 3
             lib._mlir_ciface_main_0.restype = None
@@ -173,7 +174,7 @@ class TestEmbeddingWithIdentityWeights:
                    _memref(weight.ctypes.data, 2, weight.shape)]
             for w in id_weights:
                 mrs.append(_memref(w.ctypes.data, 2, w.shape))
-            sret = (ctypes.c_uint8 * 131072)()
+            sret = (ctypes.c_uint8 * DEFAULT_SRET_SIZE)()
             args2 = [ctypes.byref(sret)] + [ctypes.byref(m) for m in mrs]
             lib._mlir_ciface_main_0.argtypes = [ctypes.c_void_p] * len(args2)
             lib._mlir_ciface_main_0.restype = None
@@ -245,7 +246,7 @@ class TestFullModelMain0Isolation:
 
             lib = ctypes.CDLL(dylib)
             mrs = [_memref(a.ctypes.data, a.ndim, a.shape) for a in all_inputs]
-            sret = (ctypes.c_uint8 * 131072)()
+            sret = (ctypes.c_uint8 * DEFAULT_SRET_SIZE)()
             args = [ctypes.byref(sret)] + [ctypes.byref(m) for m in mrs]
             k = getattr(lib, "_mlir_ciface_main_0")
             k.argtypes = [ctypes.c_void_p] * len(args)

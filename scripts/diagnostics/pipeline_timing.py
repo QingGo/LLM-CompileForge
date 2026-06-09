@@ -103,6 +103,7 @@ def time_pipeline(artifact_dir: str) -> None:
             [sys.executable, "-c", f"""
 import sys; sys.path.insert(0, '.')
 from compiler.artifact import _parse_mlir_text, mlir_module_to_ir_module
+from compiler.pipeline.lowering import SF_LOWERING_PIPELINE
 import mlir.ir as ir, mlir.passmanager as pm
 from mlir_sf._mlir_libs._sfDialectsNanobind import sf
 
@@ -110,7 +111,7 @@ module = _parse_mlir_text(open(r'{mlir_path}').read())
 ctx = ir.Context()
 sf.register_dialects(ctx._CAPIPtr, load=True)
 ir_mod = mlir_module_to_ir_module(module, ctx=ctx)
-pman = pm.PassManager.parse('builtin.module(sf-promote-weights,canonicalize,cse,sf-lower-to-linalg)', ctx)
+pman = pm.PassManager.parse('builtin.module(' + SF_LOWERING_PIPELINE + ')', ctx)
 pman.enable_verifier(True)
 pman.run(ir_mod.operation)
 asm = ir_mod.operation.get_asm(print_generic_op_form=True)

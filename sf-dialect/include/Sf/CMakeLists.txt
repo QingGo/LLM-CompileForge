@@ -1,6 +1,8 @@
 set(LLVM_TARGET_DEFINITIONS SfOps.td)
 mlir_tablegen(SfOps.h.inc -gen-op-decls)
 mlir_tablegen(SfOps.cpp.inc -gen-op-defs)
+mlir_tablegen(SfOpsAttributes.h.inc -gen-attrdef-decls)
+mlir_tablegen(SfOpsAttributes.cpp.inc -gen-attrdef-defs)
 add_mlir_dialect(SfOps sf)
 add_public_tablegen_target(SfOpsIncGen)
 

@@ -23,6 +23,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
+from compiler.sfcf_parser import DEFAULT_SRET_SIZE
 
 
 def _cos(a: np.ndarray, b: np.ndarray) -> float:
@@ -146,7 +147,7 @@ class TestSretLayoutContract:
                    _memref(w0.ctypes.data, 2, w0.shape)]
             for w in ids:
                 mrs.append(_memref(w.ctypes.data, 2, w.shape))
-            sret = (ctypes.c_uint8 * 131072)()
+            sret = (ctypes.c_uint8 * DEFAULT_SRET_SIZE)()
             args = [ctypes.byref(sret)] + [ctypes.byref(m) for m in mrs]
             lib._mlir_ciface_main_0.argtypes = [ctypes.c_void_p] * len(args)
             lib._mlir_ciface_main_0.restype = None
@@ -169,7 +170,7 @@ class TestSretLayoutContract:
                     _memref(w0.ctypes.data, 2, w0.shape)]
             for w in ids:
                 mrs0.append(_memref(w.ctypes.data, 2, w.shape))
-            sret0 = (ctypes.c_uint8 * 131072)()
+            sret0 = (ctypes.c_uint8 * DEFAULT_SRET_SIZE)()
             a0 = [ctypes.byref(sret0)] + [ctypes.byref(m) for m in mrs0]
             lib._mlir_ciface_main_0.argtypes = [ctypes.c_void_p] * len(a0)
             lib._mlir_ciface_main_0.restype = None
@@ -178,7 +179,7 @@ class TestSretLayoutContract:
             hid = _data(al, sz)
             hm = _memref(hid.ctypes.data, 2, hid.shape)
             wm = _memref(w1.ctypes.data, 2, w1.shape)
-            sret1 = (ctypes.c_uint8 * 131072)()
+            sret1 = (ctypes.c_uint8 * DEFAULT_SRET_SIZE)()
             a1 = [ctypes.byref(sret1), ctypes.byref(hm), ctypes.byref(wm)]
             lib._mlir_ciface_main_1.argtypes = [ctypes.c_void_p] * len(a1)
             lib._mlir_ciface_main_1.restype = None
@@ -200,7 +201,7 @@ class TestSretLayoutContract:
                    _memref(w0.ctypes.data, 2, w0.shape)]
             for w in ids:
                 mrs.append(_memref(w.ctypes.data, 2, w.shape))
-            sret = (ctypes.c_uint8 * 131072)()
+            sret = (ctypes.c_uint8 * DEFAULT_SRET_SIZE)()
             args = [ctypes.byref(sret)] + [ctypes.byref(m) for m in mrs]
             lib._mlir_ciface_main_0.argtypes = [ctypes.c_void_p] * len(args)
             lib._mlir_ciface_main_0.restype = None

@@ -325,4 +325,37 @@ def Sf_FusedAttentionBlockOp : Sf_Op<"fused_attention_block", [Pure]> {
   let results = (outs Sf_FloatTensor:$output);
 }
 
+//===----------------------------------------------------------------------===//
+// Dialect Attributes — registered so canonicalize/dialect-conversion
+// preserves sf.-prefixed module/function attributes.
+//===----------------------------------------------------------------------===//
+
+def Sf_ChainOrderAttr : AttrDef<Sf_Dialect, "ChainOrder"> {
+  let summary = "Module-level: ordered function names for chain wrapper execution";
+  let mnemonic = "chain_order";
+  let parameters = (ins "mlir::ArrayAttr":$value);
+  let hasCustomAssemblyFormat = 1;
+}
+
+def Sf_WeightNamesAttr : AttrDef<Sf_Dialect, "WeightNames"> {
+  let summary = "Per-function: weight name per argument position";
+  let mnemonic = "weight_names";
+  let parameters = (ins "mlir::ArrayAttr":$value);
+  let hasCustomAssemblyFormat = 1;
+}
+
+def Sf_ConsumedInternallyAttr : AttrDef<Sf_Dialect, "ConsumedInternally"> {
+  let summary = "Per-function: per-output consumed-internally flags";
+  let mnemonic = "consumed_internally";
+  let parameters = (ins "mlir::ArrayAttr":$value);
+  let hasCustomAssemblyFormat = 1;
+}
+
+def Sf_ExecPlanDataAttr : AttrDef<Sf_Dialect, "ExecPlanData"> {
+  let summary = "Module-level: flat execution plan input bindings";
+  let mnemonic = "exec_plan_data";
+  let parameters = (ins "mlir::ArrayAttr":$value);
+  let hasCustomAssemblyFormat = 1;
+}
+
 #endif // SF_OPS

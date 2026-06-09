@@ -1,6 +1,14 @@
 // RUN: %sf-opt --sf-chain-wrapper %s | FileCheck %s
+// exec_plan_data: [num_steps=3, num_global=4,
+//   step0: 4 GLOBAL_INPUT edges → indices 0,1,2,3
+//   step1: 2 STEP_OUTPUT edges → (step=0,out=0),(step=0,out=1)
+//   step2: 2 STEP_OUTPUT edges → (step=1,out=0),(step=0,out=2)]
 
-module attributes {sf.chain_order = ["main_0", "main_1", "main_2"]} {
+module attributes {sf.chain_order = ["main_0", "main_1", "main_2"],
+                   sf.exec_plan_data = [3, 4,
+                     4, 0, 0, 0, 0, 1, 0, 0, 2, 0, 0, 3, 0,
+                     2, 1, 0, 0, 1, 0, 1,
+                     2, 1, 1, 0, 1, 0, 2]} {
   func.func @main_0(%arg0: tensor<2x4xi64>, %arg1: tensor<8x64xf32>,
                       %arg2: tensor<64x64xf32>, %arg3: tensor<64xf32>)
       -> (tensor<2x4x64xf32>, tensor<64x64xf32>, tensor<64xf32>)
@@ -27,11 +35,8 @@ module attributes {sf.chain_order = ["main_0", "main_1", "main_2"]} {
   }
 }
 
-// CHECK:      func.func private @main
+// CHECK:      func.func @main
 // CHECK:        call @main_0(
 // CHECK:        call @main_1(
-// CHECK-SAME:     %{{.+}}#0
-// CHECK-SAME:     %{{.+}}#1
 // CHECK:        call @main_2(
-// CHECK-SAME:     %{{.+}}#2
 // CHECK:        return

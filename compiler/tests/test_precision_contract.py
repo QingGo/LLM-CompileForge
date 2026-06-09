@@ -20,6 +20,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
+from compiler.sfcf_parser import DEFAULT_SRET_SIZE
 
 from gen.proto.python.sfa_precision_pb2 import NumericalTestCase, PrecisionContract  # noqa: E402
 
@@ -166,7 +167,7 @@ def _call_dylib(
         a = np.asarray(arr, dtype=np.float32)
         memrefs.append(_make_memref_struct(a.ctypes.data, a.ndim, a.shape))
 
-    sret_buf = (ctypes.c_uint8 * 131072)()
+    sret_buf = (ctypes.c_uint8 * DEFAULT_SRET_SIZE)()
     args = [ctypes.byref(sret_buf)] + [ctypes.byref(m) for m in memrefs]
 
     kernel.argtypes = [ctypes.c_void_p] * len(args)

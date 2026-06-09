@@ -23,6 +23,7 @@ import torch.nn.functional as F  # noqa: N812
 ROOT = Path(__file__).resolve().parent.parent.parent
 import sys
 sys.path.insert(0, str(ROOT))
+from compiler.sfcf_parser import DEFAULT_SRET_SIZE
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -166,7 +167,7 @@ def _compile_lowered_to_dylib(lowered_mlir: str, tmp_dir: str, name: str) -> str
 
 def _call_ciface(lib, symbol, input_arrays):
     mrs = [_memref(a.ctypes.data, a.ndim, a.shape) for a in input_arrays]
-    sret = (ctypes.c_uint8 * 131072)()
+    sret = (ctypes.c_uint8 * DEFAULT_SRET_SIZE)()
     args = [ctypes.byref(sret)] + [ctypes.byref(m) for m in mrs]
     k = getattr(lib, symbol)
     k.argtypes = [ctypes.c_void_p] * len(args)

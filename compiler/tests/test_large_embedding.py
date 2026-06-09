@@ -20,6 +20,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
+from compiler.sfcf_parser import DEFAULT_SRET_SIZE
 
 
 def _cos(a: np.ndarray, b: np.ndarray) -> float:
@@ -115,7 +116,7 @@ class TestLargeEmbedding:
             lib = ctypes.CDLL(dylib)
             in_m = _memref(input_ids.ctypes.data, 2, input_ids.shape)
             w_m = _memref(emb_w.ctypes.data, 2, emb_w.shape)
-            sret = (ctypes.c_uint8 * 131072)()
+            sret = (ctypes.c_uint8 * DEFAULT_SRET_SIZE)()
             args = [ctypes.byref(sret), ctypes.byref(in_m), ctypes.byref(w_m)]
             lib._mlir_ciface_main_0.argtypes = [ctypes.c_void_p] * 3
             lib._mlir_ciface_main_0.restype = None

@@ -28,6 +28,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
+from compiler.sfcf_parser import DEFAULT_SRET_SIZE
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -627,7 +628,7 @@ class TestMiniGptV2:
 
             lib = ctypes.CDLL(dylib)
             mrs = [_memref(a.ctypes.data, a.ndim, a.shape) for a in all_in]
-            sret = (ctypes.c_uint8 * 131072)()
+            sret = (ctypes.c_uint8 * DEFAULT_SRET_SIZE)()
             args = [ctypes.byref(sret)] + [ctypes.byref(m) for m in mrs]
             k = getattr(lib, "_mlir_ciface_main_0")
             k.argtypes = [ctypes.c_void_p] * len(args)

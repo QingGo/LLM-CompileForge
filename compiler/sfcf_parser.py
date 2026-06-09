@@ -253,6 +253,38 @@ def make_memref_descriptor(arr: np.ndarray[Any, Any]) -> Any:
 # SRET output parsing
 # =====================================================================
 
+# Default sret buffer size (64 KB) — generous for most compiled functions.
+# Callers should prefer compute_sret_size() when output descriptors are known.
+DEFAULT_SRET_SIZE: int = 65536
+
+
+def compute_sret_size(
+    output_defs: list[dict[str, Any]],
+    floor: int = 4096,
+) -> int:
+    """Compute required sret buffer size from output descriptors.
+
+    After bufferization each ciface function writes exactly ONE packed
+    output memref descriptor.  The descriptor size is ``24 + 16 * rank``
+    bytes.  When *output_defs* is non-empty, uses the rank of the first
+    entry (the packed output rank).  Falls back to *floor* if the list
+    is empty.
+
+    The *output_defs* list may contain many pre-bufferization output
+    entries — only the rank of the first one matters because the ciface
+    produces a single post-bufferization packed descriptor.
+    """
+    if output_defs:
+        rank = output_defs[0].get("rank", 0)
+        return max(24 + 16 * rank, floor)
+    return floor
+
+
+def desc_size(rank: int) -> int:
+    """Size in bytes of a single sret memref descriptor for the given rank."""
+    return 24 + 16 * rank
+
+
 def parse_sret_outputs(sret_bytes: bytes, output_defs: list[dict[str, Any]]) -> list[np.ndarray[Any, Any]]:
     """Parse output tensors from the sret buffer written by the ciface kernel.
 
@@ -268,8 +300,8 @@ def parse_sret_outputs(sret_bytes: bytes, output_defs: list[dict[str, Any]]) -> 
     offset = 0
     for od in output_defs:
         rank = od['rank']
-        desc_size = 24 + 16 * rank
-        desc = sret_bytes[offset:offset + desc_size]
+        dsize = desc_size(rank)
+        desc = sret_bytes[offset:offset + dsize]
 
         aligned = struct.unpack_from('<Q', desc, 8)[0]
 
@@ -290,7 +322,7 @@ def parse_sret_outputs(sret_bytes: bytes, output_defs: list[dict[str, Any]]) -> 
             arr = np.array([], dtype=np.float32)
 
         tensors.append(arr)
-        offset += desc_size
+        offset += dsize
 
     return tensors
 

@@ -18,6 +18,7 @@ def Sf_Dialect : Dialect {
     by the MLIR canonicalizer.
   }];
   let useDefaultTypePrinterParser = 0;
+  let useDefaultAttributePrinterParser = 1;
   let hasConstantMaterializer = 0;
 }
 

@@ -1,4 +1,5 @@
 #include "Sf/SfPasses.h"
+#include "Sf/SfOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -12,14 +13,57 @@ using namespace mlir;
 
 namespace {
 
-static SmallVector<StringRef> dedupWeightNames(ArrayAttr wnames) {
-  SmallVector<StringRef> result;
-  for (auto attr : wnames) {
-    StringRef name = mlir::cast<StringAttr>(attr).getValue();
-    if (llvm::find(result, name) == result.end())
-      result.push_back(name);
-  }
-  return result;
+struct ParsedEdge {
+    unsigned source;      // 0=GLOBAL_INPUT, 1=STEP_OUTPUT
+    unsigned sourceIdx;   // global_inputs index or producer step index
+    unsigned outputIdx;   // output index of the producer (0 for GLOBAL_INPUT)
+};
+
+struct ParsedStep {
+    StringRef funcName;
+    SmallVector<ParsedEdge> edges;
+};
+
+static bool parseExecPlan(ArrayAttr planAttr, StringRef chainOrder[],
+                           unsigned numChain, SmallVectorImpl<ParsedStep> &steps) {
+    SmallVector<int64_t> data;
+    for (auto attr : planAttr) {
+        auto intAttr = mlir::dyn_cast<IntegerAttr>(attr);
+        if (!intAttr)
+            return false;
+        data.push_back(intAttr.getInt());
+    }
+    if (data.size() < 2)
+        return false;
+
+    unsigned idx = 0;
+    unsigned numSteps = data[idx++];
+    unsigned numGlobal = data[idx++];  // unused here, validated by producer
+    (void)numGlobal;
+
+    if (numSteps != numChain)
+        return false;
+
+    for (unsigned s = 0; s < numSteps; ++s) {
+        if (idx >= data.size())
+            return false;
+        ParsedStep step;
+        step.funcName = chainOrder[s];
+        unsigned numInputs = data[idx++];
+        for (unsigned i = 0; i < numInputs; ++i) {
+            if (idx + 2 >= data.size())
+                return false;
+            ParsedEdge edge;
+            edge.source = data[idx++];
+            edge.sourceIdx = data[idx++];
+            edge.outputIdx = data[idx++];
+            if (edge.source > 1)
+                return false;
+            step.edges.push_back(edge);
+        }
+        steps.push_back(step);
+    }
+    return idx == data.size();
 }
 
 struct SfChainWrapperPass
@@ -30,61 +74,70 @@ struct SfChainWrapperPass
     auto module = getOperation();
     auto *ctx = &getContext();
 
-    auto orderAttr = module->getAttrOfType<ArrayAttr>("chain_order");
+    auto orderAttr = module->getAttr("sf.chain_order");
     if (!orderAttr)
       return;
 
-    SmallVector<StringRef> chainOrder;
-    for (auto attr : orderAttr)
-      chainOrder.push_back(mlir::cast<StringAttr>(attr).getValue());
+    ArrayAttr orderArr = mlir::dyn_cast<ArrayAttr>(orderAttr);
+    if (!orderArr) {
+      auto ca = mlir::dyn_cast<sf::ChainOrderAttr>(orderAttr);
+      if (ca) orderArr = ca.getValue();
+      else return;
+    }
 
-    // Build name → FuncOp map
+    SmallVector<StringRef> chainOrder;
+    for (auto attr : orderArr)
+      chainOrder.push_back(mlir::cast<StringAttr>(attr).getValue());
+    if (chainOrder.empty())
+      return;
+
     llvm::StringMap<func::FuncOp> nameToFunc;
     func::FuncOp main0;
     for (auto op : module.getOps<func::FuncOp>()) {
       nameToFunc[op.getSymName()] = op;
-      if (op.getSymName() == "main_0")
+      if (op.getSymName() == chainOrder[0])
         main0 = op;
     }
+    if (!main0)
+      return;
 
-    if (chainOrder.size() < 2) {
-      // Single-function: generate pass-through main()
-      if (chainOrder.size() == 1) {
-        auto it = nameToFunc.find(chainOrder[0]);
-        if (it == nameToFunc.end())
-          return;
-        auto func = it->second;
-        auto loc = module.getLoc();
-        auto mainType = func.getFunctionType();
-        OpBuilder builder(ctx);
-        builder.setInsertionPointToEnd(module.getBody());
-        auto mainFunc = builder.create<func::FuncOp>(loc, "main", mainType);
-        // Do NOT set Private — public visibility is required for
-        // llvm.emit_c_interface and _mlir_ciface_main export.
-        auto *entryBlock = mainFunc.addEntryBlock();
-        builder.setInsertionPointToStart(entryBlock);
-        SmallVector<Value> callArgs;
-        for (auto arg : entryBlock->getArguments())
-          callArgs.push_back(arg);
-        auto callOp = builder.create<func::CallOp>(loc, func, callArgs);
-        builder.create<func::ReturnOp>(loc, callOp.getResults());
-      }
+    if (chainOrder.size() == 1) {
+      auto loc = module.getLoc();
+      auto mainType = main0.getFunctionType();
+      OpBuilder builder(ctx);
+      builder.setInsertionPointToEnd(module.getBody());
+      auto mainFunc = builder.create<func::FuncOp>(loc, "main", mainType);
+      auto *entryBlock = mainFunc.addEntryBlock();
+      builder.setInsertionPointToStart(entryBlock);
+      SmallVector<Value> callArgs;
+      for (auto arg : entryBlock->getArguments())
+        callArgs.push_back(arg);
+      auto callOp = builder.create<func::CallOp>(loc, main0, callArgs);
+      builder.create<func::ReturnOp>(loc, callOp.getResults());
       return;
     }
+
+    auto planAttr = module->getAttr("sf.exec_plan_data");
+    if (!planAttr)
+      return;
+    ArrayAttr planArr = mlir::dyn_cast<ArrayAttr>(planAttr);
+    if (!planArr) {
+      auto ep = mlir::dyn_cast<sf::ExecPlanDataAttr>(planAttr);
+      if (ep) planArr = ep.getValue();
+      else return;
+    }
+
+    SmallVector<ParsedStep> steps;
+    if (!parseExecPlan(planArr, chainOrder.data(), chainOrder.size(), steps))
+      return;
 
     SmallVector<func::FuncOp> funcs;
-    for (auto name : chainOrder) {
-      auto it = nameToFunc.find(name);
-      if (it != nameToFunc.end())
-        funcs.push_back(it->second);
+    for (auto &s : steps) {
+      auto it = nameToFunc.find(s.funcName);
+      if (it == nameToFunc.end())
+        return;
+      funcs.push_back(it->second);
     }
-    if (funcs.size() < 2)
-      return;
-
-    auto wnamesRaw = main0->getAttrOfType<ArrayAttr>("sf.weight_names");
-    if (!wnamesRaw)
-      wnamesRaw = main0->getAttrOfType<ArrayAttr>("debug_weight_names");
-    auto wnames = wnamesRaw ? dedupWeightNames(wnamesRaw) : SmallVector<StringRef>();
 
     auto loc = module.getLoc();
     auto mainType = FunctionType::get(
@@ -94,73 +147,55 @@ struct SfChainWrapperPass
     OpBuilder builder(ctx);
     builder.setInsertionPointToEnd(module.getBody());
     auto mainFunc = builder.create<func::FuncOp>(loc, "main", mainType);
-    mainFunc.setVisibility(SymbolTable::Visibility::Private);
     auto *entryBlock = mainFunc.addEntryBlock();
     builder.setInsertionPointToStart(entryBlock);
+
+    SmallVector<Value> mainArgs(entryBlock->getArguments().begin(),
+                                 entryBlock->getArguments().end());
 
     SmallVector<Value> main0CallArgs;
     for (auto arg : entryBlock->getArguments())
       main0CallArgs.push_back(arg);
     auto main0Call = builder.create<func::CallOp>(loc, main0, main0CallArgs);
 
-    unsigned numReturnWeights = main0.getFunctionType().getResults().size() - 1;
-    unsigned numConsumed = 0;
-    if (wnames.size() >= numReturnWeights)
-      numConsumed = wnames.size() - numReturnWeights;
+    SmallVector<SmallVector<Value>> stepResults;
+    stepResults.push_back({});
+    for (unsigned r = 0; r < main0Call.getNumResults(); ++r)
+      stepResults.back().push_back(main0Call.getResult(r));
 
-    llvm::StringMap<unsigned> nameToReturnIdx;
-    for (unsigned i = 0; i < numReturnWeights; ++i)
-      nameToReturnIdx[wnames[numConsumed + i]] = i + 1;
-
-    Value prevHidden = main0Call.getResult(0);
-
-    for (size_t i = 1; i < funcs.size(); ++i) {
-      auto func = funcs[i];
-      auto funcType = func.getFunctionType();
-      unsigned numArgs = funcType.getNumInputs();
+    for (unsigned s = 1; s < steps.size(); ++s) {
+      auto func = funcs[s];
       SmallVector<Value> callArgs;
-      callArgs.push_back(prevHidden);
-
-      auto argNamesRaw = func->getAttrOfType<ArrayAttr>("sf.weight_names");
-      if (!argNamesRaw)
-        argNamesRaw = func->getAttrOfType<ArrayAttr>("debug_weight_names");
-      auto argNames = argNamesRaw ? dedupWeightNames(argNamesRaw) : SmallVector<StringRef>();
-
-      for (unsigned a = 1; a < numArgs; ++a) {
-        StringRef argName = (a - 1) < argNames.size() ? argNames[a - 1] : "";
-        auto it = nameToReturnIdx.find(argName);
-        if (it != nameToReturnIdx.end()) {
-          callArgs.push_back(main0Call.getResult(it->second));
-        } else if (!argName.empty()) {
-          func.emitError("wrapper: cannot map arg ") << a
-              << " ('" << argName << "') — not in main_0 weight_names";
-          signalPassFailure();
-          return;
-        } else {
-          // Non-weight SSA arg (sym_size, mask, etc.): match by type
-          auto expectedType = funcType.getInput(a);
-          bool found = false;
-          for (unsigned r = 1; r < main0Call.getNumResults(); ++r) {
-            if (main0Call.getResult(r).getType() == expectedType) {
-              callArgs.push_back(main0Call.getResult(r));
-              found = true;
-              break;
-            }
-          }
-          if (!found) {
-            func.emitError("wrapper: cannot map arg ") << a
-                << " (non-weight SSA, no type match)";
+      for (auto &edge : steps[s].edges) {
+        if (edge.source == 0) {
+          if (edge.sourceIdx >= mainArgs.size()) {
+            func.emitError("global input index ") << edge.sourceIdx
+                << " out of range (main has " << mainArgs.size() << " args)";
             signalPassFailure();
             return;
           }
+          callArgs.push_back(mainArgs[edge.sourceIdx]);
+        } else {
+          if (edge.sourceIdx >= stepResults.size() ||
+              edge.outputIdx >= stepResults[edge.sourceIdx].size()) {
+            func.emitError("STEP_OUTPUT reference out of range: step ")
+                << edge.sourceIdx << " out " << edge.outputIdx;
+            signalPassFailure();
+            return;
+          }
+          callArgs.push_back(
+              stepResults[edge.sourceIdx][edge.outputIdx]);
         }
       }
-
       auto callOp = builder.create<func::CallOp>(loc, func, callArgs);
-      prevHidden = callOp.getResult(0);
+      stepResults.push_back({});
+      for (unsigned r = 0; r < callOp.getNumResults(); ++r)
+        stepResults.back().push_back(callOp.getResult(r));
     }
 
-    builder.create<func::ReturnOp>(loc, prevHidden);
+    auto &lastResults = stepResults.back();
+    if (!lastResults.empty())
+      builder.create<func::ReturnOp>(loc, lastResults.front());
   }
 };
 

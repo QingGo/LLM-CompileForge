@@ -30,6 +30,7 @@ def _parse_mlir_text(text: str) -> MlirModule:
     """
     functions: list[MlirFunction] = []
     chain_order: list[str] = []
+    exec_plan_data: list[int] = []
     current_func: MlirFunction | None = None
     ssa_to_name: dict[str, str] = {}  # SSA → weight name
     ssa_types: dict[str, str] = {}  # SSA → MLIR type
@@ -51,11 +52,17 @@ def _parse_mlir_text(text: str) -> MlirModule:
             if attr_block.startswith("{") and attr_block.endswith("}"):
                 # Find chain_order = [...] inside attr block
                 import re as _re2
-                co_match = _re2.search(r'chain_order\s*=\s*\[(.*?)\]', attr_block)
+                co_match = _re2.search(r'sf\.chain_order\s*=\s*\[(.*?)\]', attr_block)
                 if co_match:
                     names_str = co_match.group(1)
                     chain_order = [
                         n.strip().strip('"') for n in _split_comma(names_str)
+                    ]
+                ep_match = _re2.search(r'sf\.exec_plan_data\s*=\s*\[(.*?)\]', attr_block)
+                if ep_match:
+                    nums_str = ep_match.group(1)
+                    exec_plan_data = [
+                        int(n.strip()) for n in _split_comma(nums_str) if n.strip()
                     ]
             continue
         if stripped == "}":
@@ -160,7 +167,7 @@ def _parse_mlir_text(text: str) -> MlirModule:
                 f"SSA names (check fx_to_mlir.py output handling)."
             )
 
-    return MlirModule(functions=functions, chain_order=chain_order)
+    return MlirModule(functions=functions, chain_order=chain_order, exec_plan_data=exec_plan_data)
 
 
 def _parse_mlir_op(
@@ -340,7 +347,12 @@ def _parse_attrs(attrs_str: str) -> dict[str, Any]:
 
 
 def _split_attrs(text: str) -> list[str]:
-    """Split attribute string respecting nested brackets and quotes."""
+    """Split attribute string respecting nested brackets and quotes.
+
+    MLIR attribute syntax separates multiple attributes with semicolons
+    inside ``attributes { ... }`` blocks.  Commas separate items within
+    a single attribute value (e.g. array elements).
+    """
     parts: list[str] = []
     depth = 0
     in_quote = False
@@ -353,7 +365,7 @@ def _split_attrs(text: str) -> list[str]:
                 depth += 1
             elif ch in "]})":
                 depth -= 1
-        if ch == "," and depth == 0 and not in_quote:
+        if (ch == "," or ch == ";") and depth == 0 and not in_quote:
             parts.append("".join(current).strip())
             current = []
         else:

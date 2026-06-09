@@ -134,6 +134,29 @@ def parse_lowered_argument_types(
     return result
 
 
+def parse_lowered_weight_names(
+    lowered_mlir_path: str,
+) -> dict[str, list[str]]:
+    """Parse lowered MLIR to extract ``sf.weight_names`` per function."""
+    try:
+        with open(lowered_mlir_path) as f:
+            text = f.read()
+    except (FileNotFoundError, OSError):
+        return {}
+    _func_weight_re = re.compile(
+        r'func\.func\s+@(\w+)[^{]*attributes\s*\{[^}]*sf\.weight_names\s*=\s*'
+        r'(?:#sf<weight_names)?\[([^\]]*)\]',
+        re.DOTALL,
+    )
+    result: dict[str, list[str]] = {}
+    for match in _func_weight_re.finditer(text):
+        func_name = match.group(1)
+        names_str = match.group(2)
+        names = [n.strip().strip('"') for n in names_str.split(",") if n.strip()]
+        result[func_name] = names
+    return result
+
+
 def parse_lowered_output_types(
     lowered_mlir_path: str,
 ) -> dict[str, list[tuple[int, list[int]]]]:
@@ -269,6 +292,7 @@ def merge_with_semantics(
     pre_lowering_module: dict[str, Any],
     lowered_arg_types: dict[str, list[tuple[int, list[int]]]] | None = None,
     lowered_output_types: dict[str, list[tuple[int, list[int]]]] | None = None,
+    lowered_weight_names: dict[str, list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Merge LLVM IR ciface signatures with pre-lowering input semantics.
 
@@ -409,18 +433,18 @@ def merge_with_semantics(
                         "producer_out": pout,
                     })
 
-        # 2. Weight/constant ops (promoted to function args during C++ lowering)
-        for wop in func.get("weight_ops", []):
-            wname = wop.get("name", "")
-            if not wname:
-                continue
-            # Skip scalar constants (prefixed with _const_ — inlined as arith.const)
-            if wname.startswith("_const_"):
-                continue
-            input_fields.append({
-                "kind": SfaInputKind.Value("SFA_INPUT_WEIGHT"),
-                "weight_name": wname,
-            })
+        # 2. Weight entries from lowered sf.weight_names (same order as
+        # lowered function arguments — Fix 1 of contract hardening).
+        # Only add weight entries for main_0 (entry function with all weights).
+        # Sub-functions have weights distributed by chain-wrapper and their
+        # inputs already cover all args.
+        lwn = (lowered_weight_names or {}).get(func["name"], [])
+        if fi == 0 and lwn:
+            for wname in lwn:
+                input_fields.append({
+                    "kind": SfaInputKind.Value("SFA_INPUT_WEIGHT"),
+                    "weight_name": wname,
+                })
 
         # 3. Output descriptors — use LLVM IR sret rank (post-bufferization).
         # Each bufferized function has a SINGLE packed output memref.

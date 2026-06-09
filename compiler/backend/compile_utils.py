@@ -198,6 +198,7 @@ def llc_compile(
     arch: str = "",
     output: str | None = None,
     opt_level: int = 3,
+    debug: bool = False,
 ) -> str:
     """Invoke llc to compile a .ll file to a .o object file.
 
@@ -262,6 +263,7 @@ def jit_compile_and_run(ir_module: Any, func_name: str = "main") -> Any:
 def link_dylib(
     obj_files: list[str],
     output: str,
+    debug: bool = False,
 ) -> str:
     """Link one or more .o object files into a .dylib shared library.
 
@@ -296,6 +298,8 @@ def link_dylib(
         "-o", output,
         *obj_files,
     ]
+    if debug:
+        cmd.insert(1, "-g")  # DWARF debug info for lldb
     if runner_lib.is_file():
         cmd.extend(["-L", str(build_lib), "-lmlir_c_runner_utils"])
         cmd.append(f"-Wl,-rpath,{build_lib}")
@@ -342,6 +346,7 @@ def compile_module_to_dylib(
     model_name: str = "model",
     arch: str = "native",
     opt_level: int = 0,
+    debug: bool = False,
 ) -> str:
     """Compile a lowered MLIR module into the outputs/compiled/ artifacts directory.
 
@@ -358,7 +363,7 @@ def compile_module_to_dylib(
     """
     os.makedirs(output_dir, exist_ok=True)
     dylib_path = os.path.join(output_dir, f"lib{model_name}.dylib")
-    _compile_mlir_to_dylib_with_constants(ir_module, output_dir, dylib_path, arch, opt_level)
+    _compile_mlir_to_dylib_with_constants(ir_module, output_dir, dylib_path, arch, opt_level, debug)
     return dylib_path
 
 
@@ -368,6 +373,7 @@ def _compile_mlir_to_dylib_with_constants(
     dylib_path: str,
     arch: str,
     opt_level: int,
+    debug: bool = False,
 ) -> None:
     """Internal: compile MLIR → .ll → .o → .dylib, embedding constants.bin."""
     const_bin_path = os.path.join(work_dir, "constants.bin")
@@ -381,7 +387,7 @@ def _compile_mlir_to_dylib_with_constants(
         import shutil
         debug_ll = os.path.join(work_dir, "model.ll")
         shutil.copy2(ll_path, debug_ll)
-        obj_path = llc_compile(ll_path, arch=arch, opt_level=opt_level)
+        obj_path = llc_compile(ll_path, arch=arch, opt_level=opt_level, debug=debug)
         obj_files.append(obj_path)
 
         if os.path.isfile(const_bin_path):
@@ -391,7 +397,7 @@ def _compile_mlir_to_dylib_with_constants(
 
         obj_files.append(_compile_serveforge_free(td))
 
-        link_dylib(obj_files, dylib_path)
+        link_dylib(obj_files, dylib_path, debug=debug)
 
 
 def _compile_embedded_data(bin_path: str, work_dir: str) -> str:

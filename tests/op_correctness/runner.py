@@ -21,6 +21,7 @@ import numpy as np
 import torch
 
 from compiler.backend.compile_utils import _setup_mlir_path
+from compiler.pipeline.lowering import SF_LOWERING_PIPELINE
 from scripts._cos import cosine_similarity
 from tests.op_correctness.registry import OpCase
 
@@ -171,10 +172,7 @@ def lower_and_jit(mlir_text: str) -> tuple[Any, tuple[int, ...]]:
         # Step 2: sf → linalg lowering
         sf_pipeline = (
             "builtin.module("
-            "sf-promote-weights,"
-            "canonicalize,"
-            "cse,"
-            "sf-lower-to-linalg"
+            + SF_LOWERING_PIPELINE +
             ")"
         )
         pman = pm.PassManager.parse(sf_pipeline, ctx)

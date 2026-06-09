@@ -28,6 +28,7 @@ import numpy as np
 from compiler.sfcf_parser import (
     make_memref_descriptor,
     parse_sret_outputs,
+    compute_sret_size,
 )
 
 from gen.proto.python.sfa_abi_pb2 import (  # type: ignore[attr-defined]
@@ -334,7 +335,6 @@ def run_ctypes(
         raise KeyError(f"Weight '{name}' not found")
 
     # Run forward pass
-    sret_size = 131072
     func_outputs: list[list[np.ndarray]] = [
         [] for _ in range(len(graph["functions"]))
     ]
@@ -384,6 +384,7 @@ def run_ctypes(
             input_descs.append(desc)
             input_args.append(ctypes.byref(desc))
 
+        sret_size = compute_sret_size(func_def.get("outputs", []))
         sret = (ctypes.c_uint8 * sret_size)()
         all_args = [ctypes.byref(sret)] + input_args
         kernel.argtypes = [ctypes.c_void_p] * len(all_args)

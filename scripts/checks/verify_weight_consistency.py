@@ -190,7 +190,7 @@ def parse_lowered_weight_names(lowered_path: str) -> dict[str, list[str]]:
     )
 
     # Find each sf.weight_names and associate with the preceding sym_name
-    for wm in re.finditer(r'sf\.weight_names\s*=\s*\[([^\]]*)\]', content):
+    for wm in re.finditer(r'sf\.weight_names\s*=\s*(?:#sf<weight_names)?\[([^\]]*)\]', content):
         wpos = wm.start()
         func_name = None
         for sm in reversed(sym_name_positions):
@@ -218,7 +218,7 @@ def _parse_weight_names_from_text(text: str) -> dict[str, list[str]]:
     sym_name_positions = list(
         re.finditer(r'sym_name\s*=\s*"([^"]+)"', text)
     )
-    for wm in re.finditer(r'sf\.weight_names\s*=\s*\[([^\]]*)\]', text):
+    for wm in re.finditer(r'sf\.weight_names\s*=\s*(?:#sf<weight_names)?\[([^\]]*)\]', text):
         wpos = wm.start()
         func_name = None
         for sm in reversed(sym_name_positions):
@@ -262,30 +262,27 @@ def verify_weight_promotion_order(module: Any, lowered_text: str) -> list[str]:
             original_weight_names = list(func.weight_names)
 
         lowered_names = ir_weight_names.get(func_name, [])
-        # Deduplicate lowered names (C++ SfPromoteWeights appends to
-        # sf.weight_names, creating duplicates when Python already set it).
-        lowered_names_dedup = list(dict.fromkeys(lowered_names))
 
-        if not original_weight_names and not lowered_names_dedup:
+        if not original_weight_names and not lowered_names:
             continue
 
-        if len(original_weight_names) != len(lowered_names_dedup):
+        if len(original_weight_names) != len(lowered_names):
             errors.append(
                 f"Function '{func_name}': expected {len(original_weight_names)} "
-                f"weight names, found {len(lowered_names_dedup)} (raw={len(lowered_names)}) "
+                f"weight names, found {len(lowered_names)} "
                 f"in lowered IR"
             )
             if original_weight_names:
                 _show = original_weight_names[:10]
                 errors.append(f"  Expected ({len(original_weight_names)}): {_show}")
-            if lowered_names_dedup:
-                _show = lowered_names_dedup[:10]
-                errors.append(f"  Got ({len(lowered_names_dedup)}): {_show}")
+            if lowered_names:
+                _show = lowered_names[:10]
+                errors.append(f"  Got ({len(lowered_names)}): {_show}")
             continue
 
         # Check set equality (not ordered — split.py may reorder weights)
         orig_set = set(original_weight_names)
-        lowered_set = set(lowered_names_dedup)
+        lowered_set = set(lowered_names)
         missing = orig_set - lowered_set
         extra = lowered_set - orig_set
         if missing:

@@ -12,6 +12,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from compiler.backend.compile_utils import _setup_mlir_path
+from compiler.pipeline.lowering import SF_LOWERING_PIPELINE
 
 MINIMAL_MLIR = r"""
 module {
@@ -49,7 +50,7 @@ def main():
         t0 = time.time()
         pman = pm.PassManager.parse(
             "builtin.module("
-            "sf-promote-weights,canonicalize,cse,sf-lower-to-linalg"
+            + SF_LOWERING_PIPELINE +
             ")", ctx)
         pman.enable_verifier(True)
         pman.run(module.operation)

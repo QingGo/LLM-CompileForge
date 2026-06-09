@@ -313,12 +313,11 @@ def _apply_mlir_passes(
 def _apply_sf_to_linalg(mlir_text: str, orig_mlir_mod: Any = None) -> str:
     """Apply sf→linalg lowering pass using C++ passes only.
 
-    Uses C++ passes: sf-promote-weights → canonicalize/cse → sf-lower-to-linalg.
-    Raises RuntimeError with clear message if C++ bindings are unavailable.
+    Delegates to compiler.pipeline.lowering.run_sf_lowering_pipeline() —
+    the single source of truth for the lowering pass list.
     """
     _setup_mlir_path()
     import mlir.ir as ir
-    import mlir.passmanager as pm
     try:
         from mlir_sf._mlir_libs._sfDialectsNanobind import sf
     except ImportError as e:
@@ -337,34 +336,9 @@ def _apply_sf_to_linalg(mlir_text: str, orig_mlir_mod: Any = None) -> str:
             ir_mod = mlir_module_to_ir_module(orig_mlir_mod, ctx=ctx)
         else:
             ir_mod = ir.Module.parse(mlir_text, ctx)
-        # Run chain-wrapper BEFORE any other pass (preserves chain_order attr)
-        pman_wrap = pm.PassManager.parse("builtin.module(sf-chain-wrapper)", ctx)
-        pman_wrap.run(ir_mod.operation)
-        pman = pm.PassManager.parse(
-            "builtin.module(sf-promote-weights,canonicalize,cse,sf-lower-to-linalg)",
-            ctx)
-        pman.enable_verifier(True)
-        pman.enable_timing()
-        pman.run(ir_mod.operation)
-        _annotate_debug_weight_names(ir_mod)
-        mlir_text = ir_mod.operation.get_asm(print_generic_op_form=True)
+        from compiler.pipeline.lowering import run_sf_lowering_pipeline
+        mlir_text = run_sf_lowering_pipeline(ir_mod, ctx)
     return _post_lowering_canonicalize(mlir_text)
-
-
-def _annotate_debug_weight_names(ir_mod: Any) -> None:
-    """Add debug_weight_names on func.func ops so weight tracking survives stripping.
-
-    sf.weight_names (set by sf-promote-weights) is stripped before bufferize
-    because unregistered dialect attributes block canonicalize.  debug_weight_names
-    uses the debug_ prefix and is not stripped — it survives the full pipeline.
-    """
-
-    for op in ir_mod.operation.regions[0].blocks[0]:
-        if str(op.operation.name) != "func.func":
-            continue
-        weight_names = op.operation.attributes.get("sf.weight_names")
-        if weight_names is not None:
-            op.operation.attributes["debug_weight_names"] = weight_names
 
 
 def _post_lowering_canonicalize(mlir_text: str) -> str:

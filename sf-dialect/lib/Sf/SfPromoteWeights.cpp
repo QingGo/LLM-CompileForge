@@ -53,7 +53,15 @@ struct SfPromoteWeightsPass
     }
     unsigned promoted = 0;
     for (auto &[parentFunc, ops] : funcToOps) {
-      auto wnames = parentFunc->getAttrOfType<ArrayAttr>("sf.weight_names");
+      auto wnamesAttr = parentFunc->getAttr("sf.weight_names");
+      ArrayAttr wnames;
+      if (wnamesAttr) {
+        wnames = mlir::dyn_cast<ArrayAttr>(wnamesAttr);
+        if (!wnames) {
+          auto wa = mlir::dyn_cast<sf::WeightNamesAttr>(wnamesAttr);
+          if (wa) wnames = wa.getValue();
+        }
+      }
       if (wnames) {
         // Reorder ops to match weight_names (consumed first, exported in
         // return order).  Preserves Python-set ordering for callers.
@@ -62,7 +70,7 @@ struct SfPromoteWeightsPass
           if (auto na = op->getAttrOfType<StringAttr>("name"))
             nameToOp[na.getValue()] = op;
         SmallVector<sf::WeightOp> orderedOps;
-        for (auto attr : wnames) {
+        for (auto attr : wnames.getValue()) {
           auto name = mlir::cast<StringAttr>(attr).getValue();
           auto it = nameToOp.find(name);
           if (it != nameToOp.end()) {
@@ -74,6 +82,7 @@ struct SfPromoteWeightsPass
           orderedOps.push_back(op);
         ops = std::move(orderedOps);
       }
+      SmallVector<Attribute> promotedNames;
       for (auto op : ops) {
         auto resultType = op.getResult().getType();
         if (!isa<RankedTensorType>(resultType)) continue;
@@ -84,14 +93,15 @@ struct SfPromoteWeightsPass
             entry.getNumArguments(), resultType, loc);
 
         if (auto nameAttr = op->getAttrOfType<StringAttr>("name")) {
-          auto existing =
-              parentFunc->getAttrOfType<ArrayAttr>("sf.weight_names");
-          SmallVector<Attribute> names;
-          if (existing)
-            names.assign(existing.begin(), existing.end());
-          names.push_back(nameAttr);
-          parentFunc->setAttr("sf.weight_names",
-                              ArrayAttr::get(&this->getContext(), names));
+          auto existing = parentFunc->getAttr("sf.weight_names");
+          if (!existing) {
+            SmallVector<Attribute> names;
+            names.push_back(nameAttr);
+            parentFunc->setAttr("sf.weight_names",
+                                sf::WeightNamesAttr::get(&this->getContext(),
+                                    ArrayAttr::get(&this->getContext(), names)));
+          }
+          promotedNames.push_back(nameAttr);
         }
 
         auto origType = parentFunc.getFunctionType();
@@ -103,6 +113,14 @@ struct SfPromoteWeightsPass
         op.replaceAllUsesWith(newArg);
         op.erase();
         ++promoted;
+      }
+
+      // Rebuild sf.weight_names to only include names actually promoted
+      // as function arguments (Contract hardening Fix 2).
+      if (!promotedNames.empty()) {
+        parentFunc->setAttr("sf.weight_names",
+            sf::WeightNamesAttr::get(&this->getContext(),
+                ArrayAttr::get(&this->getContext(), promotedNames)));
       }
     }
 

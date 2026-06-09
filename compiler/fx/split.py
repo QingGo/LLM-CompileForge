@@ -440,9 +440,12 @@ def _make_multi_functions(
     # Build per-step input bindings as flat integer array.
     # Encoding: GLOBAL_INPUT(global_idx, 0), STEP_OUTPUT(1, step, out_idx)
     exec_plan_data: list[int] = []
-    # Count global inputs: input_ids SSA names + all weight names from main_0
     global_names = [name for name, _ in global_inputs]
-    global_names += funcs[0].weight_names  # main_0's weight args in order
+    for op in funcs[0].ops:
+        if op.op_name == "weight":
+            wname = op.attributes.get("name", "")
+            if wname and wname not in global_names:
+                global_names.append(wname)
     exec_plan_data.append(len(funcs))  # num_steps
     exec_plan_data.append(len(global_names))  # num_global_inputs
 
@@ -458,25 +461,45 @@ def _make_multi_functions(
                     gi = global_names.index(name)  # try with %
                 step_inputs.append((0, gi, 0))
             else:
-                prod = producer.get(key)
-                if prod is not None and prod > 0:
-                    # SSA from another function
-                    # Find output index in producer function
-                    producer_func = funcs[prod]
-                    out_idx = 0
-                    for oi, (oname, _, _) in enumerate(producer_func.outputs):
+                if key in weights:
+                    # Weight arg.  If main_0 exports this weight (it appears
+                    # in main_0's output list), encode as STEP_OUTPUT from
+                    # main_0.  Otherwise, encode as GLOBAL_INPUT (consumed
+                    # internally by main_0 and passed through the entry block).
+                    out_idx = -1
+                    for oi, (oname, _, _) in enumerate(funcs[0].outputs):
                         if oname.lstrip("%") == key:
                             out_idx = oi
                             break
-                    step_inputs.append((1, prod, out_idx))
-                elif prod == 0 and key in weights:
-                    # Weight from main_0 — consumed weights are at beginning,
-                    # exported weights in alphabetical SSA order (return order).
-                    # All are in funcs[0].weight_names at known positions.
-                    pass  # weights are handled via global_inputs in main_0
+                    if out_idx >= 0:
+                        step_inputs.append((1, 0, out_idx))
+                    else:
+                        try:
+                            gi = global_names.index(key)
+                        except ValueError:
+                            gi = global_names.index(name)
+                        step_inputs.append((0, gi, 0))
                 else:
-                    # Cross-function non-weight SSA
-                    step_inputs.append((1, prod if prod else 0, 0))
+                    prod = producer.get(key)
+                    if prod is not None and prod > 0:
+                        # SSA from another function
+                        producer_func = funcs[prod]
+                        out_idx = 0
+                        for oi, (oname, _, _) in enumerate(producer_func.outputs):
+                            if oname.lstrip("%") == key:
+                                out_idx = oi
+                                break
+                        step_inputs.append((1, prod, out_idx))
+                    else:
+                        # SSA from main_0 (prod==0 or unknown producer).
+                        # Look up the actual output index in main_0's outputs
+                        # so the consumer knows exactly which return value to use.
+                        out_idx = 0
+                        for oi, (oname, _, _) in enumerate(funcs[0].outputs):
+                            if oname.lstrip("%") == key:
+                                out_idx = oi
+                                break
+                        step_inputs.append((1, 0, out_idx))
         # Encode step
         exec_plan_data.append(len(step_inputs))
         for src, a, b in step_inputs:
