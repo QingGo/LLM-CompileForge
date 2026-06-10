@@ -7,8 +7,6 @@ pub mod engine;
 pub mod check;
 pub mod hal;
 pub mod debug;
-#[cfg(feature = "hal-rust")]
-pub mod hal_runner;
 pub mod cache;
 pub mod kv_cache;
 
@@ -27,10 +25,6 @@ mod contract_determinism_tests;
 #[cfg(test)]
 #[path = "tests/contract_precision_tests.rs"]
 mod contract_precision_tests;
-
-#[cfg(all(test, feature = "hal-rust"))]
-#[path = "tests/hal_dispatch_test.rs"]
-mod hal_dispatch_test;
 
 #[cfg(feature = "python-bindings")]
 mod py_bindings {

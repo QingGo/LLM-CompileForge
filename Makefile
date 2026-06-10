@@ -1,4 +1,4 @@
-.PHONY: lint lint-clippy lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-rust-cov test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-forward-smoke-rust test-forward-smoke-rust-hal test-forward-cos test-weight-consistency test-consistency verify-dylib verify-dylib-fresh verify-consistency verify-diag verify-preflight check-op-consistency test-contract build-rust install-rust build-so test-dylib-cos test-dylib-cos-quick clean-compiled test-dylib-quick debug-cos diagnose test-kv-compiler test-kv-rust test-kv-python-e2e test-kv-all build-sf rebuild-clean rebuild-mlir rebuild-dylib rebuild-test rebuild build-all build build-plugin serve serve-py run-prompt test-e2e-forward test-e2e-forward-hal
+.PHONY: lint lint-clippy lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-rust-cov test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-forward-smoke-rust test-forward-cos test-weight-consistency test-consistency verify-dylib verify-dylib-fresh verify-consistency verify-diag verify-preflight check-op-consistency test-contract build-rust install-rust build-so test-dylib-cos test-dylib-cos-quick clean-compiled test-dylib-quick debug-cos diagnose test-kv-compiler test-kv-rust test-kv-python-e2e test-kv-all build-sf rebuild-clean rebuild-mlir rebuild-dylib rebuild-test rebuild build-all build build-plugin serve serve-py run-prompt test-e2e-forward
 
 # ═══════════════════════════════════════════════════════════════
 #  环境
@@ -16,8 +16,6 @@ MLIR_LIBS_PATH := $(PROJECT_ROOT)/llvm-project/build/tools/mlir/python_packages/
 SF_MLIR_LIBS := $(PROJECT_ROOT)/sf-dialect/build/python_packages/sf/mlir_sf/_mlir_libs
 TORCH_LIB_PATH := $(PROJECT_ROOT)/$(VENV)/lib/python3.10/site-packages/torch/lib
 DYLIB_ENV := DYLD_LIBRARY_PATH="$(SF_MLIR_LIBS):$(TORCH_LIB_PATH):$(MLIR_LIBS_PATH)"
-HAL_OPS_CPU_PATH_DEFAULT := $(PROJECT_ROOT)/outputs/compiled/opt_125m_fresh/generated
-HAL_OPS_CPU_PATH ?= $(HAL_OPS_CPU_PATH_DEFAULT)
 
 $(VENV):
 	uv venv --python 3.10 && uv sync
@@ -271,11 +269,7 @@ test-rust-unit: $(VENV)
 	cd runtime && cargo test --lib > ../outputs/logs/rust/test_unit_$$(date +%Y%m%d_%H%M%S).log 2>&1
 test-rust: test-rust-unit test-rust-integ
 test-e2e-forward:
-	cd runtime && HAL_OPS_CPU_PATH="$(HAL_OPS_CPU_PATH)" cargo test --test integration_tests --features hal-rust
-
-test-e2e-forward-hal:
-	cd runtime && HAL_OPS_CPU_PATH="$(HAL_OPS_CPU_PATH)" cargo build --bin forward_check_hal --features hal-rust
-	cd runtime && HAL_OPS_CPU_PATH="$(HAL_OPS_CPU_PATH)" cargo test --test hal_forward_test --features hal-rust
+	cd runtime && cargo test --test integration_tests
 test-rust-cov:
 	cargo llvm-cov --lib --summary-only
 test-pipeline-timing: $(VENV)
@@ -303,10 +297,7 @@ test-forward-smoke-rust: verify-dylib-fresh
 	@echo "[forward_check] Running Rust forward pass..."
 	$(DYLIB_ENV) ./runtime/target/debug/forward_check
 
-# L1.5: HAL IR forward smoke (uses forward_check_hal binary, Path B)
-test-forward-smoke-rust-hal:
-	cd runtime && HAL_OPS_CPU_PATH="$(HAL_OPS_CPU_PATH)" cargo build --bin forward_check_hal --features hal-rust
-	./runtime/target/debug/forward_check_hal
+# L1.5: HAL IR forward smoke (removed — Path B deprecated)
 
 test-forward-cos: test-forward-smoke
 	@for model in outputs/compiled/opt_125m_fresh; do \
