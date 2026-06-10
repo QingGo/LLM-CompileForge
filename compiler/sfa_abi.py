@@ -433,14 +433,19 @@ def merge_with_semantics(
                         "producer_out": pout,
                     })
 
-        # 2. Weight entries from lowered sf.weight_names (same order as
-        # lowered function arguments — Fix 1 of contract hardening).
-        # Only add weight entries for main_0 (entry function with all weights).
-        # Sub-functions have weights distributed by chain-wrapper and their
-        # inputs already cover all args.
+        # 2. Weight entries from lowered sf.weight_names.
+        # Fix 2 (SfPromoteWeights) rebuilds weight_names to only promoted
+        # args, but the C++ custom format concatenates duplicates.  Filter
+        # to unique entries, skip _const_ scalars (inlined as arith.const),
+        # and preserve the lowered argument order which matches the ciface
+        # function signature exactly.
         lwn = (lowered_weight_names or {}).get(func["name"], [])
         if fi == 0 and lwn:
+            seen: set[str] = set()
             for wname in lwn:
+                if wname in seen or wname.startswith("_const_"):
+                    continue
+                seen.add(wname)
                 input_fields.append({
                     "kind": SfaInputKind.Value("SFA_INPUT_WEIGHT"),
                     "weight_name": wname,
