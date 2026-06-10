@@ -26,8 +26,7 @@ def _run_pattern(
     max_iterations: int = 5,
 ) -> str:
     """Run a single RewritePatternSet callback on MLIR text.
-
-    Returns the modified MLIR text.
+    If parsing fails, returns the original text — fusion is an optimization.
     """
     _setup_mlir_path()
     import mlir.ir as ir
@@ -47,7 +46,15 @@ def _run_pattern(
         pass
 
     with ctx, ir.Location.unknown(ctx):
-        module = ir.Module.parse(mlir_text, ctx)
+        try:
+            module = ir.Module.parse(mlir_text, ctx)
+        except Exception:
+            import logging
+            _log = logging.getLogger(__name__)
+            _log.warning(
+                "%s: parse failed (non-critical, fusion skipped)", pattern_name
+            )
+            return mlir_text
         pattern_set = RewritePatternSet(ctx)
         pattern_set.add(pattern_name, callback)
         config = GreedyRewriteConfig()

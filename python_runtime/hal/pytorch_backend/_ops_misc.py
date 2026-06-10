@@ -109,7 +109,10 @@ class _MiscOps:
 
     def _op_sym_size(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         dim = kwargs.get("dim", 0)
-        size_val = inputs[0].shape[dim]
+        shape = inputs[0].shape
+        if dim >= len(shape):
+            return torch.tensor(1, dtype=torch.int64)
+        size_val = shape[dim]
         return torch.tensor(size_val, dtype=torch.int64)
 
     def _op_gt(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:

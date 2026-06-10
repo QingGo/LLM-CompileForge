@@ -26,6 +26,7 @@ class _ShapeOps:
         # During FX→MLIR lowering, each dynamic dim (sym_size node) is
         # replaced by sentinel -(dyn_pos+2) to distinguish it from static
         # -1 entries.  Static -1 entries remain for inference.
+        x = torch.as_tensor(x)
         for i in range(len(resolved)):
             if resolved[i] < -1 and dim_inputs:
                 resolved[i] = int(dim_inputs.pop(0).item())
