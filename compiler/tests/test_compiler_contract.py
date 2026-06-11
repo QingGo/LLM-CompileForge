@@ -64,7 +64,7 @@ class TestCompilerContract:
         backend = PyTorchBackend("cpu")
         executor = MlirExecutor(artifact, backend)
 
-        input_ids = np.array(_hf_reference["input_ids"], dtype=np.int64)
+        input_ids = np.array([_hf_reference["input_ids"]], dtype=np.int64)
         result = executor.forward(input_ids)
 
         hf_logits = _hf_reference["logits"]

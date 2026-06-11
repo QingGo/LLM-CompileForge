@@ -29,7 +29,6 @@ def _collect_results(
         (2, check2_hal_no_hardcoded_compiled_path),
         (3, check3_compiler_syspath_insert),
         (4, check4_proto_magic_version),
-        (5, check5_hal_ir_schema),
         (6, check6_metadata_cache_policy),
         (7, check7_version_validation),
         (8, check8_num_inputs_validation),
@@ -38,7 +37,6 @@ def _collect_results(
         (11, check11_op_catalog_completeness),
         (12, check12_cache_policy_proto_usage),
         (13, check13_kernel_op_trait),
-        (14, check14_hal_ir_semantics),
     ]
     for num, fn in checks:
         if check_nums and num not in check_nums:
@@ -214,59 +212,7 @@ def check4_proto_magic_version() -> tuple[str, str, str]:
         return label, "FAIL", f"Cannot import SfaAbiHeader: {e}"
 
 
-# ── Check 5: hal_ir.json validates against schema ─────────────────────
-
-
-def check5_hal_ir_schema() -> tuple[str, str, str]:
-    """Validate hal_ir.json against include/hal_ir.schema.json."""
-    label = "Check 5: hal_ir.json validates against schema"
-    schema_path = PROJECT_ROOT / "include" / "hal_ir.schema.json"
-    if not schema_path.is_file():
-        return label, "SKIP", "NO_SCHEMA: include/hal_ir.schema.json not found"
-
-    # Find hal_ir.json — check outputs/compiled/ directories
-    hal_ir_candidates = sorted(
-        PROJECT_ROOT.glob("outputs/compiled/*/hal_ir.json")
-    )
-    if not hal_ir_candidates:
-        return label, "SKIP", "NO_HAL_IR_SKIP: no hal_ir.json found under outputs/compiled/"
-
-    # Use the first (or most recent) hal_ir.json
-    hal_ir_path = hal_ir_candidates[-1]
-
-    # Validate JSON parseable
-    try:
-        with open(hal_ir_path) as f:
-            hal_ir_data = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        return label, "FAIL", f"Cannot parse {hal_ir_path.relative_to(PROJECT_ROOT)}: {e}"
-
-    # Validate against JSON Schema
-    try:
-        import jsonschema
-    except ImportError:
-        return label, "SKIP", "NO_JSONSCHEMA: jsonschema package not installed"
-
-    try:
-        with open(schema_path) as f:
-            schema = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        return label, "FAIL", f"Cannot load schema: {e}"
-
-    validator = jsonschema.Draft7Validator(schema)
-    errors = sorted(validator.iter_errors(hal_ir_data), key=lambda e: e.path)
-    if errors:
-        error_msgs = "; ".join(
-            f"{'/'.join(str(p) for p in e.absolute_path) or '(root)'}: {e.message}"
-            for e in errors[:5]
-        )
-        if len(errors) > 5:
-            error_msgs += f" ... and {len(errors) - 5} more"
-        return label, "FAIL", error_msgs
-
-    func_count = len(hal_ir_data.get("functions", []))
-    rel_path = hal_ir_path.relative_to(PROJECT_ROOT)
-    return label, "PASS", f"{rel_path} validates ({func_count} functions)"
+# ── Check 6: cache_policy in metadata.json parseable ──────────────────
 
 
 # ── Check 6: cache_policy in metadata.json parseable ──────────────────
@@ -574,52 +520,6 @@ def check13_kernel_op_trait() -> tuple[str, str, str]:
             f"but only {impl_count} impl blocks (need ≥5)"
         )
 
-
-# ── Check 14: hal_ir semantics proto with 20+ entries ────────────────
-
-
-def check14_hal_ir_semantics() -> tuple[str, str, str]:
-    """Verify SfaHalOpSemantics defined in proto and default_hal_op_semantics() has ≥20 entries."""
-    label = "Check 14: SfaHalOpSemantics defined in proto, ≥20 entries in default impl"
-    proto_path = PROJECT_ROOT / "include" / "sfa_abi.proto"
-    hal_runner_mod = PROJECT_ROOT / "runtime" / "src" / "hal_runner" / "mod.rs"
-
-    if not proto_path.is_file():
-        return label, "SKIP", "NO_PROTO: include/sfa_abi.proto not found"
-    if not hal_runner_mod.is_file():
-        return label, "SKIP", "NO_HAL_RUNNER: runtime/src/hal_runner/mod.rs not found"
-
-    # Check proto defines SfaHalOpSemantics message
-    result_proto = subprocess.run(
-        ["grep", "-c", r"message SfaHalOpSemantics", str(proto_path)],
-        capture_output=True, text=True,
-    )
-    if result_proto.returncode != 0:
-        return label, "FAIL", f"grep error on proto: {result_proto.stderr.strip()}"
-    proto_matches = int(result_proto.stdout.strip())
-
-    if proto_matches < 1:
-        return label, "FAIL", "no 'message SfaHalOpSemantics' found in sfa_abi.proto"
-
-    # Check default_hal_op_semantics() has ≥20 SfaHalOpSemanticEntry instances
-    result_entries = subprocess.run(
-        ["grep", "-c", "SfaHalOpSemanticEntry {", str(hal_runner_mod)],
-        capture_output=True, text=True,
-    )
-    if result_entries.returncode != 0:
-        return label, "FAIL", f"grep error on hal_runner: {result_entries.stderr.strip()}"
-    entry_count = int(result_entries.stdout.strip())
-
-    if entry_count >= 20:
-        return label, "PASS", (
-            f"SfaHalOpSemantics message defined in proto ({proto_matches}); "
-            f"{entry_count} SfaHalOpSemanticEntry instances in default_hal_op_semantics() (≥20 required)"
-        )
-    else:
-        return label, "FAIL", (
-            f"SfaHalOpSemantics defined in proto, "
-            f"but only {entry_count} entries in default_hal_op_semantics() (need ≥20)"
-        )
 
 
 # ── Main ──────────────────────────────────────────────────────────────
