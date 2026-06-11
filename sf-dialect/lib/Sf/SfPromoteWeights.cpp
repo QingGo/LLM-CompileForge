@@ -117,7 +117,11 @@ struct SfPromoteWeightsPass
 
       // Rebuild sf.weight_names to only include names actually promoted
       // as function arguments (Contract hardening Fix 2).
+      // Must remove the old attribute first (Python sets it as plain
+      // ArrayAttr; WeightNamesAttr with the same key doesn't replace
+      // cleanly in all MLIR serialization paths).
       if (!promotedNames.empty()) {
+        parentFunc->removeAttr("sf.weight_names");
         parentFunc->setAttr("sf.weight_names",
             sf::WeightNamesAttr::get(&this->getContext(),
                 ArrayAttr::get(&this->getContext(), promotedNames)));
