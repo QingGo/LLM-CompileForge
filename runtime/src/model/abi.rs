@@ -29,8 +29,6 @@ pub use proto::OutputDescriptor;
 pub use proto::SfaAbiHeader;
 pub use proto::SfaCachePolicy;
 pub use proto::SfaFuncMeta;
-pub use proto::SfaHalOpSemanticEntry;
-pub use proto::SfaHalOpSemantics;
 pub use proto::SfaInputField;
 pub use proto::SfaInputKind;
 pub use proto::SfaInterceptSpec;

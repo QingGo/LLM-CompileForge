@@ -212,31 +212,4 @@ message SfaOpCatalog {
   repeated SfaOpDef ops = 310;
 }
 
-// ── HAL Op Semantics (field numbers 400+) ─────────────────────────
-// Runtime semantic contract for hal_ir.json ops — defines what each
-// HAL operator should look like at the structural level: arity,
-// expected dtypes, and category kind.
-//
-// This is Path B's equivalent of the function-level ABI contract.
-// While SfaOpCatalog defines what ops EXIST, SfaHalOpSemantics defines
-// what they should LOOK LIKE at runtime (input/output counts, dtypes).
-//
-// Op name matching uses prefix matching: "element_wise" semantics
-// apply to "element_wise:add", "element_wise:mul", etc.
 
-// Describes the semantic contract for a single HAL operator.
-message SfaHalOpSemanticEntry {
-  string op_name = 1;                  // canonical op name, e.g. "matmul", "element_wise", "gather"
-  uint32 expected_input_count = 2;     // minimum number of input tensors (0 for fill ops)
-  uint32 expected_output_count = 3;    // number of output tensors (0 for pure-side-effect ops)
-  repeated string input_dtypes = 4;    // expected element types for inputs, e.g. ["f32","f32"]
-  repeated string output_dtypes = 5;   // expected element types for outputs, e.g. ["f32"]
-  string kind = 6;                     // semantic category: matmul|element_wise|reduce|attention|normalization|reshape|compare|gather|fill|shape|slice|softmax|scan|cache|concat
-}
-
-// Collection of HAL operator semantic contracts.
-// Used by the Rust hal_runner to validate loaded hal_ir.json
-// against known operator contracts on startup.
-message SfaHalOpSemantics {
-  repeated SfaHalOpSemanticEntry entries = 400;
-}

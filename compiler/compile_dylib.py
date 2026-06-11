@@ -83,6 +83,28 @@ def main() -> None:
     # Restore weight classification from metadata.json
     if "weight_classification" not in module.metadata and metadata:
         module.metadata["weight_classification"] = metadata.get("weight_classification", {})
+
+    # Restore exec_plan_data from metadata.json (too large for MLIR text parser)
+    if not module.exec_plan_data and metadata:
+        ed = metadata.get("exec_plan_data")
+        if ed:
+            module.exec_plan_data = ed
+            print(f"   Restored exec_plan_data from metadata.json ({len(ed)} entries)")
+
+    # Validate exec_plan against ExecutionPlan proto if available
+    if metadata.get("exec_plan_proto"):
+        import base64
+        from gen.proto.python import sfa_abi_pb2
+        plan_bytes = base64.b64decode(metadata["exec_plan_proto"])
+        plan = sfa_abi_pb2.ExecutionPlan()
+        plan.ParseFromString(plan_bytes)
+        print(f"   ExecutionPlan proto: {len(plan.global_inputs)} global inputs, {len(plan.steps)} steps")
+
+    # Restore chain_order from metadata.json if missing
+    if not module.chain_order and metadata:
+        co = metadata.get("chain_order")
+        if co:
+            module.chain_order = co
     wc = module.metadata.get("weight_classification", {})
     for func in module.functions:
         fwc = wc.get(func.name, {})
@@ -253,6 +275,7 @@ def main() -> None:
     try:
         _walk_and_fix_tensor_constants(ir_mod)
         run_sf_lowering_pipeline(ir_mod, ctx_lower)
+        _fixup_main_call_operands(ir_mod)
     except Exception:
         _debug_path = Path(compiled_path) / "debug_lowering_failure.mlir"
         try:
@@ -267,7 +290,7 @@ def main() -> None:
                                copy_source=_debug_path)
         raise
 
-    lowered_text = ir_mod.operation.get_asm(print_generic_op_form=True)
+    lowered_text = ir_mod.operation.get_asm(print_generic_op_form=False)
 
     lowered_text = _strip_main_function(lowered_text)
     lowered_text = _strip_dialect_attrs(lowered_text)
@@ -396,6 +419,7 @@ def main() -> None:
         str(compiled_path),
         model_name=model_name,
         debug=DEBUG,
+        opt_level=2,  # O2 is needed for full-model (1571 linalg ops) to complete in reasonable time
     )
 
     # Step 6: Embed SFA ABI + weights symbols into dylib
@@ -451,24 +475,8 @@ def main() -> None:
     print(f"\nCompilation complete: {dylib_path}")
 
 
-def _strip_main_function(lowered_text):
-    lines = lowered_text.split('\n')
-    start = None
-    depth = 0
-    result = []
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if start is None and stripped.startswith('func.func @main('):
-            start = i
-            depth = 1
-            continue
-        if start is not None:
-            depth += stripped.count('{') - stripped.count('}')
-            if depth <= 0:
-                start = None
-            continue
-        result.append(line)
-    return '\n'.join(result)
+def _strip_main_function(text):
+    return text  # no-op: chain-wrapper's main is kept, not stripped
 
 
 def _strip_dialect_attrs(lowered_text):
@@ -502,10 +510,12 @@ def _fixup_main_call_operands(ir_mod):
                 main_func = op
                 break
     if main_func is None:
+        print("   [fixup] WARNING: main function not found in IR module")
         return
 
     main_block = main_func.operation.regions[0].blocks[0]
     main_args = list(main_block.arguments)
+    print(f"   [fixup] main has {len(main_args)} args")
 
     def _fix_call(call_op):
         nonlocal main_args
@@ -528,6 +538,9 @@ def _fixup_main_call_operands(ir_mod):
         callee_arg_count = len(callee_block.arguments)
         call_operand_count = len(call_op.operation.operands)
 
+        if call_operand_count != callee_arg_count:
+            print(f"   [fixup] {callee_name}: call={call_operand_count} operands, callee={callee_arg_count} args, main={len(main_args)} args")
+
         if call_operand_count >= callee_arg_count:
             return
 
@@ -546,6 +559,8 @@ def _fixup_main_call_operands(ir_mod):
         op_name = str(op.operation.name)
         if op_name == "func.call":
             _fix_call(op)
+
+    print(f"   [fixup] done, main now has {len(list(main_block.arguments))} args")
 
     entry_args = list(main_block.arguments)
     entry_types = [a.type for a in entry_args]

@@ -310,17 +310,19 @@ def fx_graph_to_mlir(
         )
     else:
         # Multi-function: split by function boundaries computed by _split_into_functions
-        functions, chain_order, exec_plan_data = _make_multi_functions(
+        functions, chain_order, exec_plan_data, plan_bytes = _make_multi_functions(
             mlir_ops, func_inputs, func_outputs, weights,
             param_names, const_names, function_name,
         )
         meta["num_functions"] = func_count
-        return MlirModule(
+        module = MlirModule(
             functions=functions,
             metadata=meta,
             chain_order=chain_order,
             exec_plan_data=exec_plan_data,
         )
+        module._exec_plan_proto = plan_bytes
+        return module
 
 
 # ── handler functions ─────────────────────────────────────

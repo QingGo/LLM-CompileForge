@@ -9,6 +9,24 @@ import torch
 
 from compiler.artifact import MlirFunction, MlirOp  # type: ignore[attr-defined]
 
+
+def _empty_execution_plan(
+    global_inputs: list[tuple[str, str]],
+    funcs: list[MlirFunction],
+) -> bytes:
+    from gen.proto.python import sfa_abi_pb2
+    plan = sfa_abi_pb2.ExecutionPlan()
+    for name, _ in global_inputs:
+        plan.global_inputs.append(name)
+    step = plan.steps.add()
+    step.func_name = funcs[0].name
+    for name, _ in funcs[0].inputs:
+        edge = step.inputs.add()
+        edge.source = sfa_abi_pb2.GLOBAL_INPUT
+        edge.source_index = 0
+        edge.producer_step = 0
+    return plan.SerializeToString()
+
 _log = logging.getLogger(__name__)
 
 
@@ -189,7 +207,7 @@ def _make_multi_functions(
     param_names: set[str],
     const_names: set[str],
     base_name: str,
-) -> tuple[list[MlirFunction], list[str], list[int]]:
+) -> tuple[list[MlirFunction], list[str], list[int], bytes]:
     """Split mlir_ops at sentinel boundaries into separate MlirFunction objects.
 
     If a block's first op is ``scaled_dot_product_attention`` (SD-PA), it is
@@ -224,12 +242,14 @@ def _make_multi_functions(
                 wname = op.attributes.get("name", "")
                 if wname:
                     single_weight_names.append(wname)
-        return [MlirFunction(
+        funcs = [MlirFunction(
             name=base_name, inputs=global_inputs, outputs=global_outputs,
             ops=mlir_ops, weights=weights,
             param_weight_names=param_names, const_weight_names=const_names,
             weight_names=single_weight_names,
         )]
+        empty_plan = _empty_execution_plan(global_inputs, funcs)
+        return funcs, [base_name], [], empty_plan
 
     # Build type map: SSA name → MLIR type string (normalize % prefix)
     type_map: dict[str, str] = {}
@@ -437,72 +457,88 @@ def _make_multi_functions(
 
     chain_order = [f.name for f in funcs]
 
-    # Build per-step input bindings as flat integer array.
-    # Encoding: GLOBAL_INPUT(global_idx, 0), STEP_OUTPUT(1, step, out_idx)
-    exec_plan_data: list[int] = []
+    # Build global input names (match proto ExecutionPlan.global_inputs order)
     global_names = [name for name, _ in global_inputs]
     for op in funcs[0].ops:
         if op.op_name == "weight":
             wname = op.attributes.get("name", "")
-            if wname and wname not in global_names:
+            if wname and wname not in global_names and not wname.startswith("_const_"):
                 global_names.append(wname)
-    exec_plan_data.append(len(funcs))  # num_steps
-    exec_plan_data.append(len(global_names))  # num_global_inputs
 
+    # Build per-step input bindings as structured data (source, source_index, producer_step)
+    step_inputs: list[list[tuple[int, int, int]]] = []
     for fi, func in enumerate(funcs):
-        step_inputs: list[tuple[int, int, int]] = []
+        sis: list[tuple[int, int, int]] = []
         for name, _ in func.inputs:
             key = name.lstrip("%")
             if fi == 0:
-                # All main_0 inputs are global
                 try:
                     gi = global_names.index(key)
                 except ValueError:
-                    gi = global_names.index(name)  # try with %
-                step_inputs.append((0, gi, 0))
+                    gi = global_names.index(name)
+                sis.append((0, gi, 0))
             else:
                 if key in weights:
-                    # Weight arg.  If main_0 exports this weight (it appears
-                    # in main_0's output list), encode as STEP_OUTPUT from
-                    # main_0.  Otherwise, encode as GLOBAL_INPUT (consumed
-                    # internally by main_0 and passed through the entry block).
                     out_idx = -1
                     for oi, (oname, _, _) in enumerate(funcs[0].outputs):
                         if oname.lstrip("%") == key:
                             out_idx = oi
                             break
                     if out_idx >= 0:
-                        step_inputs.append((1, 0, out_idx))
+                        sis.append((1, 0, out_idx))
                     else:
                         try:
                             gi = global_names.index(key)
                         except ValueError:
                             gi = global_names.index(name)
-                        step_inputs.append((0, gi, 0))
+                        sis.append((0, gi, 0))
                 else:
                     prod = producer.get(key)
                     if prod is not None and prod > 0:
-                        # SSA from another function
                         producer_func = funcs[prod]
                         out_idx = 0
                         for oi, (oname, _, _) in enumerate(producer_func.outputs):
                             if oname.lstrip("%") == key:
                                 out_idx = oi
                                 break
-                        step_inputs.append((1, prod, out_idx))
+                        sis.append((1, prod, out_idx))
                     else:
-                        # SSA from main_0 (prod==0 or unknown producer).
-                        # Look up the actual output index in main_0's outputs
-                        # so the consumer knows exactly which return value to use.
                         out_idx = 0
                         for oi, (oname, _, _) in enumerate(funcs[0].outputs):
                             if oname.lstrip("%") == key:
                                 out_idx = oi
                                 break
-                        step_inputs.append((1, 0, out_idx))
-        # Encode step
-        exec_plan_data.append(len(step_inputs))
-        for src, a, b in step_inputs:
+                        sis.append((1, 0, out_idx))
+        step_inputs.append(sis)
+
+    # ── Generate ExecutionPlan proto ──
+    from gen.proto.python import sfa_abi_pb2
+
+    plan = sfa_abi_pb2.ExecutionPlan()
+    for gn in global_names:
+        plan.global_inputs.append(gn)
+
+    for fi, (func, sis) in enumerate(zip(funcs, step_inputs)):
+        step = plan.steps.add()
+        step.func_name = func.name
+        for src, source_index, producer_step in sis:
+            edge = step.inputs.add()
+            if src == 0:
+                edge.source = sfa_abi_pb2.GLOBAL_INPUT
+            else:
+                edge.source = sfa_abi_pb2.STEP_OUTPUT
+            edge.source_index = source_index
+            edge.producer_step = producer_step
+
+    plan_bytes = plan.SerializeToString()
+
+    # Flatten to legacy exec_plan_data for MLIR attribute + C++ chain-wrapper compat
+    exec_plan_data: list[int] = []
+    exec_plan_data.append(len(funcs))
+    exec_plan_data.append(len(global_names))
+    for sis in step_inputs:
+        exec_plan_data.append(len(sis))
+        for src, a, b in sis:
             exec_plan_data.extend([src, a, b])
 
-    return funcs, chain_order, exec_plan_data
+    return funcs, chain_order, exec_plan_data, plan_bytes

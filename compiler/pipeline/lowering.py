@@ -44,18 +44,4 @@ def run_sf_lowering_pipeline(ir_mod: Any, ctx: Any, verify: bool = True) -> str:
     pman.enable_verifier(verify)
     pman.enable_timing()
     pman.run(ir_mod.operation)
-
-    for attr_name in list(ir_mod.operation.attributes.keys()):
-        if attr_name.startswith("sf."):
-            del ir_mod.operation.attributes[attr_name]
-    ops_to_erase = []
-    for op in ir_mod.operation.regions[0].blocks[0]:
-        op_name = str(op.operation.name)
-        if op_name == "func.func":
-            sym = str(op.operation.attributes.get("sym_name", ""))
-            if sym == '"main"':
-                ops_to_erase.append(op)
-    for op in ops_to_erase:
-        op.operation.erase()
-
     return ir_mod.operation.get_asm(print_generic_op_form=True)

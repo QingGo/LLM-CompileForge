@@ -106,7 +106,7 @@ struct SfChainWrapperPass
       auto mainType = main0.getFunctionType();
       OpBuilder builder(ctx);
       builder.setInsertionPointToEnd(module.getBody());
-      auto mainFunc = builder.create<func::FuncOp>(loc, "main", mainType);
+    auto mainFunc = builder.create<func::FuncOp>(loc, "main", mainType);
       auto *entryBlock = mainFunc.addEntryBlock();
       builder.setInsertionPointToStart(entryBlock);
       SmallVector<Value> callArgs;

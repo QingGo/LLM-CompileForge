@@ -43,9 +43,8 @@ def mlir_module_to_text(module: MlirModule) -> str:
     if module.chain_order:
         names = ", ".join(f'"{n}"' for n in module.chain_order)
         attrs_parts.append(f'sf.chain_order = [{names}]')
-    if module.exec_plan_data:
-        data = ", ".join(str(v) for v in module.exec_plan_data)
-        attrs_parts.append(f'sf.exec_plan_data = [{data}]')
+    # exec_plan_data is stored in metadata.json (too large for MLIR text parser).
+    # It is attached programmatically by compile_dylib.py when lowering.
     if attrs_parts:
         attrs = " attributes {" + "; ".join(attrs_parts) + "}"
     lines.append(f"module{attrs} {{")
@@ -234,6 +233,14 @@ def save_mlir_module_artifact(module: MlirModule, directory: str) -> None:
             }
     if classification:
         module.metadata["weight_classification"] = classification
+    if module.chain_order:
+        module.metadata["chain_order"] = list(module.chain_order)
+    if module.exec_plan_data:
+        module.metadata["exec_plan_data"] = list(module.exec_plan_data)
+    if hasattr(module, '_exec_plan_proto') and module._exec_plan_proto:
+        import base64
+        module.metadata["exec_plan_proto"] = base64.b64encode(
+            module._exec_plan_proto).decode('ascii')
 
     with open(out_dir / "metadata.json", "w") as f:
         json.dump(module.metadata, f, indent=2)
