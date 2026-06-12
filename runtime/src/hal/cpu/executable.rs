@@ -10,6 +10,17 @@ use super::super::sfa::SfaMemRef;
 use super::memref::MemRefDescAny;
 use super::sret;
 
+// ── sret buffer size helper ────────────────────────────────────────────
+
+/// Compute the sret (struct return) buffer size from output memref ranks.
+///
+/// Each output descriptor occupies 24 + 16 * rank bytes (MLIR memref layout).
+/// Minimum allocation is 4096 bytes to cover small-arity cases with a single
+/// page-sized buffer.
+pub(crate) fn compute_sret_size(output_ranks: &[usize]) -> usize {
+    output_ranks.iter().map(|&r| 24 + 16 * r).sum::<usize>().max(4096)
+}
+
 // ── RawCpuExecutable (low-level dylib loader) ───────────────────────────
 
 #[derive(Debug)]
@@ -140,11 +151,9 @@ impl traits::Executable for CpuExecutable {
             .collect();
 
         // Step 3: Allocate sret buffer for output descriptors.
-        // Compute from output ranks: 24 + 16 * rank bytes per descriptor.
-        let sret_size: usize = outputs.iter()
-            .map(|o| 24 + 16 * o.rank() as usize)
-            .sum::<usize>()
-            .max(4096);
+        let sret_size: usize = compute_sret_size(
+            &outputs.iter().map(|o| o.rank() as usize).collect::<Vec<_>>(),
+        );
         let mut sret: Vec<u8> = vec![0u8; sret_size];
         let sret_ptr = sret.as_mut_ptr() as *mut c_void;
 
@@ -357,4 +366,88 @@ impl traits::Executable for CpuExecutable {
     /// count is stored in the compute graph (parsed via proto ABI during
     /// model loading). Callers should use `compute_graph.functions.len()`.
     fn function_count(&self) -> usize { 0 }
+}
+
+// ── Unit tests ─────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── compute_sret_size ──────────────────────────────────────────
+
+    #[test]
+    fn test_compute_sret_size_single_rank3() {
+        let size = compute_sret_size(&[3]);
+        assert_eq!(size, 4096.max(24 + 48));
+    }
+
+    #[test]
+    fn test_compute_sret_size_multi_rank() {
+        let size = compute_sret_size(&[2, 3]);
+        assert_eq!(size, 4096.max(56 + 72));
+    }
+
+    #[test]
+    fn test_compute_sret_size_large_exceeds_4096() {
+        let ranks = [100, 100, 100];
+        let per_output = 24 + 16 * 100;
+        let expected = 3 * per_output;
+        assert!(expected > 4096);
+        assert_eq!(compute_sret_size(&ranks), expected);
+    }
+
+    #[test]
+    fn test_compute_sret_size_empty_clamps_to_4096() {
+        assert_eq!(compute_sret_size(&[]), 4096);
+    }
+
+    #[test]
+    fn test_compute_sret_size_rank_zero() {
+        assert_eq!(compute_sret_size(&[0]), 4096.max(24 + 0));
+    }
+
+    // ── KernelFn::as_raw_ptr ───────────────────────────────────────
+
+    #[test]
+    fn test_kernel_fn_as_raw_ptr_arity2() {
+        unsafe extern "C" fn dummy_fn(_sret: *mut std::ffi::c_void, _in0: *const std::ffi::c_void) {}
+        let kernel = KernelFn::Arity2(dummy_fn as CifaceFn2);
+        let ptr = kernel.as_raw_ptr();
+        assert!(!ptr.is_null());
+    }
+
+    #[test]
+    fn test_kernel_fn_as_raw_ptr_arity1() {
+        unsafe extern "C" fn dummy_fn(_sret: *mut std::ffi::c_void) {}
+        let kernel = KernelFn::Arity1(dummy_fn as CifaceFn1);
+        let ptr = kernel.as_raw_ptr();
+        assert!(!ptr.is_null());
+    }
+
+    #[test]
+    fn test_kernel_fn_as_raw_ptr_high_arity() {
+        unsafe extern "C" fn dummy_fn() {}
+        let f = crate::model::ciface_high::FnPtr(dummy_fn);
+        let kernel = KernelFn::HighArity(f);
+        let ptr = kernel.as_raw_ptr();
+        assert!(!ptr.is_null());
+    }
+
+    #[test]
+    fn test_kernel_fn_as_raw_ptr_arity8() {
+        unsafe extern "C" fn dummy_fn(
+            _sret: *mut std::ffi::c_void,
+            _in0: *const std::ffi::c_void,
+            _in1: *const std::ffi::c_void,
+            _in2: *const std::ffi::c_void,
+            _in3: *const std::ffi::c_void,
+            _in4: *const std::ffi::c_void,
+            _in5: *const std::ffi::c_void,
+            _in6: *const std::ffi::c_void,
+        ) {}
+        let kernel = KernelFn::Arity8(dummy_fn as CifaceFn8);
+        let ptr = kernel.as_raw_ptr();
+        assert!(!ptr.is_null());
+    }
 }

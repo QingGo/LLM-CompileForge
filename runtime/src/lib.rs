@@ -31,8 +31,20 @@ mod contract_precision_tests;
 mod golden_tests;
 
 #[cfg(test)]
+#[path = "tests/internal_e2e_tests.rs"]
+mod internal_e2e_tests;
+
+#[cfg(test)]
 #[path = "tests/precision_contract_tests.rs"]
 mod precision_contract_tests;
+
+#[cfg(test)]
+#[path = "tests/contract_weight_tests.rs"]
+mod contract_weight_tests;
+
+#[cfg(test)]
+#[path = "tests/e2e_tests.rs"]
+mod e2e_tests;
 
 #[cfg(feature = "python-bindings")]
 mod py_bindings {
