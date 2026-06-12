@@ -247,10 +247,17 @@ test-ddr:
 		echo "  ✅ DRR patterns compile"; \
 	else echo "  ❌ DRR patterns failed"; exit 1; fi
 
-# L0: Contract — cross-validate proto ABI fields in compiled model
+# L0: Contract — precision + ABI + memref golden tests across all subprojects
 TEST_CONTRACT_MODEL := outputs/compiled/opt_125m_fresh
 test-contract: $(VENV)
-	PYTHONPATH="$(PROJECT_ROOT)/gen/proto/python:$$PYTHONPATH" $(PYTHON) tests/contract/abi_cross_validate.py $(TEST_CONTRACT_MODEL)
+	@echo "=== sf-dialect precision ==="
+	$(DYLIB_ENV) $(PYTEST) sf-dialect/test/test_precision.py -v --timeout=60
+	@echo "=== compiler precision ==="
+	$(DYLIB_ENV) $(PYTEST) compiler/tests/test_precision_contract.py -v -m integration --timeout=120
+	@echo "=== runtime precision (build golden dylibs) ==="
+	make -f tests/data/golden/Makefile
+	cd runtime && cargo test precision_contract --lib -- --nocapture
+	@echo "✓ All contract tests passed"
 
 # L1: 单元测试
 test-unit: $(VENV)

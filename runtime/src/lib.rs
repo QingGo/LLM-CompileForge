@@ -26,6 +26,14 @@ mod contract_determinism_tests;
 #[path = "tests/contract_precision_tests.rs"]
 mod contract_precision_tests;
 
+#[cfg(test)]
+#[path = "tests/golden_tests.rs"]
+mod golden_tests;
+
+#[cfg(test)]
+#[path = "tests/precision_contract_tests.rs"]
+mod precision_contract_tests;
+
 #[cfg(feature = "python-bindings")]
 mod py_bindings {
     use crate::cache::block::BlockManager;
