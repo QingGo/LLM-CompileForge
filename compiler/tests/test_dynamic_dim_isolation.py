@@ -20,7 +20,6 @@ import numpy as np
 import pytest
 import safetensors.torch
 import torch
-from transformers import AutoModelForCausalLM
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
@@ -34,7 +33,7 @@ from compiler.backend.compile_utils import (
 from compiler.backend.fixups import _fixup_unrealized_casts_pass
 from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir
 from compiler.pipeline.lowering import SF_LOWERING_PIPELINE
-from compiler.sfcf_parser import DEFAULT_SRET_SIZE
+from compiler.dylib_ffi import DEFAULT_SRET_SIZE
 
 _setup_mlir_path()
 import mlir.ir as ir  # noqa: E402
@@ -54,7 +53,7 @@ def _cos(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _memref(ptr, ndim, shape):
-    strides = tuple(int(np.prod(shape[i + 1:])) for i in range(ndim))
+    strides = tuple(int(np.prod(shape[i + 1 :])) for i in range(ndim))
 
     class M(ctypes.Structure):
         _fields_ = [
@@ -64,8 +63,11 @@ def _memref(ptr, ndim, shape):
             ("sizes", ctypes.c_int64 * ndim),
             ("strides", ctypes.c_int64 * ndim),
         ]
+
     return M(
-        ctypes.c_void_p(ptr), ctypes.c_void_p(ptr), 0,
+        ctypes.c_void_p(ptr),
+        ctypes.c_void_p(ptr),
+        0,
         (ctypes.c_int64 * ndim)(*shape),
         (ctypes.c_int64 * ndim)(*strides),
     )
@@ -85,9 +87,7 @@ def _compile_dylib(mlir: str, td: str) -> str:
     sf.register_dialects(ctx._CAPIPtr, load=True)
     with ir.Location.unknown(ctx):
         mod = ir.Module.parse(mlir, ctx)
-        pman = pm.PassManager.parse(
-            "builtin.module({})".format(SF_LOWERING_PIPELINE), ctx
-        )
+        pman = pm.PassManager.parse(f"builtin.module({SF_LOWERING_PIPELINE})", ctx)
         pman.run(mod.operation)
         lower_linalg_to_llvm_ir(mod)
         _fixup_unrealized_casts_pass(mod)
@@ -101,11 +101,15 @@ def _compile_dylib(mlir: str, td: str) -> str:
             f.write(str(mod))
         subprocess.run(
             ["./llvm-project/build/bin/mlir-translate", "--mlir-to-llvmir", m_path, "-o", ll_path],
-            capture_output=True, check=True, timeout=120,
+            capture_output=True,
+            check=True,
+            timeout=120,
         )
         subprocess.run(
             [_find_llc(), "-filetype=obj", ll_path, "-o", o_path],
-            capture_output=True, check=True, timeout=120,
+            capture_output=True,
+            check=True,
+            timeout=120,
         )
         free_o = _compile_serveforge_free(td)
         link_dylib([o_path, free_o], dylib_path)
@@ -182,21 +186,19 @@ class TestDynamicDimIsolation:
             lib._mlir_ciface_main_0(*args)
             actual = _unpack_sret_3d(sret)
 
-        norm = (x / np.sqrt((x ** 2).mean(axis=-1, keepdims=True) + 1e-6)) * nw
+        norm = (x / np.sqrt((x**2).mean(axis=-1, keepdims=True) + 1e-6)) * nw
         fc1 = np.dot(norm.reshape(-1, hidden), w1.T) + b1
         silu = fc1 / (1.0 + np.exp(-fc1))
         fc2 = np.dot(silu, w2.T) + b2
         expected = (fc2 + x.reshape(-1, hidden)).reshape(batch, seq, hidden)
 
         cos_val = _cos(actual, expected)
-        print(f"\nStatic FFN: cos={cos_val:.8f}, actual mean={actual.mean():.4f}, "
-              f"expected mean={expected.mean():.4f}")
-        assert cos_val >= 0.9999, \
-            f"Static FFN baseline failed: cos={cos_val:.8f}"
+        print(f"\nStatic FFN: cos={cos_val:.8f}, actual mean={actual.mean():.4f}, expected mean={expected.mean():.4f}")
+        assert cos_val >= 0.9999, f"Static FFN baseline failed: cos={cos_val:.8f}"
 
     def test_ffn_dynamic_small(self):
         """Dynamic FFN (small dims): same data as static FFN but with ?x? type.
-        
+
         This tests whether the dynamic dimension path in linalg lowering
         produces the same result as the static path.
         """
@@ -222,32 +224,33 @@ class TestDynamicDimIsolation:
             lib._mlir_ciface_main_0(*args)
             actual = _unpack_sret_3d(sret)
 
-        norm = (x / np.sqrt((x ** 2).mean(axis=-1, keepdims=True) + 1e-6)) * nw
+        norm = (x / np.sqrt((x**2).mean(axis=-1, keepdims=True) + 1e-6)) * nw
         fc1 = np.dot(norm.reshape(-1, hidden), w1.T) + b1
         silu = fc1 / (1.0 + np.exp(-fc1))
         fc2 = np.dot(silu, w2.T) + b2
         expected = (fc2 + x.reshape(-1, hidden)).reshape(batch, seq, hidden)
 
         cos_val = _cos(actual, expected)
-        print(f"\nDynamic FFN (small): cos={cos_val:.8f}, actual mean={actual.mean():.4f}, "
-              f"expected mean={expected.mean():.4f}")
-        assert cos_val >= 0.9999, \
-            f"Dynamic FFN failed: cos={cos_val:.8f} — dynamic dim handling has a bug"
+        print(
+            f"\nDynamic FFN (small): cos={cos_val:.8f}, actual mean={actual.mean():.4f}, "
+            f"expected mean={expected.mean():.4f}"
+        )
+        assert cos_val >= 0.9999, f"Dynamic FFN failed: cos={cos_val:.8f} — dynamic dim handling has a bug"
 
     def test_ffn_real_weights(self):
         """Dynamic FFN with real OPT-125m layer-0 weights (real hidden=768).
-        
+
         Uses safetensors weights and compares with HF layer-0 output.
         """
         st = safetensors.torch.load_file(str(SAFETENSORS_PATH))
-        
+
         # Layer 0 FFN weights
         prefix = "model.decoder.layers.0."
         nw = st[f"{prefix}self_attn_layer_norm.weight"].numpy().astype(np.float32)
-        w1 = st[f"{prefix}fc1.weight"].numpy().astype(np.float32)   # [3072, 768]
-        b1 = st[f"{prefix}fc1.bias"].numpy().astype(np.float32)     # [3072]
-        w2 = st[f"{prefix}fc2.weight"].numpy().astype(np.float32)   # [768, 3072]
-        b2 = st[f"{prefix}fc2.bias"].numpy().astype(np.float32)     # [768]
+        w1 = st[f"{prefix}fc1.weight"].numpy().astype(np.float32)  # [3072, 768]
+        b1 = st[f"{prefix}fc1.bias"].numpy().astype(np.float32)  # [3072]
+        w2 = st[f"{prefix}fc2.weight"].numpy().astype(np.float32)  # [768, 3072]
+        b2 = st[f"{prefix}fc2.bias"].numpy().astype(np.float32)  # [768]
 
         hidden = 768
         ffn_dim = 3072
@@ -256,10 +259,10 @@ class TestDynamicDimIsolation:
         x = rng.randn(batch, seq, hidden).astype(np.float32)
 
         # Build dynamic MLIR with real dims
-        mlir = f"""module {{
+        mlir = """module {
   func.func @main_0(%x: tensor<?x?x768xf32>, %nw: tensor<768xf32>,
       %w1: tensor<3072x768xf32>, %b1: tensor<3072xf32>,
-      %w2: tensor<768x3072xf32>, %b2: tensor<768xf32>) -> tensor<?x?x768xf32> {{
+      %w2: tensor<768x3072xf32>, %b2: tensor<768xf32>) -> tensor<?x?x768xf32> {
     %n = "sf.rms_norm"(%x, %nw) :
       (tensor<?x?x768xf32>, tensor<768xf32>) -> tensor<?x?x768xf32>
     %fc1 = "sf.linear"(%n, %w1, %b1) :
@@ -270,8 +273,8 @@ class TestDynamicDimIsolation:
     %out = "sf.add"(%fc2, %x) :
       (tensor<?x?x768xf32>, tensor<?x?x768xf32>) -> tensor<?x?x768xf32>
     return %out : tensor<?x?x768xf32>
-  }}
-}}
+  }
+}
 """
         with tempfile.TemporaryDirectory() as td:
             dylib = _compile_dylib(mlir, td)

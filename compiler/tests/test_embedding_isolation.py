@@ -19,7 +19,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
-from compiler.sfcf_parser import DEFAULT_SRET_SIZE
+from compiler.dylib_ffi import DEFAULT_SRET_SIZE
 
 
 def _cos(a: np.ndarray, b: np.ndarray) -> float:
@@ -45,25 +45,34 @@ def _find_tool(name: str) -> str:
 
 
 def _memref(ptr, ndim, shape):
-    strides = tuple(int(np.prod(shape[i + 1:])) for i in range(ndim))
+    strides = tuple(int(np.prod(shape[i + 1 :])) for i in range(ndim))
 
     class M(ctypes.Structure):
         _fields_ = [
-            ("allocated", ctypes.c_void_p), ("aligned", ctypes.c_void_p),
+            ("allocated", ctypes.c_void_p),
+            ("aligned", ctypes.c_void_p),
             ("offset", ctypes.c_int64),
-            ("sizes", ctypes.c_int64 * ndim), ("strides", ctypes.c_int64 * ndim),
+            ("sizes", ctypes.c_int64 * ndim),
+            ("strides", ctypes.c_int64 * ndim),
         ]
-    return M(ctypes.c_void_p(ptr), ctypes.c_void_p(ptr), 0,
-             (ctypes.c_int64 * ndim)(*shape), (ctypes.c_int64 * ndim)(*strides))
+
+    return M(
+        ctypes.c_void_p(ptr),
+        ctypes.c_void_p(ptr),
+        0,
+        (ctypes.c_int64 * ndim)(*shape),
+        (ctypes.c_int64 * ndim)(*strides),
+    )
 
 
 def _compile_sf_to_dylib(sf_mlir: str, tmp_dir: str, name: str) -> str:
     import mlir.ir as ir
     from mlir_sf._mlir_libs._sfDialectsNanobind import sf
+
+    from compiler.backend.compile_utils import _compile_serveforge_free, link_dylib
     from compiler.backend.fixups import _fixup_unrealized_casts_pass
     from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir
     from compiler.pipeline import _apply_sf_to_linalg
-    from compiler.backend.compile_utils import _compile_serveforge_free, link_dylib
 
     lowered = _apply_sf_to_linalg(sf_mlir)
     ctx = ir.Context()
@@ -81,11 +90,17 @@ def _compile_sf_to_dylib(sf_mlir: str, tmp_dir: str, name: str) -> str:
             f.write(str(mod))
         subprocess.run(
             [_find_tool("mlir-translate"), "--mlir-to-llvmir", m, "-o", l],
-            capture_output=True, text=True, check=True, timeout=60,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
         )
         subprocess.run(
             [_find_tool("cc"), "-c", l, "-o", o, "-O0"],
-            capture_output=True, text=True, check=True, timeout=60,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
         )
         free_o = _compile_serveforge_free(tmp_dir)
         link_dylib([o, free_o], d)
@@ -95,12 +110,14 @@ def _compile_sf_to_dylib(sf_mlir: str, tmp_dir: str, name: str) -> str:
 @pytest.mark.integration
 @pytest.mark.timeout(60)
 class TestEmbeddingIsolation:
-
-    @pytest.mark.parametrize("batch,seq,vocab,hidden", [
-        (2, 4, 50272, 768),
-        (2, 4, 100, 64),
-        (1, 8, 50, 32),
-    ])
+    @pytest.mark.parametrize(
+        "batch,seq,vocab,hidden",
+        [
+            (2, 4, 50272, 768),
+            (2, 4, 100, 64),
+            (1, 8, 50, 32),
+        ],
+    )
     def test_embedding_standalone_dylib(self, batch, seq, vocab, hidden):
         """sf.embedding compiled as standalone dylib matches numpy reference."""
         rng = np.random.RandomState(42)
@@ -132,15 +149,12 @@ class TestEmbeddingIsolation:
             actual = np.array((ctypes.c_float * n).from_address(al), dtype=np.float32).reshape(sz)
             expected = weight[indices % vocab]
             cos = _cos(actual, expected)
-            assert cos >= 0.9999, (
-                f"Embedding standalone cos={cos:.8f} < 0.9999 "
-                f"shape=({batch},{seq},{vocab},{hidden})")
+            assert cos >= 0.9999, f"Embedding standalone cos={cos:.8f} < 0.9999 shape=({batch},{seq},{vocab},{hidden})"
 
 
 @pytest.mark.integration
 @pytest.mark.timeout(60)
 class TestEmbeddingWithIdentityWeights:
-
     def test_embedding_plus_10_identity_weights(self):
         """sf.embedding + 10 identity weight copies in same function."""
         rng = np.random.RandomState(42)
@@ -149,7 +163,7 @@ class TestEmbeddingWithIdentityWeights:
         indices = np.array([[2, 3, 1, 5], [0, 0, 0, 0]], dtype=np.int64)
         id_weights = [rng.randn(64, 64).astype(np.float32) for _ in range(10)]
 
-        args = [f"%ids: tensor<2x4xi64>", f"%emb_w: tensor<{vocab}x{hidden}xf32>"]
+        args = ["%ids: tensor<2x4xi64>", f"%emb_w: tensor<{vocab}x{hidden}xf32>"]
         for i in range(10):
             args.append(f"%id{i}: tensor<64x64xf32>")
         lines = ["module {"]
@@ -158,20 +172,25 @@ class TestEmbeddingWithIdentityWeights:
         for _ in range(10):
             lines.append(", tensor<64x64xf32>")
         lines.append("  ) {")
-        lines.append(f'    %emb = "sf.embedding"(%emb_w, %ids) : (tensor<{vocab}x{hidden}xf32>, tensor<2x4xi64>) -> tensor<2x4x{hidden}xf32>')
+        lines.append(
+            f'    %emb = "sf.embedding"(%emb_w, %ids) : (tensor<{vocab}x{hidden}xf32>, tensor<2x4xi64>) -> tensor<2x4x{hidden}xf32>'
+        )
         rv = ["%emb"]
         for i in range(10):
-            lines.append(f"    %c{i} = linalg.copy ins(%id{i} : tensor<64x64xf32>) outs(%id{i} : tensor<64x64xf32>) -> tensor<64x64xf32>")
+            lines.append(
+                f"    %c{i} = linalg.copy ins(%id{i} : tensor<64x64xf32>) outs(%id{i} : tensor<64x64xf32>) -> tensor<64x64xf32>"
+            )
             rv.append(f"%c{i}")
-        lines.append(f"    return {', '.join(rv)} : tensor<2x4x64xf32>" + "".join(", tensor<64x64xf32>" for _ in range(10)))
+        lines.append(
+            f"    return {', '.join(rv)} : tensor<2x4x64xf32>" + "".join(", tensor<64x64xf32>" for _ in range(10))
+        )
         lines.append("  }")
         lines.append("}")
 
         with tempfile.TemporaryDirectory() as td:
             dylib = _compile_sf_to_dylib("\n".join(lines), td, "test_embid")
             lib = ctypes.CDLL(dylib)
-            mrs = [_memref(indices.ctypes.data, 2, indices.shape),
-                   _memref(weight.ctypes.data, 2, weight.shape)]
+            mrs = [_memref(indices.ctypes.data, 2, indices.shape), _memref(weight.ctypes.data, 2, weight.shape)]
             for w in id_weights:
                 mrs.append(_memref(w.ctypes.data, 2, w.shape))
             sret = (ctypes.c_uint8 * DEFAULT_SRET_SIZE)()
@@ -189,14 +208,12 @@ class TestEmbeddingWithIdentityWeights:
             actual = np.array((ctypes.c_float * n).from_address(al), dtype=np.float32).reshape(sz)
             expected = weight[indices % vocab]
             cos = _cos(actual, expected)
-            assert cos >= 0.9999, (
-                f"Embedding+10id cos={cos:.8f} < 0.9999")
+            assert cos >= 0.9999, f"Embedding+10id cos={cos:.8f} < 0.9999"
 
 
 @pytest.mark.integration
 @pytest.mark.timeout(300)
 class TestFullModelMain0Isolation:
-
     def test_standalone_main0_vs_fulldylib_main0(self):
         """RED: standalone sf dialect main_0 vs full-dylib libmodel.dylib main_0.
 
@@ -207,6 +224,7 @@ class TestFullModelMain0Isolation:
         the pipeline stages for this specific IR.
         """
         import re
+
         from compiler.serialize import load_artifact
         from scripts._cos import cosine_similarity
 
@@ -232,23 +250,19 @@ class TestFullModelMain0Isolation:
 
             # The lowered MLIR should have sf.weight_names with argument order
             lowered = _apply_sf_to_linalg(sf_mlir)
-            wm = re.search(
-                r'sf\.weight_names\s*=\s*\[(.*?)\]', lowered, re.DOTALL
-            )
+            wm = re.search(r"sf\.weight_names\s*=\s*\[(.*?)\]", lowered, re.DOTALL)
             assert wm, "No sf.weight_names in lowered MLIR"
             names = [w.strip().strip('"') for w in wm.group(1).split(",")]
             w_arrs = [all_w.get(n, np.zeros((1,), dtype=np.float32)) for n in names]
 
-            input_ids = np.array(
-                [[2, 32826, 85, 4129], [0, 0, 0, 0]], dtype=np.int64
-            )
+            input_ids = np.array([[2, 32826, 85, 4129], [0, 0, 0, 0]], dtype=np.int64)
             all_inputs = [input_ids] + w_arrs
 
             lib = ctypes.CDLL(dylib)
             mrs = [_memref(a.ctypes.data, a.ndim, a.shape) for a in all_inputs]
             sret = (ctypes.c_uint8 * DEFAULT_SRET_SIZE)()
             args = [ctypes.byref(sret)] + [ctypes.byref(m) for m in mrs]
-            k = getattr(lib, "_mlir_ciface_main_0")
+            k = lib._mlir_ciface_main_0
             k.argtypes = [ctypes.c_void_p] * len(args)
             k.restype = None
             k(*args)
@@ -256,33 +270,23 @@ class TestFullModelMain0Isolation:
             sb = bytes(sret)
             off = 12 * 40  # output[12] offset
             al = struct.unpack_from("<Q", sb, off + 8)[0]
-            sz = tuple(
-                struct.unpack_from("<q", sb, off + 24 + 8 * i)[0] for i in range(3)
-            )
+            sz = tuple(struct.unpack_from("<q", sb, off + 24 + 8 * i)[0] for i in range(3))
             assert sz == (2, 4, 768), f"Wrong standalone shape: {sz}"
             n = int(np.prod(sz))
-            standalone_emb = np.array(
-                (ctypes.c_float * n).from_address(al), dtype=np.float32
-            ).reshape(sz)
+            standalone_emb = np.array((ctypes.c_float * n).from_address(al), dtype=np.float32).reshape(sz)
 
             # Compare with Python executor
             from scripts.ctypes_forward import run_python_executor
 
             py_result = run_python_executor(ARTIFACT_DIR)
             py_layer0 = py_result.func_outputs[1][0]
-            standalone_cos = cosine_similarity(
-                standalone_emb.ravel(), py_layer0.ravel()
-            )
-            print(
-                f"\n  Standalone main_0 vs py: cos={standalone_cos:.8f}"
-            )
+            standalone_cos = cosine_similarity(standalone_emb.ravel(), py_layer0.ravel())
+            print(f"\n  Standalone main_0 vs py: cos={standalone_cos:.8f}")
 
             # Compare with full-dylib main_0
             from scripts.ctypes_forward import run_ctypes
 
-            ctypes_result = run_ctypes(
-                ARTIFACT_DIR, dylib_path=f"{ARTIFACT_DIR}/libmodel.dylib"
-            )
+            ctypes_result = run_ctypes(ARTIFACT_DIR, dylib_path=f"{ARTIFACT_DIR}/libmodel.dylib")
             full_emb = ctypes_result.func_outputs[0][12]
             full_cos = cosine_similarity(standalone_emb.ravel(), full_emb.ravel())
             print(f"  Standalone vs full-dylib: cos={full_cos:.8f}")
@@ -295,11 +299,11 @@ class TestFullModelMain0Isolation:
                 print("  → Bug is in pipeline stages for this specific IR")
 
             assert standalone_cos >= 0.9999, (
-                f"Standalone main_0 cos={standalone_cos:.8f} < 0.9999. "
-                f"Bug is in pipeline stages."
+                f"Standalone main_0 cos={standalone_cos:.8f} < 0.9999. Bug is in pipeline stages."
             )
 
 
 def _apply_sf_to_linalg(sf_mlir: str) -> str:
     from compiler.pipeline import _apply_sf_to_linalg as _f
+
     return _f(sf_mlir)

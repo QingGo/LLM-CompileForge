@@ -14,6 +14,7 @@ import pytest
 
 try:
     from mlir_sf._mlir_libs._sfDialectsNanobind import sf  # noqa: F401
+
     _HAS_SF_DIALECT = True
 except ImportError:
     _HAS_SF_DIALECT = False
@@ -46,8 +47,7 @@ def test_binary_op(op):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("op", ["sf.relu", "sf.gelu", "sf.silu", "sf.sigmoid",
-                                "sf.exp", "sf.neg", "sf.tanh"])
+@pytest.mark.parametrize("op", ["sf.relu", "sf.gelu", "sf.silu", "sf.sigmoid", "sf.exp", "sf.neg", "sf.tanh"])
 def test_activation_op(op):
     lowered = lower(ACTIVATION_MODULE.format(op=op))
     check_lowered(lowered)
@@ -386,9 +386,6 @@ def test_linear_dynamic():
     check_lowered(lowered)
 
 
-
-
-
 # ── From test_mlir_lowering.py: precise op-level checks ─────────
 
 
@@ -499,6 +496,3 @@ class TestLoweringChain:
         check_op_count(r, "linalg.generic", 1)
         check_absent(r, "sf.matmul")
         check_absent(r, "sf.silu")
-
-
-

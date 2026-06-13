@@ -19,7 +19,6 @@ from compiler.passes.fusion import _run_pattern
 
 @pytest.mark.unit
 class TestRunPatternFallback:
-
     def test_matches_sf_mul_among_sf_ops(self):
         """_run_pattern finds sf.mul ops in MLIR with multiple sf ops."""
         mlir = """module {
@@ -50,6 +49,7 @@ class TestRunPatternFallback:
     return %0 : tensor<4xf32>
   }
 }"""
+
         def callback(op, rewriter):
             return True
 
@@ -64,6 +64,7 @@ class TestRunPatternFallback:
     return %0 : tensor<4xf32>
   }
 }"""
+
         def callback(op, rewriter):
             return True
 
@@ -89,8 +90,10 @@ class TestRunPatternFallback:
 
         builtins.__import__ = mock_import
         try:
+
             def callback(op, rewriter):
                 return True
+
             result = _run_pattern(mlir, "sf.mul", callback)
             assert "sf.mul" in result
         finally:

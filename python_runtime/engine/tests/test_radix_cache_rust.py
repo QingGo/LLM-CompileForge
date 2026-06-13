@@ -9,11 +9,13 @@ import pytest
 class TestRadixCacheRust:
     def test_import(self) -> None:
         from llm_serveforge_runtime import PyRadixCache
+
         cache = PyRadixCache(block_size=16)
         assert cache is not None
 
     def test_empty_match(self) -> None:
         from llm_serveforge_runtime import PyRadixCache
+
         cache = PyRadixCache(block_size=16)
         blocks, matched = cache.match_prefix([1, 2, 3])
         assert blocks == []

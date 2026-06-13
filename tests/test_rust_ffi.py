@@ -284,6 +284,7 @@ class TestLLMEngineRustIntegration:
     @staticmethod
     def _make_test_mlir():
         from compiler.artifact import MlirFunction, MlirModule, MlirOp
+
         return MlirModule(
             functions=[
                 MlirFunction(
@@ -427,4 +428,5 @@ class TestLLMEngineRustIntegration:
     @staticmethod
     def _make_tokenizer():
         from tests.helpers import SimpleTokenizer
+
         return SimpleTokenizer()

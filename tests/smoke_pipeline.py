@@ -29,6 +29,7 @@ def main():
     _setup_mlir_path()
     import mlir.ir as ir
     import mlir.passmanager as pm
+
     try:
         from mlir_sf._mlir_libs._sfDialectsNanobind import sf
     except ImportError:
@@ -48,10 +49,7 @@ def main():
 
         # Step 2: C++ lowering
         t0 = time.time()
-        pman = pm.PassManager.parse(
-            "builtin.module("
-            + SF_LOWERING_PIPELINE +
-            ")", ctx)
+        pman = pm.PassManager.parse("builtin.module(" + SF_LOWERING_PIPELINE + ")", ctx)
         pman.enable_verifier(True)
         pman.run(module.operation)
         t = time.time() - t0
@@ -62,6 +60,7 @@ def main():
         # Step 3: LLVM lowering (bufferize + convert)
         from compiler.backend.compile_utils import mlir_module_to_llvm_ir
         from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir
+
         t0 = time.time()
         llvm_text = lower_linalg_to_llvm_ir(module)
         t = time.time() - t0

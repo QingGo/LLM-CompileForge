@@ -19,7 +19,7 @@ import struct
 import numpy as np
 import pytest
 
-from compiler.sfcf_parser import parse_sret_outputs, verify_output_shapes
+from compiler.dylib_ffi import parse_sret_outputs, verify_output_shapes
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -37,9 +37,9 @@ def _make_sret_descriptor(arr: np.ndarray) -> bytes:
     rank = arr.ndim
     buf = struct.pack("<Q", arr.ctypes.data)  # allocated
     buf += struct.pack("<Q", arr.ctypes.data)  # aligned
-    buf += struct.pack("<q", 0)                # offset
+    buf += struct.pack("<q", 0)  # offset
     for s in arr.shape:
-        buf += struct.pack("<q", s)            # sizes
+        buf += struct.pack("<q", s)  # sizes
     elem_strides = arr.strides
     for s in elem_strides:
         buf += struct.pack("<q", s // arr.itemsize)  # strides (in elements)
@@ -80,7 +80,6 @@ def _make_tensors_and_sret(
 
 @pytest.mark.unit
 class TestVerifyOutputShapes:
-
     def test_happy_path(self):
         """All shapes match — no errors."""
         arr1 = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
@@ -203,7 +202,6 @@ class TestVerifyOutputShapes:
 
 @pytest.mark.unit
 class TestParseSretOutputsEdgeCases:
-
     def test_null_pointer_returns_empty(self):
         """parse_sret_outputs returns empty array when aligned==0."""
         desc = _make_sret_descriptor_null(rank=2)

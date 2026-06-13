@@ -99,9 +99,7 @@ class TestSFATensorRawLayout:
 
     def test_raw1_size_40_bytes(self) -> None:
         """SFATensorRaw1 = 24 (header) + 8 (sizes) + 8 (strides) = 40."""
-        assert ctypes.sizeof(SFATensorRaw1) == 40, (
-            f"SFATensorRaw1 size={ctypes.sizeof(SFATensorRaw1)}, expected 40"
-        )
+        assert ctypes.sizeof(SFATensorRaw1) == 40, f"SFATensorRaw1 size={ctypes.sizeof(SFATensorRaw1)}, expected 40"
 
     def test_raw2_size_56_bytes(self) -> None:
         """SFATensorRaw2 = 24 + 16 + 16 = 56."""
@@ -118,9 +116,7 @@ class TestSFATensorRawLayout:
     def test_header_24_byte_field_offsets(self) -> None:
         assert SFATensorRaw1.allocated.offset == 0, "allocated must be at offset 0"
         assert SFATensorRaw1.aligned.offset == 8, "aligned must be at offset 8"
-        assert SFATensorRaw1.offset.offset == 16, (
-            "offset field must be at byte 16"
-        )
+        assert SFATensorRaw1.offset.offset == 16, "offset field must be at byte 16"
         assert SFATensorRaw1.sizes.offset == 24, "sizes must be at offset 24"
 
     def test_sret_descriptor_aligned_offset(self) -> None:
@@ -140,15 +136,11 @@ class TestSFATensorRawLayout:
 # ── LLVM IR patterns for sret verification ──────────────────────────
 
 # Ciface wrapper definition: define void @_mlir_ciface_<name>(<params>) {
-_CIFACE_DEF_RE = re.compile(
-    r"define\s+void\s+@(_mlir_ciface_\w+)\s*\(([^)]*)\)\s*\{"
-)
+_CIFACE_DEF_RE = re.compile(r"define\s+void\s+@(_mlir_ciface_\w+)\s*\(([^)]*)\)\s*\{")
 
 # Store into sret pointer: store ... ptr %0, align 8
 # The sret pointer is always the first argument (%0)
-_STORE_SRET_RE = re.compile(
-    r"store\s+\{([^}]+)\}\s+%(\d+),\s*ptr\s+%(\d+)"
-)
+_STORE_SRET_RE = re.compile(r"store\s+\{([^}]+)\}\s+%(\d+),\s*ptr\s+%(\d+)")
 
 _INSERTVALUE_UNDEF_RE = re.compile(
     r"insertvalue\s+\{\s*ptr,\s*ptr,\s*i64,\s*"
@@ -204,11 +196,13 @@ def _find_sret_construction(ll_body: str) -> list[dict[str, Any]]:
         field_idx = int(m.group(4))
         if field_idx == 0:
             if current_rank is not None and fields_set:
-                events.append({
-                    "type": "insertvalue_chain",
-                    "rank": current_rank,
-                    "fields_set": fields_set,
-                })
+                events.append(
+                    {
+                        "type": "insertvalue_chain",
+                        "rank": current_rank,
+                        "fields_set": fields_set,
+                    }
+                )
             current_rank = rank
             fields_set = {field_idx}
         else:
@@ -216,11 +210,13 @@ def _find_sret_construction(ll_body: str) -> list[dict[str, Any]]:
                 fields_set.add(field_idx)
 
     if current_rank is not None and fields_set:
-        events.append({
-            "type": "insertvalue_chain",
-            "rank": current_rank,
-            "fields_set": fields_set,
-        })
+        events.append(
+            {
+                "type": "insertvalue_chain",
+                "rank": current_rank,
+                "fields_set": fields_set,
+            }
+        )
 
     return events
 
@@ -264,8 +260,7 @@ class TestLLVMIRSretContract:
         count = len(ciface_funcs)
         # 28 = main_0 + 12*_a + 12*_b + main_13 + main_14 + main_15
         assert count == 28, (
-            f"Expected 28 ciface wrappers (KV split), got {count}. "
-            f"Functions: {list(ciface_funcs.keys())}"
+            f"Expected 28 ciface wrappers (KV split), got {count}. Functions: {list(ciface_funcs.keys())}"
         )
 
     def test_all_ciface_have_sret_construction(self, ciface_funcs: dict[str, dict[str, Any]]) -> None:
@@ -280,9 +275,7 @@ class TestLLVMIRSretContract:
             if not events:
                 missing.append(name)
 
-        assert not missing, (
-            f"These ciface wrappers have no detectable sret construction: {missing}"
-        )
+        assert not missing, f"These ciface wrappers have no detectable sret construction: {missing}"
 
     def test_sret_store_call_has_returns(self, ciface_funcs: dict[str, dict[str, Any]]) -> None:
         void_stores: list[str] = []
@@ -293,15 +286,11 @@ class TestLLVMIRSretContract:
             store_match = re.search(r"store\s+\{[^}]+\}\s+%(\d+),\s*ptr\s*%0", body)
             if store_match:
                 result_reg = store_match.group(1)
-                call_pat = re.compile(
-                    rf"%{result_reg}\s*=\s*call\s+\{{[^}}]+\}}\s*@\w+\("
-                )
+                call_pat = re.compile(rf"%{result_reg}\s*=\s*call\s+\{{[^}}]+\}}\s*@\w+\(")
                 if not call_pat.search(body):
                     void_stores.append(f"{name} (stores %{result_reg} from non-call)")
 
-        assert not void_stores, (
-            f"Functions storing non-call results to sret: {void_stores}"
-        )
+        assert not void_stores, f"Functions storing non-call results to sret: {void_stores}"
 
     def test_kv_split_sret_has_valid_construction(self, ciface_funcs: dict[str, dict[str, Any]]) -> None:
         kv_funcs = {k: v for k, v in ciface_funcs.items() if k.endswith("a")}
@@ -312,18 +301,13 @@ class TestLLVMIRSretContract:
             store_evs = [e for e in events if e["type"] == "store_sret"]
             insert_evs = [e for e in events if e["type"] == "insertvalue_chain"]
 
-            assert store_evs or insert_evs, (
-                f"KV function {name}: no sret construction found"
-            )
+            assert store_evs or insert_evs, f"KV function {name}: no sret construction found"
 
             for ev in insert_evs:
                 field_check = ev["fields_set"]
-                assert 0 in field_check, (
-                    f"KV function {name}: insertvalue chain missing field 0 (allocated)"
-                )
+                assert 0 in field_check, f"KV function {name}: insertvalue chain missing field 0 (allocated)"
                 assert 1 in field_check, (
-                    f"KV function {name}: insertvalue chain missing field 1 (aligned). "
-                    f"Fields set: {field_check}"
+                    f"KV function {name}: insertvalue chain missing field 1 (aligned). Fields set: {field_check}"
                 )
 
     def test_no_undef_sret_descriptor(self, ciface_funcs: dict[str, dict[str, Any]]) -> None:
@@ -342,13 +326,10 @@ class TestLLVMIRSretContract:
                 if ev["type"] == "insertvalue_chain":
                     fields = ev["fields_set"]
                     if 0 not in fields or 1 not in fields:
-                        bad_funcs.append(
-                            f"{name} (rank={ev['rank']}, fields={fields})"
-                        )
+                        bad_funcs.append(f"{name} (rank={ev['rank']}, fields={fields})")
 
         assert not bad_funcs, (
-            f"Functions with incomplete descriptor construction "
-            f"(missing allocated or aligned): {bad_funcs}"
+            f"Functions with incomplete descriptor construction (missing allocated or aligned): {bad_funcs}"
         )
 
 
@@ -393,10 +374,7 @@ class TestDylibSymbolContract:
             except AttributeError:
                 missing.append(name)
 
-        assert not missing, (
-            f"Missing ciface symbols: {missing} "
-            f"({len(missing)}/{len(expected)} missing)"
-        )
+        assert not missing, f"Missing ciface symbols: {missing} ({len(missing)}/{len(expected)} missing)"
 
     def test_sfa_abi_symbol_exists(self, lib: ctypes.CDLL) -> None:
         """sfa_abi exported symbol must exist for proto deserialization."""
@@ -454,9 +432,7 @@ class TestMemRefDescriptorLayout:
             offsets = [0]
             for f in fmt:
                 offsets.append(offsets[-1] + struct.calcsize(f))
-            assert offsets[1] == 8, (
-                f"Rank {rank}: aligned field at byte {offsets[1]}, expected 8"
-            )
+            assert offsets[1] == 8, f"Rank {rank}: aligned field at byte {offsets[1]}, expected 8"
 
     def test_memref_descriptor_can_be_created(self) -> None:
         import numpy as np
@@ -479,6 +455,7 @@ class TestMemRefDescriptorLayout:
 
 
 # ── Runtime sret validation: compile mini model, ctypes call, verify descriptors ─
+
 
 @pytest.mark.integration
 @pytest.mark.timeout(120)
@@ -520,10 +497,8 @@ class TestRuntimeSretContract:
             dylib_path = _compile_sf_to_dylib(sf_mlir, td, "test_sret")
             lib = ctypes.CDLL(dylib_path)
 
-            inp_mr = _make_memref_struct(
-                input_data.ctypes.data, input_data.ndim, input_data.shape)
-            w_mr = _make_memref_struct(
-                weight_data.ctypes.data, weight_data.ndim, weight_data.shape)
+            inp_mr = _make_memref_struct(input_data.ctypes.data, input_data.ndim, input_data.shape)
+            w_mr = _make_memref_struct(weight_data.ctypes.data, weight_data.ndim, weight_data.shape)
 
             sret_buf = (ctypes.c_uint8 * 1024)()
             lib._mlir_ciface_main_0(
@@ -541,17 +516,9 @@ class TestRuntimeSretContract:
             aligned_ptr = ctypes.c_void_p.from_buffer(sret_buf, 8)
 
             # Contract: both allocated and aligned must be non-null
-            assert allocated_ptr.value is not None, (
-                "sret contract violation: allocated pointer is null"
-            )
-            assert aligned_ptr.value is not None, (
-                "sret contract violation: aligned pointer is null"
-            )
+            assert allocated_ptr.value is not None, "sret contract violation: allocated pointer is null"
+            assert aligned_ptr.value is not None, "sret contract violation: aligned pointer is null"
             # They may differ (aligned is the aligned version of allocated)
             # but both must be valid pointers
-            assert allocated_ptr.value != 0, (
-                f"sret contract violation: allocated={allocated_ptr.value:#x}"
-            )
-            assert aligned_ptr.value != 0, (
-                f"sret contract violation: aligned={aligned_ptr.value:#x}"
-            )
+            assert allocated_ptr.value != 0, f"sret contract violation: allocated={allocated_ptr.value:#x}"
+            assert aligned_ptr.value != 0, f"sret contract violation: aligned={aligned_ptr.value:#x}"

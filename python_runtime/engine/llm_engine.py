@@ -104,6 +104,7 @@ class LLMEngine:
             self.executor: Any = executor
         else:
             from python_runtime.engine.mlir_executor import MlirExecutor
+
             self.executor = MlirExecutor(module, hal_backend)
 
         # ── Inference loop ───────────────────────────────
@@ -173,11 +174,19 @@ class LLMEngine:
 
         rid = str(time.monotonic_ns())
         self._bridge.add_request(rid, prompt_tokens, max_tokens)
-        self.__loop.add_request(rid, prompt_tokens, SamplingParams(
-            temperature=temperature, top_p=top_p, top_k=top_k, max_tokens=max_tokens,
-        ))
-        log_request_lifecycle(_log, rid, "admitted", prompt_len=len(prompt_tokens),
-                              max_tokens=max_tokens, priority=priority)
+        self.__loop.add_request(
+            rid,
+            prompt_tokens,
+            SamplingParams(
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                max_tokens=max_tokens,
+            ),
+        )
+        log_request_lifecycle(
+            _log, rid, "admitted", prompt_len=len(prompt_tokens), max_tokens=max_tokens, priority=priority
+        )
         return rid
 
     def generate(
@@ -237,6 +246,7 @@ class LLMEngine:
 
         # Determine model's expected seq_len from function input type
         import re
+
         expected_seq = None
         for _name, tp in self._module.main.inputs:
             m = re.search(r"tensor<(\d+)x(\d+)x", tp)
@@ -261,17 +271,17 @@ class LLMEngine:
             last_logits = logits[0, last_pos, :]
 
             from python_runtime.engine.sampler import sample
-            sp = SamplingParams(temperature=temperature, top_p=top_p, top_k=top_k,
-                                max_tokens=max_tokens)
-            token_id = int(sample(last_logits.unsqueeze(0),
-                                  temperature=sp.temperature, top_p=sp.top_p,
-                                  top_k=sp.top_k).item())
+
+            sp = SamplingParams(temperature=temperature, top_p=top_p, top_k=top_k, max_tokens=max_tokens)
+            token_id = int(
+                sample(last_logits.unsqueeze(0), temperature=sp.temperature, top_p=sp.top_p, top_k=sp.top_k).item()
+            )
 
             if eos_id is not None and token_id == eos_id:
                 break
             all_tokens.append(token_id)
 
-        output_tokens = all_tokens[len(prompt_tokens):]
+        output_tokens = all_tokens[len(prompt_tokens) :]
         if self._tokenizer is not None:
             return str(self._tokenizer.decode(output_tokens))
         return " ".join(str(t) for t in output_tokens)

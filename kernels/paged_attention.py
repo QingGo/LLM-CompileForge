@@ -60,8 +60,13 @@ def _paged_attention_cpu(
             v_seq = v_seq.repeat_interleave(ratio, dim=1)
 
         out = F.scaled_dot_product_attention(
-            q_i, k_seq, v_seq, attn_mask=None,
-            dropout_p=0.0, is_causal=False, scale=scale,
+            q_i,
+            k_seq,
+            v_seq,
+            attn_mask=None,
+            dropout_p=0.0,
+            is_causal=False,
+            scale=scale,
         )
         outputs[rid] = out.squeeze(0).squeeze(1)  # remove batch=1, seq=1 → [heads, head_dim]
 
@@ -106,9 +111,7 @@ def _paged_attention_triton(
         n_blocks = tl.cdiv(seq_len, BLOCK_SIZE).to(tl.int32)
 
         offs_d = tl.arange(0, HEAD_DIM)
-        q = tl.load(
-            Q_ptr + batch_idx * N_HEADS * HEAD_DIM + head_idx * HEAD_DIM + offs_d
-        )
+        q = tl.load(Q_ptr + batch_idx * N_HEADS * HEAD_DIM + head_idx * HEAD_DIM + offs_d)
 
         m_i = float("-inf")
         l_i = 0.0
@@ -132,7 +135,8 @@ def _paged_attention_triton(
             scores = tl.sum(q[None, :] * k, axis=1) * scale_val
             scores = tl.where(
                 tl.arange(0, BLOCK_SIZE)[:, None] < (seq_len - block_idx * BLOCK_SIZE),
-                scores, float("-inf"),
+                scores,
+                float("-inf"),
             )
 
             m_curr = tl.max(scores)
@@ -167,16 +171,23 @@ def _paged_attention_triton(
     bt_flat = torch.zeros((B, max_blocks), dtype=torch.long)
     sl_flat = torch.zeros(B, dtype=torch.long)
     for idx, (rid, bt) in enumerate(block_tables.items()):
-        bt_flat[idx, :len(bt)] = torch.tensor(bt, dtype=torch.long)
+        bt_flat[idx, : len(bt)] = torch.tensor(bt, dtype=torch.long)
         sl_flat[idx] = seq_lens.get(rid, len(bt) * block_size)
 
     o = torch.empty(B, H, D, device=q.device, dtype=q.dtype)
     grid = (B * H,)
 
     _kernel[grid](
-        q, k_cache, v_cache, bt_flat, sl_flat, o,
+        q,
+        k_cache,
+        v_cache,
+        bt_flat,
+        sl_flat,
+        o,
         scale_val=scale,
-        BLOCK_SIZE=block_size, HEAD_DIM=D, N_HEADS=H,
+        BLOCK_SIZE=block_size,
+        HEAD_DIM=D,
+        N_HEADS=H,
         MAX_BLOCKS=max_blocks,
     )
 
@@ -212,9 +223,5 @@ def paged_attention(
     from kernels import HAS_TRITON
 
     if HAS_TRITON and q.is_cuda:
-        return _paged_attention_triton(
-            q, k_cache, v_cache, block_tables, seq_lens, block_size, scale
-        )
-    return _paged_attention_cpu(
-        q, k_cache, v_cache, block_tables, seq_lens, block_size, scale
-    )
+        return _paged_attention_triton(q, k_cache, v_cache, block_tables, seq_lens, block_size, scale)
+    return _paged_attention_cpu(q, k_cache, v_cache, block_tables, seq_lens, block_size, scale)

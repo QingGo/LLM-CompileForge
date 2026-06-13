@@ -6,8 +6,6 @@ import os
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts.diagnostics.reduce_mlir import (
@@ -19,7 +17,6 @@ from scripts.diagnostics.reduce_mlir import (
     reduce_by_binary_search,
     reduce_functions,
 )
-
 
 # =========================================================================
 # Synthetic MLIR test fixtures
@@ -39,9 +36,7 @@ def _make_mlir_module(func_names: list[str]) -> str:
 
 
 SIMPLE_TWO_FUNC = _make_mlir_module(["main_0", "main_1"])
-SIMPLE_FIVE_FUNC = _make_mlir_module(
-    ["main_0", "main_1", "main_2", "main_3", "main_4"]
-)
+SIMPLE_FIVE_FUNC = _make_mlir_module(["main_0", "main_1", "main_2", "main_3", "main_4"])
 
 
 # =========================================================================
@@ -52,6 +47,7 @@ SIMPLE_FIVE_FUNC = _make_mlir_module(
 class TestModuleManipulation:
     def test_get_func_names(self):
         import mlir.ir as ir
+
         from scripts.diagnostics.reduce_mlir import _get_mlir_ctx
 
         ctx = _get_mlir_ctx()
@@ -61,9 +57,7 @@ class TestModuleManipulation:
         assert names == ["main_0", "main_1", "main_2", "main_3", "main_4"]
 
     def test_build_with_subset(self):
-        result = _build_module_with(
-            SIMPLE_FIVE_FUNC, {"main_0", "main_2", "main_4"}
-        )
+        result = _build_module_with(SIMPLE_FIVE_FUNC, {"main_0", "main_2", "main_4"})
         assert "func.func @main_0" in result
         assert "func.func @main_1" not in result
         assert "func.func @main_2" in result
@@ -77,6 +71,7 @@ class TestModuleManipulation:
 
     def test_build_roundtrip_valid(self):
         import mlir.ir as ir
+
         from scripts.diagnostics.reduce_mlir import _get_mlir_ctx
 
         result = _build_module_with(SIMPLE_TWO_FUNC, {"main_0"})
@@ -130,12 +125,8 @@ class TestReduceFunctions:
                 return True
             return True
 
-        result_no_retry = reduce_functions(
-            SIMPLE_FIVE_FUNC, m1_depends_on_m3_absent, retry=False
-        )
-        result_retry = reduce_functions(
-            SIMPLE_FIVE_FUNC, m1_depends_on_m3_absent, retry=True
-        )
+        result_no_retry = reduce_functions(SIMPLE_FIVE_FUNC, m1_depends_on_m3_absent, retry=False)
+        result_retry = reduce_functions(SIMPLE_FIVE_FUNC, m1_depends_on_m3_absent, retry=True)
 
         names_no = _func_names_from_text(result_no_retry)
         names_yes = _func_names_from_text(result_retry)
@@ -178,6 +169,7 @@ class TestReduceBinarySearch:
 class TestGlobalCounter:
     def setup_method(self):
         import glob as _glob
+
         for f in _glob.glob("/tmp/reduce_mlir_counters/best_test*.txt"):
             try:
                 os.unlink(f)
@@ -218,9 +210,7 @@ class TestGlobalCounter:
                 return True
 
         counter = GlobalCounter(AlwaysInteresting(), metric="ops", input_hash="test_gc_ops")
-        assert counter.is_interesting(
-            "  %0 = arith.addf %a, %b : f32\n  %1 = arith.mulf %0, %c : f32\n"
-        )
+        assert counter.is_interesting("  %0 = arith.addf %a, %b : f32\n  %1 = arith.mulf %0, %c : f32\n")
         assert counter.is_interesting("  %0 = arith.addf %a, %b : f32\n")
 
     def test_persists_best_value(self):
@@ -280,9 +270,7 @@ class TestPassInterestingness:
         assert test.is_interesting("not valid mlir {{{") is False
 
     def test_buggy_mlir_detected_as_interesting(self):
-        test = PassInterestingness(
-            "one-shot-bufferize{bufferize-function-boundaries}", timeout=10
-        )
+        test = PassInterestingness("one-shot-bufferize{bufferize-function-boundaries}", timeout=10)
         mlir = """module {
   func.func @bad(%arg0: tensor<2xf32>) -> tensor<2xf32> {
     %0 = tensor.empty() : tensor<2xf32>
@@ -301,4 +289,5 @@ class TestPassInterestingness:
 
 def _func_names_from_text(mlir_text: str) -> list[str]:
     import re
+
     return re.findall(r"func\.func\s+@(\w+)", mlir_text)

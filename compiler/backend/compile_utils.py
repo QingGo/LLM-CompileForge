@@ -50,6 +50,7 @@ def _has_bindings() -> bool:
     _setup_mlir_path()
     try:
         import mlir.ir  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -65,10 +66,7 @@ def _find_mlir_tool(name: str) -> str:
       4. Common Homebrew paths (fallback)
     """
     # 1. Our build (preferred) — compiled from source with all translation interfaces
-    our_build = (
-        Path(__file__).resolve().parent.parent.parent
-        / "llvm-project" / "build" / "bin" / name
-    )
+    our_build = Path(__file__).resolve().parent.parent.parent / "llvm-project" / "build" / "bin" / name
     if our_build.is_file() and os.access(str(our_build), os.X_OK):
         tool_path = str(our_build)
         _log.info("Using %s: %s (LLVM build dir)", name, tool_path)
@@ -84,9 +82,10 @@ def _find_mlir_tool(name: str) -> str:
     path = shutil.which(name)
     if path:
         _log.warning(
-            "Using %s from PATH (%s). This may pick up Homebrew version instead "
-            "of compiled LLVM build. Prefer: %s",
-            name, path, our_build,
+            "Using %s from PATH (%s). This may pick up Homebrew version instead of compiled LLVM build. Prefer: %s",
+            name,
+            path,
+            our_build,
         )
         return path
 
@@ -104,8 +103,7 @@ def _find_mlir_tool(name: str) -> str:
 
     raise ToolNotFoundError(
         name,
-        "Install LLVM (brew install llvm), "
-        "or set SERVE_FORGE_LLVM_BIN to the llvm/bin directory.",
+        "Install LLVM (brew install llvm), or set SERVE_FORGE_LLVM_BIN to the llvm/bin directory.",
     )
 
 
@@ -170,7 +168,8 @@ def mlir_module_to_llvm_ir(ir_module: Any) -> str:
 
         result = subprocess.run(
             [mlir_translate, "--allow-unregistered-dialect", "--mlir-to-llvmir", mlir_path],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
             timeout=90,
         )
 
@@ -255,7 +254,6 @@ def jit_compile_and_run(ir_module: Any, func_name: str = "main") -> Any:
 
     from mlir.execution_engine import ExecutionEngine
 
-
     engine = ExecutionEngine(ir_module, opt_level=2)
     return engine
 
@@ -286,16 +284,14 @@ def link_dylib(
 
     # Locate MLIR runner_utils library for memrefCopy and other runtime helpers
     # needed by bufferized dynamic-shaped memref ops.
-    build_lib = (
-        Path(__file__).resolve().parent.parent.parent
-        / "llvm-project" / "build" / "lib"
-    )
+    build_lib = Path(__file__).resolve().parent.parent.parent / "llvm-project" / "build" / "lib"
     runner_lib = build_lib / "libmlir_c_runner_utils.dylib"
 
     cmd = [
         cc_bin,
         "-shared",
-        "-o", output,
+        "-o",
+        output,
         *obj_files,
     ]
     if debug:
@@ -385,15 +381,14 @@ def _compile_mlir_to_dylib_with_constants(
         emit_llvm_ir_to_file(ir_module, ll_path)
         # Save a copy of LLVM IR in output dir for debugging
         import shutil
+
         debug_ll = os.path.join(work_dir, "model.ll")
         shutil.copy2(ll_path, debug_ll)
         obj_path = llc_compile(ll_path, arch=arch, opt_level=opt_level, debug=debug)
         obj_files.append(obj_path)
 
         if os.path.isfile(const_bin_path):
-            obj_files.append(
-                _compile_embedded_data(const_bin_path, td)
-            )
+            obj_files.append(_compile_embedded_data(const_bin_path, td))
 
         obj_files.append(_compile_serveforge_free(td))
 
@@ -432,14 +427,12 @@ def _compile_embedded_data(bin_path: str, work_dir: str) -> str:
     cc_bin = _find_cc()
     result = subprocess.run(
         [cc_bin, "-c", c_path, "-o", o_path],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
         timeout=30,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"Failed to compile embedded constants (exit {result.returncode}):\n"
-            f"{result.stderr[:2000]}"
-        )
+        raise RuntimeError(f"Failed to compile embedded constants (exit {result.returncode}):\n{result.stderr[:2000]}")
 
     return o_path
 
@@ -461,13 +454,13 @@ void serveforge_free(void* ptr) { free(ptr); }
     cc_bin = _find_cc()
     result = subprocess.run(
         [cc_bin, "-c", c_path, "-o", o_path],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
         timeout=30,
     )
     if result.returncode != 0:
         raise RuntimeError(
-            f"Failed to compile serveforge_free stub (exit {result.returncode}):\n"
-            f"{result.stderr[:2000]}"
+            f"Failed to compile serveforge_free stub (exit {result.returncode}):\n{result.stderr[:2000]}"
         )
     return o_path
 
@@ -476,13 +469,17 @@ def _patch_transformers_torch() -> None:
     import torch
     import transformers.utils.generic as _generic
     import transformers.utils.import_utils as _iu
+
     _iu._torch_available = True  # type: ignore[attr-defined]
     _iu._torch_version = torch.__version__  # type: ignore[attr-defined]
     _generic._torch_pytree = torch.utils._pytree  # type: ignore[attr-defined]
+
     def _flatten(output: Any) -> tuple[list[Any], list[Any]]:
         return list(output.values()), list(output.keys())
+
     def _unflatten(values: list[Any], context: Any, output_type: Any = None) -> Any:
         return (output_type or type(context[0]))(**dict(zip(context, values, strict=False)))
+
     _generic._model_output_flatten = _flatten
     _generic._model_output_unflatten = _unflatten  # type: ignore[assignment]
 

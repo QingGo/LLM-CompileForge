@@ -88,9 +88,7 @@ def test_consumed_internally_with_cache_policy() -> None:
 
         # At least one function output must have consumed_internally=True
         has_internal = any(
-            consumed_internally
-            for func in mlir_mod.functions
-            for _, _, consumed_internally in func.outputs
+            consumed_internally for func in mlir_mod.functions for _, _, consumed_internally in func.outputs
         )
         assert has_internal, (
             "Expected at least one function output with "
@@ -147,9 +145,7 @@ def test_function_count_increases_with_sdpa_split() -> None:
     )
 
     # With SDPA split, at least 2 functions (QKV split from Attn+FFN)
-    assert count_with_policy >= 2, (
-        f"Expected at least 2 functions with CachePolicy, got {count_with_policy}"
-    )
+    assert count_with_policy >= 2, f"Expected at least 2 functions with CachePolicy, got {count_with_policy}"
 
 
 # ── Test: K/V outputs have consumed_internally=True ───────────
@@ -184,18 +180,13 @@ def test_kv_outputs_marked_consumed_internally() -> None:
 
         # Find "a" functions (QKV proj) — name ends with 'a'
         a_funcs = [f for f in mlir_mod.functions if f.name.endswith("a")]
-        assert len(a_funcs) >= 1, (
-            f"Expected at least one '*a' function, found {len(a_funcs)}"
-        )
+        assert len(a_funcs) >= 1, f"Expected at least one '*a' function, found {len(a_funcs)}"
 
         # Each 'a' function should have at least one consumed_internally=True output
         for func in a_funcs:
-            internal_outputs = [
-                (name, tp) for name, tp, consumed in func.outputs if consumed
-            ]
+            internal_outputs = [(name, tp) for name, tp, consumed in func.outputs if consumed]
             assert len(internal_outputs) >= 1, (
-                f"Function {func.name} has no consumed_internally=True outputs. "
-                f"All outputs: {func.outputs}"
+                f"Function {func.name} has no consumed_internally=True outputs. All outputs: {func.outputs}"
             )
 
 
@@ -224,10 +215,6 @@ def test_no_cache_policy_no_split() -> None:
 
         # No consumed_internally=True when no CachePolicy
         has_internal = any(
-            consumed_internally
-            for func in mlir_mod.functions
-            for _, _, consumed_internally in func.outputs
+            consumed_internally for func in mlir_mod.functions for _, _, consumed_internally in func.outputs
         )
-        assert not has_internal, (
-            "Expected NO consumed_internally=True when CachePolicy is absent"
-        )
+        assert not has_internal, "Expected NO consumed_internally=True when CachePolicy is absent"

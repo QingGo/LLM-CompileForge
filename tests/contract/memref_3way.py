@@ -32,8 +32,7 @@ def main() -> int:
 
     # Field offsets for the 24-byte memref header (SFATensorRaw2).
     # The layout is struct<(void*, void*, int64_t, int64_t[2], int64_t[2])>
-    assert struct.calcsize("PPq2q2q") == 56, \
-        f"SFATensorRaw2 expected 56, got {struct.calcsize('PPq2q2q')}"
+    assert struct.calcsize("PPq2q2q") == 56, f"SFATensorRaw2 expected 56, got {struct.calcsize('PPq2q2q')}"
     print("Python:allocated=0")
     print(f"Python:aligned={ptr_size}")
     print(f"Python:offset={ptr_size + ptr_size}")

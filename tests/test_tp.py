@@ -167,12 +167,12 @@ class TestTPTwoRankMock:
 
         ref = nn.Linear(in_f, out_f)
         with torch.no_grad():
-            col_l0.weight.copy_(ref.weight[:out_f // 2])
+            col_l0.weight.copy_(ref.weight[: out_f // 2])
             if col_l0.bias is not None:
-                col_l0.bias.copy_(ref.bias[:out_f // 2])
-            col_l1.weight.copy_(ref.weight[out_f // 2:])
+                col_l0.bias.copy_(ref.bias[: out_f // 2])
+            col_l1.weight.copy_(ref.weight[out_f // 2 :])
             if col_l1.bias is not None:
-                col_l1.bias.copy_(ref.bias[out_f // 2:])
+                col_l1.bias.copy_(ref.bias[out_f // 2 :])
 
             partial_r0 = nn.functional.linear(x, col_l0.weight, col_l0.bias)
             partial_r1 = nn.functional.linear(x, col_l1.weight, col_l1.bias)
@@ -219,6 +219,7 @@ def _run_tp2_col_worker(rank: int, in_f: int, out_f: int) -> None:
     os.environ["MASTER_PORT"] = "29500"
     dist.init_process_group("gloo", rank=rank, world_size=2)
     from compiler.tp.linear import ColumnParallelLinear
+
     torch.manual_seed(42)
     x = torch.randn(4, in_f)
     comm = _GlooBridge()
@@ -234,6 +235,7 @@ def _run_tp2_row_worker(rank: int, in_f: int, out_f: int) -> None:
     os.environ["MASTER_PORT"] = "29501"
     dist.init_process_group("gloo", rank=rank, world_size=2)
     from compiler.tp.linear import RowParallelLinear
+
     torch.manual_seed(7)
     x = torch.randn(4, in_f)
     comm = _GlooBridge()
@@ -327,9 +329,7 @@ class TestAutoTPStrategy:
         from compiler.tp.strategy import search_tp_strategy
 
         large = nn.Linear(8192, 8192)
-        result = search_tp_strategy(
-            large, available_memory_gb=0.001, max_tp_size=8
-        )
+        result = search_tp_strategy(large, available_memory_gb=0.001, max_tp_size=8)
 
         assert result.tp_size >= 2
 

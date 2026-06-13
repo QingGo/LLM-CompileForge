@@ -25,7 +25,7 @@ import pytest
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
-from compiler.sfcf_parser import DEFAULT_SRET_SIZE
+from compiler.dylib_ffi import DEFAULT_SRET_SIZE
 
 
 def _memref(data_ptr: int, rank: int, shape: tuple[int, ...]) -> ctypes.Structure:
@@ -40,12 +40,11 @@ def _memref(data_ptr: int, rank: int, shape: tuple[int, ...]) -> ctypes.Structur
         off += 8
     for s in range(1, n + 1):
         val = 1
-        for dim in (list(shape) + [1] * n)[s:min(s + 1, n)]:
+        for dim in (list(shape) + [1] * n)[s : min(s + 1, n)]:
             val *= max(dim, 1)
         struct.pack_into("Q", buf, off, val * 4)
         off += 8
-    RawMemRef = type("RawMemRef", (ctypes.Structure,),
-                     {"_fields_": [("raw", ctypes.c_uint8 * total)]})
+    RawMemRef = type("RawMemRef", (ctypes.Structure,), {"_fields_": [("raw", ctypes.c_uint8 * total)]})
     inst = RawMemRef()
     ctypes.memmove(ctypes.addressof(inst), bytes(buf), total)
     return inst
@@ -65,7 +64,11 @@ def _compile_simple_model(model_name: str, mlir_text: str, work_dir: str) -> str
     sf_opt = str(_PROJECT_ROOT / "sf-dialect" / "build" / "tools" / "sf-opt" / "sf-opt")
     result = subprocess.run(
         [sf_opt, "--sf-promote-weights", "--sf-lower-to-linalg", mlir_path],
-        capture_output=True, text=True, timeout=60, env=env)
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
     if result.returncode != 0:
         raise RuntimeError(f"sf-opt failed: {result.stderr[:500]}")
     with open(lowered_path, "w") as f:
@@ -85,25 +88,34 @@ def _compile_simple_model(model_name: str, mlir_text: str, work_dir: str) -> str
     )
     result = subprocess.run(
         [mlir_opt, lowered_path, "--pass-pipeline", f"builtin.module({passes})"],
-        capture_output=True, text=True, timeout=60, env=env)
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
     if result.returncode != 0:
         raise RuntimeError(f"mlir-opt failed: {result.stderr[:500]}")
 
     result2 = subprocess.run(
         [mlir_translate, "--mlir-to-llvmir", "-o", ll_path],
-        input=result.stdout, capture_output=True, text=True, timeout=30, env=env)
+        input=result.stdout,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
     if result2.returncode != 0:
         raise RuntimeError(f"mlir-translate failed: {result2.stderr[:500]}")
 
     result3 = subprocess.run(
-        [llc, "-O0", "-filetype=obj", ll_path, "-o", o_path],
-        capture_output=True, text=True, timeout=30, env=env)
+        [llc, "-O0", "-filetype=obj", ll_path, "-o", o_path], capture_output=True, text=True, timeout=30, env=env
+    )
     if result3.returncode != 0:
         raise RuntimeError(f"llc failed: {result3.stderr[:500]}")
 
     result4 = subprocess.run(
-        ["cc", "-shared", "-o", dylib_path, o_path],
-        capture_output=True, text=True, timeout=30, env=env)
+        ["cc", "-shared", "-o", dylib_path, o_path], capture_output=True, text=True, timeout=30, env=env
+    )
     if result4.returncode != 0:
         raise RuntimeError(f"cc failed: {result4.stderr[:500]}")
 
@@ -111,13 +123,12 @@ def _compile_simple_model(model_name: str, mlir_text: str, work_dir: str) -> str
 
 
 def _malloc_error_count() -> int:
-    libSystem = ctypes.CDLL('/usr/lib/libSystem.B.dylib')
+    libSystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
     libSystem.malloc_zone_check.restype = ctypes.c_int
     return libSystem.malloc_zone_check(None)
 
 
 class TestDylibMemorySafety:
-
     def test_simple_matmul_no_heap_corruption(self):
         mlir = """
 module {
@@ -147,16 +158,14 @@ module {
             kernel(ctypes.byref(sret), ctypes.byref(ma), ctypes.byref(mb))
             post_errs = _malloc_error_count()
 
-            assert post_errs <= pre_errs, (
-                f"Heap corruption increased: pre={pre_errs} post={post_errs}"
-            )
+            assert post_errs <= pre_errs, f"Heap corruption increased: pre={pre_errs} post={post_errs}"
 
     def test_full_model_no_heap_corruption(self):
         sys.path.insert(0, str(_PROJECT_ROOT))
         from gen.proto.python import sfa_abi_pb2
 
         with open(str(_PROJECT_ROOT / "outputs/compiled/opt_125m_test/sfa_abi.c")) as f:
-            hex_bytes = re.findall(r'0x[0-9a-fA-F]{2}', f.read())
+            hex_bytes = re.findall(r"0x[0-9a-fA-F]{2}", f.read())
         raw = bytes(int(h, 16) for h in hex_bytes)
         hdr = sfa_abi_pb2.SfaAbiHeader()
         hdr.ParseFromString(raw)
@@ -183,13 +192,14 @@ module {
             struct.pack_into("QQQ", raw_mr, 0, ptr, ptr, 0)
             off = 24
             for s in padded[:rank]:
-                struct.pack_into("Q", raw_mr, off, s); off += 8
+                struct.pack_into("Q", raw_mr, off, s)
+                off += 8
             stride = 4
             for s in reversed(padded[:rank]):
-                struct.pack_into("Q", raw_mr, off, stride); off += 8
+                struct.pack_into("Q", raw_mr, off, stride)
+                off += 8
                 stride *= s if s > 0 else 1
-            MR = type("MR", (ctypes.Structure,),
-                     {"_fields_": [("raw", ctypes.c_uint8 * total)]})
+            MR = type("MR", (ctypes.Structure,), {"_fields_": [("raw", ctypes.c_uint8 * total)]})
             inst = MR()
             ctypes.memmove(ctypes.addressof(inst), bytes(raw_mr), total)
             memrefs.append(inst)
@@ -204,6 +214,4 @@ module {
         kernel(ctypes.byref(sret), *(ctypes.byref(m) for m in memrefs))
         post_errs = _malloc_error_count()
 
-        assert post_errs <= pre_errs, (
-            f"Heap corruption increased: pre={pre_errs} post={post_errs}"
-        )
+        assert post_errs <= pre_errs, f"Heap corruption increased: pre={pre_errs} post={post_errs}"

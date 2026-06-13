@@ -65,18 +65,12 @@ class SpeculativeRunner:
             first_tok = target_logits[:, 0, :].argmax(dim=-1).unsqueeze(1)
             return [first_tok], True, 1
 
-        draft_tokens = self.proposer.propose(
-            hidden_states, input_ids, num_spec_tokens
-        )
-        accepted, all_accepted = self.verifier.verify_greedy(
-            draft_tokens, target_logits
-        )
+        draft_tokens = self.proposer.propose(hidden_states, input_ids, num_spec_tokens)
+        accepted, all_accepted = self.verifier.verify_greedy(draft_tokens, target_logits)
         num_generated = len(accepted)
         return accepted, all_accepted, num_generated
 
-    def get_first_token(
-        self, target_logits: torch.Tensor
-    ) -> torch.Tensor:
+    def get_first_token(self, target_logits: torch.Tensor) -> torch.Tensor:
         """Extract the first (non-speculative) token from target logits.
 
         Args:

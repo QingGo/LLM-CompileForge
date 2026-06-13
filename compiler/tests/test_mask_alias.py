@@ -27,9 +27,7 @@ from scripts.ctypes_forward import run_ctypes  # noqa: E402
 
 DYLIB_DIR = "outputs/compiled/opt_125m_fresh"
 _DYLIB_PATH = os.path.join(DYLIB_DIR, "libopt_125m_fresh.dylib") if os.path.isdir(DYLIB_DIR) else None
-pytestmark = pytest.mark.skip(
-    reason="Mask tests require working dylib forward pass (pre-existing format mismatch)"
-)
+pytestmark = pytest.mark.skip(reason="Mask tests require working dylib forward pass (pre-existing format mismatch)")
 
 # Mask tensor index within main_0's func_outputs
 _MASK_OUTPUT_IDX: int = 13
@@ -40,9 +38,7 @@ _MASK_OUTPUT_IDX: int = 13
 
 def _artifacts_exist() -> bool:
     """Check both the .dylib and model.ll exist."""
-    dylib_ok = os.path.isdir(DYLIB_DIR) and any(
-        f.endswith(".dylib") for f in os.listdir(DYLIB_DIR)
-    )
+    dylib_ok = os.path.isdir(DYLIB_DIR) and any(f.endswith(".dylib") for f in os.listdir(DYLIB_DIR))
     model_ll = os.path.isfile(os.path.join(DYLIB_DIR, "model.ll"))
     return dylib_ok and model_ll
 
@@ -100,13 +96,9 @@ class TestMaskAliasGuardrail:
         """
         mask = _load_mask()
         assert mask.size > 0, f"Mask tensor is empty (shape={mask.shape})"
-        assert mask.ndim == 4, (
-            f"Expected 4D mask tensor, got ndim={mask.ndim} "
-            f"(shape={mask.shape})"
-        )
+        assert mask.ndim == 4, f"Expected 4D mask tensor, got ndim={mask.ndim} (shape={mask.shape})"
         assert mask.shape == (2, 1, 4, 4), (
-            f"Expected mask shape (2,1,4,4), got {mask.shape} — "
-            f"compilation may have changed"
+            f"Expected mask shape (2,1,4,4), got {mask.shape} — compilation may have changed"
         )
 
         unique_vals = np.unique(mask)
@@ -133,13 +125,11 @@ class TestMaskAliasGuardrail:
                 val = float(mask[0, 0, i, j])
                 if j <= i:
                     assert val == pytest.approx(1.0, abs=1e-6), (
-                        f"Position ({i},{j}): attend should be ~1.0, "
-                        f"got {val} — mask buffer corrupted"
+                        f"Position ({i},{j}): attend should be ~1.0, got {val} — mask buffer corrupted"
                     )
                 else:
                     assert val == pytest.approx(0.0, abs=1e-6), (
-                        f"Position ({i},{j}): blocked should be ~0.0, "
-                        f"got {val} — mask buffer corrupted"
+                        f"Position ({i},{j}): blocked should be ~0.0, got {val} — mask buffer corrupted"
                     )
 
     # ── Test 2: LLVM IR output structure ───────────────────────────
@@ -171,9 +161,7 @@ class TestMaskAliasGuardrail:
         # main_0 has a deeply nested return struct, so a simple brace
         # regex won't work — we find by line-start + function label.
         # NOTE: no \b before @ since both space and @ are non-word chars.
-        main_defs = re.findall(
-            r'^define\s.*@main_\d+\b', content, re.MULTILINE
-        )
+        main_defs = re.findall(r"^define\s.*@main_\d+\b", content, re.MULTILINE)
         assert len(main_defs) == 16, (
             f"Expected 16 @main_ functions, "
             f"got {len(main_defs)}. "
@@ -183,9 +171,7 @@ class TestMaskAliasGuardrail:
         )
 
         # ── 2b. Count ciface wrapper functions ─────────────────────
-        ciface_defs = re.findall(
-            r'define\s+void\s+@_mlir_ciface_main_\d+', content
-        )
+        ciface_defs = re.findall(r"define\s+void\s+@_mlir_ciface_main_\d+", content)
         assert len(ciface_defs) == 16, (
             f"Expected 16 _mlir_ciface_main_ wrappers, "
             f"got {len(ciface_defs)}. "
@@ -203,9 +189,7 @@ class TestMaskAliasGuardrail:
         # ── 2c. Count malloc calls (proves independent allocation) ─
         # Each output memref's data buffer is allocated via @malloc.
         # 844 calls >> 16 functions, confirming independent allocation.
-        malloc_count = len(re.findall(
-            r'call\s+ptr\s+@malloc\(', content
-        ))
+        malloc_count = len(re.findall(r"call\s+ptr\s+@malloc\(", content))
 
         assert malloc_count >= 16, (
             f"Only {malloc_count} @malloc calls for {len(main_defs)} "
@@ -251,23 +235,17 @@ class TestMaskAliasGuardrail:
         result = run_ctypes(artifact_dir=DYLIB_DIR)
 
         # Check number of function output groups
-        assert len(result.func_outputs) == 16, (
-            f"Expected 16 function output groups, "
-            f"got {len(result.func_outputs)}"
-        )
+        assert len(result.func_outputs) == 16, f"Expected 16 function output groups, got {len(result.func_outputs)}"
 
         # Check that the mask output exists
         func_0_outputs = result.func_outputs[0]
         assert len(func_0_outputs) > _MASK_OUTPUT_IDX, (
-            f"func_outputs[0] has only {len(func_0_outputs)} entries, "
-            f"but mask is at index {_MASK_OUTPUT_IDX}"
+            f"func_outputs[0] has only {len(func_0_outputs)} entries, but mask is at index {_MASK_OUTPUT_IDX}"
         )
 
         # Verify mask shape is stable
         mask = func_0_outputs[_MASK_OUTPUT_IDX]
-        assert mask.shape == (2, 1, 4, 4), (
-            f"Mask shape changed: expected (2,1,4,4), got {mask.shape}"
-        )
+        assert mask.shape == (2, 1, 4, 4), f"Mask shape changed: expected (2,1,4,4), got {mask.shape}"
 
         # Determinism check: run twice, verify same output structure
         result2 = run_ctypes(artifact_dir=DYLIB_DIR)

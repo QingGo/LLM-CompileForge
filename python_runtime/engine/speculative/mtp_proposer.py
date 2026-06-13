@@ -43,13 +43,10 @@ class MTPProposer(SpeculativeProposer):
         self._vocab_size = vocab_size
         self.num_mtp_layers = num_mtp_layers
 
-        self.mtp_norms = nn.ModuleList([
-            nn.LayerNorm(hidden_size) for _ in range(num_mtp_layers)
-        ])
-        self.mtp_projections = nn.ModuleList([
-            nn.Linear(hidden_size, vocab_size, bias=False)
-            for _ in range(num_mtp_layers)
-        ])
+        self.mtp_norms = nn.ModuleList([nn.LayerNorm(hidden_size) for _ in range(num_mtp_layers)])
+        self.mtp_projections = nn.ModuleList(
+            [nn.Linear(hidden_size, vocab_size, bias=False) for _ in range(num_mtp_layers)]
+        )
 
     @property
     def vocab_size(self) -> int:

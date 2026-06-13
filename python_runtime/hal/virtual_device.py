@@ -77,9 +77,7 @@ class VirtualDevice:
                 return v.dtype if v.dtype.is_floating_point else torch.float32
         return torch.float32
 
-    def _infer_output_shape(
-        self, op_name: str, inputs: list[Any], **kwargs: Any
-    ) -> tuple[int, ...]:
+    def _infer_output_shape(self, op_name: str, inputs: list[Any], **kwargs: Any) -> tuple[int, ...]:
         if op_name == "weight":
             wt = kwargs.get("_weight_tensor")
             if isinstance(wt, torch.Tensor):
@@ -130,13 +128,46 @@ class VirtualDevice:
                         if isinstance(b, torch.Tensor) and b.dim() >= 2:
                             return vs[:-1] + (b.shape[-1],)
                     return vs
-                if op_name in ("add", "sub", "mul", "div", "max", "min", "gt", "lt",
-                               "relu", "gelu", "silu", "sigmoid", "softplus", "exp",
-                               "neg", "tanh", "sqrt", "rsqrt", "cos", "sin",
-                               "clamp_min", "triu", "tril", "type_as", "copy_",
-                               "layer_norm", "rms_norm", "softmax", "zeros_like",
-                               "masked_fill", "logical_and", "eq", "le", "ne",
-                               "ones_like", "full_like", "linalg_norm", "var"):
+                if op_name in (
+                    "add",
+                    "sub",
+                    "mul",
+                    "div",
+                    "max",
+                    "min",
+                    "gt",
+                    "lt",
+                    "relu",
+                    "gelu",
+                    "silu",
+                    "sigmoid",
+                    "softplus",
+                    "exp",
+                    "neg",
+                    "tanh",
+                    "sqrt",
+                    "rsqrt",
+                    "cos",
+                    "sin",
+                    "clamp_min",
+                    "triu",
+                    "tril",
+                    "type_as",
+                    "copy_",
+                    "layer_norm",
+                    "rms_norm",
+                    "softmax",
+                    "zeros_like",
+                    "masked_fill",
+                    "logical_and",
+                    "eq",
+                    "le",
+                    "ne",
+                    "ones_like",
+                    "full_like",
+                    "linalg_norm",
+                    "var",
+                ):
                     return vs
                 if op_name == "permute":
                     dims = kwargs.get("dims", ())
@@ -258,9 +289,7 @@ class VirtualDevice:
         return (1,)
 
 
-def _resolve_view_shape(
-    original: tuple[int, ...], target: tuple[int, ...]
-) -> tuple[int, ...]:
+def _resolve_view_shape(original: tuple[int, ...], target: tuple[int, ...]) -> tuple[int, ...]:
     resolved: list[int] = []
     total = 1
     for d in original:
@@ -279,9 +308,7 @@ def _resolve_view_shape(
     return tuple(resolved)
 
 
-def _slice_shape(
-    original: tuple[int, ...], kwargs: dict[str, Any]
-) -> tuple[int, ...]:
+def _slice_shape(original: tuple[int, ...], kwargs: dict[str, Any]) -> tuple[int, ...]:
     d = kwargs.get("dim", 0)
     start = kwargs.get("start", 0)
     end_val = kwargs.get("end", 1)

@@ -8,10 +8,14 @@ Reference: design-phase2.md §2.4
 
 from compiler._lazy_imports import lazy_imports
 
-lazy_imports(__name__, globals(), {
-    "ColumnParallelLinear": ("compiler.tp.linear", "ColumnParallelLinear"),
-    "RowParallelLinear": ("compiler.tp.linear", "RowParallelLinear"),
-    "VocabParallelEmbedding": ("compiler.tp.linear", "VocabParallelEmbedding"),
-    "search_tp_strategy": ("compiler.tp.strategy", "search_tp_strategy"),
-    "count_parameters": ("compiler.tp.strategy", "count_parameters"),
-})
+lazy_imports(
+    __name__,
+    globals(),
+    {
+        "ColumnParallelLinear": ("compiler.tp.linear", "ColumnParallelLinear"),
+        "RowParallelLinear": ("compiler.tp.linear", "RowParallelLinear"),
+        "VocabParallelEmbedding": ("compiler.tp.linear", "VocabParallelEmbedding"),
+        "search_tp_strategy": ("compiler.tp.strategy", "search_tp_strategy"),
+        "count_parameters": ("compiler.tp.strategy", "count_parameters"),
+    },
+)

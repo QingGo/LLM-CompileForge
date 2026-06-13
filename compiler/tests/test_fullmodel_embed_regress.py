@@ -27,7 +27,6 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 @pytest.mark.integration
 @pytest.mark.timeout(180)
 class TestFullModelEmbeddingRegression:
-
     def test_embedding_output_matches_python_executor(self) -> None:
         from scripts.ctypes_forward import run_ctypes
 
@@ -35,6 +34,7 @@ class TestFullModelEmbeddingRegression:
 
         # Load embedding weight from artifact
         from compiler.serialize import load_artifact
+
         artifact = load_artifact(ARTIFACT_DIR)
         emb_weight: np.ndarray | None = None
         for func in artifact.functions:
@@ -47,11 +47,10 @@ class TestFullModelEmbeddingRegression:
         assert emb_weight is not None, "Embedding weight not found in artifact"
 
         # Run dylib forward pass
-        input_ids = np.array(
-            [[2, 32826, 85, 4129], [0, 0, 0, 0]], dtype=np.int64
-        )
+        input_ids = np.array([[2, 32826, 85, 4129], [0, 0, 0, 0]], dtype=np.int64)
         ctypes_result = run_ctypes(
-            ARTIFACT_DIR, dylib_path=f"{ARTIFACT_DIR}/libopt_125m.dylib",
+            ARTIFACT_DIR,
+            dylib_path=f"{ARTIFACT_DIR}/libopt_125m.dylib",
             input_ids=input_ids,
         )
 

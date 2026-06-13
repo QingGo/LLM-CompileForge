@@ -59,9 +59,21 @@ def _infer_elementwise(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Typ
 _BROADCAST_OPS: set[str] = {"add", "mul", "sub", "div", "neg", "pow", "max"}
 
 _ELEMENTWISE_OPS: set[str] = {
-    "relu", "gelu", "silu", "sigmoid", "softplus",
-    "exp", "tanh", "sqrt", "clamp_min", "rsqrt",
-    "cos", "sin", "softmax", "triu", "tril",
+    "relu",
+    "gelu",
+    "silu",
+    "sigmoid",
+    "softplus",
+    "exp",
+    "tanh",
+    "sqrt",
+    "clamp_min",
+    "rsqrt",
+    "cos",
+    "sin",
+    "softmax",
+    "triu",
+    "tril",
 }
 
 
@@ -152,7 +164,10 @@ def infer_transpose(input_types: list[ir.Type], dim0: int = 0, dim1: int = 1, **
 
 def infer_slice(
     input_types: list[ir.Type],
-    dim: int = 0, start: int = 0, end: int = -1, step: int = 1,
+    dim: int = 0,
+    start: int = 0,
+    end: int = -1,
+    step: int = 1,
     **kwargs: Any,
 ) -> list[ir.Type]:
     """Slice: extract ``[start:end:step]`` along ``dim``."""
@@ -161,7 +176,8 @@ def infer_slice(
 
 def infer_select(
     input_types: list[ir.Type],
-    dim: int = 0, index: int = 0,
+    dim: int = 0,
+    index: int = 0,
     **kwargs: Any,
 ) -> list[ir.Type]:
     """Select: remove ``dim`` by indexing with a scalar ``index``."""
@@ -199,9 +215,7 @@ def infer_pad(input_types: list[ir.Type], pad: tuple[int, ...] | None = None, **
 # ── Reduction ────────────────────────────────────────────────
 
 
-def _infer_reduce(
-    input_types: list[ir.Type], dim: int = -1, keepdim: bool = False, **kwargs: Any
-) -> list[ir.Type]:
+def _infer_reduce(input_types: list[ir.Type], dim: int = -1, keepdim: bool = False, **kwargs: Any) -> list[ir.Type]:
     if not input_types:
         return []
     inp = input_types[0]

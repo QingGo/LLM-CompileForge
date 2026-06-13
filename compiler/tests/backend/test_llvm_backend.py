@@ -36,7 +36,12 @@ def _tools_available() -> bool:
 def _mlir_path_setup() -> None:
     _mlir_pkg = (
         Path(__file__).resolve().parent.parent.parent.parent
-        / "llvm-project" / "build" / "tools" / "mlir" / "python_packages" / "mlir_core"
+        / "llvm-project"
+        / "build"
+        / "tools"
+        / "mlir"
+        / "python_packages"
+        / "mlir_core"
     )
     if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
         sys.path.insert(0, str(_mlir_pkg))
@@ -44,23 +49,26 @@ def _mlir_path_setup() -> None:
 
 # ── Unit tests ───────────────────────────────────────────────────────
 
+
 @pytest.mark.unit
 class TestFindTools:
-
     def test_find_llc(self) -> None:
         from compiler.backend.llvm_backend import _find_llc
+
         llc = _find_llc()
         assert os.path.isfile(llc)
         assert os.access(llc, os.X_OK)
 
     def test_find_mlir_translate(self) -> None:
         from compiler.backend.llvm_backend import _find_mlir_translate
+
         mt = _find_mlir_translate()
         assert os.path.isfile(mt)
         assert os.access(mt, os.X_OK)
 
     def test_find_tools_returns_different_binaries(self) -> None:
         from compiler.backend.llvm_backend import _find_llc, _find_mlir_translate
+
         llc = _find_llc()
         mt = _find_mlir_translate()
         assert Path(llc).name != Path(mt).name
@@ -68,7 +76,6 @@ class TestFindTools:
 
 @pytest.mark.unit
 class TestLLCCompile:
-
     def test_compile_minimal_ll(self, tmp_path: Path) -> None:
         if not _tools_available():
             pytest.skip("llc/mlir-translate not available")
@@ -126,7 +133,6 @@ define i32 @answer() {
 
 @pytest.mark.unit
 class TestLinkDylib:
-
     def test_link_minimal_o_to_dylib(self, tmp_path: Path) -> None:
         if not _tools_available():
             pytest.skip("llc/mlir-translate not available")
@@ -174,9 +180,9 @@ define i32 @b() { ret i32 2 }
 
 # ── Integration tests ────────────────────────────────────────────────
 
+
 @pytest.mark.integration
 class TestQwenMain2FullPipeline:
-
     def _run_pipeline_on_main2(self, ir_ctx: Any) -> str:
         """Run sf→linalg→LLVM pipeline on Qwen main_2, return LLVM IR text."""
         from compiler.artifact import MlirModule, mlir_module_to_ir_module
@@ -257,7 +263,5 @@ class TestQwenMain2FullPipeline:
         assert os.path.getsize(dylib_path) > 0
 
         # Verify symbol exists
-        result = subprocess.run(
-            ["nm", "-g", dylib_path], capture_output=True, text=True
-        )
+        result = subprocess.run(["nm", "-g", dylib_path], capture_output=True, text=True)
         assert "_main_2" in result.stdout or "__mlir_ciface_main_2" in result.stdout

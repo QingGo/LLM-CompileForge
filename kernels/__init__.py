@@ -21,6 +21,7 @@ from __future__ import annotations
 
 try:
     import triton  # noqa: F401
+
     HAS_TRITON = True
 except ImportError:
     HAS_TRITON = False

@@ -62,7 +62,8 @@ def _llvm_step(label, script, timeout=STEP_TIMEOUT):
     t0 = time.time()
     result = subprocess.run(
         [sys.executable, "-c", script],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
         timeout=timeout,
         env=env,
         cwd=_PROJECT_ROOT,
@@ -114,8 +115,9 @@ _sf_count = asm.count('"sf.')
 print(f'Lowered: {{len(asm)}} chars, {{_sf_count}} sf ops remaining')
 """,
         )
-        assert '"sf.' not in stdout or '2 sf ops remaining' in stdout or '0 sf ops' in stdout, \
+        assert '"sf.' not in stdout or "2 sf ops remaining" in stdout or "0 sf ops" in stdout, (
             f"sf ops remain: {stdout.split('sf ops')[0] if 'sf ops' in stdout else stdout[:200]}"
+        )
 
     def test_02_llvm_lowering(self):
         """Bufferize + LLVM lowering: no vector/memref ops remain."""
@@ -214,11 +216,11 @@ with ctx:
     print(f'LLVM IR: {{len(llvm_ir)}} chars, ciface={{n_ciface}}, casts={{n_unrealized}}')
 """,
         )
-        assert "unrealized_conversion_cast" not in stdout, (
-            "unrealized_conversion_cast remains after fixup"
-        )
+        assert "unrealized_conversion_cast" not in stdout, "unrealized_conversion_cast remains after fixup"
 
-    @pytest.mark.xfail(reason="pre-existing: cc -shared model.o doesn't link against MLIR runner utils; _memrefCopy undefined")
+    @pytest.mark.xfail(
+        reason="pre-existing: cc -shared model.o doesn't link against MLIR runner utils; _memrefCopy undefined"
+    )
     def test_04_llc_and_link(self):
         """llc + link: produce .dylib with expected symbols."""
         if not self.ll_path.exists():
@@ -259,7 +261,8 @@ exit(result.returncode)
         # Check symbols
         nm = subprocess.run(
             ["nm", "-g", str(self.dylib_path)],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         text_syms = [line.strip() for line in nm.stdout.split("\n") if " T " in line]
         main_syms = [s for s in text_syms if "main" in s.split()[-1]]

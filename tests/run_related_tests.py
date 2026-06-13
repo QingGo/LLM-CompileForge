@@ -94,6 +94,7 @@ TEST_MAP: dict[str, list[str]] = {
 def _match(pattern: str, filepath: str) -> bool:
     """Simple glob matching (supports ``*`` only)."""
     import fnmatch
+
     return fnmatch.fnmatch(filepath, pattern)
 
 
@@ -103,14 +104,16 @@ def main():
     # Get changed files
     result = subprocess.run(
         ["git", "diff", "--name-only", "HEAD"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
         timeout=10,
     )
     if result.returncode != 0:
         # Try unstaged diff
         result = subprocess.run(
             ["git", "diff", "--name-only"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
             timeout=10,
         )
     changed = [f for f in result.stdout.splitlines() if f.strip()]
@@ -146,9 +149,9 @@ def main():
 
     # Run make targets first
     for target in make_targets:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"Running: make {target}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         ret = subprocess.run(
             ["make", target],
             timeout=120,
@@ -161,9 +164,9 @@ def main():
     if test_args:
         pytest_bin = ".venv/bin/pytest"
         cmd = [pytest_bin, "-v", "--tb=short", *test_args]
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"Running: {' '.join(cmd)}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         ret = subprocess.run(cmd, timeout=120)
         if ret.returncode != 0:
             print("❌ pytest failed")

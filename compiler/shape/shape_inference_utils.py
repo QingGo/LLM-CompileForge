@@ -106,9 +106,7 @@ def _broadcast_shapes(*shapes: tuple[int | None, ...]) -> tuple[int | None, ...]
             result.append(non_one[0])
         else:
             if len(set(non_one)) > 1:
-                raise ValueError(
-                    f"Incompatible dims for broadcast: {dims}"
-                )
+                raise ValueError(f"Incompatible dims for broadcast: {dims}")
             result.append(non_one[0])
     return tuple(result)
 

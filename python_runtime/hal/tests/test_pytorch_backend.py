@@ -295,7 +295,7 @@ class TestPyTorchBackendAttention:
         k = torch.randn(1, 1, 4, 8)
         v = torch.randn(1, 1, 4, 8)
         # Pre-scale Q (as dynamic-shape export does)
-        q_scaled = q * (1.0 / (8 ** 0.5))
+        q_scaled = q * (1.0 / (8**0.5))
         # SDPA with scale=1.0 on pre-scaled Q should match PyTorch reference
         out = b.execute("scaled_dot_product_attention", [q_scaled, k, v], scale=1.0)
         ref = F.scaled_dot_product_attention(q_scaled, k, v, scale=1.0)

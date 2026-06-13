@@ -18,7 +18,6 @@ import pytest
 class TestMLIRFixupPass:
     """Tests for _fixup_unrealized_casts_pass (MLIR bindings version)."""
 
-
     @staticmethod
     def _run_pass(mlir_text: str) -> str:
         import mlir.ir as ir

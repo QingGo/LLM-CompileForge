@@ -77,4 +77,3 @@ class MissingBindingsError(CompileError):
 
     def __init__(self) -> None:
         super().__init__("MLIR Python bindings not available")
-

@@ -29,9 +29,7 @@ class TestSmoothQuantCompiled:
         from compiler.quantize.smoothquant import SmoothQuantCalibrator
 
         weights = module_tiny_llama.main.weights
-        linear_weights: dict[str, torch.Tensor] = {
-            k: v for k, v in weights.items() if v.dim() == 2
-        }
+        linear_weights: dict[str, torch.Tensor] = {k: v for k, v in weights.items() if v.dim() == 2}
         if not linear_weights:
             pytest.skip("No 2D weight tensors")
 
@@ -110,9 +108,7 @@ class TestAWQCompiled:
 
         assert len(aq.salient_channels) >= 1
 
-        aq.find_optimal_scales(
-            [(torch.randn(1, w.size(1)),)], scale_range=(1.0, 1.2), n_grid=5
-        )
+        aq.find_optimal_scales([(torch.randn(1, w.size(1)),)], scale_range=(1.0, 1.2), n_grid=5)
         aq.quantize()
 
         assert aq.num_layers_processed >= 1

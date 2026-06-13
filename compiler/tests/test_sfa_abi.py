@@ -111,17 +111,29 @@ class TestConsumedInternallyContract:
         }
         pre_lowering = {
             "functions": [
-                {"name": "main_1a", "inputs": [], "outputs": [
-                    ("k_cache", "tensor<?x12x?x64xf32>", True),
-                    ("v_cache", "tensor<?x12x?x64xf32>", True),
-                    ("q_out", "tensor<?x12x?x64xf32>", False),
-                ]},
-                {"name": "main_1b", "inputs": [], "outputs": [
-                    ("out", "tensor<?x?x768xf32>", False),
-                ]},
-                {"name": "main_2", "inputs": [], "outputs": [
-                    ("out", "tensor<?x?x768xf32>", False),
-                ]},
+                {
+                    "name": "main_1a",
+                    "inputs": [],
+                    "outputs": [
+                        ("k_cache", "tensor<?x12x?x64xf32>", True),
+                        ("v_cache", "tensor<?x12x?x64xf32>", True),
+                        ("q_out", "tensor<?x12x?x64xf32>", False),
+                    ],
+                },
+                {
+                    "name": "main_1b",
+                    "inputs": [],
+                    "outputs": [
+                        ("out", "tensor<?x?x768xf32>", False),
+                    ],
+                },
+                {
+                    "name": "main_2",
+                    "inputs": [],
+                    "outputs": [
+                        ("out", "tensor<?x?x768xf32>", False),
+                    ],
+                },
             ]
         }
         metas = merge_with_semantics(sigs, pre_lowering, lowered_arg_types={}, lowered_output_types={})
@@ -146,11 +158,17 @@ class TestConsumedInternallyContract:
         from gen.proto.python.sfa_abi_pb2 import SfaAbiHeader
 
         sigs = {"_mlir_ciface_main_0": (2, 1)}
-        pre_lowering = {"functions": [
-            {"name": "main_0", "inputs": [], "outputs": [
-                ("out", "tensor<?x?x768xf32>", False),
-            ]},
-        ]}
+        pre_lowering = {
+            "functions": [
+                {
+                    "name": "main_0",
+                    "inputs": [],
+                    "outputs": [
+                        ("out", "tensor<?x?x768xf32>", False),
+                    ],
+                },
+            ]
+        }
         metas = merge_with_semantics(sigs, pre_lowering, lowered_arg_types={}, lowered_output_types={})
         abi_bytes = serialize_abi(metas)
         abi = SfaAbiHeader()

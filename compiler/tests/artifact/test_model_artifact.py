@@ -17,8 +17,7 @@ from compiler.artifact import MlirOp, _parse_mlir_text
 from compiler.serialize import load_artifact
 
 _MODEL_DIR = _PROJECT_ROOT = (
-    Path(__file__).resolve().parent.parent.parent.parent
-    / "outputs" / "compiled" / "opt_125m_fresh"
+    Path(__file__).resolve().parent.parent.parent.parent / "outputs" / "compiled" / "opt_125m_fresh"
 )
 pytestmark = pytest.mark.skipif(
     not _MODEL_DIR.is_dir(),
@@ -46,7 +45,6 @@ def _rank_of(tp: str) -> int:
 
 @pytest.mark.unit
 class TestWeightTypes:
-
     def test_all_weights_have_non_scalar_types(self):
         """Every weight op must have a proper tensor type (not tensor<f32>)."""
         mod, _ = _load_model()
@@ -57,9 +55,8 @@ class TestWeightTypes:
                     t = op.output_types[0]
                     if _rank_of(t) == 0:
                         bad.append(op)
-        assert not bad, (
-            f"{len(bad)} weight ops have scalar type tensor<f32>: "
-            + ", ".join(op.attributes.get("name", "?") for op in bad[:5])
+        assert not bad, f"{len(bad)} weight ops have scalar type tensor<f32>: " + ", ".join(
+            op.attributes.get("name", "?") for op in bad[:5]
         )
 
     def test_weight_type_shapes_plausible(self):
@@ -78,17 +75,15 @@ class TestWeightTypes:
 
 @pytest.mark.unit
 class TestArtifactSanity:
-
     def test_no_kdynamic_in_tensor_types(self):
         """Tensor type strings in model.mlir must use '?' for dynamic dims, not kDynamic."""
         text = (_MODEL_DIR / "model.mlir").read_text()
         import re
+
         # Find all tensor type annotations (e.g. tensor<?x4xf32>)
-        type_annotations = re.findall(r'tensor<[^>]+>', text)
-        bad = [t for t in type_annotations if '9223372036854775807' in t]
-        assert not bad, (
-            f"{len(bad)} type annotations contain kDynamic sentinel:\n  " + "\n  ".join(bad[:5])
-        )
+        type_annotations = re.findall(r"tensor<[^>]+>", text)
+        bad = [t for t in type_annotations if "9223372036854775807" in t]
+        assert not bad, f"{len(bad)} type annotations contain kDynamic sentinel:\n  " + "\n  ".join(bad[:5])
 
     def test_binary_op_rank_consistency(self):
         """Binary ops should have broadcast-compatible operand ranks."""
@@ -102,14 +97,12 @@ class TestArtifactSanity:
                     # Scalar (rank 0) or equal rank — OK. Broadcast OK too.
                     bad_rank_diff = abs(r1 - r2)
                     if bad_rank_diff > 1:
-                        bad.append(f"{op.name}: rank diff={bad_rank_diff} "
-                                   f"{op.input_types[0]} vs {op.input_types[1]}")
+                        bad.append(f"{op.name}: rank diff={bad_rank_diff} {op.input_types[0]} vs {op.input_types[1]}")
         if bad:
             # Soft fail: warn instead of assert (known issue with scalar weights)
             import warnings
-            warnings.warn(f"{len(bad)} binary ops have >1 rank difference:\n  "
-                          + "\n  ".join(bad[:5]),
-                          stacklevel=2)
+
+            warnings.warn(f"{len(bad)} binary ops have >1 rank difference:\n  " + "\n  ".join(bad[:5]), stacklevel=2)
 
     def test_all_ops_parsed(self):
         """Module should have the expected number of ops."""
@@ -123,12 +116,16 @@ class TestArtifactSanity:
         # Allow sf.slice attribute values to use -1 or another sentinel
         # INT64_MAX in attributes is a known issue with _get_dynamic_dim
         import re
-        attr_vals = re.findall(r'\b9223372036854775807\b', text)
+
+        attr_vals = re.findall(r"\b9223372036854775807\b", text)
         if attr_vals:
             import warnings
-            warnings.warn(f"{len(attr_vals)} attribute values contain kDynamic sentinel "
-                          "(may be in slice end= attributes — acceptable)",
-                          stacklevel=2)
+
+            warnings.warn(
+                f"{len(attr_vals)} attribute values contain kDynamic sentinel "
+                "(may be in slice end= attributes — acceptable)",
+                stacklevel=2,
+            )
 
     def test_text_roundtrip_preserves_ops(self):
         """_parse_mlir_text roundtrip preserves op count."""

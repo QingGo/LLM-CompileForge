@@ -86,7 +86,7 @@ def generate_mlir(case: OpCase) -> str:
         attr_parts: list[str] = []
         for k, v in case.kwargs.items():
             if isinstance(v, bool):
-                attr_parts.append(f'{k} = {"true" if v else "false"}')
+                attr_parts.append(f"{k} = {'true' if v else 'false'}")
             elif isinstance(v, int):
                 attr_parts.append(f"{k} = {v} : i64")
             elif isinstance(v, float):
@@ -100,7 +100,7 @@ def generate_mlir(case: OpCase) -> str:
     module = (
         f"module {{\n"
         f"  func.func @main({inputs_str}) -> {output_type_str} {{\n"
-        f"    %0 = \"{case.sf_op_name}\"({input_vals}) {attrs_str}: "
+        f'    %0 = "{case.sf_op_name}"({input_vals}) {attrs_str}: '
         f"({input_type_str}) -> {output_type_str}\n"
         f"    return %0 : {output_type_str}\n"
         f"  }}\n"
@@ -170,11 +170,7 @@ def lower_and_jit(mlir_text: str) -> tuple[Any, tuple[int, ...]]:
         module = ir.Module.parse(mlir_text, ctx)
 
         # Step 2: sf → linalg lowering
-        sf_pipeline = (
-            "builtin.module("
-            + SF_LOWERING_PIPELINE +
-            ")"
-        )
+        sf_pipeline = "builtin.module(" + SF_LOWERING_PIPELINE + ")"
         pman = pm.PassManager.parse(sf_pipeline, ctx)
         pman.enable_verifier(True)
         pman.run(module.operation)
@@ -227,16 +223,16 @@ def lower_and_jit(mlir_text: str) -> tuple[Any, tuple[int, ...]]:
 
             _runner_lib = (
                 Path(__file__).resolve().parent.parent.parent
-                / "llvm-project" / "build" / "lib" / "libmlir_c_runner_utils.dylib"
+                / "llvm-project"
+                / "build"
+                / "lib"
+                / "libmlir_c_runner_utils.dylib"
             )
             shared_libs = [str(_runner_lib)] if _runner_lib.exists() else []
             engine = ExecutionEngine(module, opt_level=0, shared_libs=shared_libs)
             return engine, output_shape
         except Exception as e:
-            raise RuntimeError(
-                f"ExecutionEngine creation failed: {e}\n"
-                f"Module after lowering:\n{str(module)}"
-            ) from e
+            raise RuntimeError(f"ExecutionEngine creation failed: {e}\nModule after lowering:\n{str(module)}") from e
 
 
 def _detect_output_shape(module: Any) -> tuple[int, ...]:
@@ -361,7 +357,9 @@ class Runner:
         if output.shape != reference_np.shape:
             _log.warning(
                 "Shape mismatch for %s: JIT=%s ref=%s",
-                case.name, output.shape, reference_np.shape,
+                case.name,
+                output.shape,
+                reference_np.shape,
             )
             if reference_np.ndim == 0:
                 reference_np = reference_np.reshape(output.shape)
@@ -369,7 +367,10 @@ class Runner:
         cos = cosine_similarity(output, reference_np)
         _log.info(
             "%s: cos=%.8f (rtol=%s) shape=%s",
-            case.name, cos, case.rtol, output.shape,
+            case.name,
+            cos,
+            case.rtol,
+            output.shape,
         )
 
         return RunResult(cos=cos, output=output, reference=reference_np)

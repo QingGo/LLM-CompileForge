@@ -76,14 +76,10 @@ class AdaptiveSpeculator:
             elif recent_rate > 0.85 and self.current_spec_tokens < self.max_spec_tokens:
                 self.current_spec_tokens += 1
 
-        draft_tokens = self.proposer.propose(
-            hidden_states, input_ids, self.current_spec_tokens
-        )
+        draft_tokens = self.proposer.propose(hidden_states, input_ids, self.current_spec_tokens)
         n_drafted = draft_tokens.shape[1]
 
-        target_logits = torch.randn(
-            hidden_states.size(0), 1 + n_drafted, self.proposer.vocab_size
-        )
+        target_logits = torch.randn(hidden_states.size(0), 1 + n_drafted, self.proposer.vocab_size)
 
         accepted, all_accepted = self.verifier.verify_greedy(draft_tokens, target_logits)
 

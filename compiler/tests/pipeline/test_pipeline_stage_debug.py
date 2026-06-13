@@ -128,14 +128,7 @@ class TestVerifyStageOutput:
     def test_detects_func_func_change(self) -> None:
         from compiler.pipeline.stages_utils import _verify_stage_output
 
-        before = (
-            "module {\n"
-            "  func.func @foo() -> i32 {\n"
-            "    %c = arith.constant 1 : i32\n"
-            "    return %c : i32\n"
-            "  }\n"
-            "}\n"
-        )
+        before = "module {\n  func.func @foo() -> i32 {\n    %c = arith.constant 1 : i32\n    return %c : i32\n  }\n}\n"
         after = (
             "module {\n"
             "  func.func @foo() -> i32 {\n"
@@ -150,22 +143,14 @@ class TestVerifyStageOutput:
         )
         warnings = _verify_stage_output(before, after, "test_func_add")
         func_warnings = [w for w in warnings if "func.func" in w]
-        assert len(func_warnings) >= 1, (
-            f"Expected func.func count change warning, got {warnings}"
-        )
+        assert len(func_warnings) >= 1, f"Expected func.func count change warning, got {warnings}"
 
     def test_detects_func_return_change(self) -> None:
         from compiler.pipeline.stages_utils import _verify_stage_output  # noqa: F811
+
         pytest.skip("_verify_stage_output behavior changed; test needs update")
 
-        before = (
-            "module {\n"
-            "  func.func @foo() -> i32 {\n"
-            "    %c = arith.constant 1 : i32\n"
-            "    return %c : i32\n"
-            "  }\n"
-            "}\n"
-        )
+        before = "module {\n  func.func @foo() -> i32 {\n    %c = arith.constant 1 : i32\n    return %c : i32\n  }\n}\n"
         after = (
             "module {\n"
             "  func.func @foo() -> i32 {\n"
@@ -177,9 +162,7 @@ class TestVerifyStageOutput:
         )
         warnings = _verify_stage_output(before, after, "test_ret_add")
         ret_warnings = [w for w in warnings if "func.return" in w]
-        assert len(ret_warnings) >= 1, (
-            f"Expected func.return count change warning, got {warnings}"
-        )
+        assert len(ret_warnings) >= 1, f"Expected func.return count change warning, got {warnings}"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -198,6 +181,7 @@ class TestStageRunVerification:
         module = _make_test_module(mlir_context)
         _clean_pipeline_logs()
         try:
+
             def _fail_action(_m):
                 raise RuntimeError("deliberate failure for test")
 
@@ -215,9 +199,7 @@ class TestStageRunVerification:
             snapshot_path = Path(result.ir_snapshot_path)
             assert snapshot_path.exists(), f"Snapshot not found: {snapshot_path}"
 
-            stats_files = list(
-                Path("outputs/logs").glob("pipeline/stats_test_verify_fail_snapshot_*.txt")
-            )
+            stats_files = list(Path("outputs/logs").glob("pipeline/stats_test_verify_fail_snapshot_*.txt"))
             assert len(stats_files) >= 1, "No companion stats file created"
         finally:
             _clean_pipeline_logs()
@@ -236,9 +218,7 @@ class TestStageRunVerification:
 
         assert result.success
         # No invariant warnings expected for a noop action
-        assert "Stage invariant" not in caplog.text, (
-            f"Unexpected warnings: {caplog.text}"
-        )
+        assert "Stage invariant" not in caplog.text, f"Unexpected warnings: {caplog.text}"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -252,12 +232,8 @@ class TestModuleVerifyStage:
         from compiler.pipeline.stages import BUILTIN_STAGES
 
         names = [s.name for s in BUILTIN_STAGES]
-        assert "module-verify" in names, (
-            f"module-verify not found in BUILTIN_STAGES ({names})"
-        )
-        assert names[-1] == "module-verify", (
-            f"module-verify should be last stage, got {names[-1]}"
-        )
+        assert "module-verify" in names, f"module-verify not found in BUILTIN_STAGES ({names})"
+        assert names[-1] == "module-verify", f"module-verify should be last stage, got {names[-1]}"
 
     def test_verify_stage_pass_on_valid_module(self, mlir_context, caplog) -> None:
         if not has_mlir_bindings():
@@ -272,17 +248,13 @@ class TestModuleVerifyStage:
         result = stage.run(module, mlir_context)
 
         assert result.success
-        assert "PASS" in caplog.text or "0 issues" in caplog.text, (
-            f"Expected PASS message in log: {caplog.text}"
-        )
+        assert "PASS" in caplog.text or "0 issues" in caplog.text, f"Expected PASS message in log: {caplog.text}"
 
     def test_verify_stage_in_no_fma_list(self) -> None:
         from compiler.pipeline.stages import BUILTIN_STAGES_NO_FMA
 
         names = [s.name for s in BUILTIN_STAGES_NO_FMA]
-        assert "module-verify" in names, (
-            f"module-verify not in BUILTIN_STAGES_NO_FMA ({names})"
-        )
+        assert "module-verify" in names, f"module-verify not in BUILTIN_STAGES_NO_FMA ({names})"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -317,9 +289,7 @@ class TestEndToEndSnapshots:
 
             assert stages_dir.is_dir()
             mlir_files = list(stages_dir.glob("*.mlir"))
-            assert len(mlir_files) >= 2, (
-                f"Expected ≥2 DEBUG snapshots, got {len(mlir_files)}"
-            )
+            assert len(mlir_files) >= 2, f"Expected ≥2 DEBUG snapshots, got {len(mlir_files)}"
 
             for f in mlir_files:
                 assert f.stat().st_size > 0, f"Empty snapshot: {f}"
@@ -352,12 +322,8 @@ class TestEndToEndSnapshots:
 
             total, dialect_counts = _count_module_ops(str(module))
             assert total > 0
-            assert "arith" in dialect_counts, (
-                f"Expected arith dialect, got {dialect_counts}"
-            )
-            assert "func" in dialect_counts, (
-                f"Expected func dialect, got {dialect_counts}"
-            )
+            assert "arith" in dialect_counts, f"Expected arith dialect, got {dialect_counts}"
+            assert "func" in dialect_counts, f"Expected func dialect, got {dialect_counts}"
         finally:
             root_logger.setLevel(old_level)
             shutil.rmtree(stages_dir, ignore_errors=True)

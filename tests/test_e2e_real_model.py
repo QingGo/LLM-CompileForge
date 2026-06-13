@@ -41,6 +41,7 @@ class TestE2ERealModel:
         class _SimpleTokenizer:
             def encode(self, text):
                 return [ord(c) % 100 for c in text]
+
             def decode(self, tokens):
                 return " ".join(str(t) for t in tokens)
 
@@ -63,6 +64,7 @@ class TestE2ERealModel:
         class _SimpleTokenizer:
             def encode(self, text):
                 return [ord(c) % 100 for c in text]
+
             def decode(self, tokens):
                 return " ".join(str(t) for t in tokens)
 
@@ -107,6 +109,7 @@ class TestE2EOpt125M:
         class _SimpleTokenizer:
             def encode(self, text):
                 return [ord(c) % 5000 for c in text]
+
             def decode(self, tokens):
                 return " ".join(str(t) for t in tokens)
 

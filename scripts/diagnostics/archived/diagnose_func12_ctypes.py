@@ -34,7 +34,7 @@ if _project_root not in sys.path:
 
 faulthandler.enable()
 
-from compiler.sfcf_parser import (  # noqa: E402
+from compiler.dylib_ffi import (  # noqa: E402
     make_memref_descriptor,
     parse_compute_graph,
     parse_sfcf_blob,

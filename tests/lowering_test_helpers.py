@@ -21,12 +21,15 @@ from compiler.pipeline import _apply_sf_to_linalg  # noqa: E402
 try:
     from compiler.backend.llvm_backend import _has_bindings as _has_vec_bindings  # noqa: F811
 except ImportError:
+
     def _has_vec_bindings() -> bool:
         return False
+
 
 MLIR_BINDINGS = False
 try:
     import mlir.ir as ir  # noqa: F401
+
     MLIR_BINDINGS = True
 except ImportError:
     pass
@@ -43,30 +46,25 @@ def lower(sf_text: str) -> str:
 
 
 def check_lowered(
-    lowered: str, expected: str = "linalg.", not_expected: str = "sf.",
+    lowered: str,
+    expected: str = "linalg.",
+    not_expected: str = "sf.",
 ) -> None:
     """Verify lowered output contains expected and lacks not_expected."""
     if not_expected and not_expected in lowered:
-        raise AssertionError(
-            f"Lowered IR still contains '{not_expected}'. "
-            f"First 500 chars: {lowered[:500]}"
-        )
+        raise AssertionError(f"Lowered IR still contains '{not_expected}'. First 500 chars: {lowered[:500]}")
     if expected and expected not in lowered:
         # Some ops lower to tensor.dialect ops, not linalg
         if "tensor." in lowered or "arith." in lowered:
             return
     if expected:
-        assert expected in lowered, (
-            f"Expected '{expected}' not found in lowered output"
-        )
+        assert expected in lowered, f"Expected '{expected}' not found in lowered output"
 
 
 def check_op_count(text: str, op_name: str, min_count: int = 1) -> None:
     """Assert op_name appears at least min_count times in text."""
     count = text.count(op_name)
-    assert count >= min_count, (
-        f"Expected >= {min_count} '{op_name}', got {count}"
-    )
+    assert count >= min_count, f"Expected >= {min_count} '{op_name}', got {count}"
 
 
 def check_absent(text: str, op_name: str) -> None:
@@ -78,21 +76,21 @@ def check_absent(text: str, op_name: str) -> None:
 
 
 BINARY_MODULE = (
-    'module {{\n'
-    '  func.func @test(%a: tensor<2x4xf32>, %b: tensor<2x4xf32>) -> tensor<2x4xf32> {{\n'
+    "module {{\n"
+    "  func.func @test(%a: tensor<2x4xf32>, %b: tensor<2x4xf32>) -> tensor<2x4xf32> {{\n"
     '    %0 = "{op}"(%a, %b) : (tensor<2x4xf32>, tensor<2x4xf32>) -> tensor<2x4xf32>\n'
-    '    return %0 : tensor<2x4xf32>\n'
-    '  }}\n'
-    '}}'
+    "    return %0 : tensor<2x4xf32>\n"
+    "  }}\n"
+    "}}"
 )
 
 ACTIVATION_MODULE = (
-    'module {{\n'
-    '  func.func @test(%a: tensor<2x4xf32>) -> tensor<2x4xf32> {{\n'
+    "module {{\n"
+    "  func.func @test(%a: tensor<2x4xf32>) -> tensor<2x4xf32> {{\n"
     '    %0 = "{op}"(%a) : (tensor<2x4xf32>) -> tensor<2x4xf32>\n'
-    '    return %0 : tensor<2x4xf32>\n'
-    '  }}\n'
-    '}}'
+    "    return %0 : tensor<2x4xf32>\n"
+    "  }}\n"
+    "}}"
 )
 
 
@@ -109,8 +107,6 @@ def lower_and_bufferize(mlir_text: str) -> bool:
     ctx.allow_unregistered_dialects = True
     with ctx, ir.Location.unknown(ctx):
         module = ir.Module.parse(lowered_text, ctx)
-        pman = pm.PassManager.parse(
-            "builtin.module(one-shot-bufferize{bufferize-function-boundaries})", ctx
-        )
+        pman = pm.PassManager.parse("builtin.module(one-shot-bufferize{bufferize-function-boundaries})", ctx)
         pman.run(module.operation)
     return True

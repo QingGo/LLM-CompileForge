@@ -114,13 +114,9 @@ class PyTorchBackend(_MathOps, _ActivationOps, _NormOps, _ShapeOps, _AttentionOp
         handler, spec = self._dispatch[op_name]
         n = len(inputs)
         if n < spec.min_inputs:
-            raise ValueError(
-                f"Op '{op_name}' requires at least {spec.min_inputs} inputs, got {n}"
-            )
+            raise ValueError(f"Op '{op_name}' requires at least {spec.min_inputs} inputs, got {n}")
         if spec.max_inputs is not None and n > spec.max_inputs:
-            raise ValueError(
-                f"Op '{op_name}' accepts at most {spec.max_inputs} inputs, got {n}"
-            )
+            raise ValueError(f"Op '{op_name}' accepts at most {spec.max_inputs} inputs, got {n}")
         return handler(self, inputs, **kwargs)  # type: ignore[no-any-return]
 
     def _resolve(self, value: Any, dtype: torch.dtype) -> torch.Tensor:

@@ -39,7 +39,9 @@ def _build_forward_check() -> bool:
     try:
         subprocess.run(
             ["cargo", "build", "--bin", "forward_check", "--features", "cli"],
-            cwd="rust", capture_output=True, timeout=90,
+            cwd="rust",
+            capture_output=True,
+            timeout=90,
         ).check_returncode()
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -65,15 +67,11 @@ def _validate_npy(path: Path) -> None:
     assert nan_count < arr.size, f"File {path.name}: all-NaN tensor"
     if nan_count > 0:
         ratio = nan_count / arr.size
-        assert ratio < 0.01, (
-            f"File {path.name}: {nan_count}/{arr.size} ({ratio:.1%}) NaN"
-        )
+        assert ratio < 0.01, f"File {path.name}: {nan_count}/{arr.size} ({ratio:.1%}) NaN"
 
     finite = arr[np.isfinite(arr)]
     assert finite.size > 0, f"File {path.name}: all values are NaN/Inf"
-    assert finite.min() < finite.max(), (
-        f"File {path.name}: all-identical finite values ({finite.flat[0]})"
-    )
+    assert finite.min() < finite.max(), f"File {path.name}: all-identical finite values ({finite.flat[0]})"
 
 
 @pytest.mark.unit
@@ -90,15 +88,14 @@ def test_dump_layers_smoke() -> None:
 
         result = subprocess.run(
             ["./rust/target/debug/forward_check"],
-            capture_output=True, text=True, timeout=90,
+            capture_output=True,
+            text=True,
+            timeout=90,
             env=env,
         )
         if result.returncode != 0:
             stderr_tail = result.stderr.strip().split("\n")[-3:]
-            pytest.skip(
-                f"forward_check exited {result.returncode}: "
-                + "; ".join(stderr_tail)
-            )
+            pytest.skip(f"forward_check exited {result.returncode}: " + "; ".join(stderr_tail))
 
         npy_files = sorted(Path(tmpdir).glob("func_*.npy"))
         assert len(npy_files) > 0, f"No .npy files dumped to {tmpdir}"

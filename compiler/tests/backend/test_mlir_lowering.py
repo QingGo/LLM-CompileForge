@@ -25,7 +25,6 @@ def _check_absent(text: str, op_name: str) -> None:
 
 @pytest.mark.unit
 class TestLoweringBasicOps:
-
     def test_add_to_arith(self):
         r = sf_to_linalg_pass("""module {
   func.func @test(%a: tensor<2x64xf32>, %b: tensor<2x64xf32>) -> tensor<2x64xf32> {
@@ -82,7 +81,6 @@ class TestLoweringBasicOps:
 
 @pytest.mark.unit
 class TestLoweringMatmul:
-
     def test_matmul_to_linalg(self):
         r = sf_to_linalg_pass("""module {
   func.func @test(%a: tensor<2x4xf32>, %b: tensor<4x8xf32>) -> tensor<2x8xf32> {
@@ -106,7 +104,6 @@ class TestLoweringMatmul:
 
 @pytest.mark.unit
 class TestLoweringChain:
-
     def test_add_relu_chain(self):
         r = sf_to_linalg_pass("""module {
   func.func @test(%a: tensor<2x64xf32>, %b: tensor<2x64xf32>) -> tensor<2x64xf32> {
@@ -137,7 +134,6 @@ class TestLoweringChain:
 
 @pytest.mark.unit
 class TestLoweringEdgeCases:
-
     def test_identity_passthrough(self):
         pass
 
@@ -164,7 +160,6 @@ class TestLoweringEdgeCases:
 
 @pytest.mark.unit
 class TestLoweringReductions:
-
     def test_mean_lowered(self):
         pass
 
@@ -174,7 +169,6 @@ class TestLoweringReductions:
 
 @pytest.mark.unit
 class TestLoweringShapeOps:
-
     def test_view_preserved(self):
         pass
 
@@ -204,7 +198,6 @@ class TestLoweringShapeOps:
 
 @pytest.mark.unit
 class TestLoweringMiscOps:
-
     def test_softmax_lowered(self):
         pass
 
@@ -223,7 +216,6 @@ class TestLoweringMiscOps:
 
 @pytest.mark.unit
 class TestCoverageAllOps:
-
     def test_all_sf_ops_in_cxx_patterns(self):
         """Verify every sf op has a C++ lowering pattern (replaces deleted _LOWER_TABLE)."""
         from compiler.dialect import _ALL_OPS
@@ -231,49 +223,99 @@ class TestCoverageAllOps:
         # Ops handled by C++ patterns (sf-promote-weights + sf-lower-to-linalg)
         cxx_lowered = {
             # Binary (SfBinaryLowering template)
-            "sf.add", "sf.sub", "sf.mul", "sf.div", "sf.max",
+            "sf.add",
+            "sf.sub",
+            "sf.mul",
+            "sf.div",
+            "sf.max",
             # Activation (ReluLowering + SfActivationOpLowering template)
-            "sf.relu", "sf.gelu", "sf.silu",
-            "sf.sigmoid", "sf.exp", "sf.neg", "sf.tanh",
+            "sf.relu",
+            "sf.gelu",
+            "sf.silu",
+            "sf.sigmoid",
+            "sf.exp",
+            "sf.neg",
+            "sf.tanh",
             # Matmul
-            "sf.matmul", "sf.linear",
+            "sf.matmul",
+            "sf.linear",
             # Shape ops
-            "sf.identity", "sf.view", "sf.expand",
-            "sf.unsqueeze", "sf.sum",
-            "sf.transpose", "sf.slice",
+            "sf.identity",
+            "sf.view",
+            "sf.expand",
+            "sf.unsqueeze",
+            "sf.sum",
+            "sf.transpose",
+            "sf.slice",
             # Comparison / logic
-            "sf.le", "sf.logical_and",
+            "sf.le",
+            "sf.logical_and",
             # Fill
-            "sf.ones_like", "sf.new_ones",
+            "sf.ones_like",
+            "sf.new_ones",
             # Misc ops with lowering patterns
-            "sf.sym_size", "sf.arange", "sf.cumsum",
-            "sf.embedding", "sf.index",
+            "sf.sym_size",
+            "sf.arange",
+            "sf.cumsum",
+            "sf.embedding",
+            "sf.index",
             "sf.scaled_dot_product_attention",
             # Norm
-            "sf.layer_norm", "sf.rms_norm",
+            "sf.layer_norm",
+            "sf.rms_norm",
             # Promoted by sf-promote-weights
-            "sf.weight", "sf.constant",
+            "sf.weight",
+            "sf.constant",
         }
 
         # Ops excluded from C++ lowering — Python pre-lowering converters rewrite them
         # to standard ops before the C++ pass runs.
         cxx_skipped = {
             # Fusion op products (never reach lowering)
-            "sf.fused_silu_mul", "sf.fused_rms_norm_matmul",
-            "sf.fused_qkv", "sf.fused_attention_output",
+            "sf.fused_silu_mul",
+            "sf.fused_rms_norm_matmul",
+            "sf.fused_qkv",
+            "sf.fused_attention_output",
             "sf.fused_attention_block",
             # Surge ops (pre-lowered by Python convertes — see fx_to_mlir.py _preprocess)
-            "sf.softmax", "sf.mean",
-            "sf.clamp_min", "sf.softplus",
-            "sf.select", "sf.cast",
+            "sf.softmax",
+            "sf.mean",
+            "sf.clamp_min",
+            "sf.softplus",
+            "sf.select",
+            "sf.cast",
             # Common PyTorch ops pre-processed by _preprocess or directly emitted
-            "sf.cat", "sf.chunk", "sf.conv1d", "sf.copy_", "sf.cos",
-            "sf.diff", "sf.einsum", "sf.eq", "sf.expand_as", "sf.eye",
-            "sf.full_like", "sf.gt", "sf.linalg_norm", "sf.lt",
-            "sf.masked_fill", "sf.ne", "sf.pad", "sf.permute",
-            "sf.pow", "sf.rsqrt", "sf.sin", "sf.split", "sf.sqrt",
-            "sf.stack", "sf.tril", "sf.triu", "sf.type_as",
-            "sf.var", "sf.view_as", "sf.zeros", "sf.zeros_like",
+            "sf.cat",
+            "sf.chunk",
+            "sf.conv1d",
+            "sf.copy_",
+            "sf.cos",
+            "sf.diff",
+            "sf.einsum",
+            "sf.eq",
+            "sf.expand_as",
+            "sf.eye",
+            "sf.full_like",
+            "sf.gt",
+            "sf.linalg_norm",
+            "sf.lt",
+            "sf.masked_fill",
+            "sf.ne",
+            "sf.pad",
+            "sf.permute",
+            "sf.pow",
+            "sf.rsqrt",
+            "sf.sin",
+            "sf.split",
+            "sf.sqrt",
+            "sf.stack",
+            "sf.tril",
+            "sf.triu",
+            "sf.type_as",
+            "sf.var",
+            "sf.view_as",
+            "sf.zeros",
+            "sf.zeros_like",
         }
 
         uncovered = set()
@@ -282,8 +324,7 @@ class TestCoverageAllOps:
                 continue
             uncovered.add(op_name)
 
-        assert not uncovered, \
-            f"sf ops without C++ lowering pattern: {sorted(uncovered)}"
+        assert not uncovered, f"sf ops without C++ lowering pattern: {sorted(uncovered)}"
 
 
 @pytest.mark.unit
@@ -294,6 +335,7 @@ class TestStandalonePassOnModule:
     def test_standalone_lowers_without_outer_context(self, mlir_context):
         """sf_to_linalg_pass works standalone without outer 'with ctx:'."""
         from compiler.pipeline import _apply_sf_to_linalg as sf_to_linalg_pass
+
         r = sf_to_linalg_pass("""module {
   func.func @test(%a: tensor<2x64xf32>, %b: tensor<2x64xf32>) -> tensor<2x64xf32> {
     %0 = \"sf.add\"(%a, %b) : (tensor<2x64xf32>, tensor<2x64xf32>) -> tensor<2x64xf32>
@@ -311,6 +353,7 @@ class TestSigmoidLowering:
     def test_sigmoid_decomposes(self):
         """sf.sigmoid decomposes to negf+exp+addf+divf (no direct math.sigmoid)."""
         from compiler.pipeline import _apply_sf_to_linalg as sf_to_linalg_pass
+
         r = sf_to_linalg_pass("""module {
   func.func @test(%a: tensor<2x64xf32>) -> tensor<2x64xf32> {
     %0 = \"sf.sigmoid\"(%a) : (tensor<2x64xf32>) -> tensor<2x64xf32>
@@ -326,6 +369,7 @@ class TestSigmoidLowering:
     def test_sigmoid_distinct_from_silu(self):
         """sf.sigmoid and sf.silu produce distinct decompositions (silu has extra mulf)."""
         from compiler.pipeline import _apply_sf_to_linalg as sf_to_linalg_pass
+
         r_sig = sf_to_linalg_pass("""module {
   func.func @test(%a: tensor<2x64xf32>) -> tensor<2x64xf32> {
     %0 = \"sf.sigmoid\"(%a) : (tensor<2x64xf32>) -> tensor<2x64xf32>
@@ -339,8 +383,9 @@ class TestSigmoidLowering:
   }
 }""")
         # sigmoid has no arith.mulf (it's just 1/(1+exp(-x)))
-        assert "arith.mulf" not in r_sig or r_sig.count("arith.mulf") < r_silu.count("arith.mulf"), \
+        assert "arith.mulf" not in r_sig or r_sig.count("arith.mulf") < r_silu.count("arith.mulf"), (
             "sigmoid should have fewer mulf ops than silu"
+        )
         # silu has arith.mulf for x * sigmoid(x)
         assert "arith.mulf" in r_silu, "silu should use arith.mulf"
 
@@ -375,8 +420,7 @@ class TestLoweringProducesValidLinalg:
         ctx.allow_unregistered_dialects = True
         with ctx, ir.Location.unknown(ctx):
             module = ir.Module.parse(lowered_text, ctx)
-            pman = pm.PassManager.parse(
-                "builtin.module(one-shot-bufferize{bufferize-function-boundaries})", ctx)
+            pman = pm.PassManager.parse("builtin.module(one-shot-bufferize{bufferize-function-boundaries})", ctx)
             pman.run(module.operation)
         return True
 

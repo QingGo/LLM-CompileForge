@@ -97,7 +97,10 @@ def _compile_sf_to_dylib_fixed(
         f.write(str(module))
     subprocess.run(
         [_find_tool("mlir-translate"), "--mlir-to-llvmir", mlir_path, "-o", ll_path],
-        capture_output=True, text=True, check=True, timeout=60,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
     )
 
     # Step 4b: Fix LLVM IR — strip ``nocreateundeforpoison`` which
@@ -112,14 +115,20 @@ def _compile_sf_to_dylib_fixed(
     o_path = os.path.join(tmp_dir, "model.o")
     subprocess.run(
         [_find_tool("cc"), "-c", ll_path, "-o", o_path, "-O0"],
-        capture_output=True, text=True, check=True, timeout=60,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
     )
 
     # Step 6: cc -shared → .dylib
     dylib_path = os.path.join(tmp_dir, f"{dylib_name}.dylib")
     subprocess.run(
         [_find_tool("cc"), "-shared", "-o", dylib_path, o_path],
-        capture_output=True, text=True, check=True, timeout=60,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
     )
     return dylib_path
 
@@ -143,10 +152,7 @@ def _call_dylib_func(
     """
     lib = ctypes.CDLL(dylib_path)
     arrays = [np.asarray(a, dtype=np.float32) for a in input_arrays]
-    memrefs = [
-        _make_memref_struct(a.ctypes.data, a.ndim, a.shape)
-        for a in arrays
-    ]
+    memrefs = [_make_memref_struct(a.ctypes.data, a.ndim, a.shape) for a in arrays]
 
     sret_buf = (ctypes.c_uint8 * 1024)()
     ciface_func = getattr(lib, func_name)
@@ -157,29 +163,19 @@ def _call_dylib_func(
     return _get_sret_output(sret_buf, output_ndim)
 
 
-def _compute_torch_rms_norm(
-    x: np.ndarray, weight: np.ndarray, eps: float = _RMS_NORM_EPS
-) -> np.ndarray:
+def _compute_torch_rms_norm(x: np.ndarray, weight: np.ndarray, eps: float = _RMS_NORM_EPS) -> np.ndarray:
     """Torch reference for sf.rms_norm: x * rsqrt(mean(x²) + eps) * weight."""
     t_x = torch.from_numpy(x)
     t_w = torch.from_numpy(weight)
-    return (
-        t_x
-        * torch.rsqrt(t_x.pow(2).mean(dim=-1, keepdim=True) + eps)
-        * t_w
-    ).numpy()
+    return (t_x * torch.rsqrt(t_x.pow(2).mean(dim=-1, keepdim=True) + eps) * t_w).numpy()
 
 
-def _compute_torch_matmul(
-    a: np.ndarray, b: np.ndarray
-) -> np.ndarray:
+def _compute_torch_matmul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Torch reference for sf.matmul."""
     return (torch.from_numpy(a) @ torch.from_numpy(b)).numpy()
 
 
-def _compute_torch_add(
-    a: np.ndarray, b: np.ndarray
-) -> np.ndarray:
+def _compute_torch_add(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Torch reference for sf.add with broadcasting."""
     return (torch.from_numpy(a) + torch.from_numpy(b)).numpy()
 
@@ -209,9 +205,7 @@ class TestMultiFuncPrecision:
 
     # ── func_0: rms_norm ──────────────────────────────────────────
 
-    def test_func_0_rms_norm(
-        self, compiled_dylib: str, multifunc_data: dict[str, np.ndarray]
-    ) -> None:
+    def test_func_0_rms_norm(self, compiled_dylib: str, multifunc_data: dict[str, np.ndarray]) -> None:
         """func_0 (rms_norm) output matches torch reference."""
         actual = _call_dylib_func(
             compiled_dylib,
@@ -220,9 +214,7 @@ class TestMultiFuncPrecision:
             multifunc_data["weight_0"],
             output_ndim=2,
         )
-        expected = _compute_torch_rms_norm(
-            multifunc_data["input_0"], multifunc_data["weight_0"]
-        )
+        expected = _compute_torch_rms_norm(multifunc_data["input_0"], multifunc_data["weight_0"])
         cos = _cosine_similarity(actual, expected)
         assert cos >= 0.9999, (
             f"func_0 rms_norm: cosine={cos:.6f} < 0.9999\n"
@@ -232,17 +224,13 @@ class TestMultiFuncPrecision:
 
     # ── func_1: matmul ────────────────────────────────────────────
 
-    def test_func_1_matmul(
-        self, compiled_dylib: str, multifunc_data: dict[str, np.ndarray]
-    ) -> None:
+    def test_func_1_matmul(self, compiled_dylib: str, multifunc_data: dict[str, np.ndarray]) -> None:
         """func_1 (matmul) output matches torch reference.
 
         Uses torch-computed func_0 output as input to avoid cascading
         errors — only the matmul operation itself is compared.
         """
-        rms_out = _compute_torch_rms_norm(
-            multifunc_data["input_0"], multifunc_data["weight_0"]
-        )
+        rms_out = _compute_torch_rms_norm(multifunc_data["input_0"], multifunc_data["weight_0"])
         actual = _call_dylib_func(
             compiled_dylib,
             "_mlir_ciface_func_1",
@@ -260,17 +248,13 @@ class TestMultiFuncPrecision:
 
     # ── func_2: add ───────────────────────────────────────────────
 
-    def test_func_2_add(
-        self, compiled_dylib: str, multifunc_data: dict[str, np.ndarray]
-    ) -> None:
+    def test_func_2_add(self, compiled_dylib: str, multifunc_data: dict[str, np.ndarray]) -> None:
         """func_2 (add) output matches torch reference.
 
         Uses torch-computed func_0+func_1 output as input to isolate
         the add operation.
         """
-        rms_out = _compute_torch_rms_norm(
-            multifunc_data["input_0"], multifunc_data["weight_0"]
-        )
+        rms_out = _compute_torch_rms_norm(multifunc_data["input_0"], multifunc_data["weight_0"])
         matmul_out = _compute_torch_matmul(rms_out, multifunc_data["W_1"])
         actual = _call_dylib_func(
             compiled_dylib,
@@ -289,9 +273,7 @@ class TestMultiFuncPrecision:
 
     # ── Chain: func_0 → func_1 → func_2 argmax ────────────────────
 
-    def test_chain_argmax_matches_torch(
-        self, compiled_dylib: str, multifunc_data: dict[str, np.ndarray]
-    ) -> None:
+    def test_chain_argmax_matches_torch(self, compiled_dylib: str, multifunc_data: dict[str, np.ndarray]) -> None:
         """End-to-end chain through dylib: argmax of final output matches torch.
 
         Feeds compiled output through all 3 functions (not torch intermediates)
@@ -299,25 +281,29 @@ class TestMultiFuncPrecision:
         """
         # Run the full chain through compiled dylib
         dylib_out_0 = _call_dylib_func(
-            compiled_dylib, "_mlir_ciface_func_0",
-            multifunc_data["input_0"], multifunc_data["weight_0"],
+            compiled_dylib,
+            "_mlir_ciface_func_0",
+            multifunc_data["input_0"],
+            multifunc_data["weight_0"],
             output_ndim=2,
         )
         dylib_out_1 = _call_dylib_func(
-            compiled_dylib, "_mlir_ciface_func_1",
-            dylib_out_0, multifunc_data["W_1"],
+            compiled_dylib,
+            "_mlir_ciface_func_1",
+            dylib_out_0,
+            multifunc_data["W_1"],
             output_ndim=2,
         )
         dylib_out_2 = _call_dylib_func(
-            compiled_dylib, "_mlir_ciface_func_2",
-            dylib_out_1, multifunc_data["bias_2"],
+            compiled_dylib,
+            "_mlir_ciface_func_2",
+            dylib_out_1,
+            multifunc_data["bias_2"],
             output_ndim=2,
         )
 
         # Run the same chain through torch
-        torch_out_0 = _compute_torch_rms_norm(
-            multifunc_data["input_0"], multifunc_data["weight_0"]
-        )
+        torch_out_0 = _compute_torch_rms_norm(multifunc_data["input_0"], multifunc_data["weight_0"])
         torch_out_1 = _compute_torch_matmul(torch_out_0, multifunc_data["W_1"])
         torch_out_2 = _compute_torch_add(torch_out_1, multifunc_data["bias_2"])
 

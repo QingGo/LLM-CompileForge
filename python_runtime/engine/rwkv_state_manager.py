@@ -57,9 +57,7 @@ class RWKVStateManager:
             RuntimeError: If no slots are available.
         """
         if not self.free_slots:
-            raise RuntimeError(
-                f"RWKV state pool exhausted (max_requests={self.max_requests})"
-            )
+            raise RuntimeError(f"RWKV state pool exhausted (max_requests={self.max_requests})")
         slot = self.free_slots.pop()
         self.state_pool[slot].zero_()
         self.active_slots[request_id] = slot
@@ -75,9 +73,7 @@ class RWKVStateManager:
         if slot is not None:
             self.free_slots.append(slot)
 
-    def update_state(
-        self, slot_or_id: int | str, layer_idx: int, new_state: torch.Tensor
-    ) -> None:
+    def update_state(self, slot_or_id: int | str, layer_idx: int, new_state: torch.Tensor) -> None:
         """Update the state for a specific layer.
 
         Args:

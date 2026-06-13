@@ -9,9 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-SF_LOWERING_PIPELINE = (
-    "sf-promote-weights,canonicalize,cse,sf-chain-wrapper,sf-lower-to-linalg"
-)
+SF_LOWERING_PIPELINE = "sf-promote-weights,canonicalize,cse,sf-chain-wrapper,sf-lower-to-linalg,canonicalize,cse"
 
 
 def run_sf_lowering_pipeline(ir_mod: Any, ctx: Any, verify: bool = True) -> str:
@@ -39,8 +37,7 @@ def run_sf_lowering_pipeline(ir_mod: Any, ctx: Any, verify: bool = True) -> str:
     """
     import mlir.passmanager as pm
 
-    pman = pm.PassManager.parse(
-        f"builtin.module({SF_LOWERING_PIPELINE})", ctx)
+    pman = pm.PassManager.parse(f"builtin.module({SF_LOWERING_PIPELINE})", ctx)
     pman.enable_verifier(verify)
     pman.enable_timing()
     pman.run(ir_mod.operation)

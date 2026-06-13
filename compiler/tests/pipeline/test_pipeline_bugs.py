@@ -41,7 +41,15 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-_mlir_pkg = Path(__file__).resolve().parent.parent.parent.parent / "llvm-project" / "build" / "tools" / "mlir" / "python_packages" / "mlir_core"
+_mlir_pkg = (
+    Path(__file__).resolve().parent.parent.parent.parent
+    / "llvm-project"
+    / "build"
+    / "tools"
+    / "mlir"
+    / "python_packages"
+    / "mlir_core"
+)
 if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
     sys.path.insert(0, str(_mlir_pkg))
 
@@ -73,10 +81,7 @@ def test_vectorize_flattens_nested_module():
 
     # Need a lowered module to test
     lowered_path = (
-        Path(__file__).resolve().parent.parent.parent.parent
-        / "compiled"
-        / "opt_125m_fresh"
-        / "model.lowered.mlir"
+        Path(__file__).resolve().parent.parent.parent.parent / "compiled" / "opt_125m_fresh" / "model.lowered.mlir"
     )
     if not lowered_path.exists():
         pytest.skip("model.lowered.mlir not found — run compile_dylib.py first")
@@ -96,9 +101,7 @@ def test_vectorize_flattens_nested_module():
         func_idx = text.find("func.func")
         before_func = text[:func_idx] if func_idx > 0 else text
         n_nested = before_func.count("module {")
-        assert n_nested <= 1, (
-            f"Expected <=1 top-level module, got {n_nested} (nested module not flattened)"
-        )
+        assert n_nested <= 1, f"Expected <=1 top-level module, got {n_nested} (nested module not flattened)"
 
 
 # ── isValidMaskedInputVector static batch dims ─────────────────
@@ -142,9 +145,7 @@ func.func @test(%a: tensor<2x4x768xf32>, %b: tensor<2x768x768xf32>) -> tensor<2x
         pm.PassManager.parse("builtin.module(transform-interpreter)", ctx).run(combined.operation)
         text = str(combined)
         assert "vector.contract" in text, "Expected vector.contract for batch_matmul"
-        assert "vector.mask" not in text, (
-            "Exact vector_sizes should not create masks"
-        )
+        assert "vector.mask" not in text, "Exact vector_sizes should not create masks"
 
 
 # ── Transform ops removal ─────────────────────────────────────
@@ -158,10 +159,7 @@ def test_transform_ops_removed_after_vectorize():
     import mlir.ir as ir
 
     lowered_path = (
-        Path(__file__).resolve().parent.parent.parent.parent
-        / "compiled"
-        / "opt_125m_fresh"
-        / "model.lowered.mlir"
+        Path(__file__).resolve().parent.parent.parent.parent / "compiled" / "opt_125m_fresh" / "model.lowered.mlir"
     )
     if not lowered_path.exists():
         pytest.skip("model.lowered.mlir not found")
@@ -174,9 +172,7 @@ def test_transform_ops_removed_after_vectorize():
 
         pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx).run(module.operation)
         text = str(module)
-        assert "transform.structured" not in text, (
-            "transform dialect ops leaked into output module"
-        )
+        assert "transform.structured" not in text, "transform dialect ops leaked into output module"
 
 
 # ── Bufferization with full dialect registry ──────────────────
@@ -192,10 +188,7 @@ def test_bufferize_produces_memrefs():
     from mlir._mlir_libs import _mlirRegisterEverything
 
     lowered_path = (
-        Path(__file__).resolve().parent.parent.parent.parent
-        / "compiled"
-        / "opt_125m_fresh"
-        / "model.lowered.mlir"
+        Path(__file__).resolve().parent.parent.parent.parent / "compiled" / "opt_125m_fresh" / "model.lowered.mlir"
     )
     if not lowered_path.exists():
         pytest.skip("model.lowered.mlir not found")
@@ -216,16 +209,14 @@ def test_bufferize_produces_memrefs():
 
     with ir.Location.unknown(ctx2):
         m2 = ir.Module.parse(str(m), ctx2)
-        pm.PassManager.parse(
-            "builtin.module(one-shot-bufferize{bufferize-function-boundaries})", ctx2
-        ).run(m2.operation)
+        pm.PassManager.parse("builtin.module(one-shot-bufferize{bufferize-function-boundaries})", ctx2).run(
+            m2.operation
+        )
         text = str(m2)
         n_memref = text.count("memref<")
         n_tensor = text.count("tensor<")
         assert n_memref > 0, "Expected memref<, got 0 (vector ops not bufferized)"
-        assert n_tensor == 0, (
-            f"Expected 0 tensor<, got {n_tensor} (tensors leaked)"
-        )
+        assert n_tensor == 0, f"Expected 0 tensor<, got {n_tensor} (tensors leaked)"
 
 
 # ── convert-vector-to-llvm must not hang ──────────────────────
@@ -242,10 +233,7 @@ def test_contract_lowering_outerproduct_finishes():
     from mlir._mlir_libs import _mlirRegisterEverything
 
     lowered_path = (
-        Path(__file__).resolve().parent.parent.parent.parent
-        / "compiled"
-        / "opt_125m_fresh"
-        / "model.lowered.mlir"
+        Path(__file__).resolve().parent.parent.parent.parent / "compiled" / "opt_125m_fresh" / "model.lowered.mlir"
     )
     if not lowered_path.exists():
         pytest.skip("model.lowered.mlir not found")
@@ -266,12 +254,13 @@ def test_contract_lowering_outerproduct_finishes():
 
     with ir.Location.unknown(ctx2):
         m2 = ir.Module.parse(str(m), ctx2)
-        pm.PassManager.parse(
-            "builtin.module(one-shot-bufferize{bufferize-function-boundaries})", ctx2
-        ).run(m2.operation)
+        pm.PassManager.parse("builtin.module(one-shot-bufferize{bufferize-function-boundaries})", ctx2).run(
+            m2.operation
+        )
 
         # Lower to LLVM (the step that would hang with `dot` strategy)
         import time
+
         t0 = time.time()
         pm.PassManager.parse(
             "builtin.module(canonicalize,cse,convert-bufferization-to-memref,"
@@ -281,7 +270,8 @@ def test_contract_lowering_outerproduct_finishes():
             "convert-cf-to-llvm,convert-math-to-llvm,"
             "convert-vector-to-llvm{vector-contract-lowering=outerproduct},"
             "convert-arith-to-llvm,convert-ub-to-llvm,convert-func-to-llvm,"
-            "reconcile-unrealized-casts)", ctx2
+            "reconcile-unrealized-casts)",
+            ctx2,
         ).run(m2.operation)
         elapsed = time.time() - t0
         assert elapsed < 30, f"convert-vector-to-llvm took {elapsed:.1f}s (>30s)"
@@ -301,18 +291,15 @@ def test_mlir_executor_multi_function():
     from python_runtime.engine.mlir_executor import MlirExecutor
     from python_runtime.hal.pytorch_backend import PyTorchBackend
 
-    mod_dir = (
-        Path(__file__).resolve().parent.parent.parent.parent / "compiled" / "opt_125m_fresh"
-    )
+    mod_dir = Path(__file__).resolve().parent.parent.parent.parent / "compiled" / "opt_125m_fresh"
     if not (mod_dir / "model.mlir").exists():
         pytest.skip("compiled model not found")
 
     mod = load_artifact(str(mod_dir))
     executor = MlirExecutor(mod, PyTorchBackend("cpu"))
     import torch
+
     out = executor.forward(input_ids=torch.randint(0, 100, (1, 4)))
     # Output from main_1 should be LM head logits: [1, 4, 50272]
-    assert out.shape[-1] == 50272, (
-        f"Expected logits shape [*, *, 50272], got {out.shape}"
-    )
+    assert out.shape[-1] == 50272, f"Expected logits shape [*, *, 50272], got {out.shape}"
     assert out.numel() > 0, "Output should not be empty"

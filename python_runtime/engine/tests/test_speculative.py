@@ -96,7 +96,7 @@ class TestSpeculativeVerifierGreedy:
         draft = torch.tensor([[5, 10, 15]])
         # Logits: shape [1, 1+k, vocab] where k=3
         logits = torch.zeros(1, 4, 20)
-        logits[0, 0, 5] = 100.0   # Correct token 0
+        logits[0, 0, 5] = 100.0  # Correct token 0
         logits[0, 1, 10] = 100.0  # Draft matches target
         logits[0, 2, 15] = 100.0  # Draft matches target
 
@@ -110,8 +110,8 @@ class TestSpeculativeVerifierGreedy:
         verifier = SpeculativeVerifier()
         draft = torch.tensor([[2, 8]])
         logits = torch.zeros(1, 3, 20)
-        logits[0, 0, 5] = 100.0   # Target says 5, draft says 2 → mismatch
-        logits[0, 1, 8] = 100.0   # Draft 8 matches target 8
+        logits[0, 0, 5] = 100.0  # Target says 5, draft says 2 → mismatch
+        logits[0, 1, 8] = 100.0  # Draft 8 matches target 8
         logits[0, 2, 8] = 100.0
 
         accepted, all_ok = verifier.verify_greedy(draft, logits)

@@ -99,12 +99,26 @@ class TestMappingCompleteness:
     """Ensure key aten ops are in the table."""
 
     REQUIRED_ATEN_OPS = {
-        "aten.matmul", "aten.add.Tensor", "aten.relu", "aten.softmax.int",
-        "aten.view", "aten.gelu", "aten.silu", "aten.sigmoid",
-        "aten.linear", "aten.layer_norm", "aten.rms_norm",
-        "aten.embedding", "aten.scaled_dot_product_attention",
-        "aten.cat", "aten.transpose.int", "aten.unsqueeze.default", "aten.slice.Tensor",
-        "aten.clone", "aten.contiguous", "aten.dropout",
+        "aten.matmul",
+        "aten.add.Tensor",
+        "aten.relu",
+        "aten.softmax.int",
+        "aten.view",
+        "aten.gelu",
+        "aten.silu",
+        "aten.sigmoid",
+        "aten.linear",
+        "aten.layer_norm",
+        "aten.rms_norm",
+        "aten.embedding",
+        "aten.scaled_dot_product_attention",
+        "aten.cat",
+        "aten.transpose.int",
+        "aten.unsqueeze.default",
+        "aten.slice.Tensor",
+        "aten.clone",
+        "aten.contiguous",
+        "aten.dropout",
     }
 
     def test_all_required_atens_present(self) -> None:
@@ -119,11 +133,10 @@ class TestNoCrossBoundaryImports:
         import inspect
 
         import compiler.fx.utils as m
+
         for name in dir(m):
             obj = getattr(m, name)
             if inspect.ismodule(obj):
                 mod_name = getattr(obj, "__name__", "")
                 if any(p in mod_name for p in ("hal", "engine", "server", "runtime", "mlir_sf")):
-                    raise AssertionError(
-                        f"fx_to_mlir_utils exports forbidden module: {name} → {mod_name}"
-                    )
+                    raise AssertionError(f"fx_to_mlir_utils exports forbidden module: {name} → {mod_name}")

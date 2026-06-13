@@ -25,8 +25,7 @@ def test_op_correctness(case: object) -> None:
     result = Runner(case).run()
     min_cos = 1.0 - case.rtol
     assert result.cos > min_cos, (
-        f"{case.name}: cos={result.cos:.8f} < {min_cos} (rtol={case.rtol}) "
-        f"shape={result.output.shape}"
+        f"{case.name}: cos={result.cos:.8f} < {min_cos} (rtol={case.rtol}) shape={result.output.shape}"
     )
 
 
@@ -44,7 +43,11 @@ def test_op_sdpa() -> None:
     case = OpCase(
         "sf.scaled_dot_product_attention",
         lambda q, k, v, m: F.scaled_dot_product_attention(
-            q, k, v, is_causal=True, scale=1.0,
+            q,
+            k,
+            v,
+            is_causal=True,
+            scale=1.0,
         ),
         [(2, 12, 4, 64), (2, 12, 4, 64), (2, 12, 4, 64), (2, 1, 4, 4)],
         1e-4,
@@ -61,10 +64,7 @@ def test_op_sdpa() -> None:
     runner = Runner(case, custom_inputs=inputs)
     result = runner.run()
     min_cos = 1.0 - case.rtol
-    assert result.cos > min_cos, (
-        f"SDPA: cos={result.cos:.6f} < {min_cos} "
-        f"shape={result.output.shape}"
-    )
+    assert result.cos > min_cos, f"SDPA: cos={result.cos:.6f} < {min_cos} shape={result.output.shape}"
 
 
 def test_op_sdpa_explicit_mask() -> None:
@@ -82,9 +82,12 @@ def test_op_sdpa_explicit_mask() -> None:
     case = OpCase(
         "sf.scaled_dot_product_attention",
         lambda q, k, v, m: F.scaled_dot_product_attention(
-            q, k, v,
-            attn_mask=torch.where(m > 0.5, 0.0, float('-inf')),
-            is_causal=False, scale=1.0,
+            q,
+            k,
+            v,
+            attn_mask=torch.where(m > 0.5, 0.0, float("-inf")),
+            is_causal=False,
+            scale=1.0,
         ),
         [(2, 12, 4, 64), (2, 12, 4, 64), (2, 12, 4, 64), (2, 1, 4, 4)],
         1e-4,
@@ -101,10 +104,7 @@ def test_op_sdpa_explicit_mask() -> None:
     runner = Runner(case, custom_inputs=inputs)
     result = runner.run()
     min_cos = 1.0 - case.rtol
-    assert result.cos > min_cos, (
-        f"SDPA explicit mask: cos={result.cos:.6f} < {min_cos} "
-        f"shape={result.output.shape}"
-    )
+    assert result.cos > min_cos, f"SDPA explicit mask: cos={result.cos:.6f} < {min_cos} shape={result.output.shape}"
 
 
 def test_op_sdpa_model_mask() -> None:
@@ -120,16 +120,19 @@ def test_op_sdpa_model_mask() -> None:
 
     from scripts.ctypes_forward import run_ctypes
 
-    model_dir = 'outputs/compiled/opt_125m_fresh'
-    dylib = run_ctypes(model_dir, dylib_path=f'{model_dir}/libopt_125m.dylib')
+    model_dir = "outputs/compiled/opt_125m_fresh"
+    dylib = run_ctypes(model_dir, dylib_path=f"{model_dir}/libopt_125m.dylib")
     model_mask = dylib._func_outputs[0][13]
 
     case = OpCase(
         "sf.scaled_dot_product_attention",
         lambda q, k, v, m: F.scaled_dot_product_attention(
-            q, k, v,
-            attn_mask=torch.where(m > 0.5, 0.0, float('-inf')),
-            is_causal=False, scale=1.0,
+            q,
+            k,
+            v,
+            attn_mask=torch.where(m > 0.5, 0.0, float("-inf")),
+            is_causal=False,
+            scale=1.0,
         ),
         [(2, 12, 4, 64), (2, 12, 4, 64), (2, 12, 4, 64), (2, 1, 4, 4)],
         1e-4,
@@ -206,10 +209,7 @@ module {
     print("  REF mask:")
     print(ref_mask)
 
-    assert cos > 0.99, (
-        f"mask construction: cos={cos:.6f} < 0.99\n"
-        f"JIT:\n{jit_mask}\nREF:\n{ref_mask}"
-    )
+    assert cos > 0.99, f"mask construction: cos={cos:.6f} < 0.99\nJIT:\n{jit_mask}\nREF:\n{ref_mask}"
 
 
 def test_mask_full_chain() -> None:
@@ -267,10 +267,7 @@ module {
     print("  REF mask:")
     print(ref_mask)
 
-    assert cos > 0.99, (
-        f"mask full chain: cos={cos:.6f} < 0.99\n"
-        f"JIT:\n{jit_mask}\nREF:\n{ref_mask}"
-    )
+    assert cos > 0.99, f"mask full chain: cos={cos:.6f} < 0.99\nJIT:\n{jit_mask}\nREF:\n{ref_mask}"
 
 
 def test_ones_like_dtype_chain() -> None:
@@ -306,10 +303,7 @@ module {
     print(f"  JIT shape: {list(output.shape)}")
     print(f"  REF shape: {list(ref.shape)}")
 
-    assert cos > 0.99, (
-        f"ones_like dtype chain: cos={cos:.6f} < 0.99\n"
-        f"JIT:\n{output}\nREF:\n{ref}"
-    )
+    assert cos > 0.99, f"ones_like dtype chain: cos={cos:.6f} < 0.99\nJIT:\n{output}\nREF:\n{ref}"
 
 
 def test_arange_to_index_chain() -> None:
@@ -348,8 +342,7 @@ module {
     print(f"  REF shape: {list(ref.shape)}")
 
     assert cos > 0.99, (
-        f"arange to index chain: cos={cos:.6f} < 0.99\n"
-        f"JIT[:8]: {output.ravel()[:8]}\nREF[:8]: {ref.ravel()[:8]}"
+        f"arange to index chain: cos={cos:.6f} < 0.99\nJIT[:8]: {output.ravel()[:8]}\nREF[:8]: {ref.ravel()[:8]}"
     )
 
 
@@ -399,9 +392,7 @@ module {
     # Near-exact match (cos may exceed 1.0 by epsilon due to FP rounding)
     atol = 1e-6
     assert abs(cos - 1.0) < atol, (
-        f"sf.index f32: cos={cos:.8f} != 1.0\n"
-        f"JIT[:5]: {jit_out.ravel()[:5]}\n"
-        f"REF[:5]: {ref_out.ravel()[:5]}"
+        f"sf.index f32: cos={cos:.8f} != 1.0\nJIT[:5]: {jit_out.ravel()[:5]}\nREF[:5]: {ref_out.ravel()[:5]}"
     )
 
     # Verify the WARNING was emitted to stderr

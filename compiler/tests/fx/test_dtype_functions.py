@@ -34,6 +34,7 @@ def test_registry_dispatch_unregistered() -> None:
 
 def test_registry_decorator() -> None:
     """@dtype_rule registers a function; resolve_dtype dispatches to it."""
+
     @dtype_rule("_test_mock_op")
     def _mock_fn(input_elts: list[str], kwargs: dict[str, Any]) -> str | None:
         return "i64"
@@ -47,6 +48,7 @@ def test_registry_decorator() -> None:
 
 def test_apply_dtype_hook_element_type_replacement() -> None:
     """_apply_dtype_hook replaces the element type in out_type_strs[0]."""
+
     @dtype_rule("_test_hook_op")
     def _mock_hook(input_elts: list[str], kwargs: dict[str, Any]) -> str | None:
         return "i64"

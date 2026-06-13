@@ -12,21 +12,24 @@ from typing import Any
 
 
 def parse_compute_graph_outputs(compiled_dir: str) -> list[dict]:
-    """Parse the compute graph and return per-function output counts."""
-    # Import from sibling script
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from scripts.ctypes_forward import parse_compute_graph, parse_sfcf_blob  # noqa: I001
+    """Parse the compute graph from dylib proto and return per-function output counts."""
+    import ctypes
+    import glob
+    import numpy as np
 
-    bin_path = os.path.join(compiled_dir, "constants.bin")
-    if not os.path.exists(bin_path):
+    # Find dylib in compiled_dir
+    dylib_pattern = os.path.join(compiled_dir, "*.dylib")
+    dylibs = glob.glob(dylib_pattern)
+    if not dylibs:
         return []
-
-    with open(bin_path, "rb") as f:
-        blob = f.read()
+    dylib_path = dylibs[0]
 
     try:
-        _, _, graph_pos, sfcf_version = parse_sfcf_blob(blob)
-        graph, _ = parse_compute_graph(blob, graph_pos, version=sfcf_version)
+        from compiler.dylib_ffi import load_graph_from_proto
+
+        lib = ctypes.CDLL(dylib_path)
+        constants: dict[str, np.ndarray] = {}
+        graph = load_graph_from_proto(lib, constants)
 
         results = []
         for fi, func in enumerate(graph["functions"]):

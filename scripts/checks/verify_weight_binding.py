@@ -50,7 +50,7 @@ def fmt_abbrev(names: list[str], max_show: int = 5) -> str:
 def _mismatch_detail(mlir: list[str], cg: list[str]) -> list[str]:
     lines = []
     if len(mlir) != len(cg):
-        lines.append(f"Count: MLIR has {len(mlir)}, SFCF has {len(cg)}")
+        lines.append(f"Count: MLIR has {len(mlir)}, proto has {len(cg)}")
     else:
         for idx, (m, c) in enumerate(zip(mlir, cg)):
             if m != c:
@@ -58,7 +58,7 @@ def _mismatch_detail(mlir: list[str], cg: list[str]) -> list[str]:
     if not lines:
         lines.append("Names differ (possibly order)")
         lines.append(f"  MLIR: {mlir}")
-        lines.append(f"  SFCF: {cg}")
+        lines.append(f"  proto: {cg}")
     return lines
 
 
@@ -102,7 +102,7 @@ def main() -> int:
     all_funcs = sorted(set(list(mlir_names.keys()) + list(cg_names.keys())),
                        key=lambda x: int(x.split("_")[-1]) if "_" in x else 0)
 
-    header = f"{'Func':<14} {'MLIR weight names':<50} {'SFCF weight names':<50} Match?"
+    header = f"{'Func':<14} {'MLIR weight names':<50} {'proto weight names':<50} Match?"
     sep = "-" * len(header)
     print(f"\n{'Weight Binding Verification':^60}")
     print(sep)

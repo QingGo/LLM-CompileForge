@@ -77,7 +77,7 @@ class MlirExecutor(_KVCacheMixin):
             prefix = func.name + "."
             for key in list(self._weights.keys()):
                 if key.startswith(prefix):
-                    bare = key[len(prefix):]
+                    bare = key[len(prefix) :]
                     if bare not in self._weights:
                         self._weights[bare] = self._weights[key]
 
@@ -130,6 +130,7 @@ class MlirExecutor(_KVCacheMixin):
     def _detect_static_shape(self) -> bool:
         for _name, tp in self._function.inputs:
             import re
+
             m = re.search(r"tensor<(\d+)x(\d+)x", tp)
             if m and m.group(2) != "?":
                 return True
@@ -217,10 +218,7 @@ class MlirExecutor(_KVCacheMixin):
                 for i, (out_name, _, _) in enumerate(func.outputs):
                     clean = out_name.replace("%", "")
                     if clean in ssa_values:
-                        fpath = os.path.join(
-                            self._dump_dir,
-                            f"py_func_{fi}_out{i}_{clean}.npy"
-                        )
+                        fpath = os.path.join(self._dump_dir, f"py_func_{fi}_out{i}_{clean}.npy")
                         np.save(fpath, ssa_values[clean].detach().cpu().numpy())
                 self._dump_call_counter[fi] = call_idx + 1
 
@@ -359,7 +357,7 @@ class MlirExecutor(_KVCacheMixin):
     def _extract_source(self, idef: Any, op: Any, ssa_values: dict[str, torch.Tensor]) -> torch.Tensor | None:
         source = idef.source
         if source.startswith("operand["):
-            idx_str = source[len("operand["):-1]
+            idx_str = source[len("operand[") : -1]
             idx = int(idx_str)
             if idx < len(op.operands):
                 key = op.operands[idx]
@@ -373,7 +371,7 @@ class MlirExecutor(_KVCacheMixin):
     def _get_source_ssa_key(self, idef: Any, op: Any) -> str | None:
         source = idef.source
         if source.startswith("operand["):
-            idx_str = source[len("operand["):-1]
+            idx_str = source[len("operand[") : -1]
             idx = int(idx_str)
             if idx < len(op.operands):
                 result = op.operands[idx]
@@ -398,9 +396,7 @@ class MlirExecutor(_KVCacheMixin):
         if k_new is None or v_new is None:
             return
 
-        k_new_sq, v_new_sq = _normalize_kv_for_cache(
-            k_new, v_new, self._num_kv_heads, self._head_dim
-        )
+        k_new_sq, v_new_sq = _normalize_kv_for_cache(k_new, v_new, self._num_kv_heads, self._head_dim)
 
         positions = self._current_positions
         if positions is not None:

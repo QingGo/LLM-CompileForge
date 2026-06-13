@@ -9,7 +9,7 @@ use crate::engine::tokenizer::Tokenizer;
 fn compiled_executor() -> ModelExecutor {
     let dylib = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../outputs/compiled/opt_125m_fresh/libopt_125m_fresh.dylib"
+        "/../outputs/compiled/opt_125m_fresh/libopt_125m.dylib"
     );
     let st_path = concat!(
         env!("HOME"),

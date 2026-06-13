@@ -77,7 +77,13 @@ class TestShapeManip:
 
     def test_slice(self) -> None:
         out = infer_output_shape(
-            "slice", [(10, 64)], ["f32"], dim=0, start=2, end=8, step=1,
+            "slice",
+            [(10, 64)],
+            ["f32"],
+            dim=0,
+            start=2,
+            end=8,
+            step=1,
         )
         assert out == [((6, 64), "f32")]
 

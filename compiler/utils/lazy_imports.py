@@ -23,6 +23,7 @@ def make_lazy_getattr(module_name: str, attr_name: str) -> Any:
         attr_name: The attribute being accessed.
     """
     import sys
+
     mod = sys.modules[module_name]
     if attr_name in LAZY_IMPORTS:
         pkg, cls = LAZY_IMPORTS[attr_name]
@@ -30,9 +31,7 @@ def make_lazy_getattr(module_name: str, attr_name: str) -> Any:
         obj = getattr(imported, cls)
         setattr(mod, attr_name, obj)
         return obj
-    raise AttributeError(
-        f"module '{module_name}' has no attribute '{attr_name}'"
-    )
+    raise AttributeError(f"module '{module_name}' has no attribute '{attr_name}'")
 
 
 # Per-module lazy import registries.  Each __init__.py manages its own

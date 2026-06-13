@@ -105,13 +105,13 @@ def _compile_blob_to_o(
     cc_bin = _find_cc()
     result = subprocess.run(
         [cc_bin, "-c", c_path, "-o", o_path],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
         timeout=30,
     )
     if result.returncode != 0:
         raise RuntimeError(
-            f"Failed to compile {symbol_name} object (exit {result.returncode}):\n"
-            f"{result.stderr[:2000]}"
+            f"Failed to compile {symbol_name} object (exit {result.returncode}):\n{result.stderr[:2000]}"
         )
     return o_path
 
@@ -132,10 +132,16 @@ def _sfa_relink_dylib(
     work_dir = str(compiled_path)
 
     sfa_abi_o = _compile_blob_to_o(
-        sfa_abi_data, "sfa_abi", "sfa_abi_size", work_dir,
+        sfa_abi_data,
+        "sfa_abi",
+        "sfa_abi_size",
+        work_dir,
     )
     sfa_weights_o = _compile_blob_to_o(
-        sfa_weights_data, "sfa_weights", "sfa_weights_size", work_dir,
+        sfa_weights_data,
+        "sfa_weights",
+        "sfa_weights_size",
+        work_dir,
     )
 
     model_ll = os.path.join(work_dir, "model.ll")

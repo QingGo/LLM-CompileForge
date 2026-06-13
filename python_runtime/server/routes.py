@@ -205,9 +205,7 @@ async def completions(req: CompletionRequest, request: Request) -> Any:
         )
 
 
-async def _stream_completions(
-    engine: LLMEngine, req: CompletionRequest
-) -> AsyncGenerator[str, None]:
+async def _stream_completions(engine: LLMEngine, req: CompletionRequest) -> AsyncGenerator[str, None]:
     """SSE streaming generator for text completions.
 
     Holds the engine lock for the entire streaming lifetime so
@@ -320,9 +318,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request) -> Any:
         )
 
 
-async def _stream_chat(
-    engine: LLMEngine, req: ChatCompletionRequest, prompt: str
-) -> AsyncGenerator[str, None]:
+async def _stream_chat(engine: LLMEngine, req: ChatCompletionRequest, prompt: str) -> AsyncGenerator[str, None]:
     """SSE streaming generator for chat completions."""
     async with _engine_lock:
         rid = engine.add_request(

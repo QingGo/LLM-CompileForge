@@ -9,10 +9,14 @@ Usage:
 
 from compiler._lazy_imports import lazy_imports
 
-lazy_imports(__name__, globals(), {
-    "mlir_count_ops": ("compiler.passes._ops", "mlir_count_ops"),
-    "mlir_count_ops_in_module": ("compiler.passes._ops", "mlir_count_ops_in_module"),
-    "mlir_run_canonicalize": ("compiler.passes._ops", "mlir_run_canonicalize"),
-    "mlir_run_cse": ("compiler.passes._ops", "mlir_run_cse"),
-    "mlir_verify_structure": ("compiler.passes._ops", "mlir_verify_structure"),
-})
+lazy_imports(
+    __name__,
+    globals(),
+    {
+        "mlir_count_ops": ("compiler.passes._ops", "mlir_count_ops"),
+        "mlir_count_ops_in_module": ("compiler.passes._ops", "mlir_count_ops_in_module"),
+        "mlir_run_canonicalize": ("compiler.passes._ops", "mlir_run_canonicalize"),
+        "mlir_run_cse": ("compiler.passes._ops", "mlir_run_cse"),
+        "mlir_verify_structure": ("compiler.passes._ops", "mlir_verify_structure"),
+    },
+)

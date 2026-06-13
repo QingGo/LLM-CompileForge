@@ -90,7 +90,9 @@ def _build_name_mapping(module: MlirModule) -> dict[str, str]:
 
 
 def _build_constants_binary(
-    module: MlirModule, name_mapping: dict[str, str], skip_compute_graph: bool = False,
+    module: MlirModule,
+    name_mapping: dict[str, str],
+    skip_compute_graph: bool = False,
 ) -> bytes:
     """Build a self-contained binary blob with name mapping + constants + compute graph.
 
@@ -192,10 +194,14 @@ def _build_constants_binary(
             global_input_names.append(in_name.lstrip("%"))
 
     try:
-        compiler_version = subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"],
-            stderr=subprocess.DEVNULL,
-        ).decode().strip()
+        compiler_version = (
+            subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                stderr=subprocess.DEVNULL,
+            )
+            .decode()
+            .strip()
+        )
     except Exception:
         compiler_version = "unknown"
 
@@ -218,9 +224,7 @@ def _build_constants_binary(
     return b"".join(parts)
 
 
-def _emit_compute_graph_section(
-    parts: list[bytes], module: MlirModule, name_mapping: dict[str, str]
-) -> None:
+def _emit_compute_graph_section(parts: list[bytes], module: MlirModule, name_mapping: dict[str, str]) -> None:
     """Emit the compute graph section: function list with I/O bindings."""
 
     # Build producer map: SSA name → (func_idx, output_idx)
@@ -254,9 +258,9 @@ def _emit_compute_graph_section(
         # function arguments after C++ promotion. Scalar constant weight ops
         # (with _const_ prefix) are inlined as arith.constant during C++
         # conversion and are NOT function parameters.
-        weight_ops = [op for op in func.ops
-                      if op.op_name == "weight"
-                      and not op.attributes.get("name", "").startswith("_const_")]
+        weight_ops = [
+            op for op in func.ops if op.op_name == "weight" and not op.attributes.get("name", "").startswith("_const_")
+        ]
         weight_ops_with_names = [op for op in weight_ops if op.attributes.get("name", "")]
 
         num_inputs = len(func.inputs) + len(weight_ops_with_names)
@@ -328,6 +332,7 @@ def _emit_string(parts: list[bytes], s: str) -> str:
 def _parse_type_shape(type_str: str) -> tuple[int, list[int]]:
     """Return (rank, shape_dims) from MLIR type string. 0 = dynamic dim."""
     import re as _re
+
     m = _re.match(r"(?:tensor|memref)<\s*(.+?)\s*>$", type_str.strip())
     if not m:
         return (0, [])

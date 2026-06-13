@@ -9,9 +9,7 @@ import re
 
 from compiler.quantize.mixed_precision import MixedPrecisionConfig
 
-_WEIGHT_RE = re.compile(
-    r'(%\w+)\s*=\s*"sf\.weight"\(\)\s*\{name\s*=\s*"([^"]+)"'
-)
+_WEIGHT_RE = re.compile(r'(%\w+)\s*=\s*"sf\.weight"\(\)\s*\{name\s*=\s*"([^"]+)"')
 _DQ_RE = re.compile(r'"sf\.dequantize"')
 
 
@@ -88,9 +86,7 @@ def insert_quantize_dequantize(
                                 )
                                 ip.insert(dq_op)
 
-                                weight_result.replace_all_uses_except(
-                                    dq_op.results[0], dq_op
-                                )
+                                weight_result.replace_all_uses_except(dq_op.results[0], dq_op)
 
         return str(module)
 

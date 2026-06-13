@@ -36,8 +36,11 @@ def w4a16_gemm_cpu(
     in_features = weight_packed.size(1) * 2
 
     weight_fp = dequantize_groupwise(
-        weight_packed, weight_scale, group_size,
-        out_features=out_features, in_features=in_features,
+        weight_packed,
+        weight_scale,
+        group_size,
+        out_features=out_features,
+        in_features=in_features,
     )
 
     return activation.to(torch.float32) @ weight_fp.T
@@ -55,6 +58,4 @@ def w4a16_gemm(
     Dispatches to CPU fallback.  Triton kernel will be added in Phase 2
     for GPU environments.
     """
-    return w4a16_gemm_cpu(
-        activation, weight_packed, weight_scale, weight_zero, group_size
-    )
+    return w4a16_gemm_cpu(activation, weight_packed, weight_scale, weight_zero, group_size)

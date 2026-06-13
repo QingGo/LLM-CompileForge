@@ -256,13 +256,19 @@ class TestAWQ:
         aq.quantize()
 
         fc1_out = w4a16_gemm(
-            x, aq.weight_quant["fc1"], aq.weight_scales["fc1"],
-            aq.weight_zeros["fc1"], group_size=32,
+            x,
+            aq.weight_quant["fc1"],
+            aq.weight_scales["fc1"],
+            aq.weight_zeros["fc1"],
+            group_size=32,
         )
         fc1_act = torch.relu(fc1_out)
         fc2_out = w4a16_gemm(
-            fc1_act, aq.weight_quant["fc2"], aq.weight_scales["fc2"],
-            aq.weight_zeros["fc2"], group_size=32,
+            fc1_act,
+            aq.weight_quant["fc2"],
+            aq.weight_scales["fc2"],
+            aq.weight_zeros["fc2"],
+            group_size=32,
         )
 
         assert_cosine_above(fc2_out, ref, threshold=0.92)

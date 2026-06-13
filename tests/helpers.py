@@ -16,6 +16,7 @@ def has_mlir_bindings() -> bool:
     """Check if MLIR Python bindings are available."""
     try:
         import mlir.ir  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -23,9 +24,11 @@ def has_mlir_bindings() -> bool:
 
 # ── Transformers monkey-patch ─────────────────────────────────
 
+
 def patch_transformers_torch() -> None:
     """Ensure transformers can find torch even when symlinked into .venv."""
     import torch
+
     if hasattr(torch, "__path__"):
         torch_path = os.path.dirname(os.path.abspath(torch.__file__))
         torch_root = os.path.dirname(torch_path)
@@ -46,6 +49,7 @@ def patch_transformers_torch() -> None:
 
 # ── SSE helpers ───────────────────────────────────────────────
 
+
 def collect_sse_events(response: Any) -> list[dict[str, Any]]:
     """Parse a streaming SSE response into a list of event dicts.
 
@@ -60,7 +64,7 @@ def collect_sse_events(response: Any) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for line in response.iter_lines():
         if line.startswith("data: "):
-            payload = line[len("data: "):]
+            payload = line[len("data: ") :]
             if payload.strip() == "[DONE]":
                 events.append({"done": True})
             else:
@@ -72,6 +76,7 @@ def collect_sse_events(response: Any) -> list[dict[str, Any]]:
 
 
 # ── Tokenizer helpers ─────────────────────────────────────────
+
 
 class SimpleTokenizer:
     """Deterministic tokenizer for testing — maps tokens 1:1 with IDs.
@@ -106,6 +111,7 @@ class SimpleTokenizer:
 
 # ── Tensor helpers ────────────────────────────────────────────
 
+
 def assert_tensors_close(
     a: Any,
     b: Any,
@@ -115,19 +121,21 @@ def assert_tensors_close(
 ) -> None:
     """Assert two tensors are element-wise close, with a helpful message."""
     import torch
+
     assert a.shape == b.shape, f"{msg} shape mismatch: {a.shape} != {b.shape}"
     assert torch.allclose(a, b, atol=atol, rtol=rtol), (
-        f"{msg} tensors not close: max_diff={ (a - b).abs().max().item():.6f}"
+        f"{msg} tensors not close: max_diff={(a - b).abs().max().item():.6f}"
     )
-
 
 
 def cosine_similarity(a, b) -> float:
     """Compute cosine similarity between two tensors. Returns a float in [-1, 1]."""
     import torch
+
     a_f = a.float().flatten()
     b_f = b.float().flatten()
     return torch.nn.functional.cosine_similarity(a_f.unsqueeze(0), b_f.unsqueeze(0)).item()
+
 
 def assert_cosine_above(
     a: Any,
@@ -137,11 +145,11 @@ def assert_cosine_above(
 ) -> None:
     """Assert cosine similarity between two tensors exceeds threshold."""
     import torch
+
     a_f = a.float().flatten()
     b_f = b.float().flatten()
     cos = torch.nn.functional.cosine_similarity(a_f.unsqueeze(0), b_f.unsqueeze(0)).item()
     assert cos >= threshold, f"{msg} cosine {cos:.6f} < {threshold}"
-
 
 
 def assert_max_diff_below(

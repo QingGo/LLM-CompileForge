@@ -14,9 +14,13 @@ Reference: design-phase2.md §2.1
 
 from compiler._lazy_imports import lazy_imports
 
-lazy_imports(__name__, globals(), {
-    "SmoothQuantCalibrator": ("compiler.quantize.smoothquant", "SmoothQuantCalibrator"),
-    "AWQQuantizer": ("compiler.quantize.awq", "AWQQuantizer"),
-    "FP8KVCacheQuantizer": ("compiler.quantize.fp8_kv_cache", "FP8KVCacheQuantizer"),
-    "MixedPrecisionConfig": ("compiler.quantize.mixed_precision", "MixedPrecisionConfig"),
-})
+lazy_imports(
+    __name__,
+    globals(),
+    {
+        "SmoothQuantCalibrator": ("compiler.quantize.smoothquant", "SmoothQuantCalibrator"),
+        "AWQQuantizer": ("compiler.quantize.awq", "AWQQuantizer"),
+        "FP8KVCacheQuantizer": ("compiler.quantize.fp8_kv_cache", "FP8KVCacheQuantizer"),
+        "MixedPrecisionConfig": ("compiler.quantize.mixed_precision", "MixedPrecisionConfig"),
+    },
+)

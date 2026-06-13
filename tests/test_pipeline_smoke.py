@@ -63,7 +63,7 @@ def main():
     ctx.append_dialect_registry(reg)
     ctx.load_all_available_dialects()
     mod = ir.Module.parse(open(lowered_path).read(), ctx)
-    print(f"  [setup     ] {time.time()-t0:.1f}s")
+    print(f"  [setup     ] {time.time() - t0:.1f}s")
 
     # Step 1: full LLVM lowering pipeline (handles emit_c_interface, strip-sf-attrs,
     # bufferize, and all LLVM dialect conversions internally).
@@ -72,36 +72,35 @@ def main():
     # canonicalize pass's InferStaticShapeOfOperands pattern corrupts linalg.generic
     # output types when broadcast maps are present.
     from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir
+
     t5 = time.time()
     lower_linalg_to_llvm_ir(mod)
     elapsed_llvm = time.time() - t5
     print(f"  [lowering  ] {elapsed_llvm:.1f}s")
 
-    check("Lowering completed under timeout", elapsed_llvm < timeout,
-          f"Took {elapsed_llvm:.1f}s (limit {timeout}s)")
+    check("Lowering completed under timeout", elapsed_llvm < timeout, f"Took {elapsed_llvm:.1f}s (limit {timeout}s)")
 
     # Step 6: mlir-translate (fixup pass runs in mlir_module_to_llvm_ir)
     from compiler.backend.llvm_backend import mlir_module_to_llvm_ir
+
     t6 = time.time()
     llvm_ir = mlir_module_to_llvm_ir(mod)
     elapsed_translate = time.time() - t6
     print(f"  [translate ] {elapsed_translate:.1f}s")
 
     check(f"LLVM IR generated ({len(llvm_ir)} chars)", len(llvm_ir) > 0)
-    check("LLVM IR size reasonable", len(llvm_ir) < 50_000_000,
-          f"{len(llvm_ir)} chars (limit 50MB)")
-    check("No MLIR syntax in LLVM IR", "llvm.func" not in llvm_ir,
-          "LLVM IR should not contain MLIR syntax")
+    check("LLVM IR size reasonable", len(llvm_ir) < 50_000_000, f"{len(llvm_ir)} chars (limit 50MB)")
+    check("No MLIR syntax in LLVM IR", "llvm.func" not in llvm_ir, "LLVM IR should not contain MLIR syntax")
 
     # Verify fixup eliminated all casts
     n_unrealized = llvm_ir.count("unrealized_conversion_cast")
-    check("No unrealized_conversion_cast after fixup", n_unrealized == 0,
-          f"Found {n_unrealized} in LLVM IR")
+    check("No unrealized_conversion_cast after fixup", n_unrealized == 0, f"Found {n_unrealized} in LLVM IR")
 
     # Step 7: llc + link
     import tempfile
 
     from compiler.backend.llvm_backend import _compile_embedded_data, link_dylib, llc_compile
+
     t7 = time.time()
     with tempfile.TemporaryDirectory() as td:
         ll_path = os.path.join(td, "model.ll")
@@ -109,7 +108,7 @@ def main():
             f.write(llvm_ir)
         obj_path = llc_compile(ll_path, opt_level=0)
         obj_size = os.path.getsize(obj_path)
-        print(f"  [llc       ] {time.time()-t7:.1f}s")
+        print(f"  [llc       ] {time.time() - t7:.1f}s")
         check(f"Object file produced ({obj_size} bytes)", obj_size > 0)
 
         # Link
@@ -121,7 +120,7 @@ def main():
         dylib_path = os.path.join(td, "libopt_125m_smoke.dylib")
         link_dylib(obj_files, dylib_path)
         dylib_size = os.path.getsize(dylib_path)
-        print(f"  [link      ] {time.time()-t8:.1f}s")
+        print(f"  [link      ] {time.time() - t8:.1f}s")
         check(f"dylib produced ({dylib_size} bytes)", dylib_size > 0)
 
         # Check symbols

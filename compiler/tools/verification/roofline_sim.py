@@ -82,8 +82,7 @@ class RooflineReport:
     def summary(self) -> str:
         lines = [
             f"Roofline Report — {self.hardware_name}",
-            f"  Peak:  {self.peak_tflops:.1f} TFLOPS, "
-            f"{self.bandwidth_gbs:.0f} GB/s",
+            f"  Peak:  {self.peak_tflops:.1f} TFLOPS, {self.bandwidth_gbs:.0f} GB/s",
             f"  Ridge: {self.ridge_gflops_per_byte:.1f} GFLOPs/byte",
             f"  {len(self.points)} ops: "
             f"{self.compute_bound_count} compute-bound, "
@@ -148,9 +147,7 @@ class RooflineSimulator:
         spec = hw_mod.HardwareSpec.from_yaml(path)
         return cls(spec.peak_tflops, spec.bandwidth_gbs, spec.name)
 
-    def analyze(
-        self, op_profiles: dict[str, dict[str, float]]
-    ) -> RooflineReport:
+    def analyze(self, op_profiles: dict[str, dict[str, float]]) -> RooflineReport:
         """Analyze a set of operations on this hardware.
 
         Args:
@@ -183,9 +180,7 @@ class RooflineSimulator:
             )
         return report
 
-    def compare(
-        self, *others: RooflineSimulator, op_profiles: dict[str, dict[str, float]]
-    ) -> list[RooflineReport]:
+    def compare(self, *others: RooflineSimulator, op_profiles: dict[str, dict[str, float]]) -> list[RooflineReport]:
         """Compare multiple hardware configurations on the same operation set."""
         reports = [self.analyze(op_profiles)]
         for other in others:
@@ -193,9 +188,7 @@ class RooflineSimulator:
         return reports
 
 
-def approximate_op_profile(
-    op_name: str, shape: tuple[int, ...], dtype_bytes: int = 2
-) -> dict[str, float]:
+def approximate_op_profile(op_name: str, shape: tuple[int, ...], dtype_bytes: int = 2) -> dict[str, float]:
     """Estimate FLOPs and bytes for a single operation with given shapes.
 
     These are approximate formulas for typical tensor dimensions:

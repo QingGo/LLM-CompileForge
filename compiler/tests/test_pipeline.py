@@ -15,6 +15,7 @@ import pytest
 
 # ── Model of the kwargs validation pattern in compile_mlir() ──────────
 
+
 def _compile_mlir_model(**kwargs: object) -> dict[str, object]:
     """Minimal reproduction of the kwarg guard from compiler/pipeline.py."""
     kwargs.pop("apply_lowering", False)

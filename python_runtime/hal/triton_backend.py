@@ -33,6 +33,7 @@ class TritonKernelRegistry:
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             cls._kernels[op_name] = func
             return func
+
         return decorator
 
     @classmethod

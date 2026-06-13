@@ -36,9 +36,7 @@ def lazy_imports(
 
     def _getattr(name: str) -> Any:
         if name not in module_dict["_LAZY_ATTRS"]:
-            raise AttributeError(
-                f"module '{module_name}' has no attribute '{name}'"
-            )
+            raise AttributeError(f"module '{module_name}' has no attribute '{name}'")
 
         _globals: dict[str, Any] = {}
         for mod_path, attrs in _mod_to_attrs.items():

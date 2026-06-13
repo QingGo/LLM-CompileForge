@@ -92,12 +92,15 @@ class _KVCacheMixin:
                     break
             if not written and block_tables:
                 import logging
+
                 _log = logging.getLogger("engine._kv_cache")
                 _log.warning(
                     "KV write skipped: position %d (block_idx=%d, offset=%d) "
                     "not found in any request's block table. This may indicate "
                     "a block allocation gap or stale position data.",
-                    pos, block_idx, offset,
+                    pos,
+                    block_idx,
+                    offset,
                 )
 
     def _gather_kv_flat(
@@ -124,8 +127,8 @@ class _KVCacheMixin:
                 end = min(start + bs, max_seq_len)
                 if start >= max_seq_len:
                     break
-                key[req_idx, start:end] = self._kv_cache[phys_id, layer_idx, 0, :end - start]
-                value[req_idx, start:end] = self._kv_cache[phys_id, layer_idx, 1, :end - start]
+                key[req_idx, start:end] = self._kv_cache[phys_id, layer_idx, 0, : end - start]
+                value[req_idx, start:end] = self._kv_cache[phys_id, layer_idx, 1, : end - start]
 
         return key, value
 

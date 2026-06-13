@@ -79,6 +79,7 @@ def _read_memref_output(inner_ptr: Any, arr_dummy: np.ndarray) -> np.ndarray:
 
 # ── Pytest fixtures ─────────────────────────────────────────────────
 
+
 @pytest.fixture(scope="session")
 def mlir_ctx() -> Any:
     import mlir.ir as ir
@@ -95,9 +96,9 @@ def _mlir_path_setup_fixture() -> None:
 
 # ── Tests ────────────────────────────────────────────────────────────
 
+
 @pytest.mark.integration
 class TestSFSmokeJIT:
-
     @pytest.mark.skip(reason="#46: JIT path outdated after C++ lowering migration")
     def test_add_relu_mul_via_jit(self, mlir_ctx: Any) -> None:
         import mlir.ir as ir

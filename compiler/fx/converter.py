@@ -154,8 +154,15 @@ def fx_graph_to_mlir(
 
             extra_kwargs: dict[str, Any] = {}
             input_names, name_counter = _collect_input_args(
-                node, hal_op, ssa_map, name_counter,
-                weights, skwargs, sipos, laa, extra_kwargs,
+                node,
+                hal_op,
+                ssa_map,
+                name_counter,
+                weights,
+                skwargs,
+                sipos,
+                laa,
+                extra_kwargs,
             )
             kwargs = _extract_node_kwargs(node)
             kwargs.update(extra_kwargs)
@@ -170,7 +177,12 @@ def fx_graph_to_mlir(
 
             # Compute output types via shape inference
             input_types, output_types = _resolve_op_types(
-                hal_op, input_names, ssa_map, shape_map, weights, kwargs,
+                hal_op,
+                input_names,
+                ssa_map,
+                shape_map,
+                weights,
+                kwargs,
             )
             # Record output shape for downstream ops
             if output_types:
@@ -190,12 +202,18 @@ def fx_graph_to_mlir(
                 if dim_names:
                     kwargs["dim_names"] = dim_names
 
-            mlir_ops.append(MlirOp(
-                name=f"sf.{hal_op}", dialect="sf", op_name=hal_op,
-                operands=input_names, results=[output_name],
-                attributes=kwargs,
-                input_types=input_types, output_types=output_types,
-            ))
+            mlir_ops.append(
+                MlirOp(
+                    name=f"sf.{hal_op}",
+                    dialect="sf",
+                    op_name=hal_op,
+                    operands=input_names,
+                    results=[output_name],
+                    attributes=kwargs,
+                    input_types=input_types,
+                    output_types=output_types,
+                )
+            )
             continue
 
         if node.op == "output":
@@ -228,12 +246,18 @@ def fx_graph_to_mlir(
         s = tuple(tensor.shape) if len(tensor.shape) > 0 else (1,)
         elt = _fake_to_shape_tuple(tensor)[1]
         tp_str = _shape_to_mlir_type(s, elt)
-        wops.append(MlirOp(
-            name="sf.weight", dialect="sf", op_name="weight",
-            operands=[wname], results=[f"%{wname}"],
-            attributes={"name": wname},
-            input_types=[], output_types=[tp_str],
-        ))
+        wops.append(
+            MlirOp(
+                name="sf.weight",
+                dialect="sf",
+                op_name="weight",
+                operands=[wname],
+                results=[f"%{wname}"],
+                attributes={"name": wname},
+                input_types=[],
+                output_types=[tp_str],
+            )
+        )
     mlir_ops = wops + mlir_ops
 
     # Adjust layer boundaries to account for prepended weight ops
@@ -256,25 +280,26 @@ def fx_graph_to_mlir(
     # models without detectable layer structure).
     if cache_policy is not None and hasattr(cache_policy, "intercepts"):
         has_sdpa_intercept = any(
-            getattr(i, "op_name", None) == "scaled_dot_product_attention"
-            for i in cache_policy.intercepts
+            getattr(i, "op_name", None) == "scaled_dot_product_attention" for i in cache_policy.intercepts
         )
         if has_sdpa_intercept:
-            sdpa_indices = [i for i, op in enumerate(mlir_ops)
-                            if op.op_name == "scaled_dot_product_attention"]
+            sdpa_indices = [i for i, op in enumerate(mlir_ops) if op.op_name == "scaled_dot_product_attention"]
             if sdpa_indices:
                 adjusted_boundaries = sorted(set(adjusted_boundaries) | set(sdpa_indices))
                 _log.info(
-                    "[fx_to_mlir] SD-PA split: %d SD-PA ops found, "
-                    "total boundaries = %d",
-                    len(sdpa_indices), len(adjusted_boundaries),
+                    "[fx_to_mlir] SD-PA split: %d SD-PA ops found, total boundaries = %d",
+                    len(sdpa_indices),
+                    len(adjusted_boundaries),
                 )
 
     # ── Phase 5: split into per-function chunks (bufferization scaling) ──
     if adjusted_boundaries:
         _log_split_plan(mlir_ops, adjusted_boundaries)
         mlir_ops, func_count = _split_into_functions(
-            mlir_ops, func_inputs, weights, boundaries=adjusted_boundaries,
+            mlir_ops,
+            func_inputs,
+            weights,
+            boundaries=adjusted_boundaries,
         )
     elif split_strategy == "layer":
         # No layer boundaries detected — skip split (single function)
@@ -288,7 +313,10 @@ def fx_graph_to_mlir(
         ops_per_func = 500
         if len(mlir_ops) > ops_per_func:
             mlir_ops, func_count = _split_into_functions(
-                mlir_ops, func_inputs, weights, ops_per_func,
+                mlir_ops,
+                func_inputs,
+                weights,
+                ops_per_func,
             )
         else:
             func_count = 1
@@ -300,19 +328,30 @@ def fx_graph_to_mlir(
 
     if func_count == 1:
         return MlirModule(
-            functions=[MlirFunction(
-                name=function_name, inputs=func_inputs,
-                outputs=func_outputs, ops=mlir_ops, weights=weights,
-                param_weight_names=param_names, const_weight_names=const_names,
-            )],
+            functions=[
+                MlirFunction(
+                    name=function_name,
+                    inputs=func_inputs,
+                    outputs=func_outputs,
+                    ops=mlir_ops,
+                    weights=weights,
+                    param_weight_names=param_names,
+                    const_weight_names=const_names,
+                )
+            ],
             metadata=meta,
             chain_order=[function_name],
         )
     else:
         # Multi-function: split by function boundaries computed by _split_into_functions
         functions, chain_order, exec_plan_data, plan_bytes = _make_multi_functions(
-            mlir_ops, func_inputs, func_outputs, weights,
-            param_names, const_names, function_name,
+            mlir_ops,
+            func_inputs,
+            func_outputs,
+            weights,
+            param_names,
+            const_names,
+            function_name,
         )
         meta["num_functions"] = func_count
         module = MlirModule(
@@ -320,8 +359,8 @@ def fx_graph_to_mlir(
             metadata=meta,
             chain_order=chain_order,
             exec_plan_data=exec_plan_data,
+            exec_plan_proto=plan_bytes,
         )
-        module._exec_plan_proto = plan_bytes
         return module
 
 
@@ -347,11 +386,16 @@ def _do_getitem(
         dim_val = _symint_to_int(idx) if isinstance(idx, torch.SymInt) else idx
         output_name = f"%{node.name}" if node.name else f"%_out_{len(mlir_ops)}"
         ssa_map[node.name] = output_name
-        mlir_ops.append(MlirOp(
-            name="sf.sym_size", dialect="sf", op_name="sym_size",
-            operands=[tensor_ssa], results=[output_name],
-            attributes={"dim": dim_val, "source_node": node.name},
-        ))
+        mlir_ops.append(
+            MlirOp(
+                name="sf.sym_size",
+                dialect="sf",
+                op_name="sym_size",
+                operands=[tensor_ssa],
+                results=[output_name],
+                attributes={"dim": dim_val, "source_node": node.name},
+            )
+        )
 
 
 def _do_split(
@@ -381,11 +425,16 @@ def _do_split(
     offset = 0
     for i, size in enumerate(sizes):
         out_name = f"%{node.name}__split_{i}"
-        mlir_ops.append(MlirOp(
-            name="sf.slice", dialect="sf", op_name="slice",
-            operands=[tensor_ssa], results=[out_name],
-            attributes={"dim": dim, "start": offset, "end": offset + size, "source_node": node.name},
-        ))
+        mlir_ops.append(
+            MlirOp(
+                name="sf.slice",
+                dialect="sf",
+                op_name="slice",
+                operands=[tensor_ssa],
+                results=[out_name],
+                attributes={"dim": dim, "start": offset, "end": offset + size, "source_node": node.name},
+            )
+        )
         outputs.append(out_name)
         offset += size
     tuple_outputs[node.name] = outputs
@@ -420,11 +469,16 @@ def _do_chunk(
     for i in range(n_chunks):
         size = total // n_chunks + (1 if i < (total % n_chunks) else 0)
         out_name = f"%{node.name}__chunk_{i}"
-        mlir_ops.append(MlirOp(
-            name="sf.slice", dialect="sf", op_name="slice",
-            operands=[tensor_ssa], results=[out_name],
-            attributes={"dim": dim, "start": offset, "end": offset + size, "source_node": node.name},
-        ))
+        mlir_ops.append(
+            MlirOp(
+                name="sf.slice",
+                dialect="sf",
+                op_name="slice",
+                operands=[tensor_ssa],
+                results=[out_name],
+                attributes={"dim": dim, "start": offset, "end": offset + size, "source_node": node.name},
+            )
+        )
         outputs.append(out_name)
         offset += size
     tuple_outputs[node.name] = outputs
@@ -492,9 +546,7 @@ def _collect_input_args(
             if i in skip_positions:
                 kwarg_name = scalar_kwargs_map.get(i)
                 if kwarg_name:
-                    extra_kwargs.setdefault(
-                        kwarg_name, _symint_to_int(arg) if isinstance(arg, torch.SymInt) else arg
-                    )
+                    extra_kwargs.setdefault(kwarg_name, _symint_to_int(arg) if isinstance(arg, torch.SymInt) else arg)
                 continue
             const_name = f"_const_{name_counter}"
             name_counter += 1

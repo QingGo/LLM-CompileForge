@@ -41,6 +41,7 @@ def _run_pattern(
     ctx.allow_unregistered_dialects = True
     try:
         from mlir_sf._mlir_libs._sfDialectsNanobind import sf
+
         sf.register_dialects(ctx._CAPIPtr, load=True)
     except ImportError:
         pass
@@ -50,10 +51,9 @@ def _run_pattern(
             module = ir.Module.parse(mlir_text, ctx)
         except Exception:
             import logging
+
             _log = logging.getLogger(__name__)
-            _log.warning(
-                "%s: parse failed (non-critical, fusion skipped)", pattern_name
-            )
+            _log.warning("%s: parse failed (non-critical, fusion skipped)", pattern_name)
             return mlir_text
         pattern_set = RewritePatternSet(ctx)
         pattern_set.add(pattern_name, callback)
@@ -196,8 +196,8 @@ def fuse_rms_norm_pass(mlir_text: str) -> str:
                 results=[op.result.type],
                 operands=[
                     rms_op.operands[0],  # rms input
-                    mul_op.operands[1],    # rms weight (second input to mul)
-                    op.operands[1],        # matmul weight
+                    mul_op.operands[1],  # rms weight (second input to mul)
+                    op.operands[1],  # matmul weight
                 ],
             )
         rewriter.replace_op(op.operation, fused)
@@ -252,4 +252,3 @@ def fuse_attention_pass(mlir_text: str) -> str:
         return
 
     return _run_pattern(mlir_text, "sf.linear", callback)
-

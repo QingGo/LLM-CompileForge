@@ -32,6 +32,13 @@ class FakeScheduler:
     max_batch_size: int = 32
 
 
+class _FakeTokenizer:
+    """Minimal tokenizer mock for server tests."""
+
+    def decode(self, token_ids: list[int]) -> str:
+        return " ".join(str(t) for t in token_ids)
+
+
 class FakeEngine:
     """Mock LLMEngine that returns predictable token sequences."""
 
@@ -42,6 +49,7 @@ class FakeEngine:
         self._token_sequence = token_sequence or [65, 66, 67, 68, 69]  # A,B,C,D,E
         self._calls: list[dict[str, Any]] = []
         self.scheduler = FakeScheduler()  # type: ignore[assignment]
+        self._tokenizer = _FakeTokenizer()
 
     def add_request(
         self,
@@ -55,12 +63,14 @@ class FakeEngine:
         self._rid = "fake-rid-1"
         self._step_count = 0
         self._max_tokens = max_tokens
-        self._calls.append({
-            "method": "add_request",
-            "prompt": prompt,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        })
+        self._calls.append(
+            {
+                "method": "add_request",
+                "prompt": prompt,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+        )
         return self._rid
 
     def step(self) -> list[FakeResult]:

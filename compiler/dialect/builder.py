@@ -15,8 +15,10 @@ from compiler.shape.shape_inference import infer_output_type  # type: ignore[att
 
 def _make_ranked(shape: tuple[int, ...], elt_str: str) -> ir.RankedTensorType:
     elt_map = {
-        "f32": ir.F32Type.get(), "f64": ir.F64Type.get(),
-        "f16": ir.F16Type.get(), "bf16": ir.BF16Type.get(),
+        "f32": ir.F32Type.get(),
+        "f64": ir.F64Type.get(),
+        "f16": ir.F16Type.get(),
+        "bf16": ir.BF16Type.get(),
         "i32": ir.IntegerType.get_signless(32),
         "i64": ir.IntegerType.get_signless(64),
         "i8": ir.IntegerType.get_signless(8),
@@ -112,9 +114,7 @@ class SfModule:
         ret_types: list[ir.Type] = [v.type for v in values]
         arg_types = [arg.type for arg in self._body_blk.arguments]
         func_type = ir.FunctionType.get(arg_types, ret_types)
-        self._func_op.operation.attributes["function_type"] = ir.TypeAttr.get(
-            func_type
-        )
+        self._func_op.operation.attributes["function_type"] = ir.TypeAttr.get(func_type)
 
     def to_string(self) -> str:
         return str(self._module)

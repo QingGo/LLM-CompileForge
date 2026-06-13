@@ -121,14 +121,13 @@ def _build_tiny_llama() -> tuple[torch.nn.Module, str | None]:
 
     model_name = "hf-internal-testing/tiny-random-LlamaForCausalLM"
     print(f"Loading {model_name} weights...")
-    hub_dir = os.path.expanduser(
-        "~/.cache/huggingface/hub/models--hf-internal-testing--tiny-random-LlamaForCausalLM"
-    )
+    hub_dir = os.path.expanduser("~/.cache/huggingface/hub/models--hf-internal-testing--tiny-random-LlamaForCausalLM")
     snapshots = os.path.join(hub_dir, "snapshots")
     snap = os.listdir(snapshots)[0]
     model_path = os.path.join(snapshots, snap, "model.safetensors")
 
     import safetensors.torch
+
     state_dict = safetensors.torch.load_file(model_path)
     config_path = os.path.join(snapshots, snap, "config.json")
     config = LlamaConfig.from_pretrained(config_path) if os.path.exists(config_path) else LlamaConfig()
@@ -141,8 +140,9 @@ def _build_tiny_llama() -> tuple[torch.nn.Module, str | None]:
 def _build_qwen() -> tuple[torch.nn.Module, str | None]:
     from transformers import AutoConfig, AutoModelForCausalLM  # type: ignore[import-untyped]
 
-    model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                               "models", "Qwen", "Qwen3.5-0.8B")
+    model_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models", "Qwen", "Qwen3.5-0.8B"
+    )
     model_dir = os.path.abspath(model_dir)
     if not os.path.isdir(model_dir):
         raise FileNotFoundError(f"Model directory not found: {model_dir}")
@@ -152,7 +152,10 @@ def _build_qwen() -> tuple[torch.nn.Module, str | None]:
         config.text_config.use_cache = False
     config.use_cache = False
     model = AutoModelForCausalLM.from_pretrained(
-        model_dir, config=config, trust_remote_code=True, torch_dtype=torch.bfloat16,
+        model_dir,
+        config=config,
+        trust_remote_code=True,
+        torch_dtype=torch.bfloat16,
     )
     _fix_tied_weights(model, config)
     return model, model_dir
@@ -161,8 +164,9 @@ def _build_qwen() -> tuple[torch.nn.Module, str | None]:
 def _build_llama(variant: str) -> tuple[torch.nn.Module, str | None]:
     from transformers import AutoConfig, AutoModelForCausalLM  # type: ignore[import-untyped]
 
-    model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                               "models", "LLM-Research", f"Llama-3.2-{variant}")
+    model_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models", "LLM-Research", f"Llama-3.2-{variant}"
+    )
     model_dir = os.path.abspath(model_dir)
     if not os.path.isdir(model_dir):
         raise FileNotFoundError(f"Model directory not found: {model_dir}")
@@ -170,7 +174,9 @@ def _build_llama(variant: str) -> tuple[torch.nn.Module, str | None]:
     config = AutoConfig.from_pretrained(model_dir, trust_remote_code=False)
     config.use_cache = False
     model = AutoModelForCausalLM.from_pretrained(
-        model_dir, config=config, torch_dtype=torch.bfloat16,
+        model_dir,
+        config=config,
+        torch_dtype=torch.bfloat16,
     )
     _fix_tied_weights(model, config)
     return model, model_dir
@@ -181,7 +187,9 @@ def _build_rwkv() -> tuple[torch.nn.Module, str | None]:
 
     pth_dir = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "models", "RWKV", "rwkv7-g1",
+        "models",
+        "RWKV",
+        "rwkv7-g1",
     )
     pth_dir = os.path.abspath(pth_dir)
     pth_path = os.path.join(pth_dir, "rwkv7-g1d-0.4b-20260210-ctx8192.pth")
@@ -202,8 +210,11 @@ def _fix_tied_weights(model: torch.nn.Module, config: Any) -> None:
     tie_word_embeddings=True, but torch.export captures both as separate
     graph inputs. Ensure lm_head has its own tensor reference.
     """
-    if (hasattr(model, "lm_head") and hasattr(model.model, "embed_tokens")
-            and getattr(config, "tie_word_embeddings", False)):
+    if (
+        hasattr(model, "lm_head")
+        and hasattr(model.model, "embed_tokens")
+        and getattr(config, "tie_word_embeddings", False)
+    ):
         model.lm_head.weight = model.model.embed_tokens.weight
 
 
@@ -211,7 +222,9 @@ def _rwkv_post_hook(output_dir: str, mlir_mod: Any) -> None:
     """Write weight_source metadata and sf-dialect git hash for RWKV models."""
     pth_dir = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "models", "RWKV", "rwkv7-g1",
+        "models",
+        "RWKV",
+        "rwkv7-g1",
     )
     pth_path = os.path.join(os.path.abspath(pth_dir), "rwkv7-g1d-0.4b-20260210-ctx8192.pth")
     meta_path = os.path.join(output_dir, "metadata.json")
@@ -229,7 +242,9 @@ def _rwkv_post_hook(output_dir: str, mlir_mod: Any) -> None:
         try:
             result = subprocess.run(
                 ["git", "rev-parse", "HEAD:sf-dialect/"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             if result.returncode == 0:
                 sha = result.stdout.strip()
@@ -250,97 +265,117 @@ def _make_position_ids(example_input: torch.Tensor) -> torch.Tensor:
 # ── Model compilation functions ────────────────────────────────────────
 
 
-def compile_opt125m(output_dir: str, apply_lowering: bool = False,
-                    cache_policy: Any = None) -> None:
+def compile_opt125m(output_dir: str, apply_lowering: bool = False, cache_policy: Any = None) -> None:
     from torch.export import Dim
+
     example_input = torch.randint(0, 50272, (2, 4), dtype=torch.long)
-    _compile_model(CompileConfig(
-        name="opt-125m",
-        output_dir=output_dir,
-        build_model=_build_opt125m,
-        example_input=example_input,
-        dynamic_shapes={"input_ids": {0: Dim("batch"), 1: Dim("seq")}},
-        cache_policy=cache_policy,
-    ))
+    _compile_model(
+        CompileConfig(
+            name="opt-125m",
+            output_dir=output_dir,
+            build_model=_build_opt125m,
+            example_input=example_input,
+            dynamic_shapes={"input_ids": {0: Dim("batch"), 1: Dim("seq")}},
+            cache_policy=cache_policy,
+        )
+    )
 
 
 def compile_tiny_llama(output_dir: str, apply_lowering: bool = False) -> None:
     from torch.export import Dim
+
     example_input = torch.randint(0, 32000, (2, 4), dtype=torch.long)
     position_ids = _make_position_ids(example_input)
-    _compile_model(CompileConfig(
-        name="tiny-llama",
-        output_dir=output_dir,
-        build_model=_build_tiny_llama,
-        example_input=example_input,
-        example_kwargs={"position_ids": position_ids},
-        dynamic_shapes={
-            "input_ids": {0: Dim("batch"), 1: Dim("seq")},
-            "position_ids": {0: Dim("batch"), 1: Dim("seq")},
-        },
-    ))
+    _compile_model(
+        CompileConfig(
+            name="tiny-llama",
+            output_dir=output_dir,
+            build_model=_build_tiny_llama,
+            example_input=example_input,
+            example_kwargs={"position_ids": position_ids},
+            dynamic_shapes={
+                "input_ids": {0: Dim("batch"), 1: Dim("seq")},
+                "position_ids": {0: Dim("batch"), 1: Dim("seq")},
+            },
+        )
+    )
 
 
 def compile_qwen(output_dir: str, apply_lowering: bool = False) -> None:
     from compiler.cache_policy import CachePolicy
+
     example_input = torch.randint(0, 248320, (1, 64), dtype=torch.long)
-    _compile_model(CompileConfig(
-        name="qwen",
-        output_dir=output_dir,
-        build_model=_build_qwen,
-        example_input=example_input,
-        dynamic_shapes={},
-        cache_policy=CachePolicy.for_llama(
-            num_layers=24, num_kv_heads=8, head_dim=256,
-        ),
-        cache_export=False,
-    ))
+    _compile_model(
+        CompileConfig(
+            name="qwen",
+            output_dir=output_dir,
+            build_model=_build_qwen,
+            example_input=example_input,
+            dynamic_shapes={},
+            cache_policy=CachePolicy.for_llama(
+                num_layers=24,
+                num_kv_heads=8,
+                head_dim=256,
+            ),
+            cache_export=False,
+        )
+    )
 
 
 def compile_llama_1b(output_dir: str, apply_lowering: bool = False) -> None:
     from torch.export import Dim as _Dim
 
     from compiler.cache_policy import CachePolicy
+
     example_input = torch.randint(0, 128256, (1, 8), dtype=torch.long)
     position_ids = _make_position_ids(example_input)
-    _compile_model(CompileConfig(
-        name="llama-1b",
-        output_dir=output_dir,
-        build_model=lambda: _build_llama("1B"),
-        example_input=example_input,
-        example_kwargs={"position_ids": position_ids},
-        dynamic_shapes={
-            "input_ids": {1: _Dim("seq", min=1, max=256)},
-            "position_ids": {1: _Dim("seq", min=1, max=256)},
-        },
-        cache_policy=CachePolicy.for_llama(
-            num_layers=16, num_kv_heads=32, head_dim=64,
-        ),
-        cache_export=False,
-    ))
+    _compile_model(
+        CompileConfig(
+            name="llama-1b",
+            output_dir=output_dir,
+            build_model=lambda: _build_llama("1B"),
+            example_input=example_input,
+            example_kwargs={"position_ids": position_ids},
+            dynamic_shapes={
+                "input_ids": {1: _Dim("seq", min=1, max=256)},
+                "position_ids": {1: _Dim("seq", min=1, max=256)},
+            },
+            cache_policy=CachePolicy.for_llama(
+                num_layers=16,
+                num_kv_heads=32,
+                head_dim=64,
+            ),
+            cache_export=False,
+        )
+    )
 
 
 def compile_llama_3b(output_dir: str, apply_lowering: bool = False) -> None:
     from torch.export import Dim as _Dim
 
     from compiler.cache_policy import CachePolicy
+
     example_input = torch.randint(0, 128256, (1, 8), dtype=torch.long)
     position_ids = _make_position_ids(example_input)
-    _compile_model(CompileConfig(
-        name="llama-3b",
-        output_dir=output_dir,
-        build_model=lambda: _build_llama("3B"),
-        example_input=example_input,
-        example_kwargs={"position_ids": position_ids},
-        dynamic_shapes={
-            "input_ids": {1: _Dim("seq", min=1, max=256)},
-            "position_ids": {1: _Dim("seq", min=1, max=256)},
-        },
-        cache_policy=CachePolicy.for_llama(
-            num_layers=28, num_kv_heads=32, head_dim=96,
-        ),
-        cache_export=False,
-    ))
+    _compile_model(
+        CompileConfig(
+            name="llama-3b",
+            output_dir=output_dir,
+            build_model=lambda: _build_llama("3B"),
+            example_input=example_input,
+            example_kwargs={"position_ids": position_ids},
+            dynamic_shapes={
+                "input_ids": {1: _Dim("seq", min=1, max=256)},
+                "position_ids": {1: _Dim("seq", min=1, max=256)},
+            },
+            cache_policy=CachePolicy.for_llama(
+                num_layers=28,
+                num_kv_heads=32,
+                head_dim=96,
+            ),
+            cache_export=False,
+        )
+    )
 
 
 def compile_rwkv(output_dir: str, apply_lowering: bool = False) -> None:
@@ -353,18 +388,21 @@ def compile_rwkv(output_dir: str, apply_lowering: bool = False) -> None:
         return model, model_dir
 
     example_input = torch.randint(0, 65536, (1, 4), dtype=torch.long)
-    _compile_model(CompileConfig(
-        name="rwkv",
-        output_dir=output_dir,
-        build_model=_build_rwkv,
-        example_input=example_input,
-        dynamic_shapes={},
-        cache_policy=CachePolicy.for_rwkv(
-            num_layers=24, state_dim=1024,
-        ),
-        cache_export=False,
-        post_hooks=[_rwkv_post_hook],
-    ))
+    _compile_model(
+        CompileConfig(
+            name="rwkv",
+            output_dir=output_dir,
+            build_model=_build_rwkv,
+            example_input=example_input,
+            dynamic_shapes={},
+            cache_policy=CachePolicy.for_rwkv(
+                num_layers=24,
+                state_dim=1024,
+            ),
+            cache_export=False,
+            post_hooks=[_rwkv_post_hook],
+        )
+    )
 
 
 # ── CLI ────────────────────────────────────────────────────────────────
@@ -380,22 +418,26 @@ def main() -> None:
         help="Model to compile",
     )
     parser.add_argument(
-        "--output-dir", type=str, default=None,
+        "--output-dir",
+        type=str,
+        default=None,
         help="Output directory for compiled artifacts",
     )
     parser.add_argument(
-        "--cache-policy", action="store_true", default=False,
+        "--cache-policy",
+        action="store_true",
+        default=False,
         help="Enable CachePolicy for models that support it",
     )
     args = parser.parse_args()
 
     targets: dict[str, tuple[Callable, str]] = {
-        "opt-125m":   (compile_opt125m,   "./outputs/compiled/opt_125m"),
+        "opt-125m": (compile_opt125m, "./outputs/compiled/opt_125m"),
         "tiny-llama": (compile_tiny_llama, "./outputs/compiled/tiny_llama"),
-        "qwen":       (compile_qwen,       "./outputs/compiled/qwen3_0.8b"),
-        "llama-1b":   (compile_llama_1b,   "./outputs/compiled/llama_1b"),
-        "llama-3b":   (compile_llama_3b,   "./outputs/compiled/llama_3b"),
-        "rwkv":       (compile_rwkv,       "./outputs/compiled/rwkv7_g1d_0.4b"),
+        "qwen": (compile_qwen, "./outputs/compiled/qwen3_0.8b"),
+        "llama-1b": (compile_llama_1b, "./outputs/compiled/llama_1b"),
+        "llama-3b": (compile_llama_3b, "./outputs/compiled/llama_3b"),
+        "rwkv": (compile_rwkv, "./outputs/compiled/rwkv7_g1d_0.4b"),
     }
 
     func, default_dir = targets[args.model]
@@ -404,8 +446,11 @@ def main() -> None:
     cache_policy = None
     if args.cache_policy and args.model == "opt-125m":
         from compiler.cache_policy import CachePolicy
+
         cache_policy = CachePolicy.for_llama(
-            num_layers=12, num_kv_heads=12, head_dim=64,
+            num_layers=12,
+            num_kv_heads=12,
+            head_dim=64,
         )
         print("CachePolicy enabled: opt-125m (12 layers, 12 KV heads, head_dim=64)")
 

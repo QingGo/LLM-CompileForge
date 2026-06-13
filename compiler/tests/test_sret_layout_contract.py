@@ -23,7 +23,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
-from compiler.sfcf_parser import DEFAULT_SRET_SIZE
+from compiler.dylib_ffi import DEFAULT_SRET_SIZE
 
 
 def _cos(a: np.ndarray, b: np.ndarray) -> float:
@@ -49,21 +49,30 @@ def _find_tool(name: str) -> str:
 
 
 def _memref(ptr, ndim, shape):
-    strides = tuple(int(np.prod(shape[i + 1:])) for i in range(ndim))
+    strides = tuple(int(np.prod(shape[i + 1 :])) for i in range(ndim))
 
     class M(ctypes.Structure):
         _fields_ = [
-            ("allocated", ctypes.c_void_p), ("aligned", ctypes.c_void_p),
+            ("allocated", ctypes.c_void_p),
+            ("aligned", ctypes.c_void_p),
             ("offset", ctypes.c_int64),
-            ("sizes", ctypes.c_int64 * ndim), ("strides", ctypes.c_int64 * ndim),
+            ("sizes", ctypes.c_int64 * ndim),
+            ("strides", ctypes.c_int64 * ndim),
         ]
-    return M(ctypes.c_void_p(ptr), ctypes.c_void_p(ptr), 0,
-             (ctypes.c_int64 * ndim)(*shape), (ctypes.c_int64 * ndim)(*strides))
+
+    return M(
+        ctypes.c_void_p(ptr),
+        ctypes.c_void_p(ptr),
+        0,
+        (ctypes.c_int64 * ndim)(*shape),
+        (ctypes.c_int64 * ndim)(*strides),
+    )
 
 
 def _compile(sf_mlir, tmp, name):
     import mlir.ir as ir
     from mlir_sf._mlir_libs._sfDialectsNanobind import sf
+
     from compiler.backend.fixups import _fixup_unrealized_casts_pass
     from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir
     from compiler.pipeline import _apply_sf_to_linalg
@@ -117,11 +126,12 @@ def _mlir(n_id):
     lines.append('    %m = "sf.matmul"(%in, %w0) : (tensor<4x8xf32>, tensor<8x4xf32>) -> tensor<4x4xf32>')
     rv = ["%m"]
     for i in range(n_id):
-        lines.append(f"    %c{i} = linalg.copy ins(%id{i} : tensor<64x64xf32>)"
-                     f" outs(%id{i} : tensor<64x64xf32>) -> tensor<64x64xf32>")
+        lines.append(
+            f"    %c{i} = linalg.copy ins(%id{i} : tensor<64x64xf32>)"
+            f" outs(%id{i} : tensor<64x64xf32>) -> tensor<64x64xf32>"
+        )
         rv.append(f"%c{i}")
-    lines.append(f"    return {', '.join(rv)} : tensor<4x4xf32>"
-                 + "".join(", tensor<64x64xf32>" for _ in range(n_id)))
+    lines.append(f"    return {', '.join(rv)} : tensor<4x4xf32>" + "".join(", tensor<64x64xf32>" for _ in range(n_id)))
     lines.append("  }")
     lines.append("  func.func @main_1(%h: tensor<4x4xf32>, %w1: tensor<4x4xf32>) -> tensor<4x4xf32> {")
     lines.append('    %r = "sf.matmul"(%h, %w1) : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>')
@@ -134,7 +144,6 @@ def _mlir(n_id):
 @pytest.mark.integration
 @pytest.mark.timeout(120)
 class TestSretLayoutContract:
-
     def test_computed_output_10_identity_weights(self):
         rng = np.random.RandomState(42)
         inp = rng.randn(4, 8).astype(np.float32)
@@ -143,8 +152,7 @@ class TestSretLayoutContract:
         with tempfile.TemporaryDirectory() as td:
             dylib = _compile(_mlir(10), td, "t10")
             lib = ctypes.CDLL(dylib)
-            mrs = [_memref(inp.ctypes.data, 2, inp.shape),
-                   _memref(w0.ctypes.data, 2, w0.shape)]
+            mrs = [_memref(inp.ctypes.data, 2, inp.shape), _memref(w0.ctypes.data, 2, w0.shape)]
             for w in ids:
                 mrs.append(_memref(w.ctypes.data, 2, w.shape))
             sret = (ctypes.c_uint8 * DEFAULT_SRET_SIZE)()
@@ -166,8 +174,7 @@ class TestSretLayoutContract:
         with tempfile.TemporaryDirectory() as td:
             dylib = _compile(_mlir(50), td, "t50")
             lib = ctypes.CDLL(dylib)
-            mrs0 = [_memref(inp.ctypes.data, 2, inp.shape),
-                    _memref(w0.ctypes.data, 2, w0.shape)]
+            mrs0 = [_memref(inp.ctypes.data, 2, inp.shape), _memref(w0.ctypes.data, 2, w0.shape)]
             for w in ids:
                 mrs0.append(_memref(w.ctypes.data, 2, w.shape))
             sret0 = (ctypes.c_uint8 * DEFAULT_SRET_SIZE)()
@@ -197,8 +204,7 @@ class TestSretLayoutContract:
         with tempfile.TemporaryDirectory() as td:
             dylib = _compile(_mlir(200), td, "t200")
             lib = ctypes.CDLL(dylib)
-            mrs = [_memref(inp.ctypes.data, 2, inp.shape),
-                   _memref(w0.ctypes.data, 2, w0.shape)]
+            mrs = [_memref(inp.ctypes.data, 2, inp.shape), _memref(w0.ctypes.data, 2, w0.shape)]
             for w in ids:
                 mrs.append(_memref(w.ctypes.data, 2, w.shape))
             sret = (ctypes.c_uint8 * DEFAULT_SRET_SIZE)()

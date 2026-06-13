@@ -1,6 +1,5 @@
 """Unit tests for compiler/rwkv/dialect.py — RWKV dialect op definitions."""
 
-
 from compiler.rwkv.dialect import RwkvChannelMixOp, RwkvStateEvolveOp, RwkvTimeMixOp
 
 

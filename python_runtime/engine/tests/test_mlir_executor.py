@@ -298,11 +298,14 @@ class TestMlirExecutorOutputHandling:
     def test_forward_with_kv_fallback_no_outputs(self):
         """P0-7: forward_with_kv should fallback to last op result when no outputs declared."""
         mod = MlirModule(
-            functions=[MlirFunction(
-                name="main", inputs=[("%x", "tensor<?xf32>")], outputs=[],
-                ops=[MlirOp(name="sf.gelu", dialect="sf", op_name="gelu",
-                             operands=["%x"], results=["%out"])],
-            )]
+            functions=[
+                MlirFunction(
+                    name="main",
+                    inputs=[("%x", "tensor<?xf32>")],
+                    outputs=[],
+                    ops=[MlirOp(name="sf.gelu", dialect="sf", op_name="gelu", operands=["%x"], results=["%out"])],
+                )
+            ]
         )
         ex = MlirExecutor(mod, PyTorchBackend("cpu"))
         logits, kv = ex.forward_with_kv(torch.tensor([-1.0, 0.0, 1.0], dtype=torch.float32))
@@ -314,24 +317,22 @@ class TestStaticShapeDetection:
     """Verify static vs dynamic shape detection for cache strategy."""
 
     def test_dynamic_shape_detected(self) -> None:
-        mod = MlirModule(functions=[MlirFunction(
-            name="main", inputs=[("%x", "tensor<?x16xi64>")], outputs=[], ops=[]
-        )])
+        mod = MlirModule(functions=[MlirFunction(name="main", inputs=[("%x", "tensor<?x16xi64>")], outputs=[], ops=[])])
         ex = MlirExecutor(mod, PyTorchBackend("cpu"))
         assert not ex._uses_static_shape
 
     def test_static_shape_detected(self) -> None:
-        mod = MlirModule(functions=[MlirFunction(
-            name="main", inputs=[("%x", "tensor<1x64xi64>")], outputs=[], ops=[]
-        )])
+        mod = MlirModule(functions=[MlirFunction(name="main", inputs=[("%x", "tensor<1x64xi64>")], outputs=[], ops=[])])
         ex = MlirExecutor(mod, PyTorchBackend("cpu"))
         assert ex._uses_static_shape
 
     def test_cache_manager_disabled_for_static(self) -> None:
         from compiler.cache_policy import CachePolicy
-        mod = MlirModule(functions=[MlirFunction(
-            name="main", inputs=[("%x", "tensor<1x64xi64>")], outputs=[], ops=[]
-        )], metadata={"cache_policy": CachePolicy.for_llama(4, 8, 64).to_dict()})
+
+        mod = MlirModule(
+            functions=[MlirFunction(name="main", inputs=[("%x", "tensor<1x64xi64>")], outputs=[], ops=[])],
+            metadata={"cache_policy": CachePolicy.for_llama(4, 8, 64).to_dict()},
+        )
         ex = MlirExecutor(mod, PyTorchBackend("cpu"))
         assert ex._uses_static_shape
         assert not ex._uses_cache_manager, "cache manager should be disabled for static shapes"

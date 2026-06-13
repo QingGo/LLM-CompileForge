@@ -94,10 +94,13 @@ class TestJsonFormatValid:
         captured, restore = _capture_json_logging()
         try:
             log = logging.getLogger("test_json")
-            log.info("hello world", extra={
-                "event_type": "test_event",
-                "event_data": {"x": 1, "y": "two"},
-            })
+            log.info(
+                "hello world",
+                extra={
+                    "event_type": "test_event",
+                    "event_data": {"x": 1, "y": "two"},
+                },
+            )
             output = captured.getvalue().strip()
             assert output, "Expected non-empty log output"
             data = json.loads(output)
@@ -223,9 +226,7 @@ class TestJsonServerRequest:
             lines = [line for line in output.split("\n") if line.strip()]
             json_events = [json.loads(line) for line in lines]
             server_events = [e for e in json_events if e.get("event_type") == "server_request"]
-            assert len(server_events) >= 1, (
-                f"Expected at least 1 server_request event, got {len(server_events)}"
-            )
+            assert len(server_events) >= 1, f"Expected at least 1 server_request event, got {len(server_events)}"
             data = server_events[0]["event_data"]
             assert data["method"] == "GET"
             assert data["status"] == 200

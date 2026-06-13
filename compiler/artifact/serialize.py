@@ -42,7 +42,7 @@ def mlir_module_to_text(module: MlirModule) -> str:
     attrs_parts: list[str] = []
     if module.chain_order:
         names = ", ".join(f'"{n}"' for n in module.chain_order)
-        attrs_parts.append(f'sf.chain_order = [{names}]')
+        attrs_parts.append(f"sf.chain_order = [{names}]")
     # exec_plan_data is stored in metadata.json (too large for MLIR text parser).
     # It is attached programmatically by compile_dylib.py when lowering.
     if attrs_parts:
@@ -61,19 +61,14 @@ def mlir_module_to_text(module: MlirModule) -> str:
         ret = out_types[0] if len(out_types) == 1 else f"({', '.join(out_types)})"
 
         # Embed consumed_internally flags in func attributes
-        consumed_indices = [
-            i for i, (_, _, is_consumed) in enumerate(func.outputs) if is_consumed
-        ]
+        consumed_indices = [i for i, (_, _, is_consumed) in enumerate(func.outputs) if is_consumed]
         func_attr_parts: list[str] = []
         if consumed_indices:
-            flags = ", ".join(
-                "true" if i in consumed_indices else "false"
-                for i in range(len(func.outputs))
-            )
-            func_attr_parts.append(f'sf.consumed_internally = [{flags}]')
+            flags = ", ".join("true" if i in consumed_indices else "false" for i in range(len(func.outputs)))
+            func_attr_parts.append(f"sf.consumed_internally = [{flags}]")
         if func.weight_names:
             names = ", ".join(f'"{n}"' for n in func.weight_names)
-            func_attr_parts.append(f'sf.weight_names = [{names}]')
+            func_attr_parts.append(f"sf.weight_names = [{names}]")
         func_attrs = f" attributes {{{'; '.join(func_attr_parts)}}}" if func_attr_parts else ""
 
         lines.append(f"  func.func @{func.name}({args_str}) -> {ret}{func_attrs} {{")
@@ -85,8 +80,7 @@ def mlir_module_to_text(module: MlirModule) -> str:
                 wname = op.attributes.get("name", "")
                 tp = op.output_types[0] if op.output_types else "tensor<f32>"
                 attrs = f'{{name = "{wname}"}}' if wname else ""
-                lines.append(f'    {_ssa(op.results[0])} = "{op.name}"() {attrs} : '
-                             f'() -> {tp}')
+                lines.append(f'    {_ssa(op.results[0])} = "{op.name}"() {attrs} : () -> {tp}')
                 continue
 
             results_str = ", ".join(_ssa(r) for r in op.results)
@@ -108,8 +102,7 @@ def mlir_module_to_text(module: MlirModule) -> str:
             else:
                 type_sig = ""
             lines.append(
-                f'    {results_str} = "{op.name}"({operands_str}){attrs_str}'
-                f'{" : " + type_sig if type_sig else ""}'
+                f'    {results_str} = "{op.name}"({operands_str}){attrs_str}{" : " + type_sig if type_sig else ""}'
             )
 
         # Return — must use explicit SSA names.  Empty output names are a
@@ -144,6 +137,7 @@ def _unranked_tensor_type(tp: str) -> str:
     tensor<*xf32> -> tensor<*xf32>  (already unranked, no change)
     """
     import re
+
     if tp.startswith("tensor<*x"):
         return tp  # already unranked
     m = re.match(r"tensor<(?:[\d?*]+x)*(.+)>", tp)
@@ -155,7 +149,7 @@ def _unranked_tensor_type(tp: str) -> str:
 def _format_attr(key: str, value: Any) -> str:
     """Format a single attribute key=value pair for MLIR text."""
     if isinstance(value, bool):
-        return f'{key} = {"true" if value else "false"}'
+        return f"{key} = {'true' if value else 'false'}"
     if isinstance(value, int):
         return f"{key} = {value} : i64"
     if isinstance(value, float):
@@ -163,10 +157,7 @@ def _format_attr(key: str, value: Any) -> str:
     if isinstance(value, str):
         return f'{key} = "{value}"'
     if isinstance(value, (list, tuple)):
-        items = ", ".join(
-            f'"{v}"' if isinstance(v, str) else str(v)
-            for v in value
-        )
+        items = ", ".join(f'"{v}"' if isinstance(v, str) else str(v) for v in value)
         return f"{key} = [{items}]"
     if value is None:
         return f"{key} = none"
@@ -192,10 +183,7 @@ def save_mlir_module_artifact(module: MlirModule, directory: str) -> None:
     with open(out_dir / "model.mlir", "w") as f:
         f.write(mlir_text)
 
-    has_classification = any(
-        func.param_weight_names or func.const_weight_names
-        for func in module.functions
-    )
+    has_classification = any(func.param_weight_names or func.const_weight_names for func in module.functions)
     if has_classification:
         const_state: dict[str, torch.Tensor] = {}
         for func in module.functions:
@@ -237,10 +225,10 @@ def save_mlir_module_artifact(module: MlirModule, directory: str) -> None:
         module.metadata["chain_order"] = list(module.chain_order)
     if module.exec_plan_data:
         module.metadata["exec_plan_data"] = list(module.exec_plan_data)
-    if hasattr(module, '_exec_plan_proto') and module._exec_plan_proto:
+    if module.exec_plan_proto:
         import base64
-        module.metadata["exec_plan_proto"] = base64.b64encode(
-            module._exec_plan_proto).decode('ascii')
+
+        module.metadata["exec_plan_proto"] = base64.b64encode(module.exec_plan_proto).decode("ascii")
 
     with open(out_dir / "metadata.json", "w") as f:
         json.dump(module.metadata, f, indent=2)

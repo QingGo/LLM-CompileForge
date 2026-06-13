@@ -33,6 +33,7 @@ def _get_dynamic_dim() -> int:
     global _DYNAMIC_DIM
     if _DYNAMIC_DIM is None:
         import mlir.ir as _ir
+
         _DYNAMIC_DIM = _ir.ShapedType.get_dynamic_size()
     return _DYNAMIC_DIM
 
@@ -42,9 +43,12 @@ def _init_elt_map() -> dict[str, ir.Type]:
     if _ELT_MAP:
         return _ELT_MAP
     import mlir.ir as _ir
+
     _ELT_MAP = {
-        "f32": _ir.F32Type.get(), "f64": _ir.F64Type.get(),
-        "f16": _ir.F16Type.get(), "bf16": _ir.BF16Type.get(),
+        "f32": _ir.F32Type.get(),
+        "f64": _ir.F64Type.get(),
+        "f16": _ir.F16Type.get(),
+        "bf16": _ir.BF16Type.get(),
         "i1": _ir.IntegerType.get_signless(1),
         "i8": _ir.IntegerType.get_signless(8),
         "i32": _ir.IntegerType.get_signless(32),
@@ -101,11 +105,12 @@ def _type_str_to_ir_type(type_str: str) -> ir.Type:
     except Exception as e:
         _log.warning(
             "Failed to create RankedTensorType for '%s': dims=%s, elt=%s",
-            type_str, dims, elt_type, exc_info=True,
+            type_str,
+            dims,
+            elt_type,
+            exc_info=True,
         )
-        raise RuntimeError(
-            f"Failed to create RankedTensorType for '{type_str}': dims={dims}, elt={elt_type}"
-        ) from e
+        raise RuntimeError(f"Failed to create RankedTensorType for '{type_str}': dims={dims}, elt={elt_type}") from e
 
 
 def _build_mlir_function(func: MlirFunction, ir_mod: Any, ctx: Any) -> tuple[Any, Any, list[Any]]:
@@ -150,8 +155,9 @@ def _build_ssa_map(func: MlirFunction, arg_values: list[ir.Value]) -> dict[str, 
     return ssa_map
 
 
-def _emit_weight_op(op: MlirOp, ctx: Any, ssa_map: dict[str, ir.Value], body_blk: Any,
-                     weights: dict[str, Any] | None = None) -> None:
+def _emit_weight_op(
+    op: MlirOp, ctx: Any, ssa_map: dict[str, ir.Value], body_blk: Any, weights: dict[str, Any] | None = None
+) -> None:
     """Emit a weight/constant op into the IR builder.
 
     For scalar constants (_const_*) with known values, emits ``arith.constant``
@@ -172,9 +178,7 @@ def _emit_weight_op(op: MlirOp, ctx: Any, ssa_map: dict[str, ir.Value], body_blk
                 else:
                     elt_attr = _ir.IntegerAttr.get(elt_type, int(wt.item()))
                 attr = _ir.DenseElementsAttr.get_splat(result_type, elt_attr)
-                ir_op = _ir.Operation.create("arith.constant",
-                    results=[result_type],
-                    attributes={"value": attr})
+                ir_op = _ir.Operation.create("arith.constant", results=[result_type], attributes={"value": attr})
             for i, rname in enumerate(op.results):
                 if i < len(ir_op.operation.results):
                     v = ir_op.operation.results[i]
@@ -225,10 +229,7 @@ def _resolve_operands(op: MlirOp, ssa_map: dict[str, ir.Value]) -> list[ir.Value
         elif key.lstrip("%") in ssa_map:
             operands.append(ssa_map[key.lstrip("%")])
         else:
-            raise KeyError(
-                f"ssa_map missing operand '{key}' for op '{op.name}'. "
-                f"Known: {list(ssa_map.keys())[:10]}"
-            )
+            raise KeyError(f"ssa_map missing operand '{key}' for op '{op.name}'. Known: {list(ssa_map.keys())[:10]}")
     return operands
 
 
@@ -396,9 +397,11 @@ def mlir_module_to_ir_module(module: MlirModule, ctx: Any = None) -> Any:
             name_attrs = [_ir.StringAttr.get(n) for n in module.chain_order]
             ir_mod.operation.attributes["sf.chain_order"] = _ir.ArrayAttr.get(name_attrs)
         if module.exec_plan_data:
-            int_attrs = [_ir.IntegerAttr.get(_ir.IntegerType.get_signless(64), v)
-                         for v in module.exec_plan_data]
+            int_attrs = [_ir.IntegerAttr.get(_ir.IntegerType.get_signless(64), v) for v in module.exec_plan_data]
             ir_mod.operation.attributes["sf.exec_plan_data"] = _ir.ArrayAttr.get(int_attrs)
+        if module.exec_plan_proto:
+            ir_mod.operation.attributes["sf.exec_plan_proto"] = _ir.StringAttr.get(module.exec_plan_proto)
+            _log.debug("Embedded ExecutionPlan proto (%d bytes) as sf.exec_plan_proto", len(module.exec_plan_proto))
 
         return ir_mod
 

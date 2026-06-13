@@ -50,9 +50,7 @@ def _deserialize_weight_data(data: bytes) -> tuple[dict[str, str], dict[str, Any
             arr = np.zeros(element_count, dtype=np.float32)
             arr_view = arr.view(np.uint16)
             for i in range(len(arr_view) // 2):
-                arr_view[i * 2 + 1] = np.frombuffer(
-                    tensor_data[i * 2 : i * 2 + 2], dtype=np.uint16
-                )[0]
+                arr_view[i * 2 + 1] = np.frombuffer(tensor_data[i * 2 : i * 2 + 2], dtype=np.uint16)[0]
             arr = arr.reshape(shape).view(torch.bfloat16)
         elif dtype == torch.int64:
             arr = np.frombuffer(tensor_data, dtype=np.int64).reshape(shape)

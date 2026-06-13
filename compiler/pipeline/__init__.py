@@ -80,7 +80,9 @@ def compile_mlir(
     kwargs = example_kwargs or {}
 
     program = export_model(
-        model, args, kwargs,
+        model,
+        args,
+        kwargs,
         dynamic_shapes=dynamic_shapes,
         model_dir=model_dir,
         cache=cache_export,
@@ -97,26 +99,31 @@ def compile_mlir(
     lowered_text: str | None = None
     if apply_fusion:
         mlir_text, lowered_text = _apply_mlir_passes(
-            mlir_text, orig_mlir_mod, apply_lowering=apply_lowering,
+            mlir_text,
+            orig_mlir_mod,
+            apply_lowering=apply_lowering,
         )
     elif apply_lowering:
         _, lowered_text = _apply_mlir_passes(
-            mlir_text, orig_mlir_mod, apply_lowering=True,
+            mlir_text,
+            orig_mlir_mod,
+            apply_lowering=True,
         )
 
     # Save lowered MLIR text for inspection (sf→linalg output)
     if lowered_text is not None and output_dir is not None:
         from pathlib import Path
+
         _lowered_path = Path(output_dir) / "model.lowered.mlir"
         _lowered_path.write_text(lowered_text)
-        _log.info("lowered MLIR saved to %s (%d lines)",
-                   _lowered_path, len(lowered_text.splitlines()))
+        _log.info("lowered MLIR saved to %s (%d lines)", _lowered_path, len(lowered_text.splitlines()))
 
     # Step 5: re-parse to get optimized MlirModule
     # NOTE: _parse_mlir_text is a lightweight text parser that may not handle
     # output from the canonicalize pass (which uses a different text format).
     # Fall back to the original MlirModule if re-parse fails.
     from compiler.artifact import _parse_mlir_text  # type: ignore[attr-defined]
+
     try:
         mlir_mod = _parse_mlir_text(mlir_text)
     except (ValueError, IndexError, KeyError) as e:
@@ -140,17 +147,16 @@ def compile_mlir(
                 # guards against legacy model.mlir without the attribute)
                 if len(orig_func.outputs) == len(mf.outputs):
                     mf.outputs = [
-                        (mf_out[0], mf_out[1], orig_func.outputs[i][2])
-                        for i, mf_out in enumerate(mf.outputs)
+                        (mf_out[0], mf_out[1], orig_func.outputs[i][2]) for i, mf_out in enumerate(mf.outputs)
                     ]
                 break
 
     # Step 6: serialize
     if output_dir is not None:
-        mlir_mod.metadata["passes_applied"] = ["cse", "canonicalize"] + (
-            ["fuse_silu", "fuse_rms_norm"] if apply_fusion else []
-        ) + (
-            ["sf_to_linalg"] if apply_lowering else []
+        mlir_mod.metadata["passes_applied"] = (
+            ["cse", "canonicalize"]
+            + (["fuse_silu", "fuse_rms_norm"] if apply_fusion else [])
+            + (["sf_to_linalg"] if apply_lowering else [])
         )
         if cache_policy is not None and hasattr(cache_policy, "to_dict"):
             mlir_mod.metadata["cache_policy"] = cache_policy.to_dict()
@@ -171,7 +177,7 @@ def compile_mlir(
                 for func in mlir_mod.functions:
                     wlist = list(func.weights.items())
                     for i, (n1, t1) in enumerate(wlist):
-                        for n2, t2 in wlist[i + 1:]:
+                        for n2, t2 in wlist[i + 1 :]:
                             if t1.data_ptr() == t2.data_ptr():
                                 tied[n2] = n1
                 if tied:
@@ -181,16 +187,22 @@ def compile_mlir(
 
     elapsed_s = time.perf_counter() - _t0
     total_ops = sum(len(f.ops) for f in mlir_mod.functions)
-    _log.info("compile complete | %.1fs, %d ops, %d weights | %s%s",
-              elapsed_s, total_ops, sum(len(f.weights) for f in mlir_mod.functions),
-              "fusion=on" if apply_fusion else "fusion=off",
-              " lowering=on" if apply_lowering else "")
+    _log.info(
+        "compile complete | %.1fs, %d ops, %d weights | %s%s",
+        elapsed_s,
+        total_ops,
+        sum(len(f.weights) for f in mlir_mod.functions),
+        "fusion=on" if apply_fusion else "fusion=off",
+        " lowering=on" if apply_lowering else "",
+    )
 
     return mlir_mod
 
 
 def _apply_mlir_passes(
-    mlir_text: str, orig_mlir_mod: Any = None, **kwargs: Any,
+    mlir_text: str,
+    orig_mlir_mod: Any = None,
+    **kwargs: Any,
 ) -> tuple[str, str | None]:
     """Apply MLIR optimization passes.
 
@@ -245,10 +257,12 @@ def _apply_mlir_passes(
                 with ctx:
                     if orig_mlir_mod is not None:
                         from compiler.artifact import mlir_module_to_ir_module  # type: ignore[attr-defined]
+
                         module = mlir_module_to_ir_module(orig_mlir_mod, ctx=ctx)
                     else:
                         module = ir.Module.parse(mlir_text, ctx)
                     from compiler.backend.fixups import _walk_and_fix_tensor_constants
+
                     _walk_and_fix_tensor_constants(module)
                     pman = pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx)
                     pman.run(module.operation)
@@ -262,17 +276,14 @@ def _apply_mlir_passes(
                     # Re-parse after canonicalize; module is consumed above
                     module = ir.Module.parse(mlir_text, ctx)
                     pman = pm.PassManager.parse(
-                        "builtin.module(func.func("
-                        "sf-fuse-silu,sf-fuse-rms-norm,sf-fuse-qkv,sf-fuse-attention"
-                        "))",
-                        ctx)
+                        "builtin.module(func.func(sf-fuse-silu,sf-fuse-rms-norm,sf-fuse-qkv,sf-fuse-attention))", ctx
+                    )
                     pman.run(module.operation)
                     mlir_text = str(module)
                     _cpp_fusion_available = True
                     _log.info("C++ fusion passes applied successfully")
             except Exception as e:
-                _log.warning(
-                    "C++ fusion passes not available, falling back to Python: %s", e)
+                _log.warning("C++ fusion passes not available, falling back to Python: %s", e)
         except ImportError as e:
             _log.warning(
                 "sf dialect Python bindings not available (canonicalize/cse skipped): %s\n"
@@ -288,6 +299,7 @@ def _apply_mlir_passes(
             fuse_rms_norm_pass,
             fuse_silu_pass,
         )
+
         fusion_pipeline = [
             ("fuse_silu", fuse_silu_pass),
             ("fuse_rms_norm", fuse_rms_norm_pass),
@@ -298,9 +310,7 @@ def _apply_mlir_passes(
             try:
                 mlir_text = fn(mlir_text)
             except Exception as e:
-                raise RuntimeError(
-                    f"[pipeline] CRITICAL: Python fusion pass '{name}' failed: {e}"
-                ) from e
+                raise RuntimeError(f"[pipeline] CRITICAL: Python fusion pass '{name}' failed: {e}") from e
 
     # Phase 3: sf→linalg lowering (optional, after fusion, via C++ DialectConversion)
     lowered_text: str | None = None
@@ -318,6 +328,7 @@ def _apply_sf_to_linalg(mlir_text: str, orig_mlir_mod: Any = None) -> str:
     """
     _setup_mlir_path()
     import mlir.ir as ir
+
     try:
         from mlir_sf._mlir_libs._sfDialectsNanobind import sf
     except ImportError as e:
@@ -333,10 +344,12 @@ def _apply_sf_to_linalg(mlir_text: str, orig_mlir_mod: Any = None) -> str:
     with ctx:
         if orig_mlir_mod is not None:
             from compiler.artifact import mlir_module_to_ir_module  # type: ignore[attr-defined]
+
             ir_mod = mlir_module_to_ir_module(orig_mlir_mod, ctx=ctx)
         else:
             ir_mod = ir.Module.parse(mlir_text, ctx)
         from compiler.pipeline.lowering import run_sf_lowering_pipeline
+
         mlir_text = run_sf_lowering_pipeline(ir_mod, ctx)
     return _post_lowering_canonicalize(mlir_text)
 
@@ -352,6 +365,7 @@ def _post_lowering_canonicalize(mlir_text: str) -> str:
             import mlir.passmanager as pm
 
             ctx = ir.Context()
+            ctx.allow_unregistered_dialects = True
             with ctx:
                 module = ir.Module.parse(mlir_text, ctx)
                 pman = pm.PassManager.parse("builtin.module(canonicalize)", ctx)
@@ -363,6 +377,7 @@ def _post_lowering_canonicalize(mlir_text: str) -> str:
     # Fix arith.constant ops with scalar value + tensor result type
     try:
         from compiler.backend.fixups import _fixup_arith_tensor_constants_mlir
+
         mlir_text = _fixup_arith_tensor_constants_mlir(mlir_text)
     except Exception as e:
         raise RuntimeError(f"[pipeline] CRITICAL: arith.constant scalar→tensor fixup failed: {e}") from e

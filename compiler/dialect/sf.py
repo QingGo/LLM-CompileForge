@@ -421,12 +421,7 @@ _ALL_OPS: dict[str, type[SfOp]] = {}
 def _collect_ops() -> dict[str, type[SfOp]]:
     result: dict[str, type[SfOp]] = {}
     for _name, obj in list(globals().items()):
-        if (
-            isinstance(obj, type)
-            and issubclass(obj, SfOp)
-            and obj is not SfOp
-            and obj.op_name != "sf.unknown"
-        ):
+        if isinstance(obj, type) and issubclass(obj, SfOp) and obj is not SfOp and obj.op_name != "sf.unknown":
             result[obj.op_name] = obj
     return result
 

@@ -95,19 +95,19 @@ def lower_linalg_to_llvm_ir(
     # Register all dialects including bufferization interface extensions
     try:
         from mlir._mlir_libs import _mlirRegisterEverything
+
         reg = ir.DialectRegistry()
         _mlirRegisterEverything.register_dialects(reg)
         ctx.append_dialect_registry(reg)
     except (ImportError, AttributeError) as e:
-        _log.warning(
-            "Dialect registry registration failed: %s (may affect bufferization)", e
-        )
+        _log.warning("Dialect registry registration failed: %s (may affect bufferization)", e)
 
     with ir.Location.unknown(ctx):
         from compiler.pipeline import (  # noqa: E402
             BUILTIN_STAGES,
             run_stages,
         )
+
         if skip_first_canonicalize:
             stages = BUILTIN_STAGES[1:]
         else:
@@ -129,4 +129,3 @@ def lower_linalg_to_llvm_ir_text(mlir_text: str) -> str:
     with ir.Location.unknown(ctx):
         module = ir.Module.parse(mlir_text, ctx)
         return lower_linalg_to_llvm_ir(module)
-

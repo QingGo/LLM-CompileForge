@@ -429,7 +429,7 @@ def check_sret_shapes(compiled_dir: str) -> int:
     print("\n📐 sret output shape consistency check")
 
     try:
-        from scripts.ctypes_forward import verify_output_shapes
+        from compiler.dylib_ffi import verify_output_shapes
         from scripts.ctypes_oracle import CtypesOracle
 
         o = CtypesOracle(compiled_dir)

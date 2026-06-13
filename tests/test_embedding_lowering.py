@@ -49,7 +49,7 @@ def test_embedding_dylib() -> float:
   }
 }"""
 
-    weight = np.array([[i*4+1, i*4+2, i*4+3, i*4+4] for i in range(8)], dtype=np.float32)
+    weight = np.array([[i * 4 + 1, i * 4 + 2, i * 4 + 3, i * 4 + 4] for i in range(8)], dtype=np.float32)
     indices = np.array([[0, 1, 2], [2, 0, 1]], dtype=np.int64)
     expected = weight[indices]
 
@@ -61,6 +61,7 @@ def test_embedding_dylib() -> float:
     ctx.allow_unregistered_dialects = True
     sf.register_dialects(ctx._CAPIPtr, load=True)
     from mlir._mlir_libs import _mlirRegisterEverything
+
     reg = ir.DialectRegistry()
     _mlirRegisterEverything.register_dialects(reg)
     ctx.append_dialect_registry(reg)
@@ -77,27 +78,34 @@ def test_embedding_dylib() -> float:
             f.write(fixed)
         print("  [4/7] mlir-translate -> .ll ...")
         subprocess.run(
-            [_find_tool("mlir-translate"), "--mlir-to-llvmir", mlir_path, "-o",
-             os.path.join(td, "module.ll")],
-            capture_output=True, text=True, check=True, timeout=60,
+            [_find_tool("mlir-translate"), "--mlir-to-llvmir", mlir_path, "-o", os.path.join(td, "module.ll")],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
         )
         print("  [5/7] clang -c -> .o (via LLVM IR) ...")
         subprocess.run(
-            [_find_tool("cc"), "-c", os.path.join(td, "module.ll"), "-o",
-             os.path.join(td, "module.o"), "-O0"],
-            capture_output=True, text=True, check=True, timeout=60,
+            [_find_tool("cc"), "-c", os.path.join(td, "module.ll"), "-o", os.path.join(td, "module.o"), "-O0"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
         )
         print("  [6/7] clang -shared -> .dylib ...")
         subprocess.run(
-            [_find_tool("cc"), "-shared", "-o", os.path.join(td, "libembed.dylib"),
-             os.path.join(td, "module.o")],
-            capture_output=True, text=True, check=True, timeout=60,
+            [_find_tool("cc"), "-shared", "-o", os.path.join(td, "libembed.dylib"), os.path.join(td, "module.o")],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
         )
         print("  [7/7] Load and run ...")
         lib = ctypes.CDLL(os.path.join(td, "libembed.dylib"))
 
         def make_memref_struct(ptr, ndim, shape):
-            strides = tuple(int(np.prod(shape[i+1:])) for i in range(ndim))
+            strides = tuple(int(np.prod(shape[i + 1 :])) for i in range(ndim))
+
             class MemRef(ctypes.Structure):
                 _fields_ = [
                     ("allocated", ctypes.c_void_p),
@@ -106,6 +114,7 @@ def test_embedding_dylib() -> float:
                     ("sizes", ctypes.c_int64 * ndim),
                     ("strides", ctypes.c_int64 * ndim),
                 ]
+
             return MemRef(
                 ctypes.c_void_p(ptr),
                 ctypes.c_void_p(ptr),
@@ -131,8 +140,10 @@ def test_embedding_dylib() -> float:
         out_vals = [out_data_ptr[i] for i in range(num_elts)]
         out = np.array(out_vals, dtype=np.float32).reshape(expected.shape)
 
-        cos = float(np.dot(out.ravel(), expected.ravel()) /
-                    (np.linalg.norm(out.ravel()) * np.linalg.norm(expected.ravel()) + 1e-12))
+        cos = float(
+            np.dot(out.ravel(), expected.ravel())
+            / (np.linalg.norm(out.ravel()) * np.linalg.norm(expected.ravel()) + 1e-12)
+        )
         max_diff = float(np.max(np.abs(out - expected)))
         print(f"  cos={cos:.10f} max_diff={max_diff:.8e}")
 
@@ -150,6 +161,7 @@ def main():
     except Exception as e:
         print(f"\nFAILED: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
     if cos >= 0.999:

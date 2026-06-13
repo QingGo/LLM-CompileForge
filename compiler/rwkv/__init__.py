@@ -8,7 +8,11 @@ Reference: design-phase2.md §2.5
 
 from compiler._lazy_imports import lazy_imports
 
-lazy_imports(__name__, globals(), {
-    "emit_rwkv_op": ("compiler.rwkv.dialect", "emit_rwkv_op"),
-    "is_rwkv_op": ("compiler.rwkv.dialect", "is_rwkv_op"),
-})
+lazy_imports(
+    __name__,
+    globals(),
+    {
+        "emit_rwkv_op": ("compiler.rwkv.dialect", "emit_rwkv_op"),
+        "is_rwkv_op": ("compiler.rwkv.dialect", "is_rwkv_op"),
+    },
+)

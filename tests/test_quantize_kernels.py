@@ -150,8 +150,7 @@ class TestInt4GroupWise:
         quant_packed, scale, zero = quantize_groupwise_int4(weight, group_size=128)
         assert scale.shape == (8, 1)
 
-        restored = dequantize_groupwise(quant_packed, scale, group_size=128,
-                                        out_features=8, in_features=100)
+        restored = dequantize_groupwise(quant_packed, scale, group_size=128, out_features=8, in_features=100)
         assert restored.shape == (8, 100)
         assert_cosine_above(weight, restored, threshold=0.99)
 

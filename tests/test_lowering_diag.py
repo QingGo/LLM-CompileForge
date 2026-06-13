@@ -1,5 +1,6 @@
 # ruff: noqa: E501
 """Lowering diagnostic: test each sf op type individually."""
+
 import argparse
 import os
 import sys
@@ -122,6 +123,7 @@ def _apply(template: str, vals: dict[str, str]) -> str:
 def run_test(name: str, mlir_text: str, timeout_s: int = 5) -> tuple[bool, str]:
     import mlir.ir as ir
     import mlir.passmanager as pm
+
     try:
         from mlir_sf._mlir_libs._sfDialectsNanobind import sf
     except ImportError:
@@ -141,10 +143,7 @@ def run_test(name: str, mlir_text: str, timeout_s: int = 5) -> tuple[bool, str]:
             return False, f"parse failed: {e}"
 
         try:
-            pman = pm.PassManager.parse(
-                "builtin.module("
-                + SF_LOWERING_PIPELINE +
-                ")", ctx)
+            pman = pm.PassManager.parse("builtin.module(" + SF_LOWERING_PIPELINE + ")", ctx)
             pman.enable_verifier(True)
             t0 = time.time()
             pman.run(module.operation)
@@ -171,7 +170,10 @@ def main():
     _setup_mlir_path()
 
     defaults = {
-        "b": "1", "seq": "4", "nh": "12", "dk": "64",
+        "b": "1",
+        "seq": "4",
+        "nh": "12",
+        "dk": "64",
         "dim_int": "64",
         "dim": "64xf32",
         "shape": "2x64xf32",

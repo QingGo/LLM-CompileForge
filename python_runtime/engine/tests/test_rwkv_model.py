@@ -61,7 +61,9 @@ class TestRWKV7Model:
 
         pth_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
-            "models", "RWKV", "rwkv7-g1",
+            "models",
+            "RWKV",
+            "rwkv7-g1",
             "rwkv7-g1d-0.4b-20260210-ctx8192.pth",
         )
         if not os.path.isfile(pth_path):

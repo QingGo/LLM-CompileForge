@@ -30,8 +30,7 @@ class TestMlirRoundtrip:
             name="main",
             inputs=[("%x", "tensor<4xf32>")],
             outputs=[("%y", "tensor<4xf32>", False)],
-            ops=[MlirOp(name="sf.relu", dialect="sf", op_name="relu",
-                        operands=["%x"], results=["%y"])],
+            ops=[MlirOp(name="sf.relu", dialect="sf", op_name="relu", operands=["%x"], results=["%y"])],
         )
         mod = MlirModule(functions=[func])
         mlir_text = mlir_module_to_text(mod)
@@ -44,10 +43,15 @@ class TestMlirRoundtrip:
             inputs=[("%x", "tensor<?x4xf32>")],
             outputs=[("%y", "tensor<?x8xf32>", False)],
             ops=[
-                MlirOp(name="sf.weight", dialect="sf", op_name="weight",
-                       operands=["w"], results=["%w"], attributes={"name": "w"}),
-                MlirOp(name="sf.linear", dialect="sf", op_name="linear",
-                       operands=["%x", "%w"], results=["%y"]),
+                MlirOp(
+                    name="sf.weight",
+                    dialect="sf",
+                    op_name="weight",
+                    operands=["w"],
+                    results=["%w"],
+                    attributes={"name": "w"},
+                ),
+                MlirOp(name="sf.linear", dialect="sf", op_name="linear", operands=["%x", "%w"], results=["%y"]),
             ],
             weights={"w": w},
         )
@@ -61,8 +65,7 @@ class TestMlirRoundtrip:
             name="main",
             inputs=[("%x", "tensor<?x4xf32>")],
             outputs=[("%y", "tensor<?x4xf32>", False)],
-            ops=[MlirOp(name="sf.relu", dialect="sf", op_name="relu",
-                        operands=["%x"], results=["%y"])],
+            ops=[MlirOp(name="sf.relu", dialect="sf", op_name="relu", operands=["%x"], results=["%y"])],
         )
         mod = MlirModule(functions=[func])
         mlir_text = mlir_module_to_text(mod)
@@ -73,9 +76,16 @@ class TestMlirRoundtrip:
             name="main",
             inputs=[("%x", "tensor<4xf32>")],
             outputs=[("%y", "tensor<4xf32>", False)],
-            ops=[MlirOp(name="sf.softmax", dialect="sf", op_name="softmax",
-                        operands=["%x"], results=["%y"],
-                        attributes={"dim": -1})],
+            ops=[
+                MlirOp(
+                    name="sf.softmax",
+                    dialect="sf",
+                    op_name="softmax",
+                    operands=["%x"],
+                    results=["%y"],
+                    attributes={"dim": -1},
+                )
+            ],
         )
         mod = MlirModule(functions=[func])
         mlir_text = mlir_module_to_text(mod)
@@ -87,10 +97,8 @@ class TestMlirRoundtrip:
             inputs=[("%x", "tensor<4xf32>")],
             outputs=[("%z", "tensor<4xf32>", False)],
             ops=[
-                MlirOp(name="sf.relu", dialect="sf", op_name="relu",
-                       operands=["%x"], results=["%y"]),
-                MlirOp(name="sf.relu", dialect="sf", op_name="relu",
-                       operands=["%y"], results=["%z"]),
+                MlirOp(name="sf.relu", dialect="sf", op_name="relu", operands=["%x"], results=["%y"]),
+                MlirOp(name="sf.relu", dialect="sf", op_name="relu", operands=["%y"], results=["%z"]),
             ],
         )
         mod = MlirModule(functions=[func])
@@ -103,8 +111,7 @@ class TestMlirRoundtrip:
             name="main",
             inputs=[("%x", "tensor<4xf32>")],
             outputs=[("%y", "tensor<2xf32>", False), ("%z", "tensor<2xf32>", False)],
-            ops=[MlirOp(name="sf.split", dialect="sf", op_name="split",
-                        operands=["%x"], results=["%y", "%z"])],
+            ops=[MlirOp(name="sf.split", dialect="sf", op_name="split", operands=["%x"], results=["%y", "%z"])],
         )
         mod = MlirModule(functions=[func])
         mlir_text = mlir_module_to_text(mod)
@@ -126,15 +133,21 @@ class TestMlirParsing:
             inputs=[("%x", "tensor<4xf32>")],
             outputs=[("%y", "tensor<8xf32>", False)],
             ops=[
-                MlirOp(name="sf.weight", dialect="sf", op_name="weight",
-                       operands=["w"], results=["%w"], attributes={"name": "w"}),
-                MlirOp(name="sf.linear", dialect="sf", op_name="linear",
-                       operands=["%x", "%w"], results=["%y"]),
+                MlirOp(
+                    name="sf.weight",
+                    dialect="sf",
+                    op_name="weight",
+                    operands=["w"],
+                    results=["%w"],
+                    attributes={"name": "w"},
+                ),
+                MlirOp(name="sf.linear", dialect="sf", op_name="linear", operands=["%x", "%w"], results=["%y"]),
             ],
             weights={"w": w},
         )
         mod = MlirModule(functions=[func])
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             save_mlir_module_artifact(mod, d)
             parsed = load_mlir_artifact(d)
@@ -149,10 +162,8 @@ class TestMlirParsing:
             inputs=[("%x", "tensor<4xf32>")],
             outputs=[("%z", "tensor<4xf32>", False)],
             ops=[
-                MlirOp(name="sf.relu", dialect="sf", op_name="relu",
-                       operands=["%x"], results=["%y"]),
-                MlirOp(name="sf.add", dialect="sf", op_name="add",
-                       operands=["%y", "b"], results=["%z"]),
+                MlirOp(name="sf.relu", dialect="sf", op_name="relu", operands=["%x"], results=["%y"]),
+                MlirOp(name="sf.add", dialect="sf", op_name="add", operands=["%y", "b"], results=["%z"]),
             ],
         )
         mod = MlirModule(functions=[func])
@@ -166,12 +177,16 @@ class TestMlirParsing:
             name="main",
             inputs=[("%x", "tensor<4xf32>")],
             outputs=[("%y", "tensor<4xf32>", False)],
-            ops=[MlirOp(
-                name="sf.fused_rms_norm_matmul", dialect="sf",
-                op_name="fused_rms_norm_matmul",
-                operands=["%x", "w"], results=["%y"],
-                attributes={"eps": 1e-5},
-            )],
+            ops=[
+                MlirOp(
+                    name="sf.fused_rms_norm_matmul",
+                    dialect="sf",
+                    op_name="fused_rms_norm_matmul",
+                    operands=["%x", "w"],
+                    results=["%y"],
+                    attributes={"eps": 1e-5},
+                )
+            ],
         )
         mod = MlirModule(functions=[func])
         mlir_text = mlir_module_to_text(mod)
@@ -195,7 +210,7 @@ class TestMlirAttributeParsing:
         assert attrs["name"] == "hello world"
 
     def test_list_attr(self) -> None:
-        attrs = _parse_attrs('shape = [1, 2, 3]')
+        attrs = _parse_attrs("shape = [1, 2, 3]")
         assert attrs["shape"] == [1, 2, 3]
 
     def test_mixed_attrs(self) -> None:
@@ -229,10 +244,7 @@ class TestMlirAttributeParsing:
 
     def test_mixed_quoted_and_type_suffix(self) -> None:
         """P0-1+P0-2 combined: realistic MLIR attribute string."""
-        attrs = _parse_attrs(
-            '"dim" = 0 : i64, "folded" = true, '
-            '"name" = "lm_head_weight", "shape" = [1, 32, 64, 64]'
-        )
+        attrs = _parse_attrs('"dim" = 0 : i64, "folded" = true, "name" = "lm_head_weight", "shape" = [1, 32, 64, 64]')
         assert attrs["dim"] == 0
         assert attrs["folded"] is True
         assert attrs["name"] == "lm_head_weight"
@@ -252,22 +264,32 @@ class TestWeightLoadTied:
             name="main",
             inputs=[("%x", "tensor<4xf32>")],
             outputs=[("%o", "tensor<4xf32>", False)],
-            ops=[MlirOp(name="sf.linear", dialect="sf", op_name="linear",
-                         operands=["%x", "w"], results=["%o"], attributes={})],
+            ops=[
+                MlirOp(
+                    name="sf.linear",
+                    dialect="sf",
+                    op_name="linear",
+                    operands=["%x", "w"],
+                    results=["%o"],
+                    attributes={},
+                )
+            ],
             weights={"model_embed_tokens_weight": w},
         )
         # Use backward compat: no classification → all weights go to weights.pth
-        mod = MlirModule(functions=[f], metadata={
-            "weight_classification": {
-                "main": {"params": ["model_embed_tokens_weight", "lm_head_weight"],
-                         "constants": []},
+        mod = MlirModule(
+            functions=[f],
+            metadata={
+                "weight_classification": {
+                    "main": {"params": ["model_embed_tokens_weight", "lm_head_weight"], "constants": []},
+                },
+                "weight_source": {
+                    "path": "/nonexistent.safetensors",
+                    "format": "safetensors",
+                    "tied_weights": {"lm_head_weight": "model_embed_tokens_weight"},
+                },
             },
-            "weight_source": {
-                "path": "/nonexistent.safetensors",
-                "format": "safetensors",
-                "tied_weights": {"lm_head_weight": "model_embed_tokens_weight"},
-            },
-        })
+        )
 
         with tempfile.TemporaryDirectory() as d:
             save_mlir_module_artifact(mod, d)
@@ -289,11 +311,14 @@ class TestSynthConstClassification:
 
         class FakeSpec:
             kind = type("k", (), {"value": -1})()  # not a weight kind
+
         class FakeSig:
             user_inputs = ["input_ids"]
             input_specs = [FakeSpec()]
+
         class FakeConst:
             pass
+
         class FakeProgram:
             graph_module = type("g", (), {"graph": type("g2", (), {"nodes": []})()})()
             state_dict = {}
@@ -317,17 +342,20 @@ class TestCandidateNames:
 
     def test_simple_name_unchanged(self) -> None:
         from compiler.artifact import _candidate_names
+
         names = _candidate_names("model_embed_tokens_weight")
         assert "model_embed_tokens_weight" in names
 
     def test_qwen_prefix_stripped(self) -> None:
         """model_language_model_embed_tokens → model_embed_tokens via suffix."""
         from compiler.artifact import _candidate_names
+
         names = _candidate_names("model_language_model_embed_tokens_weight")
         assert "model_embed_tokens_weight" in names
 
     def test_full_suffix_chain(self) -> None:
         from compiler.artifact import _candidate_names
+
         names = _candidate_names("a_b_c_d_e")
         assert "a_b_c_d_e" in names
         assert "b_c_d_e" in names
@@ -343,36 +371,74 @@ class TestMultiFunctionRoundtrip:
     def test_roundtrip_preserves_function_outputs(self) -> None:
         from compiler.artifact import MlirFunction, MlirModule, MlirOp, _parse_mlir_text, mlir_module_to_text
 
-        mod = MlirModule(functions=[
-            MlirFunction(name="f0", inputs=[("%x", "tensor<2x4xf32>")],
-                         outputs=[("%mid", "tensor<2x4xf32>", False)],
-                         ops=[MlirOp(name="sf.add", dialect="sf", op_name="add",
-                                     operands=["%x", "%x"], results=["%mid"],
-                                     output_types=["tensor<2x4xf32>"], attributes={})]),
-            MlirFunction(name="f1", inputs=[("%mid", "tensor<2x4xf32>")],
-                         outputs=[("%out", "tensor<2x4xf32>", False)],
-                         ops=[MlirOp(name="sf.mul", dialect="sf", op_name="mul",
-                                     operands=["%mid", "%mid"], results=["%out"],
-                                     output_types=["tensor<2x4xf32>"], attributes={})]),
-        ])
+        mod = MlirModule(
+            functions=[
+                MlirFunction(
+                    name="f0",
+                    inputs=[("%x", "tensor<2x4xf32>")],
+                    outputs=[("%mid", "tensor<2x4xf32>", False)],
+                    ops=[
+                        MlirOp(
+                            name="sf.add",
+                            dialect="sf",
+                            op_name="add",
+                            operands=["%x", "%x"],
+                            results=["%mid"],
+                            output_types=["tensor<2x4xf32>"],
+                            attributes={},
+                        )
+                    ],
+                ),
+                MlirFunction(
+                    name="f1",
+                    inputs=[("%mid", "tensor<2x4xf32>")],
+                    outputs=[("%out", "tensor<2x4xf32>", False)],
+                    ops=[
+                        MlirOp(
+                            name="sf.mul",
+                            dialect="sf",
+                            op_name="mul",
+                            operands=["%mid", "%mid"],
+                            results=["%out"],
+                            output_types=["tensor<2x4xf32>"],
+                            attributes={},
+                        )
+                    ],
+                ),
+            ]
+        )
         text = mlir_module_to_text(mod)
         reparsed = _parse_mlir_text(text)
         assert len(reparsed.functions) == 2
         for orig, parsed in zip(mod.functions, reparsed.functions, strict=True):
-            assert len(parsed.outputs) == len(orig.outputs), \
+            assert len(parsed.outputs) == len(orig.outputs), (
                 f"{parsed.name}: expected {len(orig.outputs)} outputs, got {len(parsed.outputs)}"
+            )
 
     @pytest.mark.timeout(5)
     def test_roundtrip_preserves_function_inputs(self) -> None:
         from compiler.artifact import MlirFunction, MlirModule, MlirOp, _parse_mlir_text, mlir_module_to_text
 
-        mod = MlirModule(functions=[
-            MlirFunction(name="f0", inputs=[("%in", "tensor<1x64xf32>")],
-                         outputs=[("%out", "tensor<1x64xf32>", False)],
-                         ops=[MlirOp(name="sf.relu", dialect="sf", op_name="relu",
-                                     operands=["%in"], results=["%out"],
-                                     output_types=["tensor<1x64xf32>"], attributes={})]),
-        ])
+        mod = MlirModule(
+            functions=[
+                MlirFunction(
+                    name="f0",
+                    inputs=[("%in", "tensor<1x64xf32>")],
+                    outputs=[("%out", "tensor<1x64xf32>", False)],
+                    ops=[
+                        MlirOp(
+                            name="sf.relu",
+                            dialect="sf",
+                            op_name="relu",
+                            operands=["%in"],
+                            results=["%out"],
+                            output_types=["tensor<1x64xf32>"],
+                            attributes={},
+                        )
+                    ],
+                ),
+            ]
+        )
         text = mlir_module_to_text(mod)
         reparsed = _parse_mlir_text(text)
         assert len(reparsed.functions) == 1

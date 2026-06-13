@@ -44,13 +44,15 @@ class EAGLEProposer(SpeculativeProposer):
         self._vocab_size = vocab_size
         self.num_spec_tokens = num_spec_tokens
 
-        self.eagle_layers = nn.ModuleList([
-            nn.Sequential(
-                nn.LayerNorm(hidden_size),
-                nn.Linear(hidden_size, vocab_size, bias=False),
-            )
-            for _ in range(num_spec_tokens)
-        ])
+        self.eagle_layers = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.LayerNorm(hidden_size),
+                    nn.Linear(hidden_size, vocab_size, bias=False),
+                )
+                for _ in range(num_spec_tokens)
+            ]
+        )
 
     @property
     def vocab_size(self) -> int:

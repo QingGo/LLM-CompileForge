@@ -22,6 +22,7 @@ DEBUG: bool = False
 
 def main() -> None:
     from compiler.utils.logging import init_logging
+
     init_logging()
     global DEBUG
     if "--debug" in sys.argv:
@@ -92,12 +93,15 @@ def main() -> None:
             print(f"   Restored exec_plan_data from metadata.json ({len(ed)} entries)")
 
     # Validate exec_plan against ExecutionPlan proto if available
+    plan_bytes_for_abi: bytes | None = None
     if metadata.get("exec_plan_proto"):
         import base64
+
         from gen.proto.python import sfa_abi_pb2
-        plan_bytes = base64.b64decode(metadata["exec_plan_proto"])
+
+        plan_bytes_for_abi = base64.b64decode(metadata["exec_plan_proto"])
         plan = sfa_abi_pb2.ExecutionPlan()
-        plan.ParseFromString(plan_bytes)
+        plan.ParseFromString(plan_bytes_for_abi)
         print(f"   ExecutionPlan proto: {len(plan.global_inputs)} global inputs, {len(plan.steps)} steps")
 
     # Restore chain_order from metadata.json if missing
@@ -115,6 +119,7 @@ def main() -> None:
     const_pth = compiled_path / "constants.pth"
     if const_pth.exists():
         import torch
+
         const_state = torch.load(str(const_pth), weights_only=True)
         restored = 0
         for func in module.functions:
@@ -201,32 +206,6 @@ def main() -> None:
     if "weight_source" not in module.metadata:
         module.metadata["weight_source"] = ws
 
-    _orig_bin_path = compiled_path / "constants.bin"
-    if _orig_bin_path.exists():
-        try:
-            _existing = _orig_bin_path.read_bytes()
-            _sfcf_off = _existing.find(b"SFCF")
-            if _sfcf_off >= 0:
-                from compiler.sfcf_parser import parse_compute_graph, parse_sfcf_blob
-                _nm, _const, _gpos, _ver = parse_sfcf_blob(_existing[_sfcf_off:])
-                _existing_graph, _ = parse_compute_graph(_existing[_sfcf_off:], _gpos, _ver)
-                for _fi, _ef in enumerate(_existing_graph["functions"]):
-                    if _fi < len(module.functions):
-                        _mf = module.functions[_fi]
-                        _eo = _ef["outputs"]
-                        if len(_eo) == len(_mf.outputs):
-                            _mf.outputs = [
-                                (m[0], m[1], eo.get("consumed_internally", False))
-                                for i, (m, eo) in enumerate(
-                                    zip(_mf.outputs, _eo, strict=False)
-                                )
-                            ]
-        except Exception as _e:
-            if DEBUG:
-                import traceback as _tb
-                _tb.print_exc()
-            pass
-
     print("[3/5] Generating constants.bin (weights only, no compute graph) ...")
     name_mapping = _build_name_mapping(module)
     if name_mapping:
@@ -253,11 +232,11 @@ def main() -> None:
     print("[4/5] Converting MlirModule → ir.Module → sf→linalg lowering ...")
     _setup_mlir_path()
     import mlir.ir as ir
-    import mlir.passmanager as pm
 
     ctx_lower = ir.Context()
     try:
         from mlir_sf._mlir_libs._sfDialectsNanobind import sf
+
         sf.register_dialects(ctx_lower._CAPIPtr, load=True)
     except ImportError as e:
         print("   ERROR: sf dialect Python bindings not available.")
@@ -272,6 +251,7 @@ def main() -> None:
     print("   Running C++ lowering...")
     from compiler.backend.fixups import _walk_and_fix_tensor_constants
     from compiler.pipeline.lowering import run_sf_lowering_pipeline
+
     try:
         _walk_and_fix_tensor_constants(ir_mod)
         run_sf_lowering_pipeline(ir_mod, ctx_lower)
@@ -279,15 +259,14 @@ def main() -> None:
     except Exception:
         _debug_path = Path(compiled_path) / "debug_lowering_failure.mlir"
         try:
-            _debug_text = ir_mod.operation.get_asm(
-                print_generic_op_form=True, assume_verified=False)
+            _debug_text = ir_mod.operation.get_asm(print_generic_op_form=True, assume_verified=False)
             _debug_path.write_text(_debug_text)
         except Exception:
             import shutil as _shutil
+
             _shutil.copy(str(mlir_path), _debug_path)
         print(f"   Saved debug IR: {_debug_path}")
-        _save_failure_context("4", "lowering", compiled_path,
-                               copy_source=_debug_path)
+        _save_failure_context("4", "lowering", compiled_path, copy_source=_debug_path)
         raise
 
     lowered_text = ir_mod.operation.get_asm(print_generic_op_form=False)
@@ -305,6 +284,7 @@ def main() -> None:
     print("   C++ lowering succeeded")
 
     from scripts.checks.verify_weight_consistency import verify_weight_promotion_order
+
     try:
         weight_errors = verify_weight_promotion_order(module, lowered_text)
     except Exception as e:
@@ -326,7 +306,7 @@ def main() -> None:
     print(f"   Saved readable lowered MLIR to {readable_path}")
 
     # Fix tensor.empty ops with dynamic sizes
-    _lines = lowered_text.split('\n')
+    _lines = lowered_text.split("\n")
     _const_vals = {}
     for _line in _lines:
         _cm = _re.match(
@@ -355,11 +335,11 @@ def main() -> None:
         if not _me:
             continue
         _type = _me.group(3)
-        _shape_part = _type.rsplit('x', 1)[0]
-        if '?' not in _shape_part:
+        _shape_part = _type.rsplit("x", 1)[0]
+        if "?" not in _shape_part:
             continue
-        _dims = [d.strip() for d in _shape_part.split('x') if d.strip()]
-        _dyn_pos = [i for i, d in enumerate(_dims) if '?' in d]
+        _dims = [d.strip() for d in _shape_part.split("x") if d.strip()]
+        _dyn_pos = [i for i, d in enumerate(_dims) if "?" in d]
         _sizes = {}
         for _dl, _di, _dv in reversed(_dim_records):
             if _dl < _li and _di in _dyn_pos and _di not in _sizes:
@@ -370,17 +350,16 @@ def main() -> None:
             _prefix = _me.group(1)
             _sorted = [_sizes[p] for p in sorted(_sizes.keys())]
             _lines[_li] = (
-                f'{_prefix}{", ".join(_sorted)})'
-                f' : ({", ".join(["index"] * len(_dyn_pos))})'
-                f' -> tensor<{_type}>'
+                f"{_prefix}{', '.join(_sorted)}) : ({', '.join(['index'] * len(_dyn_pos))}) -> tensor<{_type}>"
             )
             _changes += 1
     if _changes:
-        lowered_text = '\n'.join(_lines)
+        lowered_text = "\n".join(_lines)
         lowered_path.write_text(lowered_text)
         print(f"   Fixed {_changes} tensor.empty ops with dynamic sizes")
 
     from compiler.backend.fixups import _fixup_arith_tensor_constants_mlir
+
     _before = lowered_text
     lowered_text = _fixup_arith_tensor_constants_mlir(lowered_text)
     if lowered_text != _before:
@@ -394,8 +373,7 @@ def main() -> None:
         print("   Verification passed")
     except ValueError as e:
         print(f"   VERIFICATION FAILED:\n{e}")
-        _save_failure_context("4v", "IR verification", compiled_path,
-                               ir_text=lowered_text)
+        _save_failure_context("4v", "IR verification", compiled_path, ir_text=lowered_text)
         print("   (continuing anyway for debugging purposes)")
 
     # Step 5: Lower LLVM dialect → LLVM IR (.ll) + compile to .dylib
@@ -409,8 +387,7 @@ def main() -> None:
         try:
             lower_linalg_to_llvm_ir(ir_mod, skip_first_canonicalize=True)
         except Exception:
-            _save_failure_context("5", "LLVM lowering", compiled_path,
-                                   copy_source=str(lowered_path))
+            _save_failure_context("5", "LLVM lowering", compiled_path, copy_source=str(lowered_path))
             raise
     print("   LLVM dialect lowering succeeded")
 
@@ -437,11 +414,7 @@ def main() -> None:
                 "name": func.name,
                 "inputs": func.inputs,
                 "outputs": func.outputs,
-                "weight_ops": [
-                    {"name": op.attributes.get("name", "")}
-                    for op in func.ops
-                    if op.op_name == "weight"
-                ],
+                "weight_ops": [{"name": op.attributes.get("name", "")} for op in func.ops if op.op_name == "weight"],
             }
             for func in module.functions
         ],
@@ -451,17 +424,19 @@ def main() -> None:
     lowered_output_types = sfa_abi.parse_lowered_output_types(str(lowered_path))
     lowered_weight_names = sfa_abi.parse_lowered_weight_names(str(lowered_path))
     func_metas = sfa_abi.merge_with_semantics(
-        sigs, pre_lowering, lowered_arg_types, lowered_output_types,
+        sigs,
+        pre_lowering,
+        lowered_arg_types,
+        lowered_output_types,
         lowered_weight_names=lowered_weight_names,
+        execution_plan_bytes=plan_bytes_for_abi,
     )
     print(f"   Built {len(func_metas)} SfaFuncMeta entries")
 
     sfa_abi_bytes = sfa_abi.serialize_abi(func_metas)
     print(f"   SFA ABI: {len(sfa_abi_bytes)} bytes")
 
-    sfa_weights_bytes = sfa_weights.build_weight_data(
-        name_mapping or {}, sfa_constants
-    )
+    sfa_weights_bytes = sfa_weights.build_weight_data(name_mapping or {}, sfa_constants)
     print(f"   SFA weights: {len(sfa_weights_bytes)} bytes")
 
     _sfa_relink_dylib(
@@ -481,12 +456,14 @@ def _strip_main_function(text):
 
 def _strip_dialect_attrs(lowered_text):
     lowered_text = _re.sub(
-        r'\s*sf\.\w+\s*=\s*\[[^\]]*\]\s*;\s*',
-        ' ', lowered_text,
+        r"\s*sf\.\w+\s*=\s*\[[^\]]*\]\s*;\s*",
+        " ",
+        lowered_text,
     )
     lowered_text = _re.sub(
-        r'\s*attributes\s*\{\s*\}',
-        '', lowered_text,
+        r"\s*attributes\s*\{\s*\}",
+        "",
+        lowered_text,
     )
     return lowered_text
 
@@ -539,7 +516,9 @@ def _fixup_main_call_operands(ir_mod):
         call_operand_count = len(call_op.operation.operands)
 
         if call_operand_count != callee_arg_count:
-            print(f"   [fixup] {callee_name}: call={call_operand_count} operands, callee={callee_arg_count} args, main={len(main_args)} args")
+            print(
+                f"   [fixup] {callee_name}: call={call_operand_count} operands, callee={callee_arg_count} args, main={len(main_args)} args"
+            )
 
         if call_operand_count >= callee_arg_count:
             return

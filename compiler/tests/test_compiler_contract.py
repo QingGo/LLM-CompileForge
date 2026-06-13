@@ -31,13 +31,9 @@ from scripts._cos import cosine_similarity
 def _hf_reference() -> dict[str, Any]:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    model = AutoModelForCausalLM.from_pretrained(
-        "facebook/opt-125m", local_files_only=True
-    )
+    model = AutoModelForCausalLM.from_pretrained("facebook/opt-125m", local_files_only=True)
     model.eval()
-    tokenizer = AutoTokenizer.from_pretrained(
-        "facebook/opt-125m", local_files_only=True
-    )
+    tokenizer = AutoTokenizer.from_pretrained("facebook/opt-125m", local_files_only=True)
     input_ids = [2, 32826, 85, 4129]  # same as forward_check
     with torch.no_grad():
         outputs = model(torch.tensor([input_ids]))
@@ -52,7 +48,6 @@ def _hf_reference() -> dict[str, Any]:
 @pytest.mark.integration
 @pytest.mark.timeout(120)
 class TestCompilerContract:
-
     def test_model_mlir_forward_matches_hf(self, _hf_reference: dict[str, Any]) -> None:
         """model.mlir executor output must match HF within cos >= 0.999.
 

@@ -43,6 +43,7 @@ def _has_compiled_model(name: str) -> bool:
 def _load_hf_reference(model_name: str, input_ids: torch.Tensor) -> torch.Tensor:
     """Load reference model from HuggingFace and return logits."""
     from transformers import AutoModelForCausalLM
+
     model_id = {
         "opt_125m": "facebook/opt-125m",
         "tiny_llama": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
@@ -81,12 +82,17 @@ def _run_rust_forward(model_name: str) -> torch.Tensor | None:
     next(MODEL_DIRS[model_name].glob("*.dylib"))
     result = subprocess.run(
         [
-            "cargo", "test", "--manifest-path",
+            "cargo",
+            "test",
+            "--manifest-path",
             str(Path(__file__).resolve().parent.parent / "rust/Cargo.toml"),
-            "--", "test_opt_125m_forward_runs",
+            "--",
+            "test_opt_125m_forward_runs",
             "--nocapture",
         ],
-        capture_output=True, text=True, timeout=120,
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     if result.returncode != 0:
         _log.warning("Rust forward test failed:\n%s", result.stderr)
@@ -105,9 +111,12 @@ def _run_rust_forward(model_name: str) -> torch.Tensor | None:
 class TestE2EPythonCorrectness:
     """Python executor path: compiler output vs HuggingFace reference."""
 
-    @pytest.mark.parametrize("model_name,input_ids", [
-        ("opt_125m", torch.tensor([[1, 2, 3, 4]])),
-    ])
+    @pytest.mark.parametrize(
+        "model_name,input_ids",
+        [
+            ("opt_125m", torch.tensor([[1, 2, 3, 4]])),
+        ],
+    )
     def test_python_executor_vs_hf(self, model_name: str, input_ids: torch.Tensor):
         if not _has_compiled_model(model_name):
             pytest.skip(f"Compiled model {model_name} not found at {MODEL_DIRS[model_name]}")
@@ -115,9 +124,7 @@ class TestE2EPythonCorrectness:
         compiled_logits = _run_python_executor(model_name, input_ids)
         cos = cosine_similarity(hf_logits, compiled_logits)
         _log.info("  Cosine similarity: %.8f", cos)
-        assert cos > 0.999, (
-            f"Python executor vs HF cosine={cos:.6f} < 0.999 for {model_name}"
-        )
+        assert cos > 0.999, f"Python executor vs HF cosine={cos:.6f} < 0.999 for {model_name}"
 
 
 @pytest.mark.integration
@@ -128,11 +135,15 @@ class TestE2ERustCorrectness:
     threshold is set to catch regressions below the current known value.
     """
 
-    @pytest.mark.parametrize("model_name", [
-        pytest.param("opt_125m", marks=pytest.mark.skip(
-            reason="Issue #45: Rust forward precision is cos=0.525, needs debugging"
-        )),
-    ])
+    @pytest.mark.parametrize(
+        "model_name",
+        [
+            pytest.param(
+                "opt_125m",
+                marks=pytest.mark.skip(reason="Issue #45: Rust forward precision is cos=0.525, needs debugging"),
+            ),
+        ],
+    )
     def test_rust_forward_runs_without_crash(self, model_name: str):
         """Verify Rust executor loads and runs without SIGSEGV."""
         if not _has_compiled_model(model_name):
@@ -140,12 +151,13 @@ class TestE2ERustCorrectness:
         result = _run_rust_forward(model_name)
         assert result is not None, "Rust forward test must pass (no crash)"
 
-    @pytest.mark.parametrize("model_name,input_ids", [
-        ("opt_125m", torch.tensor([[1, 2, 3, 4]])),
-    ])
-    def test_rust_executor_cosine_above_threshold(
-        self, model_name: str, input_ids: torch.Tensor
-    ):
+    @pytest.mark.parametrize(
+        "model_name,input_ids",
+        [
+            ("opt_125m", torch.tensor([[1, 2, 3, 4]])),
+        ],
+    )
+    def test_rust_executor_cosine_above_threshold(self, model_name: str, input_ids: torch.Tensor):
         """Check Rust executor output is not completely random.
 
         Current baseline: cos ≈ 0.525. This test prevents regression
@@ -162,8 +174,7 @@ class TestE2ERustCorrectness:
         cos = cosine_similarity(python_logits, rust_output)
         _log.info("  Rust vs Python cosine similarity: %.6f", cos)
         assert cos > 0.1, (
-            f"Rust vs Python cosine={cos:.6f} < 0.1 — output is near-random. "
-            f"Issue #45 tracked at cos=0.525."
+            f"Rust vs Python cosine={cos:.6f} < 0.1 — output is near-random. Issue #45 tracked at cos=0.525."
         )
 
 

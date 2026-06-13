@@ -71,6 +71,7 @@ class TestLLMEngineGenerate:
     @staticmethod
     def _tokenizer():
         from tests.helpers import SimpleTokenizer
+
         return SimpleTokenizer()
 
     def test_generate_with_token_ids(self):
@@ -155,6 +156,7 @@ class TestLLMEngineTokenizer:
     @staticmethod
     def _tokenizer():
         from tests.helpers import SimpleTokenizer
+
         return SimpleTokenizer()
 
     def test_set_tokenizer(self):

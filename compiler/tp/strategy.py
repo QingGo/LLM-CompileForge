@@ -93,7 +93,7 @@ def search_tp_strategy(
     total_params = count_parameters(model)
     fp16_bytes = total_params * 2  # FP16 = 2 bytes per param
 
-    needed_memory_gb = fp16_bytes / (1024 ** 3)
+    needed_memory_gb = fp16_bytes / (1024**3)
 
     if needed_memory_gb <= available_memory_gb:
         return AutoTPResult(
@@ -107,7 +107,7 @@ def search_tp_strategy(
 
     for tp in range(2, max_tp_size + 1, 2):
         per_rank_params = total_params // tp
-        per_rank_mem_gb = (per_rank_params * 2) / (1024 ** 3)
+        per_rank_mem_gb = (per_rank_params * 2) / (1024**3)
 
         comm_overhead = _estimate_comm_overhead(tp, total_params, bandwidth_gb_s)
 
@@ -127,16 +127,12 @@ def search_tp_strategy(
         total_params=total_params,
         per_rank_params=total_params // min_tp,
         memory_bytes_per_rank=(total_params // min_tp) * 2,
-        communication_overhead_pct=_estimate_comm_overhead(
-            min_tp, total_params, bandwidth_gb_s
-        ),
-        feasible=(total_params // min_tp) * 2 / (1024 ** 3) <= available_memory_gb,
+        communication_overhead_pct=_estimate_comm_overhead(min_tp, total_params, bandwidth_gb_s),
+        feasible=(total_params // min_tp) * 2 / (1024**3) <= available_memory_gb,
     )
 
 
-def _estimate_comm_overhead(
-    tp_size: int, total_params: int, bandwidth_gb_s: float
-) -> float:
+def _estimate_comm_overhead(tp_size: int, total_params: int, bandwidth_gb_s: float) -> float:
     """Estimate communication overhead as percentage of total compute.
 
     Simplified heuristic: communication scales with total_params / tp_size

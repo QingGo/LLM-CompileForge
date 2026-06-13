@@ -34,6 +34,7 @@ class _SimpleTokenizer:
     def decode(self, tokens: list[int]) -> str:
         return " ".join(str(t) for t in tokens)
 
+
 # ── Deterministic test model ───────────────────────────────
 
 TOKEN_42 = 42
@@ -52,10 +53,8 @@ def _make_deterministic_module() -> MlirModule:
         inputs=[("%input_ids", "tensor<?xi64>")],
         outputs=[("%logits", f"tensor<?x{VOCAB_SIZE}xf32>", False)],
         ops=[
-            MlirOp(name="sf.constant", dialect="sf", op_name="constant",
-                   operands=["embed"], results=["%1"]),
-            MlirOp(name="sf.matmul", dialect="sf", op_name="matmul",
-                   operands=["%1", "w"], results=["%logits"]),
+            MlirOp(name="sf.constant", dialect="sf", op_name="constant", operands=["embed"], results=["%1"]),
+            MlirOp(name="sf.matmul", dialect="sf", op_name="matmul", operands=["%1", "w"], results=["%logits"]),
         ],
         weights={"embed": embed, "w": w},
     )

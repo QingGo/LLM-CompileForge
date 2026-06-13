@@ -24,12 +24,11 @@ def dtype_rule(op_name: str) -> Callable[[_DtypeFn], _DtypeFn]:
     def decorator(fn: _DtypeFn) -> _DtypeFn:
         DTYPE_REGISTRY[op_name] = fn
         return fn
+
     return decorator
 
 
-def resolve_dtype(
-    op_name: str, input_elts: list[str], kwargs: dict[str, Any]
-) -> str | None:
+def resolve_dtype(op_name: str, input_elts: list[str], kwargs: dict[str, Any]) -> str | None:
     fn = DTYPE_REGISTRY.get(op_name)
     if fn is None:
         return None
@@ -40,7 +39,7 @@ def _replace_element_type(type_str: str, new_elt: str) -> str:
     if not type_str.startswith("tensor<"):
         return type_str
     # strip tensor<...> then replace the element type (last x-segment)
-    inner = type_str[len("tensor<"):-1]
+    inner = type_str[len("tensor<") : -1]
     parts = inner.split("x")
     parts[-1] = new_elt
     return f"tensor<{'x'.join(parts)}>"
@@ -68,9 +67,7 @@ _DTYPE_MAP: dict[torch.dtype, str] = {
 }
 
 
-def _resolve_dtype(
-    kwargs: dict[str, Any], input_elts: list[str]
-) -> str | None:
+def _resolve_dtype(kwargs: dict[str, Any], input_elts: list[str]) -> str | None:
     """Look up dtype from kwargs using torch.dtype keys in _DTYPE_MAP.
 
     Supports both torch.dtype values (torch.int64 → "i64") and integer
@@ -81,11 +78,22 @@ def _resolve_dtype(
         return None
     if isinstance(dtype_val, int):
         code_to_dtype = {
-            0: torch.uint8, 1: torch.int8, 2: torch.short, 3: torch.int64,
-            4: torch.int32, 5: torch.int64, 6: torch.float32, 7: torch.float64,
-            8: torch.complex64, 9: torch.complex128, 11: torch.bool,
-            12: torch.qint8, 13: torch.quint8, 14: torch.qint32,
-            15: torch.bfloat16, 16: torch.float16,
+            0: torch.uint8,
+            1: torch.int8,
+            2: torch.short,
+            3: torch.int64,
+            4: torch.int32,
+            5: torch.int64,
+            6: torch.float32,
+            7: torch.float64,
+            8: torch.complex64,
+            9: torch.complex128,
+            11: torch.bool,
+            12: torch.qint8,
+            13: torch.quint8,
+            14: torch.qint32,
+            15: torch.bfloat16,
+            16: torch.float16,
         }
         dtype_val = code_to_dtype.get(dtype_val)
         if dtype_val is None:
@@ -94,9 +102,7 @@ def _resolve_dtype(
 
 
 @dtype_rule("ones_like")
-def _dtype_ones_like(
-    input_elts: list[str], kwargs: dict[str, Any]
-) -> str | None:
+def _dtype_ones_like(input_elts: list[str], kwargs: dict[str, Any]) -> str | None:
     dtype_val = _resolve_dtype(kwargs, input_elts)
     if dtype_val is not None:
         return dtype_val
@@ -107,9 +113,7 @@ def _dtype_ones_like(
 
 
 @dtype_rule("cumsum")
-def _dtype_cumsum(
-    input_elts: list[str], kwargs: dict[str, Any]
-) -> str | None:
+def _dtype_cumsum(input_elts: list[str], kwargs: dict[str, Any]) -> str | None:
     dtype_val = _resolve_dtype(kwargs, input_elts)
     if dtype_val is not None:
         return dtype_val
@@ -124,15 +128,12 @@ def _dtype_cumsum(
 
 
 @dtype_rule("arange")
-def _dtype_arange(
-    input_elts: list[str], kwargs: dict[str, Any]
-) -> str | None:
+def _dtype_arange(input_elts: list[str], kwargs: dict[str, Any]) -> str | None:
     dtype_val = _resolve_dtype(kwargs, input_elts)
     if dtype_val is not None:
         return dtype_val
     # sf.arange always produces i64 (ODS constraint: Sf_Int64Tensor).
     return "i64"
-
 
 
 def _symint_to_name(val: Any) -> str | None:
@@ -196,7 +197,7 @@ def _parse_mlir_type_to_shape(type_str: str) -> tuple[tuple[int | None, ...], st
     """Parse MLIR type string like 'tensor<1x64xf32>' → ((1,64), 'f32')."""
     if not type_str.startswith("tensor<"):
         return ((1,), "f32")
-    inner = type_str[len("tensor<"):-1]  # remove tensor<...>
+    inner = type_str[len("tensor<") : -1]  # remove tensor<...>
     parts = inner.split("x")
     elt = parts[-1]
     shape: list[int | None] = []
@@ -231,7 +232,8 @@ def _resolve_op_types(
         if resolved is None:
             candidates = sorted(
                 (n for n in ssa_map if inp_name.startswith(f"%{n}")),
-                key=len, reverse=True,
+                key=len,
+                reverse=True,
             )
             resolved = candidates[0] if candidates else inp_name
 
@@ -247,8 +249,7 @@ def _resolve_op_types(
             e = _fake_to_shape_tuple(t)[1]
         else:
             warnings.warn(
-                f"Shape not found for operand {inp_name!r} in op {hal_op!r}, "
-                f"using fallback shape (2, 64)",
+                f"Shape not found for operand {inp_name!r} in op {hal_op!r}, using fallback shape (2, 64)",
                 stacklevel=2,
             )
             s = (2, 64)
@@ -261,12 +262,16 @@ def _resolve_op_types(
     # (e.g. "float32", "int64") while type checks and downstream ops
     # expect MLIR format (e.g. "f32", "i64").
     _pytorch_to_mlir = {
-        "float32": "f32", "float": "f32",
-        "float16": "f16", "half": "f16",
+        "float32": "f32",
+        "float": "f32",
+        "float16": "f16",
+        "half": "f16",
         "bfloat16": "bf16",
-        "float64": "f64", "double": "f64",
+        "float64": "f64",
+        "double": "f64",
         "int32": "i32",
-        "int64": "i64", "long": "i64",
+        "int64": "i64",
+        "long": "i64",
         "int8": "i8",
         "uint8": "ui8",
         "bool": "i1",
@@ -290,14 +295,12 @@ def _resolve_op_types(
             if n.startswith("_const_"):
                 if n in weights:
                     w = weights[n]
-                    extra = f" (const value={w.item() if w.numel()==1 else 'tensor'}, dtype={w.dtype})"
+                    extra = f" (const value={w.item() if w.numel() == 1 else 'tensor'}, dtype={w.dtype})"
                 else:
                     extra = " (const, NOT in weights)"
             elif n.startswith("%"):
                 extra = f" (SSA: {n})"
-            lines.append(
-                f"  operand[{mi}] type={t1!r} differs from operand[0] type={t0!r}{extra}"
-            )
+            lines.append(f"  operand[{mi}] type={t1!r} differs from operand[0] type={t0!r}{extra}")
         return "\n".join(lines)
 
     # Binary ops: both operands must be same type.
@@ -326,15 +329,19 @@ def _resolve_op_types(
                     if promoted:
                         _log.debug(
                             "Type promotion for '%s': %s i64→%s (matches %s operand %s)",
-                            hal_op, n, input_elts[i],
+                            hal_op,
+                            n,
+                            input_elts[i],
                             "lhs" if i > 0 else "rhs",
                             input_names[0],
                         )
                 else:
                     # Non-const operand — can't promote, must fail
-                    mismatches = [(i, input_elts[0], input_elts[i])
-                                  for i in range(1, len(input_elts))
-                                  if input_elts[0] != input_elts[i]]
+                    mismatches = [
+                        (i, input_elts[0], input_elts[i])
+                        for i in range(1, len(input_elts))
+                        if input_elts[0] != input_elts[i]
+                    ]
                     if mismatches:
                         raise TypeError(_type_mismatch_msg(hal_op, mismatches))
                     break
@@ -342,16 +349,29 @@ def _resolve_op_types(
     # Comparison ops: both operands must be same type
     cmp_ops = {"le", "ge", "gt", "lt", "eq", "ne"}
     if hal_op in cmp_ops and len(input_elts) >= 2:
-        mismatches = [(i, input_elts[0], input_elts[i])
-                      for i in range(1, len(input_elts))
-                      if input_elts[0] != input_elts[i]]
+        mismatches = [
+            (i, input_elts[0], input_elts[i]) for i in range(1, len(input_elts)) if input_elts[0] != input_elts[i]
+        ]
         if mismatches:
             raise TypeError(_type_mismatch_msg(hal_op, mismatches))
 
     # Float-required ops: fail fast if any operand is not float
-    float_required_ops = {"linear", "layer_norm", "rms_norm", "softmax",
-                          "relu", "gelu", "silu", "sigmoid", "tanh", "exp",
-                          "neg", "matmul", "mean", "cumsum"}
+    float_required_ops = {
+        "linear",
+        "layer_norm",
+        "rms_norm",
+        "softmax",
+        "relu",
+        "gelu",
+        "silu",
+        "sigmoid",
+        "tanh",
+        "exp",
+        "neg",
+        "matmul",
+        "mean",
+        "cumsum",
+    }
     if hal_op in float_required_ops:
         for i in range(len(input_elts)):
             if input_elts[i] not in ("f32", "f16", "bf16", "f64"):
@@ -368,17 +388,17 @@ def _resolve_op_types(
     if hal_op == "index":
         for i in range(1, len(input_elts)):
             if input_elts[i] not in ("i64", "i32", "int64", "int32", "f32", "f64"):
-                raise TypeError(
-                    f"sf.index index operand {i} must be integer or float type, "
-                    f"got type={input_elts[i]}"
-                )
+                raise TypeError(f"sf.index index operand {i} must be integer or float type, got type={input_elts[i]}")
 
     try:
         out = infer_output_shape(hal_op, input_shapes, input_elts, **kwargs)
     except (ValueError, TypeError, NotImplementedError) as e:
         _log.warning(
             "shape inference fallback for op=%s shapes=%s elts=%s: %s",
-            hal_op, input_shapes, input_elts, e,
+            hal_op,
+            input_shapes,
+            input_elts,
+            e,
         )
         if input_elts:
             out = [(input_shapes[0], input_elts[0])]
@@ -405,10 +425,29 @@ def _map_aten_op(target: Any) -> str | None:
         return _ATEN_TO_HAL[target_str]
     if "." in target_str:
         parts = target_str.rsplit(".", 1)
-        overload_candidates = {"default", "int", "float", "str", "bool", "complex",
-                               "Scalar", "ScalarList", "Tensor", "dimname", "layout",
-                               "device", "memory_format", "generator", "dim", "start",
-                               "other", "dtype", "dtype_layout", "values", "copy"}
+        overload_candidates = {
+            "default",
+            "int",
+            "float",
+            "str",
+            "bool",
+            "complex",
+            "Scalar",
+            "ScalarList",
+            "Tensor",
+            "dimname",
+            "layout",
+            "device",
+            "memory_format",
+            "generator",
+            "dim",
+            "start",
+            "other",
+            "dtype",
+            "dtype_layout",
+            "values",
+            "copy",
+        }
         if len(parts) == 2 and parts[1] in overload_candidates:
             base = parts[0]
             if base in _ATEN_TO_HAL:
@@ -422,9 +461,15 @@ def _extract_node_kwargs(node: torch.fx.Node) -> dict[str, Any]:
 
 def _dtype_to_mlir(dtype: str) -> str:
     mapping = {
-        "float32": "f32", "float16": "f16", "bfloat16": "bf16",
-        "float64": "f64", "int32": "i32", "int64": "i64",
-        "int8": "i8", "uint8": "ui8", "bool": "i1",
+        "float32": "f32",
+        "float16": "f16",
+        "bfloat16": "bf16",
+        "float64": "f64",
+        "int32": "i32",
+        "int64": "i64",
+        "int8": "i8",
+        "uint8": "ui8",
+        "bool": "i1",
     }
     return mapping.get(dtype, "f32")
 
@@ -450,6 +495,7 @@ def _fake_to_shape_tuple(fake: torch.Tensor) -> tuple[tuple[int | None, ...], st
 
 def _shape_to_mlir_type(shape: tuple[Any, ...], elt: str) -> str:
     """Convert (shape, element_type) to MLIR type string like tensor<1x64xf32>."""
+
     def _dim_str(d: Any) -> str:
         if d is None:
             return "?"
@@ -462,11 +508,18 @@ def _shape_to_mlir_type(shape: tuple[Any, ...], elt: str) -> str:
             return str(val)
         except (TypeError, ValueError):
             return "?"
+
     dims = "x".join(_dim_str(d) for d in shape)
     elt_map = {
-        "float32": "f32", "float16": "f16", "bfloat16": "bf16",
-        "float64": "f64", "int32": "i32", "int64": "i64",
-        "int8": "i8", "uint8": "ui8", "bool": "i1",
+        "float32": "f32",
+        "float16": "f16",
+        "bfloat16": "bf16",
+        "float64": "f64",
+        "int32": "i32",
+        "int64": "i64",
+        "int8": "i8",
+        "uint8": "ui8",
+        "bool": "i1",
     }
     # Accept both PyTorch format (e.g. "float32", "int64") and MLIR format
     # (e.g. "f32", "i64") — dtype rules may produce MLIR-format element type

@@ -33,17 +33,21 @@ def _run_transform(mlir_payload: str, transform_script: str) -> str:
     with ir.Location.unknown(ctx):
         combined_text = transform_script + "\n" + mlir_payload
         module = ir.Module.parse(combined_text, ctx)
-        pm.PassManager.parse(
-            "builtin.module(transform-interpreter)", ctx
-        ).run(module.operation)
+        pm.PassManager.parse("builtin.module(transform-interpreter)", ctx).run(module.operation)
         return str(module)
 
 
 def _has_vector_ops(text: str) -> list[str]:
     """Check which vector ops appear in the result MLIR."""
     found = []
-    for op in ["vector.contract", "vector.transfer_read", "vector.transfer_write",
-               "vector.mask", "vector.create_mask", "vector.extract_strided_slice"]:
+    for op in [
+        "vector.contract",
+        "vector.transfer_read",
+        "vector.transfer_write",
+        "vector.mask",
+        "vector.create_mask",
+        "vector.extract_strided_slice",
+    ]:
         if op in text:
             found.append(op)
     return found
@@ -54,7 +58,7 @@ def test_matmul_dynamic() -> None:
 
     Vector_sizes=[1, 32, 32]: M stays scalar, N=32, K=32.
     """
-    payload = '''func.func @test(%a: tensor<?x768xf32>, %b: tensor<768x3072xf32>) -> tensor<?x3072xf32> {
+    payload = """func.func @test(%a: tensor<?x768xf32>, %b: tensor<768x3072xf32>) -> tensor<?x3072xf32> {
   %c0 = arith.constant 0.0 : f32
   %c0_idx = arith.constant 0 : index
   %d0 = tensor.dim %a, %c0_idx : tensor<?x768xf32>
@@ -63,9 +67,9 @@ def test_matmul_dynamic() -> None:
   %r = linalg.matmul ins(%a, %b : tensor<?x768xf32>, tensor<768x3072xf32>) outs(%fill : tensor<?x3072xf32>) -> tensor<?x3072xf32>
   return %r : tensor<?x3072xf32>
 }
-'''
+"""
 
-    script = '''module attributes {transform.with_named_sequence} {
+    script = """module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg0: !transform.any_op) {
     %op = transform.structured.match ops{["linalg.matmul"]} in %arg0 : (!transform.any_op) -> !transform.any_op
     // Tile static dims N=3072,K=768 into 32-wide tiles; M stays scalar (0)
@@ -76,13 +80,11 @@ def test_matmul_dynamic() -> None:
     transform.yield
   }
 }
-'''
+"""
     result = _run_transform(payload, script)
     vec_ops = _has_vector_ops(result)
     print(f"  matmul (dynamic M): vector ops found: {vec_ops}")
-    assert "vector.transfer_read" in result, (
-        f"Expected vector.transfer_read, got:\n{result[:2000]}"
-    )
+    assert "vector.transfer_read" in result, f"Expected vector.transfer_read, got:\n{result[:2000]}"
     if "vector.contract" in result:
         print("  ✓ matmul vectorized with vector.contract")
     else:
@@ -95,7 +97,7 @@ def test_batch_matmul_dynamic() -> None:
     vector_sizes=[0,0,32,32]: batch/m stay scalar, n=32, k=32.
     Uses 0 for 'infer/don't vectorize' on dynamic dims.
     """
-    payload = '''func.func @test(%a: tensor<?x?x768xf32>, %b: tensor<?x768x768xf32>) -> tensor<?x?x768xf32> {
+    payload = """func.func @test(%a: tensor<?x?x768xf32>, %b: tensor<?x768x768xf32>) -> tensor<?x?x768xf32> {
   %c0 = arith.constant 0.0 : f32
   %c0_idx = arith.constant 0 : index
   %c1_idx = arith.constant 1 : index
@@ -106,9 +108,9 @@ def test_batch_matmul_dynamic() -> None:
   %r = linalg.batch_matmul ins(%a, %b : tensor<?x?x768xf32>, tensor<?x768x768xf32>) outs(%fill : tensor<?x?x768xf32>) -> tensor<?x?x768xf32>
   return %r : tensor<?x?x768xf32>
 }
-'''
+"""
 
-    script = '''module attributes {transform.with_named_sequence} {
+    script = """module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg0: !transform.any_op) {
     %op = transform.structured.match ops{["linalg.batch_matmul"]} in %arg0 : (!transform.any_op) -> !transform.any_op
     %tiled, %loops:2 = transform.structured.tile_using_for %op tile_sizes [0, 0, 32, 32]
@@ -117,13 +119,11 @@ def test_batch_matmul_dynamic() -> None:
     transform.yield
   }
 }
-'''
+"""
     result = _run_transform(payload, script)
     vec_ops = _has_vector_ops(result)
     print(f"  batch_matmul: vector ops found: {vec_ops}")
-    assert "vector.transfer_read" in result, (
-        f"Expected vector ops in result, got:\n{result[:2000]}"
-    )
+    assert "vector.transfer_read" in result, f"Expected vector ops in result, got:\n{result[:2000]}"
     print("  ✓ batch_matmul vectorized successfully")
 
 
@@ -135,10 +135,12 @@ def test_full_lowered_module() -> None:
         return
 
     lowered_text = lowered_path.read_text()
-    print(f"  Loaded {len(lowered_text.splitlines())} lines, "
-          f"found {lowered_text.count('linalg.batch_matmul')} batch_matmuls")
+    print(
+        f"  Loaded {len(lowered_text.splitlines())} lines, "
+        f"found {lowered_text.count('linalg.batch_matmul')} batch_matmuls"
+    )
 
-    script = '''module attributes {transform.with_named_sequence} {
+    script = """module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg0: !transform.any_op) {
     %bmms = transform.structured.match ops{["linalg.batch_matmul"]} in %arg0 : (!transform.any_op) -> !transform.any_op
     %tiled_b, %loops_b:2 = transform.structured.tile_using_for %bmms tile_sizes [0, 0, 32, 32]
@@ -151,7 +153,7 @@ def test_full_lowered_module() -> None:
     transform.yield
   }
 }
-'''
+"""
 
     result = _run_transform(lowered_text, script)
     vec_ops = _has_vector_ops(result)
@@ -172,7 +174,7 @@ def test_lm_head_batch_matmul() -> None:
 
     Vectorize K dim by 32, keep batch/M scalar. N dim is 50272.
     """
-    payload = '''func.func @test(%a: tensor<?x?x768xf32>, %b: tensor<?x768x50272xf32>) -> tensor<?x?x50272xf32> {
+    payload = """func.func @test(%a: tensor<?x?x768xf32>, %b: tensor<?x768x50272xf32>) -> tensor<?x?x50272xf32> {
   %c0 = arith.constant 0.0 : f32
   %c0_idx = arith.constant 0 : index
   %c1_idx = arith.constant 1 : index
@@ -183,9 +185,9 @@ def test_lm_head_batch_matmul() -> None:
   %r = linalg.batch_matmul ins(%a, %b : tensor<?x?x768xf32>, tensor<?x768x50272xf32>) outs(%fill : tensor<?x?x50272xf32>) -> tensor<?x?x50272xf32>
   return %r : tensor<?x?x50272xf32>
 }
-'''
+"""
 
-    script = '''module attributes {transform.with_named_sequence} {
+    script = """module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg0: !transform.any_op) {
     %op = transform.structured.match ops{["linalg.batch_matmul"]} in %arg0 : (!transform.any_op) -> !transform.any_op
     %tiled, %loops:2 = transform.structured.tile_using_for %op tile_sizes [0, 0, 32, 32]
@@ -194,13 +196,11 @@ def test_lm_head_batch_matmul() -> None:
     transform.yield
   }
 }
-'''
+"""
     result = _run_transform(payload, script)
     vec_ops = _has_vector_ops(result)
     print(f"  LM head batch_matmul: {vec_ops}")
-    assert "vector.transfer_read" in result, (
-        f"Expected vector ops, got:\n{result[:2000]}"
-    )
+    assert "vector.transfer_read" in result, f"Expected vector ops, got:\n{result[:2000]}"
     print("  ✓ LM head vectorized successfully")
 
 
@@ -208,7 +208,7 @@ def test_tile_and_vectorize() -> None:
     """Verify tile+vectorize works when static inner dims match tile sizes.
     batch_matmul with dims <?x?x?xf32> where inner k=32 fits exactly.
     """
-    payload = '''func.func @test(%a: tensor<?x?x?xf32>, %b: tensor<?x?x32xf32>) -> tensor<?x?x32xf32> {
+    payload = """func.func @test(%a: tensor<?x?x?xf32>, %b: tensor<?x?x32xf32>) -> tensor<?x?x32xf32> {
   %c0 = arith.constant 0.0 : f32
   %c0_idx = arith.constant 0 : index
   %c1_idx = arith.constant 1 : index
@@ -219,8 +219,8 @@ def test_tile_and_vectorize() -> None:
   %r = linalg.batch_matmul ins(%a, %b : tensor<?x?x?xf32>, tensor<?x?x32xf32>) outs(%fill : tensor<?x?x32xf32>) -> tensor<?x?x32xf32>
   return %r : tensor<?x?x32xf32>
 }
-'''
-    script = '''module attributes {transform.with_named_sequence} {
+"""
+    script = """module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg0: !transform.any_op) {
     %op = transform.structured.match ops{["linalg.batch_matmul"]} in %arg0 : (!transform.any_op) -> !transform.any_op
     %tiled, %loops:2 = transform.structured.tile_using_for %op tile_sizes [0, 0, 32, 32]
@@ -229,7 +229,7 @@ def test_tile_and_vectorize() -> None:
     transform.yield
   }
 }
-'''
+"""
     result = _run_transform(payload, script)
     vec_ops = _has_vector_ops(result)
     print(f"  tile+vectorize: {vec_ops}")

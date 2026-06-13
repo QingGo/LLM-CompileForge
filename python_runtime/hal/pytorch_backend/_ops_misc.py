@@ -65,11 +65,7 @@ class _MiscOps:
                     resolved[i] = int(dim_inputs.pop().item())
             if resolved:
                 return torch.full(resolved, value, dtype=torch.float32)
-        is_simple = not any(
-            isinstance(s, str) for s in (
-                shape_spec if isinstance(shape_spec, (list, tuple)) else ()
-            )
-        )
+        is_simple = not any(isinstance(s, str) for s in (shape_spec if isinstance(shape_spec, (list, tuple)) else ()))
         if inputs and is_simple:
             return torch.full_like(inputs[0], value)
         shape = tuple(shape_spec) if isinstance(shape_spec, (list, tuple)) else (1,)
@@ -155,6 +151,7 @@ class _MiscOps:
 
     def _op_diff(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
         import warnings
+
         n = kwargs.get("n", 1)
         dim = kwargs.get("dim", -1)
         prepend = kwargs.get("prepend", None)
@@ -167,8 +164,7 @@ class _MiscOps:
             return torch.diff(inputs[0], n=n, dim=dim, prepend=prepend, append=append)
         except TypeError:
             warnings.warn(
-                f"torch.diff(prepend=, append=) not supported — "
-                f"falling back to torch.diff(dim={dim})",
+                f"torch.diff(prepend=, append=) not supported — falling back to torch.diff(dim={dim})",
                 stacklevel=2,
             )
             return torch.diff(inputs[0], dim=dim)

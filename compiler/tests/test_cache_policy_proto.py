@@ -100,9 +100,7 @@ def test_proto_roundtrip_deterministic() -> None:
     p1 = _make_sample_policy()
     p2 = _make_sample_policy()
 
-    assert p1.SerializeToString() == p2.SerializeToString(), (
-        "serialization must be deterministic"
-    )
+    assert p1.SerializeToString() == p2.SerializeToString(), "serialization must be deterministic"
 
 
 def test_proto_roundtrip_empty_policy() -> None:
@@ -163,4 +161,4 @@ def test_proto_default_field_values() -> None:
     assert recovered.name == "test"
     assert recovered.num_layers == 6
     assert recovered.num_heads == 0  # unset → default
-    assert recovered.layout == ""    # unset → default
+    assert recovered.layout == ""  # unset → default

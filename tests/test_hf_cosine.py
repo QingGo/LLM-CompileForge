@@ -21,9 +21,7 @@ def _load_hf_tiny_llama():
     from transformers.models.llama.configuration_llama import LlamaConfig
     from transformers.models.llama.modeling_llama import LlamaForCausalLM
 
-    hub_dir = os.path.expanduser(
-        "~/.cache/huggingface/hub/models--hf-internal-testing--tiny-random-LlamaForCausalLM"
-    )
+    hub_dir = os.path.expanduser("~/.cache/huggingface/hub/models--hf-internal-testing--tiny-random-LlamaForCausalLM")
     snapshots = os.path.join(hub_dir, "snapshots")
     snap = os.listdir(snapshots)[0]
     model_path = os.path.join(snapshots, snap, "model.safetensors")
@@ -90,9 +88,7 @@ class TestHFCosineTinyLlama:
 
         similarity = cosine_similarity(hf_logits, compiled_logits)
         print(f"\n  tiny_llama cosine similarity: {similarity:.8f}")
-        assert similarity > 0.999, (
-            f"Cosine similarity {similarity:.8f} below threshold 0.999"
-        )
+        assert similarity > 0.999, f"Cosine similarity {similarity:.8f} below threshold 0.999"
 
     @pytest.mark.timeout(120)
     def test_cosine_similarity_decode_shape(self):
@@ -152,9 +148,7 @@ class TestHFCosineOpt125M:
 
         similarity = cosine_similarity(hf_logits, compiled_logits)
         print(f"\n  opt_125m cosine similarity: {similarity:.8f}")
-        assert similarity > 0.999, (
-            f"Cosine similarity {similarity:.8f} below threshold 0.999"
-        )
+        assert similarity > 0.999, f"Cosine similarity {similarity:.8f} below threshold 0.999"
 
     @pytest.mark.timeout(300)
     def test_cosine_similarity_decode_shape(self):
@@ -214,9 +208,7 @@ class TestHFCosineOpt125MDynamic:
 
         similarity = cosine_similarity(hf_logits, compiled_logits)
         print(f"\n  opt_125m_dynamic cosine similarity: {similarity:.8f}")
-        assert similarity > 0.999, (
-            f"Cosine similarity {similarity:.8f} below threshold 0.999"
-        )
+        assert similarity > 0.999, f"Cosine similarity {similarity:.8f} below threshold 0.999"
 
     @pytest.mark.timeout(300)
     def test_cosine_similarity_batch2(self):
@@ -232,19 +224,20 @@ class TestHFCosineOpt125MDynamic:
         input_ids = torch.randint(0, 1000, (2, 4), dtype=torch.long)
         compiled_logits = executor.forward(input_ids)
 
-        assert compiled_logits.shape == (2, 4, 50272), (
-            f"Expected (2,4,50272), got {compiled_logits.shape}"
+        assert compiled_logits.shape == (2, 4, 50272), f"Expected (2,4,50272), got {compiled_logits.shape}"
+        assert not torch.allclose(compiled_logits[0], compiled_logits[1], atol=1e-6), (
+            "Different batch elements should produce different logits"
         )
-        assert not torch.allclose(compiled_logits[0], compiled_logits[1],
-                                  atol=1e-6), "Different batch elements should produce different logits"
-        assert not torch.allclose(compiled_logits[0], compiled_logits[1],
-                                  atol=1e-6), "Different batch elements should produce different logits"
+        assert not torch.allclose(compiled_logits[0], compiled_logits[1], atol=1e-6), (
+            "Different batch elements should produce different logits"
+        )
         assert not torch.isnan(compiled_logits).any(), "No NaN in output"
         assert not torch.isinf(compiled_logits).any(), "No Inf in output"
 
 
 # --- Qwen3.5-0.8B ---
 # (hf_qwen and module_qwen fixtures are in conftest.py)
+
 
 @pytest.mark.integration
 @pytest.mark.baseline
@@ -302,13 +295,15 @@ class TestHFCosineLlama1B:
         from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         model_dir = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..",
-                         "models", "LLM-Research", "Llama-3.2-1B")
+            os.path.join(os.path.dirname(__file__), "..", "models", "LLM-Research", "Llama-3.2-1B")
         )
         config = AutoConfig.from_pretrained(model_dir, trust_remote_code=False)
         config.use_cache = False
         hf_model = AutoModelForCausalLM.from_pretrained(
-            model_dir, config=config, torch_dtype=torch.bfloat16, local_files_only=True,
+            model_dir,
+            config=config,
+            torch_dtype=torch.bfloat16,
+            local_files_only=True,
         )
         hf_model.eval()
 
@@ -341,13 +336,15 @@ class TestHFCosineLlama3B:
         from python_runtime.hal.pytorch_backend import PyTorchBackend
 
         model_dir = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..",
-                         "models", "LLM-Research", "Llama-3.2-3B")
+            os.path.join(os.path.dirname(__file__), "..", "models", "LLM-Research", "Llama-3.2-3B")
         )
         config = AutoConfig.from_pretrained(model_dir, trust_remote_code=False)
         config.use_cache = False
         hf_model = AutoModelForCausalLM.from_pretrained(
-            model_dir, config=config, torch_dtype=torch.bfloat16, local_files_only=True,
+            model_dir,
+            config=config,
+            torch_dtype=torch.bfloat16,
+            local_files_only=True,
         )
         hf_model.eval()
 

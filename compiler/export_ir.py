@@ -33,11 +33,14 @@ def _cache_key(
             shapes.append(list(a.shape))
         else:
             shapes.append(str(type(a).__name__))
-    payload = json.dumps({
-        "model_dir": os.path.abspath(model_dir),
-        "shapes": shapes,
-        "dynamic_shapes": str(dynamic_shapes) if dynamic_shapes else "static",
-    }, sort_keys=True)
+    payload = json.dumps(
+        {
+            "model_dir": os.path.abspath(model_dir),
+            "shapes": shapes,
+            "dynamic_shapes": str(dynamic_shapes) if dynamic_shapes else "static",
+        },
+        sort_keys=True,
+    )
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
@@ -87,5 +90,3 @@ def export_model(
         torch.export.save(program, _CACHE_DIR / f"{key}.pt")
 
     return program
-
-

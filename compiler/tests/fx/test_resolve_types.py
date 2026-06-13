@@ -13,7 +13,6 @@ import torch
 
 @pytest.mark.unit
 class TestResolveOpTypesScalarFix:
-
     def test_scalar_weight_gets_shape_1(self):
         """Scalar weight with shape () should produce tensor<1xf32>."""
         from compiler.fx.utils import _resolve_op_types
@@ -23,11 +22,14 @@ class TestResolveOpTypesScalarFix:
         shape_map: dict[str, tuple[tuple, str]] = {}
 
         input_types, _ = _resolve_op_types(
-            "add", ["%w"], ssa_map, shape_map, weights, {},
+            "add",
+            ["%w"],
+            ssa_map,
+            shape_map,
+            weights,
+            {},
         )
-        assert any("tensor<1xf32>" in t for t in input_types), (
-            f"Expected tensor<1xf32> in {input_types}"
-        )
+        assert any("tensor<1xf32>" in t for t in input_types), f"Expected tensor<1xf32> in {input_types}"
 
     def test_1d_weight_unchanged(self):
         """1-D tensor should still produce tensor<Nxf32>."""
@@ -38,11 +40,14 @@ class TestResolveOpTypesScalarFix:
         shape_map: dict[str, tuple[tuple, str]] = {}
 
         input_types, _ = _resolve_op_types(
-            "add", ["%w"], ssa_map, shape_map, weights, {},
+            "add",
+            ["%w"],
+            ssa_map,
+            shape_map,
+            weights,
+            {},
         )
-        assert any("tensor<64xf32>" in t for t in input_types), (
-            f"Expected tensor<64xf32> in {input_types}"
-        )
+        assert any("tensor<64xf32>" in t for t in input_types), f"Expected tensor<64xf32> in {input_types}"
 
     def test_2d_weight_unchanged(self):
         """2-D tensor should still produce tensor<NxMxf32>."""
@@ -53,11 +58,14 @@ class TestResolveOpTypesScalarFix:
         shape_map: dict[str, tuple[tuple, str]] = {}
 
         input_types, _ = _resolve_op_types(
-            "add", ["%w"], ssa_map, shape_map, weights, {},
+            "add",
+            ["%w"],
+            ssa_map,
+            shape_map,
+            weights,
+            {},
         )
-        assert any("tensor<64x128xf32>" in t for t in input_types), (
-            f"Expected tensor<64x128xf32> in {input_types}"
-        )
+        assert any("tensor<64x128xf32>" in t for t in input_types), f"Expected tensor<64x128xf32> in {input_types}"
 
     def test_ssa_map_resolution_still_works(self):
         """%w resolved via ssa_map → w lookup still yields correct shape."""
@@ -68,11 +76,14 @@ class TestResolveOpTypesScalarFix:
         shape_map: dict[str, tuple[tuple, str]] = {}
 
         input_types, _ = _resolve_op_types(
-            "add", ["%w"], ssa_map, shape_map, weights, {},
+            "add",
+            ["%w"],
+            ssa_map,
+            shape_map,
+            weights,
+            {},
         )
-        assert any("tensor<1xf32>" in t for t in input_types), (
-            f"Expected tensor<1xf32> in {input_types}"
-        )
+        assert any("tensor<1xf32>" in t for t in input_types), f"Expected tensor<1xf32> in {input_types}"
 
     def test_shape_map_takes_priority(self):
         """shape_map entries should take priority over weight lookup."""
@@ -83,7 +94,12 @@ class TestResolveOpTypesScalarFix:
         shape_map = {"w": ((128,), "f32")}
 
         input_types, _ = _resolve_op_types(
-            "add", ["%w"], ssa_map, shape_map, weights, {},
+            "add",
+            ["%w"],
+            ssa_map,
+            shape_map,
+            weights,
+            {},
         )
         assert any("tensor<128xf32>" in t for t in input_types), (
             f"Expected tensor<128xf32> from shape_map in {input_types}"

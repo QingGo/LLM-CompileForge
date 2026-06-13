@@ -86,8 +86,7 @@ OP_TABLE: list[OpCase] = [
     OpCase("sf.sub", torch.sub, [(4, 768), (4, 768)], 1e-5, "sub"),
     OpCase("sf.div", torch.div, [(4, 768), (4, 768)], 1e-5, "div"),
     # pow uses absolute values to avoid NaN from negative base ^ non-integer exponent
-    OpCase("sf.pow", torch.pow, [(4, 768), (4, 768)], 1e-5, "pow",
-           kwargs={"positive_inputs": True}),
+    OpCase("sf.pow", torch.pow, [(4, 768), (4, 768)], 1e-5, "pow", kwargs={"positive_inputs": True}),
     OpCase("sf.max", torch.maximum, [(4, 768), (4, 768)], 1e-5, "max"),
     # ── Comparison — lowering confirmed for le ──────────────────────
     # sf.le outputs f32 0.0/1.0, matching the lowering implementation
@@ -96,37 +95,52 @@ OP_TABLE: list[OpCase] = [
     # sf.identity is a pass-through (same type)
     OpCase("sf.identity", lambda x: x, [(4, 768)], 1e-5, "identity"),
     # sf.transpose with dim0=0, dim1=1; output shape is swapped
-    OpCase("sf.transpose", lambda x: torch.transpose(x, 0, 1),
-           [(4, 768)], 1e-5, "transpose",
-           kwargs={"dim0": 0, "dim1": 1},
-           output_shapes=[(768, 4)]),
-
+    OpCase(
+        "sf.transpose",
+        lambda x: torch.transpose(x, 0, 1),
+        [(4, 768)],
+        1e-5,
+        "transpose",
+        kwargs={"dim0": 0, "dim1": 1},
+        output_shapes=[(768, 4)],
+    ),
     # ── Slice — lowering confirmed ──────────────────────────────────
-    OpCase("sf.slice", lambda x: x[0:2, :], [(4, 768)], 1e-5, "slice",
-           kwargs={"dim": 0, "start": 0, "end": 2},
-           output_shapes=[(2, 768)]),
+    OpCase(
+        "sf.slice",
+        lambda x: x[0:2, :],
+        [(4, 768)],
+        1e-5,
+        "slice",
+        kwargs={"dim": 0, "start": 0, "end": 2},
+        output_shapes=[(2, 768)],
+    ),
     # ── Reduction — lowering confirmed for sum ──────────────────────────
-    OpCase("sf.sum", lambda x: torch.sum(x), [(2, 4)], 1e-5, "sum",
-           kwargs={}, output_shapes=[()]),
+    OpCase("sf.sum", lambda x: torch.sum(x), [(2, 4)], 1e-5, "sum", kwargs={}, output_shapes=[()]),
     # Rank-1 ops deferred: LLVM lowering sometimes adds a dimension
     # (tensor<768xf32> → memref<768x1xf32>). Revisit after bufferization fix.
-
     # ── Linear (matmul + bias) — lowering confirmed ─────────────────────
-    OpCase("sf.linear",
-           lambda x, w, b: torch.nn.functional.linear(x, w, b),
-           [(4, 768), (768, 768), (768,)], 1e-5, "linear"),
+    OpCase(
+        "sf.linear", lambda x, w, b: torch.nn.functional.linear(x, w, b), [(4, 768), (768, 768), (768,)], 1e-5, "linear"
+    ),
     # ── Layer norm — lowering confirmed ─────────────────────────────────
-    OpCase("sf.layer_norm",
-           lambda x, w, b: torch.nn.functional.layer_norm(
-               x, (768,), weight=w, bias=b, eps=1e-5),
-           [(4, 768), (768,), (768,)], 1e-5, "layer_norm",
-           kwargs={"normalized_shape": [768]}),
+    OpCase(
+        "sf.layer_norm",
+        lambda x, w, b: torch.nn.functional.layer_norm(x, (768,), weight=w, bias=b, eps=1e-5),
+        [(4, 768), (768,), (768,)],
+        1e-5,
+        "layer_norm",
+        kwargs={"normalized_shape": [768]},
+    ),
     # ── View (reshape) — lowering confirmed ─────────────────────────────
-    OpCase("sf.view",
-           lambda x: x.view(2, 4, 12, 64),
-           [(2, 4, 768)], 1e-5, "view",
-           kwargs={"shape": [2, 4, 12, 64]},
-           output_shapes=[(2, 4, 12, 64)]),
+    OpCase(
+        "sf.view",
+        lambda x: x.view(2, 4, 12, 64),
+        [(2, 4, 768)],
+        1e-5,
+        "view",
+        kwargs={"shape": [2, 4, 12, 64]},
+        output_shapes=[(2, 4, 12, 64)],
+    ),
 ]
 
 # ── Ops missing lowering patterns (documented, not tested) ───────────

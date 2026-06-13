@@ -10,34 +10,44 @@ from python_runtime.engine.cache_manager import CacheManager, _dict_to_proto_cac
 
 def _make_policy(num_layers=4, heads=8, dim=64):
     """Create a proto SfaCachePolicy via JSON fallback (exercises backward-compat path)."""
-    return _dict_to_proto_cache_policy({
-        "slabs": [
-            {
-                "slab_id": "k", "storage": "paged",
-                "dims": {"layers": num_layers, "heads": heads, "dim": dim},
-                "layout": "BNLD", "dtype": "float32",
-            },
-            {
-                "slab_id": "v", "storage": "paged",
-                "dims": {"layers": num_layers, "heads": heads, "dim": dim},
-                "layout": "BNLD", "dtype": "float32",
-            },
-        ],
-        "intercepts": [
-            {
-                "slab_id": "k", "op_name": "scaled_dot_product_attention",
-                "direction": "read_write", "source": "operand[1]",
-                "layer": "sequential",
-            },
-            {
-                "slab_id": "v", "op_name": "scaled_dot_product_attention",
-                "direction": "read_write", "source": "operand[2]",
-                "layer": "sequential",
-            },
-        ],
-        "block_size": 16,
-        "max_requests": 256,
-    })
+    return _dict_to_proto_cache_policy(
+        {
+            "slabs": [
+                {
+                    "slab_id": "k",
+                    "storage": "paged",
+                    "dims": {"layers": num_layers, "heads": heads, "dim": dim},
+                    "layout": "BNLD",
+                    "dtype": "float32",
+                },
+                {
+                    "slab_id": "v",
+                    "storage": "paged",
+                    "dims": {"layers": num_layers, "heads": heads, "dim": dim},
+                    "layout": "BNLD",
+                    "dtype": "float32",
+                },
+            ],
+            "intercepts": [
+                {
+                    "slab_id": "k",
+                    "op_name": "scaled_dot_product_attention",
+                    "direction": "read_write",
+                    "source": "operand[1]",
+                    "layer": "sequential",
+                },
+                {
+                    "slab_id": "v",
+                    "op_name": "scaled_dot_product_attention",
+                    "direction": "read_write",
+                    "source": "operand[2]",
+                    "layer": "sequential",
+                },
+            ],
+            "block_size": 16,
+            "max_requests": 256,
+        }
+    )
 
 
 def _make_mgr(num_blocks=16):
@@ -174,24 +184,30 @@ class TestCacheManagerBasic:
 
     def test_fixed_slab_rwkv(self) -> None:
         """RWKV fixed-size slab allocation and I/O."""
-        policy = _dict_to_proto_cache_policy({
-            "slabs": [
-                {
-                    "slab_id": "state", "storage": "fixed",
-                    "dims": {"layers": 4, "dim": 1024},
-                    "layout": "RLD", "dtype": "float32",
-                },
-            ],
-            "intercepts": [
-                {
-                    "slab_id": "state", "op_name": "state_evolve",
-                    "direction": "read_write", "source": "output",
-                    "layer": "sequential",
-                },
-            ],
-            "block_size": 16,
-            "max_requests": 256,
-        })
+        policy = _dict_to_proto_cache_policy(
+            {
+                "slabs": [
+                    {
+                        "slab_id": "state",
+                        "storage": "fixed",
+                        "dims": {"layers": 4, "dim": 1024},
+                        "layout": "RLD",
+                        "dtype": "float32",
+                    },
+                ],
+                "intercepts": [
+                    {
+                        "slab_id": "state",
+                        "op_name": "state_evolve",
+                        "direction": "read_write",
+                        "source": "output",
+                        "layer": "sequential",
+                    },
+                ],
+                "block_size": 16,
+                "max_requests": 256,
+            }
+        )
         mgr = CacheManager(policy, num_blocks=1)
         assert mgr._slabs["state"].shape == (256, 4, 1024)
 

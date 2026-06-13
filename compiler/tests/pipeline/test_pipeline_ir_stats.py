@@ -262,9 +262,7 @@ module {
         after = str(mod)
 
         assert result.success
-        assert before != after, (
-            f"Stage '{stage.name}' produced identical IR -- possible dead stage"
-        )
+        assert before != after, f"Stage '{stage.name}' produced identical IR -- possible dead stage"
 
 
 # ── Pass-through for manual invocation ──────────────────────────────────

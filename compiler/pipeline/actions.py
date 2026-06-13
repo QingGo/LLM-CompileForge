@@ -30,21 +30,21 @@ def tile_matmuls_action(module: Any, tile_k: int = 64) -> None:
     ctx.load_all_available_dialects()
 
     script = (
-        'module attributes {transform.with_named_sequence} {\n'
-        '  transform.named_sequence @__transform_main(%arg0: !transform.any_op) {\n'
+        "module attributes {transform.with_named_sequence} {\n"
+        "  transform.named_sequence @__transform_main(%arg0: !transform.any_op) {\n"
         '    %mats = transform.structured.match ops{["linalg.matmul"]} in %arg0\n'
-        '      : (!transform.any_op) -> !transform.any_op\n'
-        '    transform.structured.tile_using_for %mats\n'
-        '      tile_sizes [0, ' + str(tile_k) + ', ' + str(tile_k) + ']\n'
-        '      : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)\n'
+        "      : (!transform.any_op) -> !transform.any_op\n"
+        "    transform.structured.tile_using_for %mats\n"
+        "      tile_sizes [0, " + str(tile_k) + ", " + str(tile_k) + "]\n"
+        "      : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)\n"
         '    %batch_mats = transform.structured.match ops{["linalg.batch_matmul"]} in %arg0\n'
-        '      : (!transform.any_op) -> !transform.any_op\n'
-        '    transform.structured.tile_using_for %batch_mats\n'
-        '      tile_sizes [0, 0, ' + str(tile_k) + ', ' + str(tile_k) + ']\n'
-        '      : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)\n'
-        '    transform.yield\n'
-        '  }\n'
-        '}\n'
+        "      : (!transform.any_op) -> !transform.any_op\n"
+        "    transform.structured.tile_using_for %batch_mats\n"
+        "      tile_sizes [0, 0, " + str(tile_k) + ", " + str(tile_k) + "]\n"
+        "      : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)\n"
+        "    transform.yield\n"
+        "  }\n"
+        "}\n"
     )
 
     block = module.operation.regions[0].blocks[0]
@@ -57,14 +57,14 @@ def tile_matmuls_action(module: Any, tile_k: int = 64) -> None:
 
         combined = ir.Module.parse(script + "\n" + ftxt, ctx)
         try:
-            pm.PassManager.parse("builtin.module(transform-interpreter)", ctx).run(
-                combined.operation
-            )
+            pm.PassManager.parse("builtin.module(transform-interpreter)", ctx).run(combined.operation)
         except Exception as e:
-            _log.warning("  tile_matmuls: func %s skipped (%s)",
-                         str(func.operation.name) if hasattr(func, "operation") else "?",
-                         str(e).split("\n")[0] if "\n" in str(e) else str(e),
-                         exc_info=True)
+            _log.warning(
+                "  tile_matmuls: func %s skipped (%s)",
+                str(func.operation.name) if hasattr(func, "operation") else "?",
+                str(e).split("\n")[0] if "\n" in str(e) else str(e),
+                exc_info=True,
+            )
             continue
 
         for op in list(combined.operation.regions[0].blocks[0]):
@@ -177,3 +177,8 @@ def insert_identity_copies_action(module: Any) -> None:
             "  insert_identity_copies: inserted copies in %d function(s)",
             total_inserted,
         )
+
+
+def insert_unsqueeze_copies_action(module: Any) -> None:
+    """Stage C2.6 placeholder — bufferization fix is in C3 options."""
+    pass

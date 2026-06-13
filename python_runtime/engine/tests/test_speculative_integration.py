@@ -85,9 +85,7 @@ class TestSpeculativeRunner:
 
         h = torch.randn(2, 64)
         logits = torch.randn(2, 4, 100)
-        accepted, all_ok, n_gen = runner.run_speculative_step(
-            h, torch.zeros(2, 1).long(), logits, num_spec_tokens=2
-        )
+        accepted, all_ok, n_gen = runner.run_speculative_step(h, torch.zeros(2, 1).long(), logits, num_spec_tokens=2)
 
         assert n_gen >= 1
         assert len(accepted) == n_gen

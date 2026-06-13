@@ -43,6 +43,7 @@ class SchedulingBridge:
         self._radix_cache = None
         if enable_prefix_cache:
             from python_runtime.engine.cache.radix_cache import RadixCache
+
             self._radix_cache = RadixCache(self._bm)
 
         self._num_blocks = num_blocks

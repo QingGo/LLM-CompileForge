@@ -30,7 +30,11 @@ class FP8KVCacheQuantizer:
     """
 
     SUPPORTED_HARDWARE: tuple[str, ...] = (
-        "H100", "H200", "RTX_4090", "RTX_6000_ADA", "MI300",
+        "H100",
+        "H200",
+        "RTX_4090",
+        "RTX_6000_ADA",
+        "MI300",
     )
 
     def __init__(self, block_size: int = 16) -> None:

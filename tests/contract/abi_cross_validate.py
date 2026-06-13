@@ -73,6 +73,7 @@ def _extract_proto_bytes(c_file_path: str) -> bytes:
 
 # ── Validation functions ──────────────────────────────────────────────
 
+
 def validate_num_inputs(funcs: list) -> int:
     """Check G3: num_inputs == input_fields.len() for every function."""
     failures = 0
@@ -80,10 +81,7 @@ def validate_num_inputs(funcs: list) -> int:
         expected = f.num_inputs
         actual = len(f.input_fields)
         if expected != actual:
-            print(
-                f"  [FAIL] G3: func[{fi}] ({f.symbol}): "
-                f"num_inputs={expected} != input_fields.len()={actual}"
-            )
+            print(f"  [FAIL] G3: func[{fi}] ({f.symbol}): num_inputs={expected} != input_fields.len()={actual}")
             failures += 1
     if failures == 0:
         print(f"  G3: PASS (all {len(funcs)} funcs: num_inputs == input_fields.len())")
@@ -92,10 +90,7 @@ def validate_num_inputs(funcs: list) -> int:
             expected = f.num_inputs
             actual = len(f.input_fields)
             if expected != actual:
-                print(
-                    f"       func[{fi}] ({f.symbol}): "
-                    f"num_inputs={expected} vs input_fields={actual}"
-                )
+                print(f"       func[{fi}] ({f.symbol}): num_inputs={expected} vs input_fields={actual}")
         print(f"  G3: FAIL ({failures}/{len(funcs)} mismatches)")
     return failures
 
@@ -118,16 +113,10 @@ def validate_output_descriptors(funcs: list) -> int:
         # Verify each output descriptor has rank > 0
         for oi, od in enumerate(f.outputs):
             if od.rank == 0:
-                print(
-                    f"  [FAIL] G4: func[{fi}] ({f.symbol}): "
-                    f"output[{oi}].rank=0 (invalid)"
-                )
+                print(f"  [FAIL] G4: func[{fi}] ({f.symbol}): output[{oi}].rank=0 (invalid)")
                 failures += 1
     if failures == 0:
-        print(
-            f"  G4: PASS ({populated}/{len(funcs)} funcs have outputs, "
-            f"{total_descriptors} descriptors, all rank>0)"
-        )
+        print(f"  G4: PASS ({populated}/{len(funcs)} funcs have outputs, {total_descriptors} descriptors, all rank>0)")
     else:
         print(f"  G4: FAIL ({failures} zero-rank descriptors)")
     return failures
@@ -150,10 +139,7 @@ def validate_input_ranks(funcs: list) -> int:
     if zero_ranks == 0:
         print(f"  G1: PASS (all {total_inputs} inputs have rank>0)")
     else:
-        print(
-            f"  G1: PASS ({zero_ranks}/{total_inputs} inputs with rank=0, "
-            f"runtime has documented fallback to 2)"
-        )
+        print(f"  G1: PASS ({zero_ranks}/{total_inputs} inputs with rank=0, runtime has documented fallback to 2)")
     return 0  # rank=0 is not a failure per G1 CONTRACT.md
 
 
@@ -196,24 +182,17 @@ def validate_weight_entries(weight_data) -> int:
             print(f"  [FAIL] WEIGHT[{wi}]: empty {', '.join(missing)}")
             failures += 1
     if failures == 0:
-        print(
-            f"  WEIGHTS: PASS "
-            f"(all {len(weight_data.weight_entries)} entries non-empty)"
-        )
+        print(f"  WEIGHTS: PASS (all {len(weight_data.weight_entries)} entries non-empty)")
     else:
-        print(
-            f"  WEIGHTS: FAIL "
-            f"({failures}/{len(weight_data.weight_entries)} empty fields)"
-        )
+        print(f"  WEIGHTS: FAIL ({failures}/{len(weight_data.weight_entries)} empty fields)")
     return failures
 
 
 # ── Main ──────────────────────────────────────────────────────────────
 
+
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Cross-validate SfaAbiHeader fields from compiled model"
-    )
+    parser = argparse.ArgumentParser(description="Cross-validate SfaAbiHeader fields from compiled model")
     parser.add_argument(
         "model_dir",
         nargs="?",

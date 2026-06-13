@@ -71,8 +71,13 @@ def _fused_rms_norm_add_triton(
     BLOCK_SIZE = min(1024, triton.next_power_of_2(n_cols))
 
     _kernel[grid](
-        input_tensor, residual, weight, output,
-        n_cols=n_cols, eps_val=eps, block_size=BLOCK_SIZE,
+        input_tensor,
+        residual,
+        weight,
+        output,
+        n_cols=n_cols,
+        eps_val=eps,
+        block_size=BLOCK_SIZE,
     )
     return output
 

@@ -34,8 +34,7 @@ def _dict_to_proto_cache_policy(raw: dict[str, Any]) -> SfaCachePolicy:
     metadata.json carries JSON-serialized CachePolicy.
     """
     _logger.warning(
-        "Loading cache_policy from JSON fallback (upgrade model to proto "
-        "SfaCachePolicy for faster startup)"
+        "Loading cache_policy from JSON fallback (upgrade model to proto SfaCachePolicy for faster startup)"
     )
     policy = SfaCachePolicy()
     policy.block_size = int(raw.get("block_size", 16))
@@ -229,9 +228,7 @@ class CacheManager:
 
     @property
     def has_paged_cache(self) -> bool:
-        return any(
-            s.slab_type == "paged" for s in self._policy.slabs
-        )
+        return any(s.slab_type == "paged" for s in self._policy.slabs)
 
     def configured_kv_heads(self) -> int:
         for spec in self._policy.slabs:

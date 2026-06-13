@@ -53,24 +53,22 @@ def test_cache_policy_in_metadata() -> None:
 
     with tempfile.TemporaryDirectory() as tmpdir:
         compile_mlir(
-            model, example_args=(x,),
-            output_dir=tmpdir, apply_fusion=False,
+            model,
+            example_args=(x,),
+            output_dir=tmpdir,
+            apply_fusion=False,
             cache_policy=policy,
         )
         meta_path = os.path.join(tmpdir, "metadata.json")
         meta = json.load(open(meta_path))
 
         # cache_policy key must be present
-        assert "cache_policy" in meta, (
-            "metadata.json missing cache_policy key"
-        )
+        assert "cache_policy" in meta, "metadata.json missing cache_policy key"
 
         cp = meta["cache_policy"]
 
         # Structure matches CachePolicy.to_dict()
-        assert cp == policy_dict, (
-            f"cache_policy mismatch:\n  expected={policy_dict}\n  got={cp}"
-        )
+        assert cp == policy_dict, f"cache_policy mismatch:\n  expected={policy_dict}\n  got={cp}"
 
         # Specific field checks
         assert cp["block_size"] == 16
@@ -97,16 +95,16 @@ def test_cache_policy_backward_compat() -> None:
 
     with tempfile.TemporaryDirectory() as tmpdir:
         compile_mlir(
-            model, example_args=(x,),
-            output_dir=tmpdir, apply_fusion=False,
+            model,
+            example_args=(x,),
+            output_dir=tmpdir,
+            apply_fusion=False,
             # no cache_policy
         )
         meta_path = os.path.join(tmpdir, "metadata.json")
         meta = json.load(open(meta_path))
 
-        assert "cache_policy" not in meta, (
-            "cache_policy key should be absent when no CachePolicy provided"
-        )
+        assert "cache_policy" not in meta, "cache_policy key should be absent when no CachePolicy provided"
 
 
 @pytest.mark.unit
@@ -119,16 +117,16 @@ def test_cache_policy_none_explicit() -> None:
 
     with tempfile.TemporaryDirectory() as tmpdir:
         compile_mlir(
-            model, example_args=(x,),
-            output_dir=tmpdir, apply_fusion=False,
+            model,
+            example_args=(x,),
+            output_dir=tmpdir,
+            apply_fusion=False,
             cache_policy=None,
         )
         meta_path = os.path.join(tmpdir, "metadata.json")
         meta = json.load(open(meta_path))
 
-        assert "cache_policy" not in meta, (
-            "cache_policy key should be absent when cache_policy=None"
-        )
+        assert "cache_policy" not in meta, "cache_policy key should be absent when cache_policy=None"
 
 
 @pytest.mark.unit
@@ -142,8 +140,10 @@ def test_cache_policy_empty_policy() -> None:
 
     with tempfile.TemporaryDirectory() as tmpdir:
         compile_mlir(
-            model, example_args=(x,),
-            output_dir=tmpdir, apply_fusion=False,
+            model,
+            example_args=(x,),
+            output_dir=tmpdir,
+            apply_fusion=False,
             cache_policy=policy,
         )
         meta_path = os.path.join(tmpdir, "metadata.json")

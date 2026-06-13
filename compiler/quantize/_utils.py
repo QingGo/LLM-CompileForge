@@ -68,10 +68,9 @@ def collect_activation_stats(
             if layer_name not in stats:
                 stats[layer_name] = {"absmax": ch_absmax.clone(), "count": 1}
             else:
-                stats[layer_name]["absmax"] = torch.maximum(
-                    stats[layer_name]["absmax"], ch_absmax
-                )
+                stats[layer_name]["absmax"] = torch.maximum(stats[layer_name]["absmax"], ch_absmax)
                 stats[layer_name]["count"] += 1
+
         return _hook
 
     for name, module in model.named_modules():
@@ -86,7 +85,9 @@ def collect_activation_stats(
                 try:
                     model(dummy)
                 except Exception:
-                    _log.debug("Model rejected dummy input during calibration (expected for non-forward models)", exc_info=True)  # noqa: E501
+                    _log.debug(
+                        "Model rejected dummy input during calibration (expected for non-forward models)", exc_info=True
+                    )  # noqa: E501
         else:
             model.eval()
             with torch.no_grad():
@@ -171,11 +172,6 @@ def set_layer_weight(model: nn.Module, layer_name: str, new_weight: torch.Tensor
         return False
     w: torch.Tensor = layer.weight  # type: ignore[assignment]
     if w.shape != new_weight.shape:
-        raise ValueError(
-            f"Weight shape mismatch for {layer_name}: "
-            f"expected {w.shape}, got {new_weight.shape}"
-        )
-    w.data = new_weight.to(
-        dtype=w.dtype, device=w.device
-    )
+        raise ValueError(f"Weight shape mismatch for {layer_name}: expected {w.shape}, got {new_weight.shape}")
+    w.data = new_weight.to(dtype=w.dtype, device=w.device)
     return True

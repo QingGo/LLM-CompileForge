@@ -22,9 +22,7 @@ from scripts.ctypes_forward import run_ctypes  # noqa: E402
 
 DYLIB_DIR = "outputs/compiled/opt_125m_fresh"
 _DYLIB_PATH = os.path.join(DYLIB_DIR, "libopt_125m_fresh.dylib") if os.path.isdir(DYLIB_DIR) else None
-pytestmark = pytest.mark.skip(
-    reason="Mask tests require working dylib forward pass (pre-existing format mismatch)"
-)
+pytestmark = pytest.mark.skip(reason="Mask tests require working dylib forward pass (pre-existing format mismatch)")
 
 
 # ── Skip guard (dylib must exist) ─────────────────────────────────
@@ -32,9 +30,7 @@ pytestmark = pytest.mark.skip(
 
 def _dylib_exists() -> bool:
     try:
-        return os.path.isdir(DYLIB_DIR) and any(
-            f.endswith(".dylib") for f in os.listdir(DYLIB_DIR)
-        )
+        return os.path.isdir(DYLIB_DIR) and any(f.endswith(".dylib") for f in os.listdir(DYLIB_DIR))
     except OSError:
         return False
 
@@ -93,12 +89,10 @@ class TestMaskCorrectness:
         assert mask.size > 0, f"Mask tensor is empty (shape={mask.shape})"
         unique_vals = np.unique(mask)
         assert 0 in unique_vals, (
-            f"Mask has NO mask-out entries (0.0) — all values are attend. "
-            f"Unique values: {unique_vals}"
+            f"Mask has NO mask-out entries (0.0) — all values are attend. Unique values: {unique_vals}"
         )
         assert 1 in unique_vals, (
-            f"Mask has NO attend entries (1.0) — all values are blocked. "
-            f"Unique values: {unique_vals}"
+            f"Mask has NO attend entries (1.0) — all values are blocked. Unique values: {unique_vals}"
         )
 
     # ── Test 2: Causal pattern ──────────────────────────────────
@@ -129,14 +123,12 @@ class TestMaskCorrectness:
                     if j <= i:
                         # Attend: should be 1.0
                         assert val == pytest.approx(1.0, abs=1e-6), (
-                            f"batch={b}, pos=({i},{j}): attend should be "
-                            f"~1.0, got {val}"
+                            f"batch={b}, pos=({i},{j}): attend should be ~1.0, got {val}"
                         )
                     else:
                         # Mask: should be 0.0
                         assert val == pytest.approx(0.0, abs=1e-6), (
-                            f"batch={b}, pos=({i},{j}): masked position "
-                            f"should be 0.0, got {val}"
+                            f"batch={b}, pos=({i},{j}): masked position should be 0.0, got {val}"
                         )
 
     # ── Test 3: Determinism ────────────────────────────────────────
@@ -154,10 +146,7 @@ class TestMaskCorrectness:
             np.testing.assert_array_equal(
                 masks[0],
                 masks[i],
-                err_msg=(
-                    f"Mask differs between run 0 and run {i} — "
-                    f"non-determinism detected in compiled dylib"
-                ),
+                err_msg=(f"Mask differs between run 0 and run {i} — non-determinism detected in compiled dylib"),
             )
 
     # ── Test 4: Both batch items have valid masks ─────────────────

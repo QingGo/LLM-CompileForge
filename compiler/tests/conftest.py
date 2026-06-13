@@ -72,8 +72,13 @@ def pytest_collection_modifyitems(config: Any, items: list[Any]) -> None:
         for item in items:
             _nid = item.nodeid.lower()
             _pipeline_keys = (
-                "mlir", "llvm", "pipeline_ir", "pipeline_stage",
-                "pipeline_lowering", "pipeline_validation", "pipeline_bugs"
+                "mlir",
+                "llvm",
+                "pipeline_ir",
+                "pipeline_stage",
+                "pipeline_lowering",
+                "pipeline_validation",
+                "pipeline_bugs",
             )
             if any(k in _nid for k in _pipeline_keys):
                 item.add_marker(skip_mlir)
@@ -83,6 +88,7 @@ def _check_mlir_bindings() -> bool:
     """Check if MLIR Python bindings are importable."""
     try:
         import mlir.ir  # noqa: F401
+
         return True
     except ImportError:
         return False

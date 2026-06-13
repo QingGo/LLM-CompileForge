@@ -55,8 +55,9 @@ class ComputeUnit:
 
     @property
     def max_tflops(self) -> float:
-        return max(self.fp32_tflops, self.fp16_tflops, self.bf16_tflops,
-                   self.int8_tops, self.int4_tops, self.fp8_tflops)
+        return max(
+            self.fp32_tflops, self.fp16_tflops, self.bf16_tflops, self.int8_tops, self.int4_tops, self.fp8_tflops
+        )
 
 
 @dataclass
@@ -125,20 +126,25 @@ class HardwareSpec:
         else:
             self.compute_units = []
             if peak_tflops is not None:
-                self.compute_units.append(ComputeUnit(
-                    name="Default", fp32_tflops=peak_tflops,
-                ))
+                self.compute_units.append(
+                    ComputeUnit(
+                        name="Default",
+                        fp32_tflops=peak_tflops,
+                    )
+                )
 
         if memory_levels is not None:
             self.memory_levels = memory_levels
         else:
             self.memory_levels = []
             if bandwidth_gbs is not None or memory_gb is not None:
-                self.memory_levels.append(MemoryLevel(
-                    name="Main Memory",
-                    size_gb=memory_gb if memory_gb is not None else 16.0,
-                    bandwidth_gbs=bandwidth_gbs if bandwidth_gbs is not None else 50.0,
-                ))
+                self.memory_levels.append(
+                    MemoryLevel(
+                        name="Main Memory",
+                        size_gb=memory_gb if memory_gb is not None else 16.0,
+                        bandwidth_gbs=bandwidth_gbs if bandwidth_gbs is not None else 50.0,
+                    )
+                )
 
         self.interconnects: list[Interconnect] = interconnects or []
 
@@ -149,8 +155,7 @@ class HardwareSpec:
         """Max FP compute throughput across all compute units."""
         if not self.compute_units:
             return 10.0
-        return max(max(cu.fp32_tflops, cu.fp16_tflops, cu.bf16_tflops, cu.fp8_tflops)
-                   for cu in self.compute_units)
+        return max(max(cu.fp32_tflops, cu.fp16_tflops, cu.bf16_tflops, cu.fp8_tflops) for cu in self.compute_units)
 
     @property
     def bandwidth_gbs(self) -> float:
@@ -188,9 +193,7 @@ class HardwareSpec:
 
     # ── Latency estimation ────────────────────────────────
 
-    def predict_latency(
-        self, op_name: str, inputs: list[Any], **kwargs: Any
-    ) -> float:
+    def predict_latency(self, op_name: str, inputs: list[Any], **kwargs: Any) -> float:
         """Predict execution latency in nanoseconds.
 
         Uses fixed latency from op_latency_us if available.
@@ -239,48 +242,58 @@ class HardwareSpec:
     def from_dict(cls, data: dict[str, Any]) -> HardwareSpec:
         cu_list = []
         for cu_data in data.get("compute_units", []):
-            cu_list.append(ComputeUnit(
-                name=cu_data.get("name", ""),
-                fp32_tflops=float(cu_data.get("fp32_tflops", 0)),
-                fp16_tflops=float(cu_data.get("fp16_tflops", 0)),
-                bf16_tflops=float(cu_data.get("bf16_tflops", 0)),
-                int8_tops=float(cu_data.get("int8_tops", 0)),
-                int4_tops=float(cu_data.get("int4_tops", 0)),
-                fp8_tflops=float(cu_data.get("fp8_tflops", 0)),
-                applies_to=cu_data.get("applies_to", []),
-            ))
+            cu_list.append(
+                ComputeUnit(
+                    name=cu_data.get("name", ""),
+                    fp32_tflops=float(cu_data.get("fp32_tflops", 0)),
+                    fp16_tflops=float(cu_data.get("fp16_tflops", 0)),
+                    bf16_tflops=float(cu_data.get("bf16_tflops", 0)),
+                    int8_tops=float(cu_data.get("int8_tops", 0)),
+                    int4_tops=float(cu_data.get("int4_tops", 0)),
+                    fp8_tflops=float(cu_data.get("fp8_tflops", 0)),
+                    applies_to=cu_data.get("applies_to", []),
+                )
+            )
 
         mem_list = []
         for m_data in data.get("memory_levels", []):
-            mem_list.append(MemoryLevel(
-                name=m_data.get("name", ""),
-                size_gb=float(m_data.get("size_gb", 0)),
-                bandwidth_gbs=float(m_data.get("bandwidth_gbs", 0)),
-                latency_ns=float(m_data.get("latency_ns", 0)),
-            ))
+            mem_list.append(
+                MemoryLevel(
+                    name=m_data.get("name", ""),
+                    size_gb=float(m_data.get("size_gb", 0)),
+                    bandwidth_gbs=float(m_data.get("bandwidth_gbs", 0)),
+                    latency_ns=float(m_data.get("latency_ns", 0)),
+                )
+            )
 
         ic_list = []
         for ic_data in data.get("interconnects", []):
-            ic_list.append(Interconnect(
-                name=ic_data.get("name", ""),
-                bandwidth_gbs=float(ic_data.get("bandwidth_gbs", 0)),
-                latency_us=float(ic_data.get("latency_us", 0)),
-                topology=ic_data.get("topology", "all_to_all"),
-            ))
+            ic_list.append(
+                Interconnect(
+                    name=ic_data.get("name", ""),
+                    bandwidth_gbs=float(ic_data.get("bandwidth_gbs", 0)),
+                    latency_us=float(ic_data.get("latency_us", 0)),
+                    topology=ic_data.get("topology", "all_to_all"),
+                )
+            )
 
         # Backward compat: old YAML format with peak_tflops/bandwidth_gbs
         if not cu_list and "peak_tflops" in data:
-            cu_list.append(ComputeUnit(
-                name="Default",
-                fp32_tflops=float(data.get("peak_tflops", 10)),
-                fp16_tflops=float(data.get("peak_tflops", 10)),
-            ))
+            cu_list.append(
+                ComputeUnit(
+                    name="Default",
+                    fp32_tflops=float(data.get("peak_tflops", 10)),
+                    fp16_tflops=float(data.get("peak_tflops", 10)),
+                )
+            )
         if not mem_list and "bandwidth_gbs" in data:
-            mem_list.append(MemoryLevel(
-                name="Main Memory",
-                size_gb=float(data.get("memory_gb", 16)),
-                bandwidth_gbs=float(data.get("bandwidth_gbs", 50)),
-            ))
+            mem_list.append(
+                MemoryLevel(
+                    name="Main Memory",
+                    size_gb=float(data.get("memory_gb", 16)),
+                    bandwidth_gbs=float(data.get("bandwidth_gbs", 50)),
+                )
+            )
 
         return cls(
             name=data.get("name", "Unknown"),
@@ -291,9 +304,7 @@ class HardwareSpec:
         )
 
 
-def _estimate_flops(
-    op_name: str, inputs: list[Any], kwargs: dict[str, Any]
-) -> float:
+def _estimate_flops(op_name: str, inputs: list[Any], kwargs: dict[str, Any]) -> float:
     """Estimate FLOP count for an operation based on tensor inputs."""
     import torch
 
@@ -326,8 +337,21 @@ def _estimate_flops(
             return 5.0 * _total(inputs[0])
         return 1000
 
-    if op_name in ("add", "sub", "mul", "div", "neg", "relu", "gelu", "silu",
-                   "sigmoid", "softplus", "exp", "tanh", "sqrt"):
+    if op_name in (
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "neg",
+        "relu",
+        "gelu",
+        "silu",
+        "sigmoid",
+        "softplus",
+        "exp",
+        "tanh",
+        "sqrt",
+    ):
         if inputs and isinstance(inputs[0], torch.Tensor):
             return float(_total(inputs[0]))
         return 100
@@ -338,9 +362,7 @@ def _estimate_flops(
     return 100
 
 
-def _estimate_bytes(
-    op_name: str, inputs: list[Any], kwargs: dict[str, Any]
-) -> float:
+def _estimate_bytes(op_name: str, inputs: list[Any], kwargs: dict[str, Any]) -> float:
     """Estimate bytes accessed (read + write) for an operation."""
     import torch
 

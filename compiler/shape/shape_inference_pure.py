@@ -307,10 +307,7 @@ def _infer_ones_like_pure(
     shape_kwarg = kwargs.get("shape")
     if shape_kwarg:
         # shape entries can be str (SSA ref → dynamic/None) or int (static)
-        result_shape: tuple[int | None, ...] = tuple(
-            d if isinstance(d, int) else None
-            for d in shape_kwarg
-        )
+        result_shape: tuple[int | None, ...] = tuple(d if isinstance(d, int) else None for d in shape_kwarg)
         return [(result_shape, elts[0] if elts else "f32")]
     if shapes:
         return [(shapes[0], elts[0] if elts else "f32")]
@@ -345,7 +342,7 @@ def _build_pure_table() -> dict[str, Any]:
     # 1. Auto-map _infer_<op>_pure → op
     for name, obj in list(globals().items()):
         if name.startswith("_infer_") and name.endswith("_pure") and callable(obj):
-            op_key = name[len("_infer_"):-len("_pure")]
+            op_key = name[len("_infer_") : -len("_pure")]
             table[op_key] = obj
 
     # 2. Explicit overrides for ops not following _infer_<op>_pure convention
@@ -358,20 +355,55 @@ def _build_pure_table() -> dict[str, Any]:
 
     # 3. Elementwise ops use _infer_elementwise_pure as the shared function
     _elementwise_pure_ops: set[str] = {
-        "add", "mul", "sub", "div", "neg", "pow", "max",
-        "relu", "gelu", "silu", "sigmoid", "softplus", "exp", "tanh",
-        "sqrt", "clamp_min", "rsqrt", "cos", "sin",
-        "softmax", "layer_norm", "rms_norm",
-        "triu", "tril", "copy_", "type_as", "identity", "conv1d",
-        "zeros_like", "diff",
-        "scaled_dot_product_attention", "fused_silu_mul",
-        "fused_attention_output", "fused_attention_block",
-        "cumsum", "masked_fill",
-        "zeros", "eye", "pad",
-        "einsum", "stack", "view_as", "expand_as",
-        "fused_rms_norm_matmul", "fused_qkv",
-        "weight", "constant",
-        "split", "chunk",
+        "add",
+        "mul",
+        "sub",
+        "div",
+        "neg",
+        "pow",
+        "max",
+        "relu",
+        "gelu",
+        "silu",
+        "sigmoid",
+        "softplus",
+        "exp",
+        "tanh",
+        "sqrt",
+        "clamp_min",
+        "rsqrt",
+        "cos",
+        "sin",
+        "softmax",
+        "layer_norm",
+        "rms_norm",
+        "triu",
+        "tril",
+        "copy_",
+        "type_as",
+        "identity",
+        "conv1d",
+        "zeros_like",
+        "diff",
+        "scaled_dot_product_attention",
+        "fused_silu_mul",
+        "fused_attention_output",
+        "fused_attention_block",
+        "cumsum",
+        "masked_fill",
+        "zeros",
+        "eye",
+        "pad",
+        "einsum",
+        "stack",
+        "view_as",
+        "expand_as",
+        "fused_rms_norm_matmul",
+        "fused_qkv",
+        "weight",
+        "constant",
+        "split",
+        "chunk",
     }
     for op in _elementwise_pure_ops:
         if op not in table:

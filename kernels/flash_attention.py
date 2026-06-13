@@ -36,8 +36,13 @@ def _flash_attention_fwd_cpu(
     if scale is None:
         scale = 1.0 / math.sqrt(q.shape[-1])
     return F.scaled_dot_product_attention(
-        q, k, v, attn_mask=None, dropout_p=0.0,
-        is_causal=causal, scale=scale,
+        q,
+        k,
+        v,
+        attn_mask=None,
+        dropout_p=0.0,
+        is_causal=causal,
+        scale=scale,
     )
 
 
@@ -57,15 +62,30 @@ def _flash_attention_fwd_triton(
 
     @triton.jit
     def _kernel(
-        Q_ptr, K_ptr, V_ptr, O_ptr,
-        stride_qb, stride_qh, stride_qm,
-        stride_kb, stride_kh, stride_kn,
-        stride_vb, stride_vh, stride_vn,
-        stride_ob, stride_oh, stride_om,
-        BATCH: tl.constexpr, N_HEADS: tl.constexpr, SEQ_LEN: tl.constexpr,
+        Q_ptr,
+        K_ptr,
+        V_ptr,
+        O_ptr,
+        stride_qb,
+        stride_qh,
+        stride_qm,
+        stride_kb,
+        stride_kh,
+        stride_kn,
+        stride_vb,
+        stride_vh,
+        stride_vn,
+        stride_ob,
+        stride_oh,
+        stride_om,
+        BATCH: tl.constexpr,
+        N_HEADS: tl.constexpr,
+        SEQ_LEN: tl.constexpr,
         HEAD_DIM: tl.constexpr,
-        BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
-        CAUSAL: tl.constexpr, SCALE: tl.constexpr,
+        BLOCK_M: tl.constexpr,
+        BLOCK_N: tl.constexpr,
+        CAUSAL: tl.constexpr,
+        SCALE: tl.constexpr,
     ):
         pid = tl.program_id(0)
         num_m_blocks = tl.cdiv(SEQ_LEN, BLOCK_M)
@@ -77,8 +97,7 @@ def _flash_attention_fwd_triton(
         offs_d = tl.arange(0, HEAD_DIM)
 
         q = tl.load(
-            Q_ptr + batch_idx * stride_qb + head_idx * stride_qh
-            + offs_m[:, None] * stride_qm + offs_d[None, :],
+            Q_ptr + batch_idx * stride_qb + head_idx * stride_qh + offs_m[:, None] * stride_qm + offs_d[None, :],
             mask=offs_m[:, None] < SEQ_LEN,
         )
 
@@ -90,8 +109,7 @@ def _flash_attention_fwd_triton(
             offs_n = n_block_idx * BLOCK_N + tl.arange(0, BLOCK_N)
 
             k_block = tl.load(
-                K_ptr + batch_idx * stride_kb + head_idx * stride_kh
-                + offs_n[:, None] * stride_kn + offs_d[None, :],
+                K_ptr + batch_idx * stride_kb + head_idx * stride_kh + offs_n[:, None] * stride_kn + offs_d[None, :],
                 mask=offs_n[:, None] < SEQ_LEN,
             )
 
@@ -111,16 +129,14 @@ def _flash_attention_fwd_triton(
             acc = acc * alpha[:, None]
 
             v_block = tl.load(
-                V_ptr + batch_idx * stride_vb + head_idx * stride_vh
-                + offs_n[None, :] * stride_vn + offs_d[:, None],
+                V_ptr + batch_idx * stride_vb + head_idx * stride_vh + offs_n[None, :] * stride_vn + offs_d[:, None],
                 mask=offs_n[None, :] < SEQ_LEN,
             )
             acc += tl.dot(p, v_block)
 
         acc = acc / l_i[:, None]
         tl.store(
-            O_ptr + batch_idx * stride_ob + head_idx * stride_oh
-            + offs_m[:, None] * stride_om + offs_d[None, :],
+            O_ptr + batch_idx * stride_ob + head_idx * stride_oh + offs_m[:, None] * stride_om + offs_d[None, :],
             acc,
             mask=offs_m[:, None] < SEQ_LEN,
         )
@@ -132,14 +148,30 @@ def _flash_attention_fwd_triton(
     grid = (B * H * triton.cdiv(S, BLOCK_M),)
 
     _kernel[grid](
-        q, k, v, o,
-        q.stride(0), q.stride(1), q.stride(2),
-        k.stride(0), k.stride(1), k.stride(2),
-        v.stride(0), v.stride(1), v.stride(2),
-        o.stride(0), o.stride(1), o.stride(2),
-        BATCH=B, N_HEADS=H, SEQ_LEN=S, HEAD_DIM=D,
-        BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N,
-        CAUSAL=causal, SCALE=scale,
+        q,
+        k,
+        v,
+        o,
+        q.stride(0),
+        q.stride(1),
+        q.stride(2),
+        k.stride(0),
+        k.stride(1),
+        k.stride(2),
+        v.stride(0),
+        v.stride(1),
+        v.stride(2),
+        o.stride(0),
+        o.stride(1),
+        o.stride(2),
+        BATCH=B,
+        N_HEADS=H,
+        SEQ_LEN=S,
+        HEAD_DIM=D,
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
+        CAUSAL=causal,
+        SCALE=scale,
     )
     return o
 

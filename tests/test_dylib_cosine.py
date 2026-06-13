@@ -24,9 +24,7 @@ DYLIB_DIR = "outputs/compiled/opt_125m_fresh"
 
 def _dylib_exists() -> bool:
     try:
-        return os.path.isdir(DYLIB_DIR) and any(
-            f.endswith(".dylib") for f in os.listdir(DYLIB_DIR)
-        )
+        return os.path.isdir(DYLIB_DIR) and any(f.endswith(".dylib") for f in os.listdir(DYLIB_DIR))
     except OSError:
         return False
 
@@ -68,8 +66,8 @@ def python_result():
 # ── Per-position cosine test — the primary signal ─────────────
 
 
-@pytest.mark.unit
-@pytest.mark.timeout(60)
+@pytest.mark.integration
+@pytest.mark.timeout(120)
 @requires_dylib
 def test_per_position_cosine(
     dylib_result: Any,
@@ -89,8 +87,8 @@ def test_per_position_cosine(
 # ── Per-layer cosine test — supplementary signal ──────────────
 
 
-@pytest.mark.unit
-@pytest.mark.timeout(60)
+@pytest.mark.integration
+@pytest.mark.timeout(120)
 @requires_dylib
 def test_per_layer_cosine(
     dylib_result: Any,

@@ -48,22 +48,19 @@ def _parse_mlir_text(text: str) -> MlirModule:
 
         # Module attributes: module attributes {chain_order = [...]} {
         if stripped.startswith("module attributes {") and stripped.endswith("{"):
-            attr_block = stripped[len("module attributes "):-1].strip()
+            attr_block = stripped[len("module attributes ") : -1].strip()
             if attr_block.startswith("{") and attr_block.endswith("}"):
                 # Find chain_order = [...] inside attr block
                 import re as _re2
-                co_match = _re2.search(r'sf\.chain_order\s*=\s*\[(.*?)\]', attr_block)
+
+                co_match = _re2.search(r"sf\.chain_order\s*=\s*\[(.*?)\]", attr_block)
                 if co_match:
                     names_str = co_match.group(1)
-                    chain_order = [
-                        n.strip().strip('"') for n in _split_comma(names_str)
-                    ]
-                ep_match = _re2.search(r'sf\.exec_plan_data\s*=\s*\[(.*?)\]', attr_block)
+                    chain_order = [n.strip().strip('"') for n in _split_comma(names_str)]
+                ep_match = _re2.search(r"sf\.exec_plan_data\s*=\s*\[(.*?)\]", attr_block)
                 if ep_match:
                     nums_str = ep_match.group(1)
-                    exec_plan_data = [
-                        int(n.strip()) for n in _split_comma(nums_str) if n.strip()
-                    ]
+                    exec_plan_data = [int(n.strip()) for n in _split_comma(nums_str) if n.strip()]
             continue
         if stripped == "}":
             if current_func is not None:
@@ -74,10 +71,10 @@ def _parse_mlir_text(text: str) -> MlirModule:
         # Function declaration: func.func @name(...) -> ... attributes {...} {
         if stripped.startswith("func.func @"):
             weight_names_attr: list[str] = []
-            rest = stripped[len("func.func @"):]
+            rest = stripped[len("func.func @") :]
             name_end = rest.find("(")
             func_name = rest[:name_end].strip()
-            args_str = rest[name_end + 1:rest.find(")")]
+            args_str = rest[name_end + 1 : rest.find(")")]
             inputs: list[tuple[str, str]] = []
             for arg in _split_comma(args_str):
                 arg = arg.strip()
@@ -88,19 +85,16 @@ def _parse_mlir_text(text: str) -> MlirModule:
             ret_types: list[str] = []
             consumed_internally: list[bool] = []
             if ret_start > 0:
-                ret_part = rest[ret_start + 2:].strip()
+                ret_part = rest[ret_start + 2 :].strip()
                 # Check for 'attributes {...}' before the final '{'
                 attr_start = ret_part.find("attributes {")
                 if attr_start >= 0:
                     attr_end = ret_part.index("}", attr_start) + 1
-                    attr_str = ret_part[attr_start + len("attributes "):attr_end]
+                    attr_str = ret_part[attr_start + len("attributes ") : attr_end]
                     attrs = _parse_attrs(attr_str[1:-1])  # strip outer { }
                     ci_raw = attrs.get("sf.consumed_internally", [])
                     if isinstance(ci_raw, list):
-                        consumed_internally = [
-                            v if isinstance(v, bool) else (str(v).lower() == "true")
-                            for v in ci_raw
-                        ]
+                        consumed_internally = [v if isinstance(v, bool) else (str(v).lower() == "true") for v in ci_raw]
                     wn_raw = attrs.get("sf.weight_names", [])
                     if isinstance(wn_raw, list):
                         weight_names_attr = [str(v) for v in wn_raw]
@@ -126,9 +120,9 @@ def _parse_mlir_text(text: str) -> MlirModule:
         # Parse func.return: extract output names and match with output types
         if stripped.startswith("func.return"):
             if current_func is not None:
-                ret_content = stripped[len("func.return"):].strip()
+                ret_content = stripped[len("func.return") :].strip()
                 if ":" in ret_content:
-                    ret_content = ret_content[:ret_content.rfind(":")].strip()
+                    ret_content = ret_content[: ret_content.rfind(":")].strip()
                 ret_names = [n.strip() for n in _split_comma(ret_content) if n.strip()]
                 if current_func.outputs and ret_names:
                     new_outputs = []
@@ -146,9 +140,12 @@ def _parse_mlir_text(text: str) -> MlirModule:
             continue
 
         # Parse operations: %r = "dialect.op"(...) {attrs} : (in_types) -> out_type
-        if "=" in stripped and "\"" in stripped:
+        if "=" in stripped and '"' in stripped:
             _parse_mlir_op(
-                stripped, current_func, ssa_to_name, ssa_types,
+                stripped,
+                current_func,
+                ssa_to_name,
+                ssa_types,
             )
 
     if current_func is not None:
@@ -183,7 +180,7 @@ def _parse_mlir_op(
     # Split: %r1, %r2 = "sf.op"(%a, %b) {attr} : (t1, t2) -> (t3, t4)
     eq_idx = line.index("=")
     results_part = line[:eq_idx].strip()
-    rest = line[eq_idx + 1:].strip()
+    rest = line[eq_idx + 1 :].strip()
 
     # Parse results (strip % prefix)
     results = [r.strip().lstrip("%") for r in results_part.split(",")]
@@ -191,13 +188,13 @@ def _parse_mlir_op(
     # Parse op name
     quote_start = rest.index('"')
     quote_end = rest.index('"', quote_start + 1)
-    qualified = rest[quote_start + 1:quote_end]
+    qualified = rest[quote_start + 1 : quote_end]
     dialect, op_name = _split_qualified(qualified)
 
     # Parse operands: everything between (...) after the op name
     paren_open = rest.index("(", quote_end)
     paren_close = rest.index(")", paren_open)
-    operands_str = rest[paren_open + 1:paren_close]
+    operands_str = rest[paren_open + 1 : paren_close]
     operands = [o.strip() for o in operands_str.split(",") if o.strip()]
 
     # Parse attributes: everything between { and } before the :
@@ -206,7 +203,7 @@ def _parse_mlir_op(
     colon_idx_for_attrs = rest.find(":", brace_open) if brace_open >= 0 else -1
     if brace_open >= 0 and (colon_idx_for_attrs < 0 or brace_open < colon_idx_for_attrs):
         brace_close = rest.index("}", brace_open)
-        attrs_str = rest[brace_open + 1:brace_close]
+        attrs_str = rest[brace_open + 1 : brace_close]
         attrs = _parse_attrs(attrs_str)
 
     # Record weight SSA mapping for sf.weight ops
@@ -219,7 +216,7 @@ def _parse_mlir_op(
     out_type_strs: list[str] = []
     colon_idx = rest.rfind(":")
     if colon_idx >= 0:
-        type_part = rest[colon_idx + 1:].strip()
+        type_part = rest[colon_idx + 1 :].strip()
         arrow_idx = type_part.find("->")
         if arrow_idx >= 0:
             in_types_part = type_part[:arrow_idx].strip()
@@ -229,7 +226,7 @@ def _parse_mlir_op(
                 in_type_strs = [in_types_part]
             # Filter out '...' placeholder
             in_type_strs = [t for t in in_type_strs if t != "..."]
-            out_types_str = type_part[arrow_idx + 2:].strip()
+            out_types_str = type_part[arrow_idx + 2 :].strip()
             out_type_strs = _parse_type_list(out_types_str)
             # Filter out '...' placeholder
             out_type_strs = [t for t in out_type_strs if t != "..."]

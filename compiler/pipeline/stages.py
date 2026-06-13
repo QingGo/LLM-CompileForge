@@ -50,8 +50,7 @@ def _make_verify_stage() -> Stage:
         if issues:
             for issue in issues:
                 _log.warning("  Module verification: %s", issue)
-        _log.info("  Module verification: %d issues found — %s",
-                  len(issues), "PASS" if not issues else "FAIL")
+        _log.info("  Module verification: %d issues found — %s", len(issues), "PASS" if not issues else "FAIL")
 
     return Stage(
         name="module-verify",
@@ -72,15 +71,18 @@ def _fixup_arith_tensor_constants_action(module: Any) -> int:
     (splat).  Replaces the regex-based fixup with proper MLIR API usage.
     """
     import mlir.ir as ir
+
     if not isinstance(module, ir.Module):
         return 0
     from compiler.backend.fixups import _walk_and_fix_tensor_constants
+
     return _walk_and_fix_tensor_constants(module)
 
 
 def _emit_c_interface_action(module: Any) -> None:
     """Add ``llvm.emit_c_interface`` to each func.func."""
     import mlir.ir as ir
+
     main_mod = module.operation.regions[0].blocks[0]
     ctx = module.operation.context
     for op in list(main_mod):
@@ -140,13 +142,19 @@ def _strip_sf_attrs_canon_action(module: Any) -> None:
 
 
 def _insert_identity_copies_action(module: Any) -> None:
-    """Insert tensor.insert_slice copies for identity pass-through returns.
+    """Insert tensor.insert_slice copies for identity pass-through returns (Stage C2.5).
 
     Delegates to :func:`compiler.pipeline.actions.insert_identity_copies_action`.
-    Must run BEFORE bufferization (C3) so that tensor.empty +
-    tensor.insert_slice are properly lowered by the bufferization pass.
     """
     from compiler.pipeline.actions import insert_identity_copies_action as _action
+
+    _action(module)
+
+
+def _unsqueeze_copies_action(module: Any) -> None:
+    """Insert tensor.insert_slice copies before tensor.expand_shape (Stage C2.6)."""
+    from compiler.pipeline.actions import insert_unsqueeze_copies_action as _action
+
     _action(module)
 
 
@@ -158,25 +166,26 @@ BUILTIN_STAGES: list[Stage] = [
     Stage("A1-canonicalize,cse", "canonicalize,cse"),
     Stage("A2-eliminate-empty-tensors", "eliminate-empty-tensors"),
     Stage("A3-empty-tensor-to-alloc", "empty-tensor-to-alloc-tensor"),
-
     # ── Phase B: broadcast decomposition (optional, skip) ──
-
     # ── Phase C: bufferization ──
     Stage("C1-interface", action=_emit_c_interface_action, timeout=5.0),
     Stage("C2-strip-sf-attrs", action=_strip_sf_attrs_canon_action, timeout=30.0),
     Stage("C2.5-insert-identity-copies", action=_insert_identity_copies_action, timeout=30.0),
-    Stage("C3-bufferize", (
-        "one-shot-bufferize{bufferize-function-boundaries allow-unknown-ops"
-        " function-boundary-type-conversion=identity-layout-map},"
-        "canonicalize,cse,convert-bufferization-to-memref"
-    ), timeout=60.0),
-
+    Stage("C2.6-unsqueeze-copies", action=_unsqueeze_copies_action, timeout=30.0),
+    Stage(
+        "C3-bufferize",
+        (
+            "one-shot-bufferize{bufferize-function-boundaries allow-unknown-ops"
+            " function-boundary-type-conversion=identity-layout-map},"
+            "canonicalize,cse,convert-bufferization-to-memref"
+        ),
+        timeout=60.0,
+    ),
     # ── Phase D: loops → control flow ──
     Stage("D1-linalg→loops", "convert-linalg-to-loops"),
     Stage("D2-lower-affine", "lower-affine"),
     Stage("D3-scf→cf", "convert-scf-to-cf"),
     Stage("D4-expand-strided", "expand-strided-metadata"),
-
     # ── Phase E: LLVM conversion ──
     Stage("E1-finalize-memref", "finalize-memref-to-llvm{use-generic-functions=false}"),
     Stage("E2-math→llvm", "convert-math-to-llvm"),
@@ -262,10 +271,7 @@ def run_stages(
         op_count_pre = sum(pre_counts.values()) if pre_counts else 0
         op_count_post = sum(post_counts.values()) if post_counts else 0
         all_dialects = set(pre_counts.keys()) | set(post_counts.keys())
-        dialect_deltas = {
-            d: post_counts.get(d, 0) - pre_counts.get(d, 0)
-            for d in sorted(all_dialects)
-        }
+        dialect_deltas = {d: post_counts.get(d, 0) - pre_counts.get(d, 0) for d in sorted(all_dialects)}
 
         # ── Dead stage detection (persistent across runs) ──
         if pre_counts and post_counts:
@@ -273,9 +279,9 @@ def run_stages(
             is_dead = _DeadStageTracker.record(stage.name, dialect_changed=not no_change)
             if no_change and is_dead:
                 _log.warning(
-                    "  ⚠️ Stage '%s' marked DEAD after %d consecutive runs with "
-                    "no dialect change — pre=%s post=%s",
-                    stage.name, _DeadStageTracker.CONSECUTIVE_THRESHOLD,
+                    "  ⚠️ Stage '%s' marked DEAD after %d consecutive runs with no dialect change — pre=%s post=%s",
+                    stage.name,
+                    _DeadStageTracker.CONSECUTIVE_THRESHOLD,
                     dict(sorted(pre_counts.items())),
                     dict(sorted(post_counts.items())),
                 )
@@ -290,16 +296,22 @@ def run_stages(
 
         # JSON structured event: per-stage
         if _emit_json:
-            _log.info("", extra={"event_type": "pipeline_stage", "event_data": {
-                "stage_name": stage.name,
-                "elapsed_secs": round(result.elapsed, 3),
-                "ir_lines": result.ir_lines,
-                "op_count_pre": op_count_pre,
-                "op_count_post": op_count_post,
-                "dialect_deltas": dialect_deltas,
-                "warn_only": stage.warn_only,
-                "success": result.success,
-            }})
+            _log.info(
+                "",
+                extra={
+                    "event_type": "pipeline_stage",
+                    "event_data": {
+                        "stage_name": stage.name,
+                        "elapsed_secs": round(result.elapsed, 3),
+                        "ir_lines": result.ir_lines,
+                        "op_count_pre": op_count_pre,
+                        "op_count_post": op_count_post,
+                        "dialect_deltas": dialect_deltas,
+                        "warn_only": stage.warn_only,
+                        "success": result.success,
+                    },
+                },
+            )
 
         # ── Growth check (existing) ──
         if result.ir_lines > 0 and prev_line_count > 0:
@@ -307,7 +319,10 @@ def run_stages(
             if growth_ratio > 5.0:
                 _log.warning(
                     "  ⚠️ Stage '%s' caused %dx IR growth (%d → %d lines) — possible explosion",
-                    stage.name, int(growth_ratio), prev_line_count, result.ir_lines,
+                    stage.name,
+                    int(growth_ratio),
+                    prev_line_count,
+                    result.ir_lines,
                 )
                 if result.ir_snapshot_path:
                     _log.warning(
@@ -319,8 +334,7 @@ def run_stages(
 
         if not result.success and not stage.warn_only:
             raise RuntimeError(
-                f"Pipeline stage '{stage.name}' failed: {result.error}. "
-                f"IR snapshot saved to {result.ir_snapshot_path}"
+                f"Pipeline stage '{stage.name}' failed: {result.error}. IR snapshot saved to {result.ir_snapshot_path}"
             )
 
     # ── Pipeline summary ──
@@ -328,9 +342,12 @@ def run_stages(
     total_elapsed = sum(r.elapsed for r in results)
     final_line_count = results[-1].ir_lines if results else initial_line_count
     _log.info("  Pipeline summary: %d stages in %.2f s", len(results), total_elapsed)
-    _log.info("  Initial IR: %d lines → Final: %d lines (%+.1f%%)",
-              initial_line_count, final_line_count,
-              ((final_line_count - initial_line_count) / max(initial_line_count, 1)) * 100)
+    _log.info(
+        "  Initial IR: %d lines → Final: %d lines (%+.1f%%)",
+        initial_line_count,
+        final_line_count,
+        ((final_line_count - initial_line_count) / max(initial_line_count, 1)) * 100,
+    )
 
     # ── Warn-only failure report ──
     warn_failures = []
@@ -340,7 +357,8 @@ def run_stages(
     if warn_failures:
         _log.warning(
             "  ⚠️ %d warn_only stage(s) failed: %s — outputs may be degraded",
-            len(warn_failures), warn_failures,
+            len(warn_failures),
+            warn_failures,
         )
 
     _log.info("=" * 60)
@@ -355,22 +373,29 @@ def run_stages(
         _log.warning(
             "  %d function(s) with signature/return mismatch — IR saved to %s "
             "(this may cause uninitialized output buffers at runtime, see Issue #45)",
-            len(sig_errors), sig_snapshot_path,
+            len(sig_errors),
+            sig_snapshot_path,
         )
 
     # JSON structured event: pipeline complete
     if _emit_json and results:
         final_module_str = str(module)
         final_op_count, _ = _count_module_ops(final_module_str)
-        _log.info("", extra={"event_type": "pipeline_complete", "event_data": {
-            "num_stages": len(results),
-            "total_elapsed_secs": round(total_elapsed, 3),
-            "initial_ir_lines": initial_line_count,
-            "final_ir_lines": final_line_count,
-            "initial_op_count": initial_op_count,
-            "final_op_count": final_op_count,
-            "all_success": all(r.success for r in results),
-            "stages_completed": sum(1 for r in results if r.success),
-        }})
+        _log.info(
+            "",
+            extra={
+                "event_type": "pipeline_complete",
+                "event_data": {
+                    "num_stages": len(results),
+                    "total_elapsed_secs": round(total_elapsed, 3),
+                    "initial_ir_lines": initial_line_count,
+                    "final_ir_lines": final_line_count,
+                    "initial_op_count": initial_op_count,
+                    "final_op_count": final_op_count,
+                    "all_success": all(r.success for r in results),
+                    "stages_completed": sum(1 for r in results if r.success),
+                },
+            },
+        )
 
     return results

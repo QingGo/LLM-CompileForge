@@ -33,7 +33,4 @@ class OutOfMemoryError(ServeForgeError):
         self.needed = needed
         self.free = free
         self.total = total
-        super().__init__(
-            f"OutOfMemory: need {needed} blocks but only {free} free "
-            f"(total pool: {total})"
-        )
+        super().__init__(f"OutOfMemory: need {needed} blocks but only {free} free (total pool: {total})")

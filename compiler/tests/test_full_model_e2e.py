@@ -39,8 +39,7 @@ from compiler.backend.compile_utils import (
 from compiler.backend.fixups import _fixup_unrealized_casts_pass
 from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir
 from compiler.pipeline.lowering import SF_LOWERING_PIPELINE
-from compiler.sfcf_parser import DEFAULT_SRET_SIZE
-from scripts._cos import cosine_similarity
+from compiler.dylib_ffi import DEFAULT_SRET_SIZE
 
 _setup_mlir_path()
 import mlir.ir as ir  # noqa: E402
@@ -61,7 +60,7 @@ TEST_PROMPT = "The quick brown fox jumps over the lazy dog"
 
 def _memref(ptr, ndim, shape):
     """Create a memref descriptor struct matching MLIR's ABI."""
-    strides = tuple(int(np.prod(shape[i + 1:])) for i in range(ndim))
+    strides = tuple(int(np.prod(shape[i + 1 :])) for i in range(ndim))
 
     class M(ctypes.Structure):
         _fields_ = [
@@ -103,14 +102,9 @@ def _unpack_sret(sret_bytes: bytes) -> np.ndarray:
     al = struct.unpack_from("<Q", sb, 8)[0]  # allocated pointer
     # Determine rank from output — for logits it's always 3D (batch, seq, vocab)
     rank = 3
-    sz = tuple(
-        struct.unpack_from("<q", sb, 24 + 8 * i)[0]
-        for i in range(rank)
-    )
+    sz = tuple(struct.unpack_from("<q", sb, 24 + 8 * i)[0] for i in range(rank))
     n = int(np.prod(sz))
-    arr = np.array(
-        (ctypes.c_float * n).from_address(al), dtype=np.float32
-    )
+    arr = np.array((ctypes.c_float * n).from_address(al), dtype=np.float32)
     return arr.reshape(sz)
 
 
@@ -124,9 +118,7 @@ def _compile_dylib(mlir_text: str, td: str, dylib_name: str = "test.dylib") -> s
     sf.register_dialects(ctx._CAPIPtr, load=True)
     with ir.Location.unknown(ctx):
         mod = ir.Module.parse(mlir_text, ctx)
-        pman = pm.PassManager.parse(
-            "builtin.module({})".format(SF_LOWERING_PIPELINE), ctx
-        )
+        pman = pm.PassManager.parse(f"builtin.module({SF_LOWERING_PIPELINE})", ctx)
         pman.enable_verifier(True)
         pman.run(mod.operation)
         lower_linalg_to_llvm_ir(mod)
@@ -141,13 +133,16 @@ def _compile_dylib(mlir_text: str, td: str, dylib_name: str = "test.dylib") -> s
             f.write(str(mod))
 
         subprocess.run(
-            ["./llvm-project/build/bin/mlir-translate",
-             "--mlir-to-llvmir", m_path, "-o", ll_path],
-            capture_output=True, check=True, timeout=120,
+            ["./llvm-project/build/bin/mlir-translate", "--mlir-to-llvmir", m_path, "-o", ll_path],
+            capture_output=True,
+            check=True,
+            timeout=120,
         )
         subprocess.run(
             [_find_llc(), "-filetype=obj", ll_path, "-o", o_path],
-            capture_output=True, check=True, timeout=120,
+            capture_output=True,
+            check=True,
+            timeout=120,
         )
         free_o = _compile_serveforge_free(td)
         link_dylib([o_path, free_o], dylib_path)
@@ -159,10 +154,7 @@ def _extract_lowered_weight_names(mlir_text: str) -> list[str]:
     """Extract non-const weight names from sf.weight_names in lowered MLIR."""
     # Match the sf.weight_names format in generic MLIR:
     # {sf.weight_names = #sf<weight_names["name1", "name2", ...]>}
-    match = re.search(
-        r'sf\.weight_names\s*=\s*#sf<weight_names\[([^\]]+)\]',
-        mlir_text
-    )
+    match = re.search(r"sf\.weight_names\s*=\s*#sf<weight_names\[([^\]]+)\]", mlir_text)
     if not match:
         raise ValueError("Could not find sf.weight_names in lowered MLIR")
     names = re.findall(r'"([^"]+)"', match.group(1))
@@ -218,9 +210,7 @@ class TestFullModelE2E:
         sf.register_dialects(ctx_tmp._CAPIPtr, load=True)
         with ir.Location.unknown(ctx_tmp):
             tmp_mod = ir.Module.parse(model_mlir, ctx_tmp)
-            tmp_pm = pm.PassManager.parse(
-                "builtin.module({})".format(SF_LOWERING_PIPELINE), ctx_tmp
-            )
+            tmp_pm = pm.PassManager.parse(f"builtin.module({SF_LOWERING_PIPELINE})", ctx_tmp)
             tmp_pm.run(tmp_mod.operation)
             lowered_text = str(tmp_mod)
 
@@ -263,16 +253,12 @@ class TestFullModelE2E:
             if dylib_logits.shape != hf_logits.shape:
                 # sret might return a larger tensor (allocated size vs actual dims)
                 # Trim to match HF shape
-                dylib_logits = dylib_logits[:hf_logits.shape[0], :hf_logits.shape[1], :hf_logits.shape[2]]
+                dylib_logits = dylib_logits[: hf_logits.shape[0], : hf_logits.shape[1], : hf_logits.shape[2]]
 
         # 6. Compare
         cos = _cosine_similarity(dylib_logits, hf_logits)
-        mae = float(np.abs(
-            dylib_logits.astype(np.float64) - hf_logits.astype(np.float64)
-        ).mean())
-        max_abs_err = float(np.abs(
-            dylib_logits.astype(np.float64) - hf_logits.astype(np.float64)
-        ).max())
+        mae = float(np.abs(dylib_logits.astype(np.float64) - hf_logits.astype(np.float64)).mean())
+        max_abs_err = float(np.abs(dylib_logits.astype(np.float64) - hf_logits.astype(np.float64)).max())
 
         print(
             f"\nComparison results:\n"

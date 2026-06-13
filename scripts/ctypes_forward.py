@@ -25,18 +25,11 @@ from typing import Any
 
 import numpy as np
 
-from compiler.sfcf_parser import (
+from compiler.dylib_ffi import (
     make_memref_descriptor,
     parse_sret_outputs,
     compute_sret_size,
-)
-
-from gen.proto.python.sfa_abi_pb2 import (  # type: ignore[attr-defined]
-    SfaAbiHeader,
-    SfaWeightData,
-    SFA_INPUT_GLOBAL,
-    SFA_INPUT_WEIGHT,
-    SFA_INPUT_SSA,
+    load_graph_from_proto,
 )
 
 faulthandler.enable()
@@ -166,95 +159,6 @@ class DylibResult:
         return len(self._func_outputs)
 
 
-def _read_proto_symbol(lib: ctypes.CDLL, name: str, size_name: str) -> bytes:
-    data_ptr = ctypes.cast(
-        ctypes.addressof(ctypes.c_int64.in_dll(lib, name)),
-        ctypes.c_void_p,
-    )
-    size_ptr = ctypes.cast(
-        ctypes.addressof(ctypes.c_int64.in_dll(lib, size_name)),
-        ctypes.POINTER(ctypes.c_uint64),
-    )
-    return bytes((ctypes.c_uint8 * size_ptr[0]).from_address(data_ptr.value))
-
-
-def _load_graph_from_proto(
-    lib: ctypes.CDLL,
-    sfcf_constants: dict[str, np.ndarray],
-) -> dict[str, Any]:
-    abi_bytes = _read_proto_symbol(lib, "sfa_abi", "sfa_abi_size")
-    abi = SfaAbiHeader()
-    abi.ParseFromString(abi_bytes)
-
-    weights_bytes = _read_proto_symbol(lib, "sfa_weights", "sfa_weights_size")
-    weights = SfaWeightData()
-    weights.ParseFromString(weights_bytes)
-
-    for ce in weights.constant_entries:
-        dtype_map = {0: np.float32, 1: np.float16, 2: np.float16,
-                     3: np.int64, 4: np.int32, 5: np.int8, 6: np.uint8}
-        np_dtype = dtype_map.get(ce.dtype_code, np.float32)
-        shape = list(ce.shape) if ce.shape else [1]
-        raw = ce.data
-        arr = np.frombuffer(raw, dtype=np_dtype).reshape(shape)
-        if arr.dtype != np.float32:
-            arr = arr.astype(np.float32)
-        sfcf_constants[ce.name] = arr
-
-    functions: list[dict[str, Any]] = []
-    for fm in abi.funcs:
-        inputs: list[dict[str, Any]] = []
-        for fld in fm.input_fields:
-            binding: tuple
-            if fld.kind == SFA_INPUT_GLOBAL:
-                binding = ("global_input",)
-            elif fld.kind == SFA_INPUT_WEIGHT:
-                binding = ("weight", fld.weight_name)
-            elif fld.kind == SFA_INPUT_SSA:
-                binding = ("ssa", fld.ssa.producer_func, fld.ssa.producer_out)
-            else:
-                binding = ("global_input",)
-            inputs.append({
-                "binding": binding,
-                "rank": fld.rank,
-                "shape": list(fld.dims) if fld.dims else [0, 0],
-            })
-        outputs: list[dict[str, Any]] = []
-        for od in fm.outputs:
-            outputs.append({
-                "rank": od.rank,
-                "shape": list(od.dims) if od.dims else [0, 0],
-                "consumed_internally": False,
-            })
-        functions.append({
-            "symbol": fm.symbol,
-            "num_inputs": fm.num_inputs,
-            "num_outputs": len(fm.outputs),
-            "inputs": inputs,
-            "outputs": outputs,
-        })
-
-    global_input = (0, 0)
-    for fi, fm in enumerate(abi.funcs):
-        for ii, fld in enumerate(fm.input_fields):
-            if fld.kind == SFA_INPUT_GLOBAL:
-                global_input = (fi, ii)
-                break
-        if global_input != (0, 0) or fm.input_fields:
-            pass
-    if global_input == (0, 0) and functions:
-        for ii, fld in enumerate(abi.funcs[0].input_fields):
-            if fld.kind == SFA_INPUT_GLOBAL:
-                global_input = (0, ii)
-                break
-    global_output = (len(functions) - 1, 0) if functions else (0, 0)
-    return {
-        "functions": functions,
-        "global_input": global_input,
-        "global_output": global_output,
-    }
-
-
 def run_ctypes(
     artifact_dir: str = "./outputs/compiled/opt_125m_fresh",
     dylib_path: str | None = None,
@@ -296,8 +200,8 @@ def run_ctypes(
 
     # Load dylib + read proto symbols (sfa_abi, sfa_weights)
     lib = ctypes.CDLL(dylib_path)
-    sfcf_constants: dict[str, np.ndarray] = {}
-    graph = _load_graph_from_proto(lib, sfcf_constants)
+    dylib_constants: dict[str, np.ndarray] = {}
+    graph = load_graph_from_proto(lib, dylib_constants)
 
     if not graph.get("functions"):
         import logging
@@ -325,13 +229,13 @@ def run_ctypes(
         if bare_name != name:
             if bare_name in all_weights:
                 return all_weights[bare_name]
-            if bare_name in sfcf_constants:
-                return np.ascontiguousarray(sfcf_constants[bare_name])
+            if bare_name in dylib_constants:
+                return np.ascontiguousarray(dylib_constants[bare_name])
         prefixed = f"main_0.{name}"
         if prefixed in all_weights:
             return all_weights[prefixed]
-        if name in sfcf_constants:
-            return np.ascontiguousarray(sfcf_constants[name])
+        if name in dylib_constants:
+            return np.ascontiguousarray(dylib_constants[name])
         raise KeyError(f"Weight '{name}' not found")
 
     # Run forward pass
@@ -349,7 +253,7 @@ def run_ctypes(
             continue
 
         input_descs: list[ctypes.Structure] = []
-        input_args: list[ctypes.pointer] = []
+        input_args: list[Any] = []
         _keep_arrs: list[np.ndarray] = []
 
         for inp in func_def["inputs"]:

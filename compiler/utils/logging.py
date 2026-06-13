@@ -86,10 +86,12 @@ def init_logging() -> None:
     if log_format == "json":
         handler.setFormatter(JsonFormatter(datefmt="%H:%M:%S"))
     else:
-        handler.setFormatter(logging.Formatter(
-            fmt="%(asctime)s [%(levelname)-5s] %(name)-24s %(message)s",
-            datefmt="%H:%M:%S",
-        ))
+        handler.setFormatter(
+            logging.Formatter(
+                fmt="%(asctime)s [%(levelname)-5s] %(name)-24s %(message)s",
+                datefmt="%H:%M:%S",
+            )
+        )
 
     root = logging.getLogger()
     root.setLevel(_LOG_LEVEL)
@@ -118,7 +120,9 @@ def log_step_begin(
 ) -> None:
     logger.info(
         "step %d begin | waiting=%d running=%d",
-        step_id, waiting, running,
+        step_id,
+        waiting,
+        running,
         extra={
             "event_type": "engine_step",
             "event_data": {
@@ -141,7 +145,11 @@ def log_step_end(
 ) -> None:
     logger.info(
         "step %d end | %.1fms batch=%d tokens=%d results=%d",
-        step_id, duration_ms, batch_size, total_tokens, results,
+        step_id,
+        duration_ms,
+        batch_size,
+        total_tokens,
+        results,
         extra={
             "event_type": "engine_step",
             "event_data": {

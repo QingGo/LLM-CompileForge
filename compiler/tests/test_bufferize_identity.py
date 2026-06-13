@@ -30,6 +30,7 @@ import mlir.passmanager as pm  # noqa: E402 — must be after sys.path setup
 def _setup_mlir_path() -> None:
     """Ensure MLIR Python bindings and sf-dialect are on sys.path."""
     from compiler.backend.compile_utils import _setup_mlir_path as _msp
+
     _msp()
 
 
@@ -37,6 +38,7 @@ def _register_sf_dialect(ctx: ir.Context) -> None:
     """Register sf dialect in the MLIR context."""
     _setup_mlir_path()
     from mlir_sf._mlir_libs._sfDialectsNanobind import sf
+
     sf.register_dialects(ctx._CAPIPtr, load=True)
 
 
@@ -176,8 +178,7 @@ class TestIdentityDetection:
         module = _make_lowered_module(mlir_context)
         ir_text = str(module)
         assert _has_identity_return_in_text(ir_text), (
-            "Fixture should contain identity pass-through for test to be valid. "
-            "main_0 should return %arg1 directly."
+            "Fixture should contain identity pass-through for test to be valid. main_0 should return %arg1 directly."
         )
 
     def test_count_block_arg_returns(self, mlir_context: ir.Context) -> None:
@@ -185,8 +186,7 @@ class TestIdentityDetection:
         _register_sf_dialect(mlir_context)
         module = _make_lowered_module(mlir_context)
         assert _count_function_identity_returns(module) == 1, (
-            f"Expected exactly 1 identity return in main_0, got "
-            f"{_count_function_identity_returns(module)}"
+            f"Expected exactly 1 identity return in main_0, got {_count_function_identity_returns(module)}"
         )
 
     def test_no_identity_after_bufferization_without_fix(self, mlir_context: ir.Context) -> None:
@@ -223,6 +223,7 @@ class TestIdentityCopiesPass:
     def test_identity_copies_action_exists(self) -> None:
         """The insert_identity_copies_action must be importable."""
         from compiler.pipeline.actions import insert_identity_copies_action
+
         assert callable(insert_identity_copies_action)
 
     def test_identity_copies_eliminates_pass_through(self, mlir_context: ir.Context) -> None:
@@ -237,9 +238,7 @@ class TestIdentityCopiesPass:
         module = _make_lowered_module(mlir_context)
 
         # Verify identity exists before the pass
-        assert _count_function_identity_returns(module) == 1, (
-            "Precondition: fixture must have identity pass-through"
-        )
+        assert _count_function_identity_returns(module) == 1, "Precondition: fixture must have identity pass-through"
 
         # Run the identity copies action
         insert_identity_copies_action(module)
@@ -247,8 +246,7 @@ class TestIdentityCopiesPass:
         # Verify identity is eliminated
         remaining = _count_function_identity_returns(module)
         assert remaining == 0, (
-            f"After insert_identity_copies_action, expected 0 identity returns, "
-            f"got {remaining}. IR:\n{module}"
+            f"After insert_identity_copies_action, expected 0 identity returns, got {remaining}. IR:\n{module}"
         )
 
         # Verify the IR is still valid tensor IR (no corruption)

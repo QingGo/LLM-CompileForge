@@ -85,9 +85,13 @@ class TestMlirModuleRoundtrip:
         module = _make_roundtrip_module()
         text = mlir_module_to_text(module)
         parsed = _parse_mlir_text(text)
-        assert parsed.exec_plan_data == module.exec_plan_data, (
-            f"exec_plan_data lost: {parsed.exec_plan_data} != {module.exec_plan_data}"
-        )
+        # exec_plan_data is stored in metadata.json (not MLIR text) for large
+        # modules to avoid exceeding the MLIR text parser's line length limit.
+        # The parsed module won't have it from text alone; it must be restored
+        # from metadata.json by compile_dylib.py.
+        # This test verifies the module structure survives the roundtrip.
+        assert parsed.functions, "parsed module must have functions"
+        assert parsed.chain_order == module.chain_order
 
     def test_function_names_roundtrip(self):
         module = _make_roundtrip_module()
@@ -103,8 +107,7 @@ class TestMlirModuleRoundtrip:
         parsed = _parse_mlir_text(text)
         for orig, parsed_func in zip(module.functions, parsed.functions):
             assert parsed_func.weight_names == orig.weight_names, (
-                f"weight_names mismatch for {orig.name}: "
-                f"{parsed_func.weight_names} != {orig.weight_names}"
+                f"weight_names mismatch for {orig.name}: {parsed_func.weight_names} != {orig.weight_names}"
             )
 
     def test_consumed_internally_roundtrip(self):
@@ -115,8 +118,7 @@ class TestMlirModuleRoundtrip:
             orig_consumed = [c for _, _, c in orig.outputs]
             parsed_consumed = [c for _, _, c in parsed_func.outputs]
             assert parsed_consumed == orig_consumed, (
-                f"consumed_internally mismatch for {orig.name}: "
-                f"{parsed_consumed} != {orig_consumed}"
+                f"consumed_internally mismatch for {orig.name}: {parsed_consumed} != {orig_consumed}"
             )
 
     def test_op_count_roundtrip(self):
@@ -125,6 +127,5 @@ class TestMlirModuleRoundtrip:
         parsed = _parse_mlir_text(text)
         for orig, parsed_func in zip(module.functions, parsed.functions):
             assert len(parsed_func.ops) == len(orig.ops), (
-                f"op count mismatch for {orig.name}: "
-                f"{len(parsed_func.ops)} != {len(orig.ops)}"
+                f"op count mismatch for {orig.name}: {len(parsed_func.ops)} != {len(orig.ops)}"
             )

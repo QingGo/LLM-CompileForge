@@ -24,20 +24,19 @@ if _typing.TYPE_CHECKING:
 
 def _strided_to_struct(memref_type: str) -> str:
     """Build the equivalent ``!llvm.struct<...>`` for a memref type."""
-    m = re.match(r'memref<([^>]*?)(?:,|>)', memref_type)
+    m = re.match(r"memref<([^>]*?)(?:,|>)", memref_type)
     if not m:
-        return '!llvm.struct<(ptr, ptr, i64)>'
+        return "!llvm.struct<(ptr, ptr, i64)>"
     dims = m.group(1)
-    rank = dims.count('x')
-    sizes = f'array<{rank} x i64>' if rank else ''
-    strides = f'array<{rank} x i64>' if rank else ''
-    return (f'!llvm.struct<(ptr, ptr, i64, {sizes}, {strides})>'
-            if rank else '!llvm.struct<(ptr, ptr, i64)>')
+    rank = dims.count("x")
+    sizes = f"array<{rank} x i64>" if rank else ""
+    strides = f"array<{rank} x i64>" if rank else ""
+    return f"!llvm.struct<(ptr, ptr, i64, {sizes}, {strides})>" if rank else "!llvm.struct<(ptr, ptr, i64)>"
 
 
 def _llvm_struct_rank(struct_type: str) -> int:
     """Extract the memref rank from an ``!llvm.struct<...>`` type string."""
-    m = re.search(r'array<(\d+)\s*x\s*i64>', struct_type)
+    m = re.search(r"array<(\d+)\s*x\s*i64>", struct_type)
     return int(m.group(1)) if m else 0
 
 
@@ -57,6 +56,7 @@ def _fixup_unrealized_casts_pass(module: ir.Module) -> None:
     ctx = module.operation.context
     with ir.Location.unknown(ctx):
         _fixup_unrealized_casts_pass_body(module)
+
 
 def _fixup_unrealized_casts_pass_body(module: ir.Module) -> None:
     import mlir.ir as ir
@@ -81,9 +81,11 @@ def _fixup_unrealized_casts_pass_body(module: ir.Module) -> None:
         if result_type.startswith("memref<"):
             entry_casts.append((op, op.operation.parent, None))
         # Exit: single operand, source is memref, result is llvm struct
-        elif (len(operands) == 1
-              and str(operands[0].type).startswith("memref<")
-              and result_type.startswith("!llvm.struct<")):
+        elif (
+            len(operands) == 1
+            and str(operands[0].type).startswith("memref<")
+            and result_type.startswith("!llvm.struct<")
+        ):
             exit_casts.append((op, op.operation.parent, None))
         # Direct: result is llvm struct
         elif result_type.startswith("!llvm.struct<"):
@@ -150,7 +152,11 @@ def _fixup_unrealized_casts_pass_body(module: ir.Module) -> None:
         ip = ir.InsertionPoint(cast_op)
         curr = _build_struct_chain(
             f"fixup_{cast_op.result}",
-            struct_type, operands, rank, block, ip,
+            struct_type,
+            operands,
+            rank,
+            block,
+            ip,
         )
         cast_op.result.replace_all_uses_with(curr)
         cast_op.operation.erase()
@@ -166,7 +172,11 @@ def _fixup_unrealized_casts_pass_body(module: ir.Module) -> None:
         ip = ir.InsertionPoint(cast_op)
         curr = _build_struct_chain(
             f"fixup_{cast_op.result}",
-            struct_type, operands, rank, block, ip,
+            struct_type,
+            operands,
+            rank,
+            block,
+            ip,
         )
         cast_op.result.replace_all_uses_with(curr)
         cast_op.operation.erase()
@@ -183,8 +193,7 @@ def _fixup_unrealized_casts_pass_body(module: ir.Module) -> None:
         changes += 1
 
     total = len(entry_casts) + len(direct_casts) + len(exit_casts)
-    _log.warning("MLIR pass removed %d / %d unrealized_conversion_cast ops",
-                 changes, total)
+    _log.warning("MLIR pass removed %d / %d unrealized_conversion_cast ops", changes, total)
 
 
 def _struct_rank_from_type(struct_type: ir.Type) -> int:
@@ -220,9 +229,7 @@ def _fixup_arith_tensor_constants_mlir(mlir_text: str) -> str:
 
         if _fix_count:
             _log = logging.getLogger("compiler.fixups")
-            _log.warning(
-                "Fixed %d arith.constant ops with scalar→tensor type mismatch (MLIR)", _fix_count
-            )
+            _log.warning("Fixed %d arith.constant ops with scalar→tensor type mismatch (MLIR)", _fix_count)
 
         # Always re-serialize via str(module) to ensure clean custom-format output.
         # This catches cases where the regex produced valid-but-ugly generic format.
@@ -290,4 +297,3 @@ def _walk_and_fix_tensor_constants(module: ir.Module) -> int:
             _log.debug("Failed to fix arith.constant at %s", _op.location, exc_info=True)
 
     return _fix_count
-

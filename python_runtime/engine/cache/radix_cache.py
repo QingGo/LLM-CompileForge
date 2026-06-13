@@ -97,7 +97,7 @@ class RadixCache:
             # Full match of this child node
             matched_blocks.extend(child.kv_blocks)
             consumed += len(child_tokens)
-            remaining = remaining[len(child_tokens):]
+            remaining = remaining[len(child_tokens) :]
             node = child
 
         return matched_blocks, consumed
@@ -173,7 +173,7 @@ class RadixCache:
                 node = split_node
             else:
                 # Full match of this child node
-                remaining = remaining[len(child_tokens):]
+                remaining = remaining[len(child_tokens) :]
                 block_offset += len(child.kv_blocks)
                 node = child
 
@@ -190,9 +190,7 @@ class RadixCache:
         if target_blocks <= 0:
             return 0
 
-        def _collect_evictable(
-            node: RadixTreeNode, path: list[int]
-        ) -> list[tuple[list[int], RadixTreeNode]]:
+        def _collect_evictable(node: RadixTreeNode, path: list[int]) -> list[tuple[list[int], RadixTreeNode]]:
             """BFS-style collection of evictable nodes (ref_count == 0).
             Returns list of (parent_path_tokens, node) for eviction.
             Not used — we do DFS instead."""
@@ -234,9 +232,7 @@ class RadixCache:
 
     # ── Internals ────────────────────────────────────────────
 
-    def _add_node(
-        self, parent: RadixTreeNode, token_ids: tuple[int, ...], kv_blocks: list[int]
-    ) -> None:
+    def _add_node(self, parent: RadixTreeNode, token_ids: tuple[int, ...], kv_blocks: list[int]) -> None:
         """Create a new leaf node under *parent*.
 
         Increments the block_manager reference count for each cached

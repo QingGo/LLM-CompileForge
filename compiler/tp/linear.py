@@ -43,9 +43,7 @@ class ColumnParallelLinear(nn.Module):
         self.comm = comm
         tp_size = comm.world_size
         if out_features % tp_size != 0:
-            raise ValueError(
-                f"out_features ({out_features}) must be divisible by tp_size ({tp_size})"
-            )
+            raise ValueError(f"out_features ({out_features}) must be divisible by tp_size ({tp_size})")
         self.out_per_rank = out_features // tp_size
         self.in_features = in_features
         self.out_features = out_features
@@ -59,10 +57,10 @@ class ColumnParallelLinear(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
-        nn.init.kaiming_uniform_(self.weight, a=5 ** 0.5)
+        nn.init.kaiming_uniform_(self.weight, a=5**0.5)
         if self.bias is not None:
             fan_in = self.weight.size(1)
-            bound = 1 / (fan_in ** 0.5)
+            bound = 1 / (fan_in**0.5)
             nn.init.uniform_(self.bias, -bound, bound)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -101,9 +99,7 @@ class RowParallelLinear(nn.Module):
         self.comm = comm
         tp_size = comm.world_size
         if in_features % tp_size != 0:
-            raise ValueError(
-                f"in_features ({in_features}) must be divisible by tp_size ({tp_size})"
-            )
+            raise ValueError(f"in_features ({in_features}) must be divisible by tp_size ({tp_size})")
         self.in_per_rank = in_features // tp_size
         self.in_features = in_features
         self.out_features = out_features
@@ -117,10 +113,10 @@ class RowParallelLinear(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
-        nn.init.kaiming_uniform_(self.weight, a=5 ** 0.5)
+        nn.init.kaiming_uniform_(self.weight, a=5**0.5)
         if self.bias is not None:
             fan_in = self.weight.size(1)
-            bound = 1 / (fan_in ** 0.5)
+            bound = 1 / (fan_in**0.5)
             nn.init.uniform_(self.bias, -bound, bound)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -153,17 +149,13 @@ class VocabParallelEmbedding(nn.Module):
         self.comm = comm
         tp_size = comm.world_size
         if num_embeddings % tp_size != 0:
-            raise ValueError(
-                f"num_embeddings ({num_embeddings}) must be divisible by tp_size ({tp_size})"
-            )
+            raise ValueError(f"num_embeddings ({num_embeddings}) must be divisible by tp_size ({tp_size})")
         self.vocab_start = comm.rank * (num_embeddings // tp_size)
         self.vocab_end = self.vocab_start + num_embeddings // tp_size
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
 
-        self.weight = nn.Parameter(
-            torch.empty(num_embeddings // tp_size, embedding_dim)
-        )
+        self.weight = nn.Parameter(torch.empty(num_embeddings // tp_size, embedding_dim))
         self.reset_parameters()
 
     def reset_parameters(self) -> None:

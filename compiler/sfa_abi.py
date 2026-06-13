@@ -35,18 +35,14 @@ SFA_VERSION: int = 1
 # ── Regex patterns ───────────────────────────────────────────────────
 
 # Matches ciface wrapper definition: define void @_mlir_ciface_<name>(<params>) {
-_CIFACE_DEF_RE: re.Pattern[str] = re.compile(
-    r"define\s+void\s+@(_mlir_ciface_\w+)\s*\(([^)]*)\)\s*\{"
-)
+_CIFACE_DEF_RE: re.Pattern[str] = re.compile(r"define\s+void\s+@(_mlir_ciface_\w+)\s*\(([^)]*)\)\s*\{")
 
 # Extracts rank from descriptor struct: [N x i64]
 _RANK_RE: re.Pattern[str] = re.compile(r"\[(\d+)\s+x\s+i64\]")
 
 # Matches a single function argument in lowered MLIR: %argN: tensor<...x...xf32>
 # Captures function name and the full type string.
-_LOWERED_ARG_RE: re.Pattern[str] = re.compile(
-    r"%\w+:\s*(tensor<([^>]*)>\s*)"
-)
+_LOWERED_ARG_RE: re.Pattern[str] = re.compile(r"%\w+:\s*(tensor<([^>]*)>\s*)")
 
 
 # ── Type helpers ──────────────────────────────────────────────────────
@@ -91,9 +87,7 @@ def parse_lowered_argument_types(
         re.DOTALL,
     )
 
-    _tensor_re = re.compile(
-        r"tensor<([^>]*)>"
-    )
+    _tensor_re = re.compile(r"tensor<([^>]*)>")
 
     result: dict[str, list[tuple[int, list[int]]]] = {}
 
@@ -144,8 +138,8 @@ def parse_lowered_weight_names(
     except (FileNotFoundError, OSError):
         return {}
     _func_weight_re = re.compile(
-        r'func\.func\s+@(\w+)[^{]*attributes\s*\{[^}]*sf\.weight_names\s*=\s*'
-        r'(?:#sf<weight_names)?\[([^\]]*)\]',
+        r"func\.func\s+@(\w+)[^{]*attributes\s*\{[^}]*sf\.weight_names\s*=\s*"
+        r"(?:#sf<weight_names)?\[([^\]]*)\]",
         re.DOTALL,
     )
     result: dict[str, list[str]] = {}
@@ -293,12 +287,17 @@ def merge_with_semantics(
     lowered_arg_types: dict[str, list[tuple[int, list[int]]]] | None = None,
     lowered_output_types: dict[str, list[tuple[int, list[int]]]] | None = None,
     lowered_weight_names: dict[str, list[str]] | None = None,
+    execution_plan_bytes: bytes | None = None,
 ) -> list[dict[str, Any]]:
     """Merge LLVM IR ciface signatures with pre-lowering input semantics.
 
     Combines the raw function signatures (argument count + output rank from
     LLVM IR) with semantic information from the pre-lowering module
     (input names, weight mappings, SSA connections).
+
+    When ``execution_plan_bytes`` is provided (ExecutionPlan proto), SSA
+    routing is derived from the proto — the single source of truth for
+    multi-function dataflow — instead of heuristic LLVM IR name matching.
 
     Args:
         signatures: Output of :func:`parse_ciface_signatures` — maps
@@ -375,81 +374,142 @@ def merge_with_semantics(
         # Build input field semantics
         input_fields: list[dict[str, Any]] = []
 
-        # 1. Regular function parameters (from func.inputs)
-        for in_idx, in_entry in enumerate(func.get("inputs", [])):
-            if isinstance(in_entry, (list, tuple)) and len(in_entry) >= 1:
-                in_name = str(in_entry[0]).lstrip("%")
+        # ── ExecutionPlan-driven SSA routing (single source of truth) ──
+        if execution_plan_bytes is not None:
+            from gen.proto.python import sfa_abi_pb2  # noqa: E402
+
+            plan = sfa_abi_pb2.ExecutionPlan()
+            plan.ParseFromString(execution_plan_bytes)
+
+            # Build global input name set for weight detection:
+            # global_inputs[0] = input_ids (real global), rest = weights
+            global_input_set: set[str] = set(plan.global_inputs)
+
+            # Find the execution step matching this function
+            step = None
+            for s in plan.steps:
+                if s.func_name == func["name"]:
+                    step = s
+                    break
+
+            if step is not None:
+                # Build input_fields from ExecutionPlan edges (in order)
+                for edge in step.inputs:
+                    if edge.source == sfa_abi_pb2.GLOBAL_INPUT:
+                        input_fields.append(
+                            {"kind": SfaInputKind.Value("SFA_INPUT_GLOBAL")}
+                        )
+                    elif edge.source == sfa_abi_pb2.STEP_OUTPUT:
+                        input_fields.append(
+                            {
+                                "kind": SfaInputKind.Value("SFA_INPUT_SSA"),
+                                "producer_func": edge.source_index,
+                                "producer_out": edge.producer_step,
+                            }
+                        )
+
+                # Add weight entries for post-promotion weight arguments
+                # (weights promoted by sf-promote-weights after split.py runs).
+                # Only main_0 has promoted weights as direct args; other
+                # functions receive weights through SSA from main_0.
+                if fi == 0:
+                    lwn_local = (lowered_weight_names or {}).get(func["name"], [])
+                    if lwn_local:
+                        seen_local: set[str] = set()
+                        for wname in lwn_local:
+                            if wname in seen_local or wname.startswith("_const_"):
+                                continue
+                            seen_local.add(wname)
+                            input_fields.append(
+                                {
+                                    "kind": SfaInputKind.Value("SFA_INPUT_WEIGHT"),
+                                    "weight_name": wname,
+                                }
+                            )
             else:
-                in_name = ""
+                # Fallback: function not in ExecutionPlan (should not happen)
+                pass
 
-            if fi == 0 and in_idx <= 1:
-                # First two inputs of the first function → global inputs
-                input_fields.append({"kind": SfaInputKind.Value("SFA_INPUT_GLOBAL")})
-            elif in_name and in_name in producer_map:
-                pfi, poi = producer_map[in_name]
-                input_fields.append({
-                    "kind": SfaInputKind.Value("SFA_INPUT_SSA"),
-                    "producer_func": pfi,
-                    "producer_out": poi,
-                })
-            elif in_name:
-                # Try to match by function name embedded in the input name
-                # Pattern: <var>_N_<func_name>_M
-                matched = False
-                for fname, fni in func_name_to_idx.items():
-                    if fname in in_name:
-                        input_fields.append({
+            # Skip the heuristic name-matching below
+        else:
+            # ── Legacy heuristic (used when ExecutionPlan not available) ──
+            for in_idx, in_entry in enumerate(func.get("inputs", [])):
+                if isinstance(in_entry, (list, tuple)) and len(in_entry) >= 1:
+                    in_name = str(in_entry[0]).lstrip("%")
+                else:
+                    in_name = ""
+
+                if fi == 0 and in_idx <= 1:
+                    # First two inputs of the first function → global inputs
+                    input_fields.append({"kind": SfaInputKind.Value("SFA_INPUT_GLOBAL")})
+                elif in_name and in_name in producer_map:
+                    pfi, poi = producer_map[in_name]
+                    input_fields.append(
+                        {
                             "kind": SfaInputKind.Value("SFA_INPUT_SSA"),
-                            "producer_func": fni,
-                            "producer_out": 0,
-                        })
-                        matched = True
-                        break
-                if not matched:
-                    # Fallback: treat as SSA from previous function, match by type
-                    prev_fi = max(0, fi - 1)
-                    prod_name = funcs[prev_fi]["name"]
-                    in_type = func.get("inputs", [])[in_idx][1] if in_idx < len(func.get("inputs", [])) else ""
-                    # Try to match by type against the producer's lowered outputs
-                    pti = producer_type_indices.get(prod_name, {})
-                    match_type = in_type
-                    # Strip element type suffix (e.g. "xf32", "xi64") for matching
-                    if "x" in match_type and ">" in match_type:
-                        dims_part = match_type.split("<")[1].split(">")[0]
-                        parts = dims_part.split("x")
-                        dims_only = "x".join(parts[:-1])
-                        match_type = f"tensor<{dims_only}>" if dims_only else f"tensor<{parts[0]}>"
-                    matching = pti.get(match_type, [])
-                    key = (prod_name, match_type)
-                    pos = type_counter.get(key, 0)
-                    if matching and pos < len(matching):
-                        pout = matching[pos]
-                        type_counter[key] = pos + 1
-                    else:
-                        pout = 0
-                    input_fields.append({
-                        "kind": SfaInputKind.Value("SFA_INPUT_SSA"),
-                        "producer_func": prev_fi,
-                        "producer_out": pout,
-                    })
+                            "producer_func": pfi,
+                            "producer_out": poi,
+                        }
+                    )
+                elif in_name:
+                    # Try to match by function name embedded in the input name
+                    # Pattern: <var>_N_<func_name>_M
+                    matched = False
+                    for fname, fni in func_name_to_idx.items():
+                        if fname in in_name:
+                            input_fields.append(
+                                {
+                                    "kind": SfaInputKind.Value("SFA_INPUT_SSA"),
+                                    "producer_func": fni,
+                                    "producer_out": 0,
+                                }
+                            )
+                            matched = True
+                            break
+                    if not matched:
+                        # Fallback: treat as SSA from previous function, match by type
+                        prev_fi = max(0, fi - 1)
+                        prod_name = funcs[prev_fi]["name"]
+                        in_type = func.get("inputs", [])[in_idx][1] if in_idx < len(func.get("inputs", [])) else ""
+                        # Try to match by type against the producer's lowered outputs
+                        pti = producer_type_indices.get(prod_name, {})
+                        match_type = in_type
+                        # Strip element type suffix (e.g. "xf32", "xi64") for matching
+                        if "x" in match_type and ">" in match_type:
+                            dims_part = match_type.split("<")[1].split(">")[0]
+                            parts = dims_part.split("x")
+                            dims_only = "x".join(parts[:-1])
+                            match_type = f"tensor<{dims_only}>" if dims_only else f"tensor<{parts[0]}>"
+                        matching = pti.get(match_type, [])
+                        key = (prod_name, match_type)
+                        pos = type_counter.get(key, 0)
+                        if matching and pos < len(matching):
+                            pout = matching[pos]
+                            type_counter[key] = pos + 1
+                        else:
+                            pout = 0
+                        input_fields.append(
+                            {
+                                "kind": SfaInputKind.Value("SFA_INPUT_SSA"),
+                                "producer_func": prev_fi,
+                                "producer_out": pout,
+                            }
+                        )
 
-        # 2. Weight entries from lowered sf.weight_names.
-        # Fix 2 (SfPromoteWeights) rebuilds weight_names to only promoted
-        # args, but the C++ custom format concatenates duplicates.  Filter
-        # to unique entries, skip _const_ scalars (inlined as arith.const),
-        # and preserve the lowered argument order which matches the ciface
-        # function signature exactly.
-        lwn = (lowered_weight_names or {}).get(func["name"], [])
-        if fi == 0 and lwn:
-            seen: set[str] = set()
-            for wname in lwn:
-                if wname in seen or wname.startswith("_const_"):
-                    continue
-                seen.add(wname)
-                input_fields.append({
-                    "kind": SfaInputKind.Value("SFA_INPUT_WEIGHT"),
-                    "weight_name": wname,
-                })
+            # Weight entries from lowered sf.weight_names (legacy path only)
+            lwn_legacy = (lowered_weight_names or {}).get(func["name"], [])
+            if fi == 0 and lwn_legacy:
+                seen_legacy: set[str] = set()
+                for wname in lwn_legacy:
+                    if wname in seen_legacy or wname.startswith("_const_"):
+                        continue
+                    seen_legacy.add(wname)
+                    input_fields.append(
+                        {
+                            "kind": SfaInputKind.Value("SFA_INPUT_WEIGHT"),
+                            "weight_name": wname,
+                        }
+                    )
 
         # 3. Output descriptors — use LLVM IR sret rank (post-bufferization).
         # Each bufferized function has a SINGLE packed output memref.
@@ -457,16 +517,17 @@ def merge_with_semantics(
         # has 211), but the sret has exactly one descriptor.  Always
         # generate one OutputDescriptor matching the LLVM IR return struct.
         effective_output_rank = output_rank
-        output_descs = [{
-            "rank": effective_output_rank,
-            "dims": [0] * effective_output_rank,
-        }]
+        output_descs = [
+            {
+                "rank": effective_output_rank,
+                "dims": [0] * effective_output_rank,
+            }
+        ]
 
         # If lowered output types are available, replace with per-output descriptors
         if lowered_output_types and func["name"] in lowered_output_types:
             lot = lowered_output_types[func["name"]]
-            output_descs = [{"rank": rank, "dims": dims, "consumed_internally": False}
-                           for rank, dims in lot]
+            output_descs = [{"rank": rank, "dims": dims, "consumed_internally": False} for rank, dims in lot]
 
         # Propagate consumed_internally from pre-lowering outputs.
         # After bufferization there is only 1 packed output per function.
@@ -478,9 +539,7 @@ def merge_with_semantics(
         # packed output as consumed so the runtime knows to intercept it.
         pre_outputs = func.get("outputs", [])
         if pre_outputs and output_descs:
-            any_consumed = any(
-                len(out) > 2 and out[2] for out in pre_outputs
-            )
+            any_consumed = any(len(out) > 2 and out[2] for out in pre_outputs)
             output_descs[0]["consumed_internally"] = any_consumed
 
         # Populate rank/dims from lowered MLIR arg types when available
@@ -491,13 +550,15 @@ def merge_with_semantics(
                 input_fields[idx]["rank"] = rank
                 input_fields[idx]["dims"] = dims
 
-        metas.append({
-            "symbol": symbol,
-            "num_inputs": num_args,
-            "output_rank": effective_output_rank,
-            "input_fields": input_fields,
-            "outputs": output_descs,
-        })
+        metas.append(
+            {
+                "symbol": symbol,
+                "num_inputs": len(input_fields),
+                "output_rank": effective_output_rank,
+                "input_fields": input_fields,
+                "outputs": output_descs,
+            }
+        )
 
     return metas
 

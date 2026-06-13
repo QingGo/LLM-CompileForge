@@ -1,6 +1,5 @@
 """Unit tests for compiler/serialize.py — artifact loading."""
 
-
 import pytest
 
 from compiler.serialize import load_artifact

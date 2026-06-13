@@ -23,7 +23,6 @@ from python_runtime.hal.pytorch_backend._ops_attention import _AttentionOps
 
 @pytest.mark.unit
 class TestSDPAMaskConversion:
-
     # ── Helpers ────────────────────────────────────────────────────────
 
     def _make_qkv(self, batch: int = 2, seq: int = 4, head: int = 4, dim: int = 8) -> list[torch.Tensor]:
@@ -49,12 +48,12 @@ class TestSDPAMaskConversion:
             return_value=mock_return,
         ) as mock_sdpa:
             ops._op_scaled_dot_product_attention(
-                [*qkv, pos_mask], is_causal=True, dropout_p=0.0,
+                [*qkv, pos_mask],
+                is_causal=True,
+                dropout_p=0.0,
             )
             _call_args, call_kwargs = mock_sdpa.call_args
-            assert call_kwargs["attn_mask"] is None, (
-                "is_causal=True should clear attn_mask to None"
-            )
+            assert call_kwargs["attn_mask"] is None, "is_causal=True should clear attn_mask to None"
 
     def test_is_causal_false_converts_positional_to_additive(self):
         """With is_causal=False, positional [0,1,2,3] converts to causal additive mask."""
@@ -69,25 +68,21 @@ class TestSDPAMaskConversion:
             return_value=mock_return,
         ) as mock_sdpa:
             ops._op_scaled_dot_product_attention(
-                [*qkv, pos_mask], is_causal=False, dropout_p=0.0,
+                [*qkv, pos_mask],
+                is_causal=False,
+                dropout_p=0.0,
             )
             _call_args, call_kwargs = mock_sdpa.call_args
             result_mask = call_kwargs["attn_mask"]
 
             assert result_mask is not None, "attn_mask should not be None"
-            assert result_mask.shape == (1, 1, 4, 4), (
-                f"Expected (1, 1, 4, 4) got {result_mask.shape}"
-            )
+            assert result_mask.shape == (1, 1, 4, 4), f"Expected (1, 1, 4, 4) got {result_mask.shape}"
             for i in range(4):
                 for j in range(4):
                     if j > i:
-                        assert result_mask[0, 0, i, j] == float("-inf"), (
-                            f"Position {i} should NOT attend to {j}"
-                        )
+                        assert result_mask[0, 0, i, j] == float("-inf"), f"Position {i} should NOT attend to {j}"
                     else:
-                        assert result_mask[0, 0, i, j] == 0.0, (
-                            f"Position {i} SHOULD attend to {j}"
-                        )
+                        assert result_mask[0, 0, i, j] == 0.0, f"Position {i} SHOULD attend to {j}"
 
     def test_no_mask_passed_through(self):
         """When no attn_mask is provided, attn_mask should remain None."""
@@ -100,12 +95,11 @@ class TestSDPAMaskConversion:
             return_value=mock_return,
         ) as mock_sdpa:
             ops._op_scaled_dot_product_attention(
-                qkv, is_causal=True,
+                qkv,
+                is_causal=True,
             )
             _call_args, call_kwargs = mock_sdpa.call_args
-            assert call_kwargs["attn_mask"] is None, (
-                "No mask provided should keep attn_mask=None"
-            )
+            assert call_kwargs["attn_mask"] is None, "No mask provided should keep attn_mask=None"
 
     def test_non_float_mask_not_touched(self):
         """Integer mask (non-float) should pass through without conversion."""
@@ -119,10 +113,9 @@ class TestSDPAMaskConversion:
             return_value=mock_return,
         ) as mock_sdpa:
             ops._op_scaled_dot_product_attention(
-                [*qkv, int_mask], is_causal=False,
+                [*qkv, int_mask],
+                is_causal=False,
             )
             _call_args, call_kwargs = mock_sdpa.call_args
             result_mask = call_kwargs["attn_mask"]
-            assert result_mask is int_mask, (
-                "Integer mask should be passed through unchanged"
-            )
+            assert result_mask is int_mask, "Integer mask should be passed through unchanged"

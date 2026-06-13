@@ -15,7 +15,9 @@ class TestHardwareSpec:
 
         spec_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "hal", "hardware_specs", "a100.yaml",
+            "hal",
+            "hardware_specs",
+            "a100.yaml",
         )
         spec = HardwareSpec.from_yaml(spec_path)
         assert spec.name == "NVIDIA A100 80GB"
@@ -33,7 +35,9 @@ class TestHardwareSpec:
 
         spec_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "hal", "hardware_specs", "m2_pro.yaml",
+            "hal",
+            "hardware_specs",
+            "m2_pro.yaml",
         )
         spec = HardwareSpec.from_yaml(spec_path)
         assert spec.peak_tflops == 0.5
@@ -46,7 +50,9 @@ class TestHardwareSpec:
 
         spec_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "hal", "hardware_specs", "hypothetical_npu.yaml",
+            "hal",
+            "hardware_specs",
+            "hypothetical_npu.yaml",
         )
         spec = HardwareSpec.from_yaml(spec_path)
         assert spec.memory_gb > 0
@@ -64,6 +70,7 @@ class TestHardwareSpec:
 
         spec = HardwareSpec(name="Test", peak_tflops=1.0, bandwidth_gbs=10.0)
         import torch
+
         a = torch.randn(1, 1024)
         b = torch.randn(1024, 4096)
         latency = spec.predict_latency("matmul", [a, b])
@@ -102,7 +109,9 @@ class TestRooflineSimulator:
 
         spec_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "hal", "hardware_specs", "a100.yaml",
+            "hal",
+            "hardware_specs",
+            "a100.yaml",
         )
         sim = RooflineSimulator.from_yaml(spec_path)
         assert sim.peak_tflops >= 300
@@ -157,7 +166,9 @@ class TestVirtualDevice:
         from python_runtime.hal.virtual_device import VirtualDevice
 
         spec = HardwareSpec(
-            name="TestDevice", peak_tflops=1.0, bandwidth_gbs=10.0,
+            name="TestDevice",
+            peak_tflops=1.0,
+            bandwidth_gbs=10.0,
             op_latency_us={"add": 5.0},
         )
         dev = VirtualDevice("test", spec)

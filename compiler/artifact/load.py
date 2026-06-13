@@ -46,8 +46,7 @@ def load_mlir_artifact(directory: str) -> MlirModule:
 
     if not mlir_path.exists():
         raise FileNotFoundError(
-            f"model.mlir not found at {directory}. "
-            "Re-compile the model with the current toolchain."
+            f"model.mlir not found at {directory}. Re-compile the model with the current toolchain."
         )
 
     with open(mlir_path) as f:
@@ -73,9 +72,7 @@ def load_mlir_artifact(directory: str) -> MlirModule:
         _load_weights_legacy(module, weights_path)
     elif const_path.exists():
         # constants-only artifact (new path without weight_source)
-        raw_c: dict[str, torch.Tensor] = torch.load(
-            str(const_path), map_location="cpu", weights_only=True
-        )
+        raw_c: dict[str, torch.Tensor] = torch.load(str(const_path), map_location="cpu", weights_only=True)
         for key, tensor in raw_c.items():
             module.functions[0].weights[key] = tensor
             module.functions[0].const_weight_names.add(key)
@@ -119,9 +116,7 @@ def _load_weights_via_mmap(
                     module.functions[0].param_weight_names.add(wname)
 
     if const_path.exists():
-        raw_c: dict[str, torch.Tensor] = torch.load(
-            str(const_path), map_location="cpu", weights_only=True
-        )
+        raw_c: dict[str, torch.Tensor] = torch.load(str(const_path), map_location="cpu", weights_only=True)
         for key, tensor in raw_c.items():
             func_name = _guess_func(key, module)
             for func in module.functions:
@@ -154,6 +149,7 @@ def _load_weights_via_sharded(
     for shard_file in sorted(shard_files):
         sf_path = _os.path.join(ws_dir, shard_file)
         import safetensors
+
         with safetensors.safe_open(sf_path, framework="pt", device="cpu") as f:  # type: ignore[no-untyped-call]
             for key in f.keys():
                 wname = key.replace(".", "_")
@@ -197,9 +193,7 @@ def _load_weights_via_bin(
     const_path: Path,
     name_mapping: dict[str, str] | None = None,
 ) -> None:
-    raw_bin: dict[str, torch.Tensor] = torch.load(
-        ws_path, map_location="cpu", weights_only=True
-    )
+    raw_bin: dict[str, torch.Tensor] = torch.load(ws_path, map_location="cpu", weights_only=True)
     name_map = name_mapping or {}
     for key, tensor in raw_bin.items():
         wname = key.replace(".", "_")
@@ -217,9 +211,7 @@ def _load_weights_via_bin(
                 module.functions[0].param_weight_names.add(wname)
 
     if const_path.exists():
-        raw_c: dict[str, torch.Tensor] = torch.load(
-            str(const_path), map_location="cpu", weights_only=True
-        )
+        raw_c: dict[str, torch.Tensor] = torch.load(str(const_path), map_location="cpu", weights_only=True)
         for key, tensor in raw_c.items():
             func_name = _guess_func(key, module)
             for func in module.functions:
@@ -237,9 +229,7 @@ def _load_weights_legacy(module: MlirModule, weights_path: Path) -> None:
     # NOTE: Backward-compat fallback for artifacts that have weights.pth
     # without weight_source metadata. Kept for safety — newer artifacts use
     # _load_weights_via_mmap / _load_weights_via_sharded / _load_weights_via_bin.
-    raw_weights: dict[str, torch.Tensor] = torch.load(
-        str(weights_path), map_location="cpu", weights_only=True
-    )
+    raw_weights: dict[str, torch.Tensor] = torch.load(str(weights_path), map_location="cpu", weights_only=True)
     for key, tensor in raw_weights.items():
         func_name = _guess_func(key, module)
         for func in module.functions:
@@ -255,6 +245,3 @@ def _guess_func(wname: str, module: MlirModule) -> str:
     if "." in wname and not wname.startswith("_"):
         return wname.split(".", 1)[0]
     return "main"
-
-
-

@@ -48,6 +48,7 @@ def _require_compiled_model(model_dir: str) -> Path:
 # ── MLIR context fixture — shared across all tests to avoid
 #    nanobind Context create/destroy cycle issues ─────────────
 
+
 @pytest.fixture(scope="session")
 def mlir_context() -> Any:
     """Session-scoped MLIR Context.
@@ -69,6 +70,7 @@ def mlir_context() -> Any:
 @pytest.fixture(scope="session")
 def module_tiny_llama():
     from compiler.serialize import load_artifact
+
     p = _require_compiled_model("./outputs/compiled/tiny_llama")
     return load_artifact(str(p))
 
@@ -76,6 +78,7 @@ def module_tiny_llama():
 @pytest.fixture(scope="session")
 def module_opt_125m():
     from compiler.serialize import load_artifact
+
     p = _require_compiled_model("./outputs/compiled/opt_125m")
     return load_artifact(str(p))
 
@@ -83,6 +86,7 @@ def module_opt_125m():
 @pytest.fixture(scope="session")
 def module_opt_125m_dynamic():
     from compiler.serialize import load_artifact
+
     p = _require_compiled_model("./outputs/compiled/opt_125m_dynamic")
     return load_artifact(str(p))
 
@@ -90,6 +94,7 @@ def module_opt_125m_dynamic():
 @pytest.fixture(scope="session")
 def module_qwen():
     from compiler.serialize import load_artifact
+
     p = _require_compiled_model("./outputs/compiled/qwen3_0.8b")
     return load_artifact(str(p))
 
@@ -165,17 +170,17 @@ def hf_qwen():
     model_dir = os.path.join(os.path.dirname(__file__), "..", "models", "Qwen", "Qwen3.5-0.8B")
     model_dir = os.path.abspath(model_dir)
     if not os.path.isdir(model_dir):
-        pytest.skip(
-            f"Qwen model not found at {model_dir}.  "
-            "Clone it from HuggingFace into models/Qwen/Qwen3.5-0.8B."
-        )
+        pytest.skip(f"Qwen model not found at {model_dir}.  Clone it from HuggingFace into models/Qwen/Qwen3.5-0.8B.")
     config = AutoConfig.from_pretrained(model_dir, trust_remote_code=True)
     if hasattr(config, "text_config") and hasattr(config.text_config, "use_cache"):
         config.text_config.use_cache = False
     elif hasattr(config, "use_cache"):
         config.use_cache = False
     model = AutoModelForCausalLM.from_pretrained(
-        model_dir, config=config, trust_remote_code=True, torch_dtype=torch.bfloat16,
+        model_dir,
+        config=config,
+        trust_remote_code=True,
+        torch_dtype=torch.bfloat16,
         local_files_only=True,
     )
     model.eval()

@@ -60,9 +60,7 @@ class SmoothQuantCalibrator(BaseQuantizer):
         Step 2: Compute smoothing factors: s_j = max(|X_j|)^α / max(|W_j|)^(1-α).
         Step 3: Apply smoothing transform: W *= s (weight) and store 1/s for activation.
         """
-        act_stats = collect_activation_stats(
-            self.model, dataloader, num_samples, capture_input=True
-        )
+        act_stats = collect_activation_stats(self.model, dataloader, num_samples, capture_input=True)
 
         for layer_name, stats in act_stats.items():
             weight = get_layer_weight(layer_name, self.model)
@@ -105,9 +103,7 @@ class SmoothQuantCalibrator(BaseQuantizer):
         Returns:
             Smoothing factors [in_features].
         """
-        s = torch.pow(act_absmax.float(), self.alpha) / torch.pow(
-            weight_absmax.float(), 1.0 - self.alpha
-        )
+        s = torch.pow(act_absmax.float(), self.alpha) / torch.pow(weight_absmax.float(), 1.0 - self.alpha)
         s = torch.clamp(s, min=1e-8)
         return s.to(torch.float32)
 

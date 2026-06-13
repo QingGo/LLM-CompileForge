@@ -77,14 +77,10 @@ def test_no_arith_ops_after_lowering():
     from compiler.pipeline.actions import tile_matmuls_action
 
     with ir.Location.unknown(ctx):
-        pm.PassManager.parse(
-            "builtin.module(canonicalize,cse)", ctx
-        ).run(mod.operation)
+        pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx).run(mod.operation)
 
         tile_matmuls_action(mod, tile_k=64)
-        pm.PassManager.parse(
-            "builtin.module(canonicalize,cse)", ctx
-        ).run(mod.operation)
+        pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx).run(mod.operation)
 
         llvm_dialect = lower_linalg_to_llvm_ir(mod)
 
@@ -98,7 +94,8 @@ def test_no_arith_ops_after_lowering():
 
     # Check for arith ops with vector types specifically
     import re as _re
-    n_arith_vec = len(_re.findall(r'arith\.\w+[^:]*:\s*vector<', llvm_dialect))
+
+    n_arith_vec = len(_re.findall(r"arith\.\w+[^:]*:\s*vector<", llvm_dialect))
 
     print(f"  arith: {n_arith}  (arith+vec: {n_arith_vec})")
     print(f"  vector: {n_vector}")
@@ -131,32 +128,25 @@ def test_tile_sizes_within_bounds():
     from compiler.pipeline.actions import tile_matmuls_action
 
     with ir.Location.unknown(ctx):
-        pm.PassManager.parse(
-            "builtin.module(canonicalize,cse)", ctx
-        ).run(mod.operation)
+        pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx).run(mod.operation)
         tile_matmuls_action(mod, tile_k=64)
-        pm.PassManager.parse(
-            "builtin.module(canonicalize,cse)", ctx
-        ).run(mod.operation)
+        pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx).run(mod.operation)
 
         txt = str(mod)
 
     # Find all linalg matmul/batch_matmul IN operands and check dims
     # (the OUTS operand can be the accumulation tensor — skip it)
     for m in re.finditer(
-        r'linalg\.(?:matmul|batch_matmul)\b[^{]*ins\(([^)]+)\)',
+        r"linalg\.(?:matmul|batch_matmul)\b[^{]*ins\(([^)]+)\)",
         txt,
     ):
         ins = m.group(1)
-        tensors = re.findall(r'tensor<([\dx]+)xf32>', ins)
+        tensors = re.findall(r"tensor<([\dx]+)xf32>", ins)
         for t in tensors:
             dims = [int(d) for d in t.split("x")]
             max_dim = max(dims)
             if max_dim > 64:
-                pytest.fail(
-                    f"Tile dim {max_dim} > 64 in tensor<{t}xf32> "
-                    f"(op: {m.group()[:120]})"
-                )
+                pytest.fail(f"Tile dim {max_dim} > 64 in tensor<{t}xf32> (op: {m.group()[:120]})")
 
 
 # ── Test: pipeline timing thresholds ─────────────────────────────────────
@@ -178,13 +168,9 @@ def test_pipeline_timing():
     from compiler.pipeline.actions import tile_matmuls_action
 
     with ir.Location.unknown(ctx):
-        pm.PassManager.parse(
-            "builtin.module(canonicalize,cse)", ctx
-        ).run(mod.operation)
+        pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx).run(mod.operation)
         tile_matmuls_action(mod, tile_k=64)
-        pm.PassManager.parse(
-            "builtin.module(canonicalize,cse)", ctx
-        ).run(mod.operation)
+        pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx).run(mod.operation)
         tile_matmuls_action(mod, tile_k=64)
 
         # Time lowering
@@ -210,7 +196,9 @@ def test_pipeline_timing():
         t0 = time.perf_counter()
         r = subprocess.run(
             ["llc", "-O0", "-filetype=obj", ll_path, "-o", os.path.join(td, "model.o")],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         t_llc = time.perf_counter() - t0
         print(f"  llc: {t_llc:.1f}s")
@@ -234,13 +222,9 @@ def test_fma_fusion_fires():
     from compiler.pipeline.actions import tile_matmuls_action
 
     with ir.Location.unknown(ctx):
-        pm.PassManager.parse(
-            "builtin.module(canonicalize,cse)", ctx
-        ).run(mod.operation)
+        pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx).run(mod.operation)
         tile_matmuls_action(mod, tile_k=64)
-        pm.PassManager.parse(
-            "builtin.module(canonicalize,cse)", ctx
-        ).run(mod.operation)
+        pm.PassManager.parse("builtin.module(canonicalize,cse)", ctx).run(mod.operation)
         llvm_dialect = lower_linalg_to_llvm_ir(mod)
 
     n_fmuladd = llvm_dialect.count("llvm.intr.fmuladd")
@@ -253,9 +237,7 @@ def test_fma_fusion_fires():
     print(f"  fmuladd={n_fmuladd} fmul={n_fmul} fadd={n_fadd} fsub={n_fsub} rate={rate:.0f}%")
 
     # At least 80% of fmul operations should have been fused
-    assert rate >= 80.0, (
-        f"FMA fusion rate too low: {rate:.0f}% ({n_fmuladd}/{total})"
-    )
+    assert rate >= 80.0, f"FMA fusion rate too low: {rate:.0f}% ({n_fmuladd}/{total})"
 
 
 # ── Pass-through for manual invocation ────────────────────────────────────

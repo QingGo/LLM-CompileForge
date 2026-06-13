@@ -25,11 +25,10 @@ _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from compiler.sfcf_parser import (  # noqa: E402
+from compiler.dylib_ffi import (  # noqa: E402
     compute_sret_size,
+    load_graph_from_proto,
     make_memref_descriptor,
-    parse_compute_graph,
-    parse_sfcf_blob,
     parse_sret_outputs,
     verify_output_shapes,
 )
@@ -42,7 +41,7 @@ class CtypesOracle:
     def __init__(self, artifact_dir: str = "./outputs/compiled/opt_125m_fresh"):
         self.artifact_dir = os.path.abspath(artifact_dir)
         self._py_logits: np.ndarray | None = None
-        self._load_sfcf_blob()
+        self._load_dylib_graph()
         self._load_artifact()
         self._load_reference()
 
@@ -55,7 +54,7 @@ class CtypesOracle:
     # Initialization
     # ------------------------------------------------------------------
 
-    def _load_sfcf_blob(self) -> None:
+    def _load_dylib_graph(self) -> None:
         """Parse and cache the SFCF blob from the original compiled dylib.
 
         The SFCF blob (compute graph / weight bindings) is embedded during
@@ -71,37 +70,13 @@ class CtypesOracle:
             )
 
         lib = ctypes.CDLL(orig_dylib)
-        try:
-            data_ptr = ctypes.cast(
-                ctypes.addressof(
-                    ctypes.c_int64.in_dll(lib, "serveforge_constants_data")
-                ),
-                ctypes.c_void_p,
-            )
-            size_ptr = ctypes.cast(
-                ctypes.addressof(
-                    ctypes.c_int64.in_dll(lib, "serveforge_constants_size")
-                ),
-                ctypes.POINTER(ctypes.c_uint64),
-            )
-            blob_size = size_ptr[0]
-            blob_bytes = bytes(
-                (ctypes.c_uint8 * blob_size).from_address(data_ptr.value)
-            )
-        except (ValueError, AttributeError) as exc:
-            raise RuntimeError(
-                f"Failed to read SFCF blob from {orig_dylib}: {exc}"
-            ) from exc
-
-        self._name_mapping, self._sfcf_constants, graph_pos, sfcf_version = parse_sfcf_blob(
-            blob_bytes
-        )
-        self._graph, _ = parse_compute_graph(blob_bytes, graph_pos, version=sfcf_version)
+        self._dylib_constants: dict[str, np.ndarray] = {}
+        self._graph = load_graph_from_proto(lib, self._dylib_constants)
+        self._name_mapping: dict[str, str] = {}
         _log.info(
-            "Parsed SFCF blob: %d functions, %d constants, %d name mappings",
+            "Loaded dylib proto graph: %d functions, %d constants",
             len(self._graph["functions"]),
-            len(self._sfcf_constants),
-            len(self._name_mapping),
+            len(self._dylib_constants),
         )
 
     def _load_artifact(self) -> None:
@@ -172,13 +147,13 @@ class CtypesOracle:
         if bare_name != name:
             if bare_name in self.all_weights:
                 return self.all_weights[bare_name]
-            if bare_name in self._sfcf_constants:
-                return np.ascontiguousarray(self._sfcf_constants[bare_name])
+            if bare_name in self._dylib_constants:
+                return np.ascontiguousarray(self._dylib_constants[bare_name])
         prefixed = f"main_0.{name}"
         if prefixed in self.all_weights:
             return self.all_weights[prefixed]
-        if name in self._sfcf_constants:
-            return np.ascontiguousarray(self._sfcf_constants[name])
+        if name in self._dylib_constants:
+            return np.ascontiguousarray(self._dylib_constants[name])
         raise KeyError(f"Weight '{name}' not found")
 
     # ------------------------------------------------------------------

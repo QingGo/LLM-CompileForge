@@ -72,9 +72,7 @@ class AWQQuantizer(BaseQuantizer):
         if not isinstance(group_size, int) or group_size < 1:
             raise ValueError(f"group_size must be positive int, got {group_size}")
         if not 0.0 < salient_fraction <= 1.0:
-            raise ValueError(
-                f"salient_fraction must be in (0, 1], got {salient_fraction}"
-            )
+            raise ValueError(f"salient_fraction must be in (0, 1], got {salient_fraction}")
 
         self.group_size = group_size
         self.salient_fraction = salient_fraction
@@ -105,9 +103,7 @@ class AWQQuantizer(BaseQuantizer):
             dataloader: Calibration data.  If None, uses a single random input.
             num_samples: Maximum number of calibration samples.
         """
-        act_stats = collect_activation_stats(
-            self.model, dataloader, num_samples, capture_input=False
-        )
+        act_stats = collect_activation_stats(self.model, dataloader, num_samples, capture_input=False)
 
         for layer_name, stats in act_stats.items():
             means = stats["absmax"]
@@ -145,6 +141,7 @@ class AWQQuantizer(BaseQuantizer):
                     inp = _in
                 if isinstance(inp, torch.Tensor):
                     layer_inputs[layer_name] = inp.detach().float()
+
             return _hook
 
         for name, module in self.model.named_modules():
@@ -160,8 +157,7 @@ class AWQQuantizer(BaseQuantizer):
                         self.model(dummy)
                     except Exception:
                         _log.debug(
-                            "Model rejected dummy input during AWQ calibration "
-                            "(expected for non-forward models)",
+                            "Model rejected dummy input during AWQ calibration (expected for non-forward models)",
                             exc_info=True,
                         )
             else:

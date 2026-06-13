@@ -21,8 +21,9 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 def _load_proto(sfa_abi_path: str):
     """Parse sfa_abi.c hex bytes into SfaAbiHeader protobuf."""
     from gen.proto.python import sfa_abi_pb2
+
     with open(sfa_abi_path) as f:
-        hex_bytes = re.findall(r'0x[0-9a-fA-F]{2}', f.read())
+        hex_bytes = re.findall(r"0x[0-9a-fA-F]{2}", f.read())
     raw = bytes(int(h, 16) for h in hex_bytes)
     hdr = sfa_abi_pb2.SfaAbiHeader()
     hdr.ParseFromString(raw)
@@ -32,12 +33,14 @@ def _load_proto(sfa_abi_path: str):
 def _parse_lowered_arg_types(lowered_path: str) -> dict[str, list[tuple[int, list[int]]]]:
     """Parse lowered MLIR function argument tensor types."""
     from compiler.sfa_abi import parse_lowered_argument_types
+
     return parse_lowered_argument_types(lowered_path)
 
 
 def _parse_lowered_weight_names(lowered_path: str) -> dict[str, list[str]]:
     """Parse sf.weight_names from lowered MLIR."""
     from compiler.sfa_abi import parse_lowered_weight_names
+
     return parse_lowered_weight_names(lowered_path)
 
 
@@ -64,10 +67,7 @@ class TestProtoDimConsistency:
         if not lwn:
             pytest.fail("main_0 has no weight names in lowered MLIR")
 
-        proto_weights = {
-            f.weight_name: (f.rank, list(f.dims))
-            for f in func0.input_fields if f.weight_name
-        }
+        proto_weights = {f.weight_name: (f.rank, list(f.dims)) for f in func0.input_fields if f.weight_name}
 
         weight_start = len(lt) - len(lwn)
         errors = []

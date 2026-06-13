@@ -20,7 +20,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
-from compiler.sfcf_parser import DEFAULT_SRET_SIZE
+from compiler.dylib_ffi import DEFAULT_SRET_SIZE
 
 
 def _cos(a: np.ndarray, b: np.ndarray) -> float:
@@ -46,25 +46,34 @@ def _find_tool(name: str) -> str:
 
 
 def _memref(ptr, ndim, shape):
-    strides = tuple(int(np.prod(shape[i + 1:])) for i in range(ndim))
+    strides = tuple(int(np.prod(shape[i + 1 :])) for i in range(ndim))
 
     class M(ctypes.Structure):
         _fields_ = [
-            ("allocated", ctypes.c_void_p), ("aligned", ctypes.c_void_p),
+            ("allocated", ctypes.c_void_p),
+            ("aligned", ctypes.c_void_p),
             ("offset", ctypes.c_int64),
-            ("sizes", ctypes.c_int64 * ndim), ("strides", ctypes.c_int64 * ndim),
+            ("sizes", ctypes.c_int64 * ndim),
+            ("strides", ctypes.c_int64 * ndim),
         ]
-    return M(ctypes.c_void_p(ptr), ctypes.c_void_p(ptr), 0,
-             (ctypes.c_int64 * ndim)(*shape), (ctypes.c_int64 * ndim)(*strides))
+
+    return M(
+        ctypes.c_void_p(ptr),
+        ctypes.c_void_p(ptr),
+        0,
+        (ctypes.c_int64 * ndim)(*shape),
+        (ctypes.c_int64 * ndim)(*strides),
+    )
 
 
 def _compile(sf_mlir: str, tmp_dir: str, name: str) -> str:
     import mlir.ir as ir
     from mlir_sf._mlir_libs._sfDialectsNanobind import sf
+
+    from compiler.backend.compile_utils import _compile_serveforge_free, link_dylib
     from compiler.backend.fixups import _fixup_unrealized_casts_pass
     from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir
     from compiler.pipeline import _apply_sf_to_linalg
-    from compiler.backend.compile_utils import _compile_serveforge_free, link_dylib
 
     lowered = _apply_sf_to_linalg(sf_mlir)
     ctx = ir.Context()
@@ -80,10 +89,16 @@ def _compile(sf_mlir: str, tmp_dir: str, name: str) -> str:
         d = os.path.join(tmp_dir, f"{name}.dylib")
         with open(m, "w") as f:
             f.write(str(mod))
-        subprocess.run([_find_tool("mlir-translate"), "--mlir-to-llvmir", m, "-o", l],
-                       capture_output=True, text=True, check=True, timeout=60)
-        subprocess.run([_find_tool("cc"), "-c", l, "-o", o, "-O0"],
-                       capture_output=True, text=True, check=True, timeout=60)
+        subprocess.run(
+            [_find_tool("mlir-translate"), "--mlir-to-llvmir", m, "-o", l],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        )
+        subprocess.run(
+            [_find_tool("cc"), "-c", l, "-o", o, "-O0"], capture_output=True, text=True, check=True, timeout=60
+        )
         free_o = _compile_serveforge_free(tmp_dir)
         link_dylib([o, free_o], d)
         return d
@@ -92,7 +107,6 @@ def _compile(sf_mlir: str, tmp_dir: str, name: str) -> str:
 @pytest.mark.integration
 @pytest.mark.timeout(120)
 class TestLargeEmbedding:
-
     def test_large_embedding_high_indices(self):
         """sf.embedding with 50K vocab — high-index tokens match reference."""
         VOCAB, HIDDEN = 50000, 768
@@ -100,10 +114,10 @@ class TestLargeEmbedding:
         emb_w = rng.randn(VOCAB, HIDDEN).astype(np.float32)
 
         input_ids = np.zeros((2, 4), dtype=np.int64)
-        input_ids[0, 0] = 2       # low index
-        input_ids[0, 1] = 32826   # high index
-        input_ids[0, 2] = 85      # low index
-        input_ids[0, 3] = 49999   # max index
+        input_ids[0, 0] = 2  # low index
+        input_ids[0, 1] = 32826  # high index
+        input_ids[0, 2] = 85  # low index
+        input_ids[0, 3] = 49999  # max index
 
         mlir = f"""module {{
   func.func @main_0(%ids: tensor<2x4xi64>, %w: tensor<{VOCAB}x{HIDDEN}xf32>) -> tensor<2x4x{HIDDEN}xf32> {{
@@ -124,9 +138,7 @@ class TestLargeEmbedding:
             sb = bytes(sret)
             al = struct.unpack_from("<Q", sb, 8)[0]
             sz = tuple(struct.unpack_from("<q", sb, 24 + 8 * i)[0] for i in range(3))
-            actual = np.array(
-                (ctypes.c_float * int(np.prod(sz))).from_address(al), dtype=np.float32
-            ).reshape(sz)
+            actual = np.array((ctypes.c_float * int(np.prod(sz))).from_address(al), dtype=np.float32).reshape(sz)
 
             # Check per-token
             for batch in range(2):
@@ -139,6 +151,4 @@ class TestLargeEmbedding:
                     print(f"  token {tid:>5}: cos={cos:.8f} {status}")
 
             overall_cos = _cos(actual, emb_w[input_ids % VOCAB])
-            assert overall_cos >= 0.9999, (
-                f"Large embedding cos={overall_cos:.8f} < 0.9999"
-            )
+            assert overall_cos >= 0.9999, f"Large embedding cos={overall_cos:.8f} < 0.9999"

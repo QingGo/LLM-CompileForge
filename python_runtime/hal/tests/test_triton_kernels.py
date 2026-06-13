@@ -35,7 +35,7 @@ class TestRMSNormFused:
         result = fused_rms_norm_add(x, residual, weight, eps=1e-6)
 
         # Reference
-        ref = (x + residual)
+        ref = x + residual
         rms = torch.sqrt(torch.mean(ref * ref, dim=-1, keepdim=True) + 1e-6)
         ref = (ref / rms) * weight
 
@@ -92,7 +92,13 @@ class TestFlashAttention:
         result = flash_attention_fwd(q, k, v, causal=True)
 
         ref = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, attn_mask=None, dropout_p=0.0, is_causal=True, scale=1.0 / math.sqrt(dim),
+            q,
+            k,
+            v,
+            attn_mask=None,
+            dropout_p=0.0,
+            is_causal=True,
+            scale=1.0 / math.sqrt(dim),
         )
 
         assert_cosine_above(result, ref)
@@ -110,7 +116,12 @@ class TestFlashAttention:
         result = flash_attention_fwd(q, k, v, causal=False)
 
         ref = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False,
+            q,
+            k,
+            v,
+            attn_mask=None,
+            dropout_p=0.0,
+            is_causal=False,
         )
 
         assert_cosine_above(result, ref)
@@ -126,7 +137,13 @@ class TestFlashAttention:
 
         result = flash_attention_fwd(q, k, v, scale=scale)
         ref = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, attn_mask=None, dropout_p=0.0, is_causal=True, scale=scale,
+            q,
+            k,
+            v,
+            attn_mask=None,
+            dropout_p=0.0,
+            is_causal=True,
+            scale=scale,
         )
 
         assert_cosine_above(result, ref)
@@ -203,20 +220,31 @@ class TestPagedAttention:
         outputs = paged_attention(q, k_cache, v_cache, block_tables, seq_lens, block_size=block_size)
 
         # Reference: gather blocks manually and run SDPA
-        k_seq = torch.cat([
-            k_cache[0][:block_size],
-            k_cache[1][: (seq_len - block_size)],
-        ], dim=0)  # [seq_len, num_heads, head_dim]
-        v_seq = torch.cat([
-            v_cache[0][:block_size],
-            v_cache[1][: (seq_len - block_size)],
-        ], dim=0)
+        k_seq = torch.cat(
+            [
+                k_cache[0][:block_size],
+                k_cache[1][: (seq_len - block_size)],
+            ],
+            dim=0,
+        )  # [seq_len, num_heads, head_dim]
+        v_seq = torch.cat(
+            [
+                v_cache[0][:block_size],
+                v_cache[1][: (seq_len - block_size)],
+            ],
+            dim=0,
+        )
         k_seq = k_seq.unsqueeze(0).transpose(1, 2)  # [1, num_heads, seq_len, head_dim]
         v_seq = v_seq.unsqueeze(0).transpose(1, 2)
         q_ref = q.unsqueeze(2)  # [1, num_heads, 1, head_dim]
 
         ref = torch.nn.functional.scaled_dot_product_attention(
-            q_ref, k_seq, v_seq, attn_mask=None, dropout_p=0.0, is_causal=False,
+            q_ref,
+            k_seq,
+            v_seq,
+            attn_mask=None,
+            dropout_p=0.0,
+            is_causal=False,
         ).squeeze(2)  # [1, num_heads, head_dim]
 
         assert_cosine_above(outputs["req_1"], ref[0])

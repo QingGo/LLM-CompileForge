@@ -74,8 +74,7 @@ class _DeadStageTracker:
     @classmethod
     def known_dead_stages(cls) -> list[str]:
         state = cls._load_state()
-        return [name for name, count in state.items()
-                if count >= cls.CONSECUTIVE_THRESHOLD]
+        return [name for name, count in state.items() if count >= cls.CONSECUTIVE_THRESHOLD]
 
     @classmethod
     def reset(cls, stage_name: str | None = None) -> None:
@@ -119,7 +118,7 @@ def _save_ir_stats(ir_module: Any, stage_name: str, timestamp: str = "") -> dict
 
     log_dir = Path("outputs/logs") / "pipeline"
     log_dir.mkdir(parents=True, exist_ok=True)
-    safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', stage_name)
+    safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", stage_name)
     path = log_dir / f"stats_{safe_name}_{timestamp}.txt"
 
     sorted_ops = sorted(op_counts.items(), key=lambda x: -x[1])
@@ -140,8 +139,12 @@ def _save_ir_stats(ir_module: Any, stage_name: str, timestamp: str = "") -> dict
         lines.append(f"  {op_name}: {count}")
 
     path.write_text("\n".join(lines))
-    _log.info("  IR stats saved to %s (top op: %s, count=%d)",
-              path, top10[0][0] if top10 else "none", top10[0][1] if top10 else 0)
+    _log.info(
+        "  IR stats saved to %s (top op: %s, count=%d)",
+        path,
+        top10[0][0] if top10 else "none",
+        top10[0][1] if top10 else 0,
+    )
 
     return op_counts
 
@@ -157,7 +160,7 @@ def _save_ir_snapshot(ir_module: Any, stage_name: str) -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
     log_dir = Path("outputs/logs") / "pipeline"
     log_dir.mkdir(parents=True, exist_ok=True)
-    safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', stage_name)
+    safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", stage_name)
     path = log_dir / f"snapshot_{safe_name}_{timestamp}.mlir"
     path.write_text(str(ir_module))
     _log.info("  IR snapshot saved to %s", path)
@@ -170,25 +173,19 @@ def _save_ir_snapshot(ir_module: Any, stage_name: str) -> str:
     return str(path)
 
 
-def _verify_stage_output(
-    ir_text_before: str, ir_text_after: str, stage_name: str
-) -> list[str]:
+def _verify_stage_output(ir_text_before: str, ir_text_after: str, stage_name: str) -> list[str]:
     """Check func.func / func.return counts unchanged across a stage."""
     warnings: list[str] = []
 
     func_before = len(re.findall(r"func\.func\s+@", ir_text_before))
     func_after = len(re.findall(r"func\.func\s+@", ir_text_after))
     if func_before != func_after:
-        warnings.append(
-            f"func.func count changed: {func_before} -> {func_after} ({stage_name})"
-        )
+        warnings.append(f"func.func count changed: {func_before} -> {func_after} ({stage_name})")
 
     ret_before = len(re.findall(r"func\.return", ir_text_before))
     ret_after = len(re.findall(r"func\.return", ir_text_after))
     if ret_before != ret_after:
-        warnings.append(
-            f"func.return count changed: {ret_before} -> {ret_after} ({stage_name})"
-        )
+        warnings.append(f"func.return count changed: {ret_before} -> {ret_after} ({stage_name})")
 
     for w in warnings:
         _log.warning("  Stage invariant [%s]: %s", stage_name, w)
@@ -211,7 +208,7 @@ def _count_module_ops(module_str: str) -> tuple[int, dict[str, int]]:
             continue
         if stripped.startswith("module ") or stripped == "}":
             continue
-        m = re.search(r'\b([a-zA-Z_]\w*)\.', stripped)
+        m = re.search(r"\b([a-zA-Z_]\w*)\.", stripped)
         if m:
             dialect_counts[m.group(1)] = dialect_counts.get(m.group(1), 0) + 1
     return sum(dialect_counts.values()), dialect_counts
@@ -239,9 +236,7 @@ def _count_values(s: str) -> int:
     return count
 
 
-def _verify_function_signatures(
-    ir_text: str, module_name: str = "unknown"
-) -> list[str]:
+def _verify_function_signatures(ir_text: str, module_name: str = "unknown") -> list[str]:
     """Verify each ``func.func`` return count matches its declared signature.
 
     After bufferization, a function declared as ::
@@ -357,10 +352,7 @@ def _verify_function_signatures(
         ret_counts = func_returns.get(func_name, [])
         if not ret_counts:
             if declared > 0:
-                errors.append(
-                    f"  '{func_name}': declares {declared} outputs "
-                    f"but has no func.return"
-                )
+                errors.append(f"  '{func_name}': declares {declared} outputs but has no func.return")
         else:
             for idx, rc in enumerate(ret_counts):
                 if rc != declared:
@@ -378,6 +370,7 @@ def _verify_function_signatures(
 @dataclass
 class StageResult:
     """Structured result from running a pipeline stage."""
+
     success: bool
     elapsed: float
     ir_lines: int
@@ -398,6 +391,7 @@ class Stage:
     Each stage has a per-stage timeout; on failure or timeout, an IR
     snapshot is saved to ``outputs/logs/pipeline/``.
     """
+
     name: str
     pipeline: str = ""
     action: Callable[[Any], Any] | None = None
@@ -425,9 +419,7 @@ class Stage:
             if self.action is not None:
                 self.action(module)
             else:
-                pm_instance = pm.PassManager.parse(
-                    f"builtin.module({self.pipeline})", ctx
-                )
+                pm_instance = pm.PassManager.parse(f"builtin.module({self.pipeline})", ctx)
                 with ThreadPoolExecutor(max_workers=1) as pool:
                     future = pool.submit(pm_instance.run, module.operation)
                     try:
@@ -438,10 +430,13 @@ class Stage:
                             snapshot_path = _save_ir_snapshot(module, self.name)
                         _log.error(
                             "  STAGE %s TIMED OUT after %.0fs — IR saved to %s",
-                            self.name, self.timeout, snapshot_path or "(not saved)",
+                            self.name,
+                            self.timeout,
+                            snapshot_path or "(not saved)",
                         )
                         return StageResult(
-                            success=False, elapsed=elapsed,
+                            success=False,
+                            elapsed=elapsed,
                             ir_lines=len(str(module).splitlines()),
                             ir_snapshot_path=snapshot_path,
                             error=f"Timed out after {self.timeout}s",
@@ -460,19 +455,15 @@ class Stage:
             # ── IR dialect op count tracking ──
             post_stats = mlir_count_ops(module, ctx)
             all_keys = set(pre_stats) | set(post_stats)
-            deltas = {
-                k: post_stats.get(k, 0) - pre_stats.get(k, 0)
-                for k in all_keys
-            }
-            delta_parts = [
-                f"{k}:{d:+d}" for k, d in sorted(deltas.items()) if d != 0
-            ]
+            deltas = {k: post_stats.get(k, 0) - pre_stats.get(k, 0) for k in all_keys}
+            delta_parts = [f"{k}:{d:+d}" for k, d in sorted(deltas.items()) if d != 0]
             total_delta = sum(deltas.values())
             delta_parts.append(f"total:{total_delta:+d}")
             _log.info("  Stage '%s' IR stats: %s", self.name, ", ".join(delta_parts))
 
             return StageResult(
-                success=True, elapsed=elapsed,
+                success=True,
+                elapsed=elapsed,
                 ir_lines=n_lines,
                 context={
                     "dialect_counts_pre": pre_stats,
@@ -487,21 +478,23 @@ class Stage:
             error_msg = str(e).split("\n")[0] if "\n" in str(e) else str(e)
 
             if self.warn_only:
-                _log.warning("  %6.2fs  %-40s FAILED (warn_only=%s)", elapsed,
-                             self.name, error_msg, exc_info=True)
+                _log.warning("  %6.2fs  %-40s FAILED (warn_only=%s)", elapsed, self.name, error_msg, exc_info=True)
                 if self.save_snapshot:
                     _log.warning("  Snapshot saved: %s", snapshot_path)
                 return StageResult(
-                    success=False, elapsed=elapsed,
+                    success=False,
+                    elapsed=elapsed,
                     ir_lines=len(str(module).splitlines()),
                     ir_snapshot_path=snapshot_path,
                     error=error_msg,
                 )
             else:
-                _log.error("  STAGE %s FAILED after %.2fs — IR saved to %s",
-                           self.name, elapsed, snapshot_path or "(not saved)")
+                _log.error(
+                    "  STAGE %s FAILED after %.2fs — IR saved to %s", self.name, elapsed, snapshot_path or "(not saved)"
+                )
                 return StageResult(
-                    success=False, elapsed=elapsed,
+                    success=False,
+                    elapsed=elapsed,
                     ir_lines=len(str(module).splitlines()),
                     ir_snapshot_path=snapshot_path,
                     error=error_msg,

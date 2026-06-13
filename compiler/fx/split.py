@@ -15,6 +15,7 @@ def _empty_execution_plan(
     funcs: list[MlirFunction],
 ) -> bytes:
     from gen.proto.python import sfa_abi_pb2
+
     plan = sfa_abi_pb2.ExecutionPlan()
     for name, _ in global_inputs:
         plan.global_inputs.append(name)
@@ -27,6 +28,7 @@ def _empty_execution_plan(
         edge.producer_step = 0
     return plan.SerializeToString()
 
+
 _log = logging.getLogger(__name__)
 
 
@@ -35,7 +37,11 @@ _log = logging.getLogger(__name__)
 # rank changes at a function boundary during per-function splitting.
 
 _DIM_ATTR_NAMES: set[str] = {
-    "dim", "dim0", "dim1", "dimensions", "axis",
+    "dim",
+    "dim0",
+    "dim1",
+    "dimensions",
+    "axis",
 }
 
 _DIM_LIST_ATTR_NAMES: set[str] = {
@@ -71,16 +77,17 @@ def _adjust_op_attributes(op: MlirOp, input_rank_map: dict[str, int]) -> MlirOp:
         for attr_name in _DIM_LIST_ATTR_NAMES & set(new_attrs.keys()):
             vals = new_attrs[attr_name]
             if isinstance(vals, (list, tuple)):
-                new_attrs[attr_name] = tuple(
-                    (rank - 1) if isinstance(v, int) and v >= rank else v
-                    for v in vals
-                )
+                new_attrs[attr_name] = tuple((rank - 1) if isinstance(v, int) and v >= rank else v for v in vals)
 
     return MlirOp(
-        name=op.name, dialect=op.dialect, op_name=op.op_name,
-        operands=list(op.operands), results=list(op.results),
+        name=op.name,
+        dialect=op.dialect,
+        op_name=op.op_name,
+        operands=list(op.operands),
+        results=list(op.results),
         attributes=new_attrs,
-        input_types=list(op.input_types), output_types=list(op.output_types),
+        input_types=list(op.input_types),
+        output_types=list(op.output_types),
     )
 
 
@@ -115,11 +122,18 @@ def _split_into_functions(
         boundary_set = set(boundaries)
         for i, op in enumerate(mlir_ops):
             if i in boundary_set:
-                result.append(MlirOp(
-                    name="_sentinel", dialect="_sentinel", op_name="_func_boundary",
-                    operands=[], results=[], attributes={},
-                    input_types=[], output_types=[],
-                ))
+                result.append(
+                    MlirOp(
+                        name="_sentinel",
+                        dialect="_sentinel",
+                        op_name="_func_boundary",
+                        operands=[],
+                        results=[],
+                        attributes={},
+                        input_types=[],
+                        output_types=[],
+                    )
+                )
             result.append(op)
         return result, len(boundaries) + 1
 
@@ -130,11 +144,18 @@ def _split_into_functions(
     result_ops: list[MlirOp] = []
     for i, op in enumerate(mlir_ops):
         if i > 0 and i % ops_per_func == 0:
-            result_ops.append(MlirOp(
-                name="_sentinel", dialect="_sentinel", op_name="_func_boundary",
-                operands=[], results=[], attributes={},
-                input_types=[], output_types=[],
-            ))
+            result_ops.append(
+                MlirOp(
+                    name="_sentinel",
+                    dialect="_sentinel",
+                    op_name="_func_boundary",
+                    operands=[],
+                    results=[],
+                    attributes={},
+                    input_types=[],
+                    output_types=[],
+                )
+            )
         result_ops.append(op)
     return result_ops, (len(mlir_ops) + ops_per_func - 1) // ops_per_func
 
@@ -156,7 +177,7 @@ def _detect_layer(nn_module_stack: dict[str, Any], prev_layer: str) -> str:
     # Look for decoder layer numbers in stack keys
     layer_num: int | None = None
     for key in nn_module_stack:
-        m = re.search(r'layers\.(\d+)', str(key))
+        m = re.search(r"layers\.(\d+)", str(key))
         if m:
             num = int(m.group(1))
             if layer_num is None or num > layer_num:
@@ -167,7 +188,7 @@ def _detect_layer(nn_module_stack: dict[str, Any], prev_layer: str) -> str:
 
     # Check for output-module indicators
     key_str_lower = " ".join(str(k).lower() for k in nn_module_stack)
-    if any(kw in key_str_lower for kw in ['lm_head', 'final_norm', 'final_layer_norm']):
+    if any(kw in key_str_lower for kw in ["lm_head", "final_norm", "final_layer_norm"]):
         return "output"
 
     # If we've seen layers before and now no layer key → output region
@@ -242,12 +263,18 @@ def _make_multi_functions(
                 wname = op.attributes.get("name", "")
                 if wname:
                     single_weight_names.append(wname)
-        funcs = [MlirFunction(
-            name=base_name, inputs=global_inputs, outputs=global_outputs,
-            ops=mlir_ops, weights=weights,
-            param_weight_names=param_names, const_weight_names=const_names,
-            weight_names=single_weight_names,
-        )]
+        funcs = [
+            MlirFunction(
+                name=base_name,
+                inputs=global_inputs,
+                outputs=global_outputs,
+                ops=mlir_ops,
+                weights=weights,
+                param_weight_names=param_names,
+                const_weight_names=const_names,
+                weight_names=single_weight_names,
+            )
+        ]
         empty_plan = _empty_execution_plan(global_inputs, funcs)
         return funcs, [base_name], [], empty_plan
 
@@ -352,10 +379,16 @@ def _make_multi_functions(
             #   then weights from func[0] last.
             # Order inputs to match func[1]'s proven-correct convention:
             # [scalar, hidden_state, mask, weights..., sym_size...]
-            nw_0 = [(v, prod_order.get(v, (999, 999))) for v in needed
-                    if prod_order.get(v, (999,))[0] == 0 and v not in weights]
-            xfunc = [(v, prod_order.get(v, (999, 999))) for v in needed
-                     if prod_order.get(v, (999,))[0] != 0 and v not in weights]
+            nw_0 = [
+                (v, prod_order.get(v, (999, 999)))
+                for v in needed
+                if prod_order.get(v, (999,))[0] == 0 and v not in weights
+            ]
+            xfunc = [
+                (v, prod_order.get(v, (999, 999)))
+                for v in needed
+                if prod_order.get(v, (999,))[0] != 0 and v not in weights
+            ]
             w_0 = [(v, (999, 999)) for v in needed if v in weights]
             # First entry: earliest non-weight from func[0] (the scalar)
             nw_sorted = sorted(nw_0, key=lambda x: x[1][1])
@@ -403,7 +436,7 @@ def _make_multi_functions(
         # Determine consumed_internally for each output.
         # If this is an "a" block (has a following "b" sibling), the K and V
         # SSAs consumed by that sibling's SD-PA op are consumed_internally=True.
-        is_a_block = (fi + 1 < len(blocks) and _is_b_block[fi + 1])
+        is_a_block = fi + 1 < len(blocks) and _is_b_block[fi + 1]
         kv_to_mark: set[str] = set()
         if is_a_block:
             k_ssa, v_ssa = sdpa_kv_ssa[fi + 1]
@@ -416,16 +449,11 @@ def _make_multi_functions(
         # (emission order), then exported weights in return order
         # (alphabetical by SSA name, matching f_outputs).
         if fi == 0:
-            exported_weight_ssa = [
-                v for v in sorted(exported) if v in _ssa_to_wname
+            exported_weight_ssa = [v for v in sorted(exported) if v in _ssa_to_wname]
+            consumed_weight_ssa = [k for k in _ssa_to_wname if k not in set(exported_weight_ssa)]
+            ordered_weights = [_ssa_to_wname[v] for v in consumed_weight_ssa] + [
+                _ssa_to_wname[v] for v in exported_weight_ssa
             ]
-            consumed_weight_ssa = [
-                k for k in _ssa_to_wname if k not in set(exported_weight_ssa)
-            ]
-            ordered_weights = (
-                [_ssa_to_wname[v] for v in consumed_weight_ssa]
-                + [_ssa_to_wname[v] for v in exported_weight_ssa]
-            )
 
         f_outputs: list[tuple[str, str, bool]] = []
         for v in sorted(exported):
@@ -444,16 +472,18 @@ def _make_multi_functions(
 
         adjusted_block = [_adjust_op_attributes(op, input_rank_map) for op in block]
 
-        funcs.append(MlirFunction(
-            name=func_names[fi],
-            inputs=f_inputs,
-            outputs=f_outputs,
-            ops=adjusted_block,
-            weights={k: v for k, v in weights.items() if k in weight_refs_per_func[fi]},
-            param_weight_names=param_names & weight_refs_per_func[fi],
-            const_weight_names=const_names & weight_refs_per_func[fi],
-            weight_names=ordered_weights,
-        ))
+        funcs.append(
+            MlirFunction(
+                name=func_names[fi],
+                inputs=f_inputs,
+                outputs=f_outputs,
+                ops=adjusted_block,
+                weights={k: v for k, v in weights.items() if k in weight_refs_per_func[fi]},
+                param_weight_names=param_names & weight_refs_per_func[fi],
+                const_weight_names=const_names & weight_refs_per_func[fi],
+                weight_names=ordered_weights,
+            )
+        )
 
     chain_order = [f.name for f in funcs]
 
@@ -511,7 +541,7 @@ def _make_multi_functions(
                         sis.append((1, 0, out_idx))
         step_inputs.append(sis)
 
-    # ── Generate ExecutionPlan proto ──
+    # ── Generate ExecutionPlan proto (single source of truth) ──
     from gen.proto.python import sfa_abi_pb2
 
     plan = sfa_abi_pb2.ExecutionPlan()
@@ -532,13 +562,30 @@ def _make_multi_functions(
 
     plan_bytes = plan.SerializeToString()
 
-    # Flatten to legacy exec_plan_data for MLIR attribute + C++ chain-wrapper compat
-    exec_plan_data: list[int] = []
-    exec_plan_data.append(len(funcs))
-    exec_plan_data.append(len(global_names))
-    for sis in step_inputs:
-        exec_plan_data.append(len(sis))
-        for src, a, b in sis:
-            exec_plan_data.extend([src, a, b])
+    # Derive flat int array FROM proto (not from step_inputs) —
+    # ensures protocol is the single source of truth for the wire format.
+    exec_plan_data = _flatten_execution_plan(plan)
 
     return funcs, chain_order, exec_plan_data, plan_bytes
+
+
+def _flatten_execution_plan(plan) -> list[int]:
+    """Serialize ExecutionPlan proto into the flat int array consumed by
+    SfChainWrapper.cpp and stored as sf.exec_plan_data MLIR module attribute.
+
+    Wire format (matching ``EdgeInput`` proto fields):
+      [num_steps, num_global_inputs,
+       step0_num_inputs, src, source_index, producer_step, ...,
+       step1_num_inputs, src, source_index, producer_step, ...]
+
+    Each edge is 3 ints: (EdgeSource, source_index, producer_step).
+    This encoding is verified against the proto at generation time.
+    """
+    result: list[int] = [len(plan.steps), len(plan.global_inputs)]
+    for step in plan.steps:
+        result.append(len(step.inputs))
+        for edge in step.inputs:
+            result.append(edge.source)
+            result.append(edge.source_index)
+            result.append(edge.producer_step)
+    return result

@@ -24,9 +24,7 @@ def _verify_lowered_ir(lowered_text: str) -> None:
         )
         if tensor_arith:
             for op in tensor_arith:
-                errors.append(
-                    f"Bare arith.{op}f on tensor detected — should be inside linalg.generic"
-                )
+                errors.append(f"Bare arith.{op}f on tensor detected — should be inside linalg.generic")
 
     # 2. No unresolved sf.* ops (except sf.weight/sf.constant which are handled later)
     sf_ops = set(re.findall(r'"sf\.(\w+)"', lowered_text))
@@ -41,21 +39,18 @@ def _verify_lowered_ir(lowered_text: str) -> None:
 
     # 4. Warn about 0D tensors (tensor<f32>, tensor<i64>, etc. — no dimensions)
     zero_dim_tensors = re.findall(
-        r'tensor<(f32|f64|i1|i8|i16|i32|i64)>',
+        r"tensor<(f32|f64|i1|i8|i16|i32|i64)>",
         lowered_text,
     )
     if zero_dim_tensors:
         logging.warning(
-            "Lowered IR contains %d zero-dimensional tensor(s) — "
-            "types: %s",
+            "Lowered IR contains %d zero-dimensional tensor(s) — types: %s",
             len(zero_dim_tensors),
             sorted(set(zero_dim_tensors)),
         )
 
     if errors:
-        raise ValueError(
-            "Lowered IR verification failed:\n  - " + "\n  - ".join(errors)
-        )
+        raise ValueError("Lowered IR verification failed:\n  - " + "\n  - ".join(errors))
 
 
 def _save_failure_context(

@@ -220,9 +220,7 @@ def infer_expand_as(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
 # ── Attention ────────────────────────────────────────────────
 
 
-def infer_scaled_dot_product_attention(
-    input_types: list[ir.Type], **kwargs: Any
-) -> list[ir.Type]:
+def infer_scaled_dot_product_attention(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
     if len(input_types) >= 1:
         return [input_types[0]]
     return []
@@ -300,7 +298,7 @@ def _build_inference_table() -> dict[str, Any]:
     table: dict[str, Any] = {}
     for name, obj in list(globals().items()):
         if name.startswith("infer_") and callable(obj):
-            op_key = name[len("infer_"):]
+            op_key = name[len("infer_") :]
             table[op_key] = obj
     return table
 

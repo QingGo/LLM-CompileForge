@@ -17,7 +17,12 @@ import pytest
 # Ensure mlir-core is importable
 _mlir_pkg = (
     Path(__file__).resolve().parent.parent.parent.parent
-    / "llvm-project" / "build" / "tools" / "mlir" / "python_packages" / "mlir_core"
+    / "llvm-project"
+    / "build"
+    / "tools"
+    / "mlir"
+    / "python_packages"
+    / "mlir_core"
 )
 if _mlir_pkg.is_dir() and str(_mlir_pkg) not in sys.path:
     sys.path.insert(0, str(_mlir_pkg))
@@ -27,6 +32,7 @@ from compiler.pipeline import _apply_mlir_passes, _apply_sf_to_linalg  # noqa: E
 MLIR_BINDINGS = False
 try:
     import mlir.ir as ir  # noqa: F401
+
     MLIR_BINDINGS = True
 except ImportError:
     pass
@@ -53,7 +59,6 @@ SIMPLE_SF_MODULE = """module {
 
 @pytest.mark.unit
 class TestPipelineLowering:
-
     def test_apply_mlir_passes_no_lowering_returns_sf_text(self):
         """Without lowering, returned text should still be sf-dialect."""
         text, lowered = _apply_mlir_passes(SIMPLE_SF_MODULE, apply_lowering=False)
@@ -75,6 +80,7 @@ class TestPipelineLowering:
     def test_sf_text_still_parsable_after_passes(self):
         """The sf-dialect text (without lowering) must still parse as MlirModule."""
         from compiler.artifact import _parse_mlir_text
+
         text, _ = _apply_mlir_passes(SIMPLE_SF_MODULE, apply_lowering=False)
         mod = _parse_mlir_text(text)
         assert len(mod.functions) == 1
@@ -89,6 +95,7 @@ class TestPipelineLowering:
         if lowered is None:
             pytest.skip("no mlir bindings available")
         import mlir.ir as ir
+
         ctx = ir.Context()
         ctx.allow_unregistered_dialects = True
         with ctx:
@@ -110,7 +117,6 @@ class TestPipelineLowering:
 
 @pytest.mark.unit
 class TestPipelineLoweringEdgeCases:
-
     def test_empty_module(self):
         """Empty module should not crash."""
         text, lowered = _apply_mlir_passes(

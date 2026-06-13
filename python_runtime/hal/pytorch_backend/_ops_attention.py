@@ -40,11 +40,16 @@ class _AttentionOps:
                 if attn_mask.shape[-2] == attn_mask.shape[-1]:
                     mask_t = attn_mask.transpose(-1, -2)
                     attn_mask = (attn_mask >= mask_t).to(query.dtype)
-                    attn_mask = torch.where(attn_mask > 0.5, 0.0, float('-inf'))
+                    attn_mask = torch.where(attn_mask > 0.5, 0.0, float("-inf"))
 
         return F.scaled_dot_product_attention(
-            query, key, value, attn_mask=attn_mask, dropout_p=dropout_p,
-            is_causal=is_causal, scale=scale,
+            query,
+            key,
+            value,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            is_causal=is_causal,
+            scale=scale,
         )
 
     def _op_fused_attention_output(self, inputs: list[torch.Tensor], **kwargs: Any) -> torch.Tensor:
@@ -84,6 +89,7 @@ class _AttentionOps:
         t_attrs = kwargs.get("fuse_transpose_attrs", {})
         if isinstance(t_attrs, str):
             import ast
+
             try:
                 t_attrs = ast.literal_eval(t_attrs)
             except (ValueError, SyntaxError):
@@ -155,8 +161,8 @@ class _AttentionOps:
         qkv_out = qkv_out.to(orig_dtype)
         hidden = qkv_out.shape[-1] // 3
         q = qkv_out[..., :hidden]
-        k = qkv_out[..., hidden:2 * hidden]
-        v = qkv_out[..., 2 * hidden:]
+        k = qkv_out[..., hidden : 2 * hidden]
+        v = qkv_out[..., 2 * hidden :]
 
         n_heads: int = kwargs.get("n_heads", 0)
         if n_heads <= 0 and qkv_weight.dim() == 2:
@@ -175,9 +181,7 @@ class _AttentionOps:
         for key in ("scale", "is_causal", "dropout_p"):
             if key in kwargs:
                 sdpa_kwargs[key] = kwargs[key]
-        attn_out = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=mask_4d, **sdpa_kwargs
-        )
+        attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask_4d, **sdpa_kwargs)
         attn_out = attn_out.permute(0, 2, 1, 3).reshape(bsz, seq, hidden * n_heads)
         return F.linear(attn_out, o_weight, o_bias)
 

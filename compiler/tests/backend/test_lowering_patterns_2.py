@@ -10,6 +10,7 @@ import pytest
 
 try:
     from mlir_sf._mlir_libs._sfDialectsNanobind import sf  # noqa: F401
+
     _HAS_SF_DIALECT = True
 except ImportError:
     _HAS_SF_DIALECT = False
@@ -43,8 +44,6 @@ def test_view_dynamic():
 
 @pytest.mark.unit
 def test_arange_scalar():
-
-
     """sf.arange with scalar output (edge case: not meaningful, should not crash)."""
     lowered = lower("""module {
   func.func @test(%a: tensor<f32>) -> tensor<f32> {
@@ -90,7 +89,9 @@ def test_view_reshape():
 }""")
     check_lowered(lowered)
 
+
 # ── Remaining fix tests ──────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_unsqueeze_rank_change():
@@ -174,8 +175,8 @@ def test_index_idxcoords_mapping():
     #   extract should use outCoords[3] for dim3, constant 0 for dims 0-2
 
     # Find tensor.extract lines involving %arg1 (idx0) and %arg2 (idx1)
-    arg1_extracts = [line for line in lowered.split('\n') if 'tensor.extract' in line and '%arg1' in line]
-    arg2_extracts = [line for line in lowered.split('\n') if 'tensor.extract' in line and '%arg2' in line]
+    arg1_extracts = [line for line in lowered.split("\n") if "tensor.extract" in line and "%arg1" in line]
+    arg2_extracts = [line for line in lowered.split("\n") if "tensor.extract" in line and "%arg2" in line]
 
     assert arg1_extracts, "No tensor.extract from idx0 (arg1)"
     assert arg2_extracts, "No tensor.extract from idx1 (arg2)"
@@ -185,23 +186,24 @@ def test_index_idxcoords_mapping():
     # Bug would look like:   tensor.extract %arg1[%X, %c0, %c0, %Y]
     for ext in arg1_extracts:
         # dims 1-3 should all be %c0 (constant 0)
-        assert '%c0, %c0, %c0]' in ext or '%c0, %c0, %c0_' in ext.replace(' ', ''), \
+        assert "%c0, %c0, %c0]" in ext or "%c0, %c0, %c0_" in ext.replace(" ", ""), (
             f"idx0 extract should have constant 0 for dims 1-3 (broadcast): {ext}"
+        )
 
     # Verify idx1 (arg2) only uses outCoords[3] for dim3
     # Extract should look like: tensor.extract %arg2[%c0, %c0, %c0, %X]
     # Bug would look like:     tensor.extract %arg2[%c0, %c0, %Y, %c0]
     for ext in arg2_extracts:
         # dims 0-2 should be %c0, dim3 should be variable
-        assert '%c0, %c0, %c0' in ext, \
-            f"idx1 extract should have constant 0 for dims 0-2: {ext}"
+        assert "%c0, %c0, %c0" in ext, f"idx1 extract should have constant 0 for dims 0-2: {ext}"
         # dim3 should NOT be %c0
-        coords = ext.split('[')[1].split(']')[0].split(',')
+        coords = ext.split("[")[1].split("]")[0].split(",")
         if len(coords) >= 4:
             # The last coordinate before ']' should not be just %c0
             last_coord = coords[3].strip()
-            assert last_coord != '%c0' or '%c0]' in ext, \
+            assert last_coord != "%c0" or "%c0]" in ext, (
                 f"idx1 dim3 should be variable (outCoords[3]), not constant 0: {ext}"
+            )
 
 
 @pytest.mark.unit
@@ -223,18 +225,12 @@ def test_index_dynamic_dims():
     # Verify outDims sources from index tensors, not data tensor.
     # Bug: tensor.dim %arg0 (data) was used for all dynamic dims.
     # Fix: tensor.dim %arg1 (idx0) for dim 0, tensor.dim %arg2 (idx1) for dim 3.
-    assert "tensor.dim %arg1, %c0" in lowered, (
-        f"Expected tensor.dim from idx0 (arg1) for output dim 0:\n{lowered}"
-    )
-    assert "tensor.dim %arg2, %c3" in lowered, (
-        f"Expected tensor.dim from idx1 (arg2) for output dim 3:\n{lowered}"
-    )
+    assert "tensor.dim %arg1, %c0" in lowered, f"Expected tensor.dim from idx0 (arg1) for output dim 0:\n{lowered}"
+    assert "tensor.dim %arg2, %c3" in lowered, f"Expected tensor.dim from idx1 (arg2) for output dim 3:\n{lowered}"
     # Verify no tensor.dim from data tensor (%arg0) for the dynamic dims
     # (data tensor may still be used for index values, just not for dim sizes)
-    dim_from_data = [ln for ln in lowered.split('\n') if 'tensor.dim %arg0' in ln]
-    assert not dim_from_data, (
-        f"outDims should not source from data tensor (arg0): {dim_from_data}"
-    )
+    dim_from_data = [ln for ln in lowered.split("\n") if "tensor.dim %arg0" in ln]
+    assert not dim_from_data, f"outDims should not source from data tensor (arg0): {dim_from_data}"
 
 
 @pytest.mark.unit
@@ -298,7 +294,9 @@ def test_add_squeeze_rank_mismatch():
 }""")
     check_lowered(lowered)
 
+
 # ── Regression tests: session bugs ─────────────────────────────
+
 
 @pytest.mark.unit
 def test_binary_broadcast_3d_1d():
@@ -379,13 +377,13 @@ def test_compare_broadcast_3d_1d():
 
 @pytest.mark.unit
 def test_linear_3d_dynamic_batch():
-    lowered = lower('''module {
+    lowered = lower("""module {
   func.func @test(%a: tensor<?x4x768xf32>, %w: tensor<768x768xf32>,
                   %b: tensor<768xf32>) -> tensor<?x4x768xf32> {
     %0 = "sf.linear"(%a, %w, %b) : (tensor<?x4x768xf32>, tensor<768x768xf32>, tensor<768xf32>) -> tensor<?x4x768xf32>
     return %0 : tensor<?x4x768xf32>
   }
-}''')
+}""")
     check_lowered(lowered)
     assert "linalg.batch_matmul" in lowered
 
@@ -407,24 +405,24 @@ def test_ones_like_with_tensor_input():
 @pytest.mark.unit
 @pytest.mark.xfail(reason="known pass-through: lowering leaves sf. ops")
 def test_cumsum_out_of_bounds_dim():
-    lowered = lower('''module {
+    lowered = lower("""module {
   func.func @test(%a: tensor<1xf32>) -> tensor<1xf32> {
     %0 = "sf.cumsum"(%a) {dim = 1 : i64} : (tensor<1xf32>) -> tensor<1xf32>
     return %0 : tensor<1xf32>
   }
-}''')
+}""")
     assert lowered, "lowering should not crash"
 
 
 @pytest.mark.unit
 def test_layer_norm_with_dynamic_dim():
-    lowered = lower('''module {
+    lowered = lower("""module {
   func.func @test(%a: tensor<?x768xf32>, %w: tensor<768xf32>,
                   %b: tensor<768xf32>) -> tensor<?x768xf32> {
     %0 = "sf.layer_norm"(%a, %w, %b) {normalized_shape = [768]} : (tensor<?x768xf32>, tensor<768xf32>, tensor<768xf32>) -> tensor<?x768xf32>
     return %0 : tensor<?x768xf32>
   }
-}''')
+}""")
     check_lowered(lowered)
     assert "linalg.generic" in lowered
 
@@ -432,13 +430,14 @@ def test_layer_norm_with_dynamic_dim():
 @pytest.mark.unit
 def test_batch_matmul_affine_maps():
     """Regression: batch_matmul affine maps (contractDimR must be rhsRank-2)."""
-    lowered = lower('''module {
+    lowered = lower("""module {
   func.func @test(%a: tensor<1x12x4x64xf32>, %b: tensor<1x12x64x4xf32>) -> tensor<1x12x4x4xf32> {
     %0 = "sf.matmul"(%a, %b) : (tensor<1x12x4x64xf32>, tensor<1x12x64x4xf32>) -> tensor<1x12x4x4xf32>
     return %0 : tensor<1x12x4x4xf32>
   }
-}''')
+}""")
     from compiler.pipeline import _post_lowering_canonicalize
+
     canonical = _post_lowering_canonicalize(lowered)
     assert "linalg.generic" in canonical or "linalg.batch_matmul" in canonical
     assert "sf.matmul" not in lowered, "sf.matmul was not lowered"
@@ -447,25 +446,27 @@ def test_batch_matmul_affine_maps():
 @pytest.mark.unit
 def test_batch_matmul_dynamic_dims():
     """batch_matmul with dynamic dims: bufferization must not create 0-size tensors."""
-    lowered = lower('''module {
+    lowered = lower("""module {
   func.func @test(%a: tensor<1x12x4x64xf32>, %b: tensor<1x12x64x?xf32>) -> tensor<1x12x4x?xf32> {
     %0 = "sf.matmul"(%a, %b) : (tensor<1x12x4x64xf32>, tensor<1x12x64x?xf32>) -> tensor<1x12x4x?xf32>
     return %0 : tensor<1x12x4x?xf32>
   }
-}''')
+}""")
     assert "linalg." in lowered, "lowering failed"
     from compiler.backend.llvm_backend import _has_bindings
+
     if not _has_bindings():
         pytest.skip("MLIR bindings not available")
     import mlir.ir as ir
     import mlir.passmanager as pm
+
     ctx = ir.Context()
     with ctx:
         mod = ir.Module.parse(lowered, ctx)
         try:
-            pm.PassManager.parse(
-                "builtin.module(one-shot-bufferize{bufferize-function-boundaries})", ctx
-            ).run(mod.operation)
+            pm.PassManager.parse("builtin.module(one-shot-bufferize{bufferize-function-boundaries})", ctx).run(
+                mod.operation
+            )
         except Exception as e:
             pytest.fail(f"Bufferization failed on batch_matmul with dynamic dims: {e}")
 
@@ -499,11 +500,9 @@ def test_vector_contract_lowering_outerproduct():
             pytest.skip("Vectorization disabled — scalar path is expected")
 
         import re
-        masked_4d = len(re.findall(
-            r'vector\.mask[^{]*\{[^}]*vector\.contract', text))
-        assert masked_4d == 0, (
-            f"Found {masked_4d} masked contracts — will hang in outerproduct lowering"
-        )
+
+        masked_4d = len(re.findall(r"vector\.mask[^{]*\{[^}]*vector\.contract", text))
+        assert masked_4d == 0, f"Found {masked_4d} masked contracts — will hang in outerproduct lowering"
 
         pipeline = (
             "builtin.module("
@@ -529,15 +528,12 @@ def test_vector_contract_lowering_outerproduct():
                 for op in block:
                     if str(op.operation.name) == "func.func":
                         op.operation.attributes["llvm.emit_c_interface"] = ir.UnitAttr.get(ctx)
-        pm.PassManager.parse(
-            "builtin.module(convert-func-to-llvm,reconcile-unrealized-casts)", ctx
-        ).run(mod.operation)
+        pm.PassManager.parse("builtin.module(convert-func-to-llvm,reconcile-unrealized-casts)", ctx).run(mod.operation)
 
         result = str(mod)
         if "vector.contract" in result:
             pytest.skip("vector.contract not lowered — need different strategy")
-        assert "vector." not in result or "vector" in text, \
-            "vector ops remain after lowering"
+        assert "vector." not in result or "vector" in text, "vector ops remain after lowering"
 
 
 # ── Zero-dim tensor regression prevention ────────────────────
@@ -554,20 +550,17 @@ def test_zero_dim_tensor_prevention(caplog):
     return %0 : tensor<1xf32>
   }
 }""")
-    assert "tensor<1xf32>" in lowered, (
-        f"Lowered IR must contain 1D tensor<1xf32>:\n{lowered}"
-    )
-    assert "tensor<f32>" not in lowered, (
-        f"Lowered IR must NOT contain 0D tensor<f32>:\n{lowered}"
-    )
+    assert "tensor<1xf32>" in lowered, f"Lowered IR must contain 1D tensor<1xf32>:\n{lowered}"
+    assert "tensor<f32>" not in lowered, f"Lowered IR must NOT contain 0D tensor<f32>:\n{lowered}"
 
     from compiler.compile_dylib import _verify_lowered_ir
-    bad_ir = '''module {
+
+    bad_ir = """module {
   func.func @test(%a: tensor<f32>) -> tensor<f32> {
     %0 = linalg.copy ins(%a : tensor<f32>) outs(%a : tensor<f32>)
     return %0 : tensor<f32>
   }
-}'''
+}"""
     caplog.set_level(logging.WARNING)
     _verify_lowered_ir(bad_ir)
     assert any("zero-dimensional" in r.getMessage() for r in caplog.records), (
@@ -575,13 +568,11 @@ def test_zero_dim_tensor_prevention(caplog):
     )
 
     caplog.clear()
-    clean_ir = '''module {
+    clean_ir = """module {
   func.func @test(%a: tensor<1xf32>) -> tensor<1xf32> {
     %0 = linalg.copy ins(%a : tensor<1xf32>) outs(%a : tensor<1xf32>)
     return %0 : tensor<1xf32>
   }
-}'''
+}"""
     _verify_lowered_ir(clean_ir)
-    assert not any("zero-dimensional" in r.getMessage() for r in caplog.records), (
-        "Unexpected warning for clean 1D IR"
-    )
+    assert not any("zero-dimensional" in r.getMessage() for r in caplog.records), "Unexpected warning for clean 1D IR"

@@ -13,9 +13,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-VALID_PRECISIONS: frozenset[str] = frozenset({
-    "fp16", "fp32", "w8a8", "w4a16", "int8", "fp8",
-})
+VALID_PRECISIONS: frozenset[str] = frozenset(
+    {
+        "fp16",
+        "fp32",
+        "w8a8",
+        "w4a16",
+        "int8",
+        "fp8",
+    }
+)
 
 
 @dataclass

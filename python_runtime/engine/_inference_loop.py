@@ -23,6 +23,7 @@ _log = get_logger("engine.inference")
 @dataclass
 class _BatchRequest:
     """Lightweight per-request metadata passed through the batch forward."""
+
     request_id: str
     input_ids: torch.Tensor
     positions: torch.Tensor
@@ -113,16 +114,10 @@ class InferenceLoop:
     # ── KV Cache Lifecycle ──────────────────────────────────────
 
     def _uses_new_cache(self) -> bool:
-        return (
-            hasattr(self.executor, "_uses_cache_manager")
-            and self.executor._uses_cache_manager
-        )
+        return hasattr(self.executor, "_uses_cache_manager") and self.executor._uses_cache_manager
 
     def _uses_static_model(self) -> bool:
-        return (
-            hasattr(self.executor, "_uses_static_shape")
-            and getattr(self.executor, "_uses_static_shape", False)
-        )
+        return hasattr(self.executor, "_uses_static_shape") and getattr(self.executor, "_uses_static_shape", False)
 
     def _ensure_kv_cache(self) -> torch.Tensor:
         if self._kv_cache is not None:
@@ -131,10 +126,7 @@ class InferenceLoop:
             self._kv_cache = torch.zeros(1)
             return self._kv_cache
         if self._num_layers <= 0 or self._num_kv_heads <= 0 or self._head_dim <= 0:
-            raise RuntimeError(
-                "KV cache requires num_layers, num_kv_heads, head_dim. "
-                "Set them on LLMEngine creation."
-            )
+            raise RuntimeError("KV cache requires num_layers, num_kv_heads, head_dim. Set them on LLMEngine creation.")
         self._kv_cache = self.executor.prepare_kv_blocks(
             num_layers=self._num_layers,
             num_kv_heads=self._num_kv_heads,
@@ -173,9 +165,7 @@ class InferenceLoop:
                 if value.dim() >= 4 and value.shape[0] == 1:
                     value = value.squeeze(0)
                 flat_pos = positions.squeeze(0) if positions.dim() >= 2 else positions
-                self.executor.write_kv_to_cache(
-                    key, value, flat_pos, block_tables, layer_idx=layer_idx
-                )
+                self.executor.write_kv_to_cache(key, value, flat_pos, block_tables, layer_idx=layer_idx)
 
     # ── Prefix Cache helpers ────────────────────────────────────
 
@@ -244,10 +234,14 @@ class InferenceLoop:
             results = self._step_per_request(batch, use_kv)
 
         elapsed_ms = (time.perf_counter() - t0) * 1000
-        log_step_end(_log, step_id, elapsed_ms,
-                     batch_size=batch.size,
-                     total_tokens=sum(r.n_tokens for r in batch._requests),
-                     results=len(results))
+        log_step_end(
+            _log,
+            step_id,
+            elapsed_ms,
+            batch_size=batch.size,
+            total_tokens=sum(r.n_tokens for r in batch._requests),
+            results=len(results),
+        )
         return results
 
     def _can_batch_forward(self, batch: _Batch) -> bool:
@@ -273,7 +267,9 @@ class InferenceLoop:
                 head_dim=self._head_dim,
             )
             logits, kv_tensors = self.executor.forward_with_kv(
-                stacked_input, positions=stacked_pos, is_decode=batch_is_decode,
+                stacked_input,
+                positions=stacked_pos,
+                is_decode=batch_is_decode,
             )
             self._write_kv_outputs(kv_tensors, stacked_pos, batch.block_tables)
         else:
@@ -298,7 +294,9 @@ class InferenceLoop:
 
             if use_kv:
                 logits, kv_tensors = self.executor.forward_with_kv(
-                    req_input, positions=req_pos, is_decode=br.is_decode,
+                    req_input,
+                    positions=req_pos,
+                    is_decode=br.is_decode,
                 )
                 self._write_kv_outputs(kv_tensors, req_pos, batch.block_tables)
             else:
@@ -321,9 +319,9 @@ class InferenceLoop:
             rid = br.request_id
 
             if logits_tensor.dim() >= 3:
-                req_logits = logits_tensor[req_idx:req_idx + 1, -1, :]
+                req_logits = logits_tensor[req_idx : req_idx + 1, -1, :]
             elif logits_tensor.dim() == 2:
-                req_logits = logits_tensor[req_idx:req_idx + 1, :]
+                req_logits = logits_tensor[req_idx : req_idx + 1, :]
             else:
                 req_logits = logits_tensor
 
@@ -342,8 +340,7 @@ class InferenceLoop:
             if finished:
                 self._insert_finished_to_cache(rid)
                 self._cleanup_request(rid)
-                log_request_lifecycle(_log, rid, "finished",
-                                      output_tokens=len(self._output_tokens.get(rid, [])))
+                log_request_lifecycle(_log, rid, "finished", output_tokens=len(self._output_tokens.get(rid, [])))
 
             results.append(
                 GenerationResult(
