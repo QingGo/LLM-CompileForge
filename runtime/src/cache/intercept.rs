@@ -40,7 +40,9 @@ pub fn intercept_consumed_output(
         let layer_rid = format!("{}_f{}", rid, fi);
         let num_tokens = positions.len();
         #[allow(clippy::manual_checked_ops)]
-        let hidden_dim = if num_tokens > 0 {
+        let hidden_dim = if tensor.shape.len() >= 4 {
+            tensor.shape[1] * tensor.shape[3]
+        } else if num_tokens > 0 {
             tensor.numel() / num_tokens
         } else {
             *func_def_outputs[oi]
@@ -67,10 +69,19 @@ pub fn intercept_consumed_output(
         // BNSD→BNLD: prefill K/V is head-major [b, h, s, d];
         // write_kv expects position-major where each hidden_dim chunk
         // = one position.
-        let write_data: Vec<f32> = if tensor.shape.len() >= 4 && num_tokens > 1 {
-            let nh = tensor.shape[1];
+        // When the tensor's first dim already encodes num_tokens
+        // (e.g., [seq, heads, seq, dim] from SDPA-split), the
+        // numel may be num_tokens * heads * seq * dim rather than
+        // batch * heads * seq * dim.  Use a loop-based transpose only
+        // when the tensor actually contains num_tokens * nh * hd
+        // elements; otherwise pass through as-is.
+        let nh = tensor.shape[1];
+        let hd = tensor.shape[3];
+        let expected_elems = num_tokens * nh * hd;
+        let write_data: Vec<f32> = if tensor.shape.len() >= 4 && num_tokens > 1
+            && tensor.numel() >= expected_elems
+        {
             let sl = tensor.shape[2];
-            let hd = tensor.shape[3];
             let src = tensor.as_slice();
             let mut dst = vec![0.0f32; num_tokens * hidden_dim];
             for p in 0..num_tokens {
@@ -157,9 +168,9 @@ pub fn intercept_consumed_input(
         let is_k = kv_indices.first() == Some(&output_idx);
 
         let cached_data = if is_k { &cached_key } else { &cached_val };
-        let n_cached_tokens = pos;
-        let num_new_tokens = positions.len();
-        let total_tokens = n_cached_tokens + num_new_tokens;
+        let n_cached_tokens = cached_data.len() / hidden_dim.max(1);
+        let n_new_tokens = new_tensor.numel() / hidden_dim.max(1);
+        let total_tokens = n_cached_tokens + n_new_tokens;
 
         // Concat: cached (BNLD from read_kv) ++ new (1 token, BNSD but
         // flat-equivalent to BNLD for a single position).

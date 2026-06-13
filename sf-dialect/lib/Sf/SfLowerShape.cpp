@@ -71,6 +71,31 @@ struct SfViewOpLowering : public OpRewritePattern<sf::ViewOp> {
               dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), dynVal);
             }
             shapeVals.push_back(dynVal);
+          } else if (val < -1 && (size_t)(-val - 2) < dynShapeOperands.size()) {
+            // Negative sentinel (-2, -3, ...) → use dyn_shape operand at position
+            // (-val-2).  The Python compiler emits -(dyn_pos+2) for each dynamic dim
+            // to distinguish it from -1 (inferred) and static dims.
+            Value dynVal = dynShapeOperands[-val - 2];
+            auto dynTy = dyn_cast<RankedTensorType>(dynVal.getType());
+            if (dynTy && dynTy.getRank() == 0) {
+              Value extracted = tensor::ExtractOp::create(rewriter, loc,
+                  dynTy.getElementType(), dynVal, ValueRange{});
+              Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
+              dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), asInt);
+            } else if (dynTy && dynTy.getRank() == 1 && dynTy.getDimSize(0) == 1) {
+              Value extracted = tensor::ExtractOp::create(rewriter, loc,
+                  dynTy.getElementType(), dynVal,
+                  ValueRange{arith::ConstantIndexOp::create(rewriter, loc, 0)});
+              if (dynTy.getElementType().isF32() || dynTy.getElementType().isF64()) {
+                Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
+                dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), asInt);
+              } else {
+                dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), extracted);
+              }
+            } else if (!dynVal.getType().isIndex()) {
+              dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), dynVal);
+            }
+            shapeVals.push_back(dynVal);
           } else if (val == -1) {
             // -1 with no remaining operands → truly inferred (pass 2)
             inferredIdx = i;

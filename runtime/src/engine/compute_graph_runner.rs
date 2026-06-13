@@ -142,9 +142,10 @@ fn allocate_output_buffers(
         // dim could be hidden_dim (768) or vocab_size (50272).  Use a generous
         // allocation (8 MB f32) to avoid "dylib output exceeds buffer capacity".
         let all_dynamic = io_def.shape.iter().all(|&d| d == 0);
+        let has_dynamic = io_def.shape.iter().any(|&d| d == 0);
         let numel: usize;
         let final_shape: Vec<usize>;
-        if product == 0 || all_dynamic {
+        if product == 0 || all_dynamic || (has_dynamic && io_def.rank >= 3) {
             if io_def.rank >= 1 {
                 let n = 2_097_152usize;
                 final_shape = match io_def.rank as usize {

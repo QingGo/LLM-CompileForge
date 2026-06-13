@@ -46,6 +46,10 @@ mod contract_weight_tests;
 #[path = "tests/e2e_tests.rs"]
 mod e2e_tests;
 
+#[cfg(test)]
+#[path = "tests/diagnostic_tests.rs"]
+mod diagnostic_tests;
+
 #[cfg(feature = "python-bindings")]
 mod py_bindings {
     use crate::cache::block::BlockManager;

@@ -1,3 +1,26 @@
+//===----------------------------------------------------------------------===//
+// SfChainWrapper — Generate func @main orchestrating sub-function calls
+//
+// Consumes sf.exec_plan_data (flat int array) derived from the ExecutionPlan
+// protobuf message defined in include/sfa_abi.proto:79-121.
+//
+// Protocol mapping (single source of truth: sfa_abi.proto):
+//   Flat array layout:
+//     [num_steps, num_global_inputs,
+//      step0_num_inputs,
+//        GLOBAL_INPUT=0|STEP_OUTPUT=1, source_index, producer_step, ...
+//      step1_num_inputs, ...]
+//
+//   Maps to proto fields:
+//     num_steps         → len(ExecutionPlan.steps)
+//     num_global_inputs → len(ExecutionPlan.global_inputs)
+//     stepN_num_inputs  → len(ExecutionStep.inputs)
+//     [src, idx, step]  → EdgeInput { source, source_index, producer_step }
+//
+// The canonical proto bytes are also embedded as sf.exec_plan_proto (StringAttr)
+// for consumers that can deserialize protobuf directly (Python/Rust).
+//===----------------------------------------------------------------------===//
+
 #include "Sf/SfPasses.h"
 #include "Sf/SfOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

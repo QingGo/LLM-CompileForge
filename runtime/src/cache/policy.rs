@@ -105,6 +105,21 @@ impl CachePolicy {
                     let io = iv
                         .as_object()
                         .ok_or_else(|| "expected object in intercepts array".to_string())?;
+                    let fi = io.get("func_index").and_then(|v| v.as_u64());
+                    let oi = io.get("output_index").and_then(|v| v.as_u64());
+                    let (func_index, output_index) = match (fi, oi) {
+                        (Some(f), Some(o)) => (f as usize, o as usize),
+                        _ => {
+                            log::warn!(
+                                "Skipping intercept entry without func_index/output_index \
+                                 (slab_id={:?}, op_name={:?}) — \
+                                 falling back to consumed_internally flag",
+                                io.get("slab_id").and_then(|v| v.as_str()),
+                                io.get("op_name").and_then(|v| v.as_str()),
+                            );
+                            continue;
+                        }
+                    };
                     intercepts.push(InterceptSpec {
                         slab_id: io
                             .get("slab_id")
@@ -131,14 +146,8 @@ impl CachePolicy {
                             .and_then(|v| v.as_str())
                             .unwrap_or("sequential")
                             .to_string(),
-                        func_index: io
-                            .get("func_index")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as usize,
-                        output_index: io
-                            .get("output_index")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as usize,
+                        func_index,
+                        output_index,
                     });
                 }
                 intercepts
