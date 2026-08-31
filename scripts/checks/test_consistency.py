@@ -23,12 +23,12 @@ import sys
 
 import numpy as np
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, _PROJECT_ROOT)
 
 ARTIFACT_DIR = "outputs/compiled/opt_125m_fresh"
-DYLIB_PATH = os.path.join(ARTIFACT_DIR, "libopt_125m.dylib")
-FORWARD_CHECK_BIN = "rust/target/release/forward_check"
+DYLIB_PATH = os.path.join(ARTIFACT_DIR, "libopt_125m_fresh.dylib")
+FORWARD_CHECK_BIN = "runtime/target/release/forward_check"
 RUST_LOGITS_CSV = "/tmp/rust_logits.csv"
 HF_CACHE = os.path.expanduser(
     "~/.cache/huggingface/hub/models--facebook--opt-125m"
@@ -176,11 +176,23 @@ def main() -> int:
         "make test-dylib-cos",
         "编译产物 .dylib",
     )
-    ensure(
-        os.path.join(ARTIFACT_DIR, "weights.safetensors"),
-        None,
-        "权重文件 weights.safetensors",
-    )
+    # Weights resolve from the artifact dir or the HF cache — the same
+    # resolution order the Rust forward_check binary uses.
+    weights_found = False
+    for local_name in ("model.safetensors", "weights.safetensors", "pytorch_model.bin"):
+        if os.path.exists(os.path.join(ARTIFACT_DIR, local_name)):
+            weights_found = True
+            break
+    if not weights_found:
+        snapshots = os.path.join(HF_CACHE, "snapshots")
+        if os.path.isdir(snapshots):
+            for snap in sorted(os.listdir(snapshots), reverse=True):
+                if os.path.isfile(os.path.join(snapshots, snap, "model.safetensors")):
+                    weights_found = True
+                    break
+    if not weights_found:
+        print("❌ 权重文件未找到 (artifact dir 或 HF 缓存中均无 model.safetensors)")
+        sys.exit(1)
     print("  ✅ 所有编译产物已就绪")
 
     # ── Step 2: Check HF cache ────────────────────────────────────

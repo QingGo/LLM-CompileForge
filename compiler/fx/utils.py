@@ -213,8 +213,15 @@ def _resolve_op_types(
     shape_map: dict[str, tuple[tuple[int | None, ...], str]],
     weights: dict[str, torch.Tensor],
     kwargs: dict[str, Any],
+    promotions: list[tuple[int, str, str]] | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Compute input/output MLIR type strings for an sf operation."""
+    """Compute input/output MLIR type strings for an sf operation.
+
+    ``promotions`` is an optional out-parameter.  Mixed f32/bf16/f16
+    non-weight operands follow PyTorch promotion to f32; each promoted
+    operand is appended as ``(index, source_type_str, target_elt)`` so the
+    converter can insert an explicit ``sf.identity`` cast before the op.
+    """
 
     input_shapes: list[tuple[int | None, ...]] = []
     input_elts: list[str] = []
@@ -306,14 +313,26 @@ def _resolve_op_types(
     # Binary ops: both operands must be same type.
     # For constants (_const_*) with type mismatch, implement PyTorch's
     # promotion rules: int → float when mixed with float operands.
-    # This is NOT a silent coercion — it's explicitly tracking the
-    # promotion with a log message so it's visible in debug output.
+    # Mixed f32/bf16 and f32/f16 weight operands are promoted to f32;
+    # PyTorch performs this promotion per-op and the exported FX graph
+    # does not always insert an explicit ``to`` node.  Weight SSA ops are
+    # emitted later from the same weights dict, so promoting the tensor is
+    # equivalent for the compiled artifact.
     same_type_ops = {"add", "mul", "sub", "div", "max", "pow"}
+
+    def _weight_key(n: str) -> str | None:
+        if n.startswith("%") and n[1:] in weights:
+            return n[1:]
+        if n in weights:
+            return n
+        return None
+
     if hal_op in same_type_ops and len(input_elts) >= 2:
         for i in range(1, len(input_elts)):
             if input_elts[i] != input_elts[0]:
                 # Check if we can resolve via promotion
                 n = input_names[i] if i < len(input_names) else ""
+                weight_key = _weight_key(n)
                 if n.startswith("_const_") and n in weights:
                     promoted = False
                     # i64 → f32 promotion (PyTorch semantics)
@@ -326,6 +345,15 @@ def _resolve_op_types(
                         weights[n] = weights[n].half()
                         input_elts[i] = "f16"
                         promoted = True
+                    # f32 scalar constant → bf16/f16 tensor (preserve the
+                    # tensor dtype instead of forcing f32 on the whole op).
+                    if input_elts[i] == "f32" and input_elts[0] in ("f16", "bf16"):
+                        target = input_elts[0]
+                        weights[n] = weights[n].to(
+                            torch.float16 if target == "f16" else torch.bfloat16
+                        )
+                        input_elts[i] = target
+                        promoted = True
                     if promoted:
                         _log.debug(
                             "Type promotion for '%s': %s i64→%s (matches %s operand %s)",
@@ -335,8 +363,33 @@ def _resolve_op_types(
                             "lhs" if i > 0 else "rhs",
                             input_names[0],
                         )
+                elif weight_key is not None and input_elts[0] == "f32" and input_elts[i] in ("bf16", "f16"):
+                    weights[weight_key] = weights[weight_key].float()
+                    old_elt = input_elts[i]
+                    input_elts[i] = "f32"
+                    _log.debug(
+                        "Type promotion for '%s': %s %s→f32 (matches %s operand %s)",
+                        hal_op,
+                        weight_key,
+                        old_elt,
+                        "lhs" if i > 0 else "rhs",
+                        input_names[0],
+                    )
+                elif {input_elts[0], input_elts[i]} <= {"f32", "bf16", "f16"}:
+                    # Non-weight mixed float operands follow PyTorch promotion
+                    # to f32.  Record the source type so the converter can
+                    # insert an explicit identity cast before this op.
+                    target = "f32"
+                    for idx in (0, i):
+                        if input_elts[idx] != target:
+                            src_elt = input_elts[idx]
+                            src_type = _shape_to_mlir_type(input_shapes[idx], src_elt)
+                            if promotions is not None:
+                                promotions.append((idx, src_type, target))
+                            input_elts[idx] = target
+                    continue
                 else:
-                    # Non-const operand — can't promote, must fail
+                    # Non-promotable mismatch — must fail
                     mismatches = [
                         (i, input_elts[0], input_elts[i])
                         for i in range(1, len(input_elts))

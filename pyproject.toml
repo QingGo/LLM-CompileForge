@@ -59,7 +59,12 @@ exclude = ["tests/", "compiler/state_export.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "python_runtime/engine/tests", "python_runtime/hal/tests", "compiler/tests"]
-timeout = 1
+# Default per-test timeout.  Was 1s — too aggressive: it killed legitimate
+# tests that invoke subprocesses (mlir-translate/llc ~2-60s) and produced
+# flaky Timeout failures under load.  30s still catches accidental hangs
+# while letting real subprocess-based unit tests finish; genuinely slow
+# tests set their own @pytest.mark.timeout.
+timeout = 30
 timeout_method = "signal"
 addopts = ["-v", "--tb=short", "--strict-markers"]
 markers = [

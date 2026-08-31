@@ -60,6 +60,7 @@ from compiler.shape.shape_inference_activations import (  # type: ignore[attr-de
     infer_view,
 )
 from compiler.shape.shape_inference_pure import (
+    _infer_conv1d_pure,
     _infer_embedding_pure,
 )
 from compiler.shape.shape_inference_utils import (
@@ -102,15 +103,25 @@ def infer_type_as(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
 
 
 def infer_identity(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
-    if input_types:
-        return [input_types[0]]
-    return []
+    if not input_types:
+        return []
+    out_type = input_types[0]
+    dtype_str = kwargs.get("dtype")
+    if dtype_str is not None:
+        from compiler.shape.shape_inference_utils import _elt_from_str
+        dtype_mlir = dtype_str.replace("torch.", "")
+        if isinstance(out_type, (ir.RankedTensorType, ir.UnrankedTensorType)):
+            target_ir = _elt_from_str(dtype_mlir)
+            out_type = ir.RankedTensorType.get(out_type.shape, target_ir)
+        elif isinstance(out_type, ir.UnrankedTensorType):
+            target_ir = _elt_from_str(dtype_mlir)
+            out_type = ir.UnrankedTensorType.get(target_ir)
+    return [out_type]
 
 
 def infer_conv1d(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:
-    if not input_types:
-        return []
-    return [input_types[0]]
+    """Infer Conv1d output using the shared pure shape function."""
+    return _infer_ir_via_pure(_infer_conv1d_pure, input_types, **kwargs)
 
 
 def infer_arange(input_types: list[ir.Type], **kwargs: Any) -> list[ir.Type]:

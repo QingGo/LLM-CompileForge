@@ -8,7 +8,9 @@ name mapping, constant tensors, and compute graph description.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import struct
 import subprocess
 from typing import Any
@@ -41,27 +43,74 @@ def _init_dtype_codes() -> dict[Any, int]:
     return _DTYPE_TO_CODE
 
 
+def _load_actual_safetensor_keys(weight_source: dict[str, Any]) -> list[str]:
+    """Load the real tensor keys from the checkpoint on disk.
+
+    ``hf_key_map`` is derived from the in-memory PyTorch state dict, which can
+    differ from the on-disk safetensors key layout (e.g. Qwen3.5 stores
+    ``model.language_model.*`` while the loaded module exposes ``model.*``).
+    When available, prefer the on-disk keys so the Rust WeightProvider can
+    mmap the actual safetensors files.
+    """
+    path = weight_source.get("path", "") if weight_source else ""
+    if not path or not os.path.isfile(path):
+        return []
+
+    try:
+        if path.endswith(".index.json"):
+            with open(path) as f:
+                index = json.load(f)
+            return list(index.get("weight_map", {}).keys())
+        if path.endswith(".safetensors"):
+            with open(path, "rb") as f:
+                header_len = struct.unpack("<Q", f.read(8))[0]
+                header = json.loads(f.read(header_len))
+            if isinstance(header, dict):
+                return [k for k in header.keys() if k != "__metadata__"]
+    except Exception:
+        return []
+    return []
+
+
+def _find_actual_hf_key(short: str, actual_keys: list[str]) -> str | None:
+    """Find the on-disk safetensors key for a compiled weight name."""
+    # Fast path: exact clean-name match.
+    for hf in actual_keys:
+        if hf.replace(".", "_") == short:
+            return hf
+
+    # Model-prefix-tolerant path: suffix candidates, e.g.
+    # model.language_model.embed_tokens.weight -> model_embed_tokens_weight.
+    for hf in actual_keys:
+        clean = hf.replace(".", "_")
+        if short in _candidate_names(clean) or clean.endswith(short):
+            return hf
+    return None
+
+
 def _build_name_mapping(module: MlirModule) -> dict[str, str]:
     """Build a compiled weight name → original HF safetensors key mapping.
 
     Uses ``hf_key_map`` from module metadata (stored at compile time by
     ``fx_graph_to_mlir``) to obtain the original HF key for each weight.
+    When the on-disk safetensors/index is available, it takes precedence so
+    the Rust runtime can find the exact serialized tensor names.
+
     Resolves tied weights: if two weights share the same data tensor,
     both map to the SINGLE survivor HF key in the safetensors file.
     """
     hf_key_map: dict[str, str] = module.metadata.get("hf_key_map", {})
-    tied_weights: dict[str, str] = module.metadata.get("weight_source", {}).get("tied_weights", {})
-    # tied_weights maps alias → survivor, e.g. "lm_head_weight" → "model_decoder_embed_tokens_weight"
-    # meaning lm_head_weight is an alias for model_decoder_embed_tokens_weight (same tensor data).
+    weight_source: dict[str, Any] = module.metadata.get("weight_source", {}) or {}
+    tied_weights: dict[str, str] = weight_source.get("tied_weights", {})
+    actual_keys = _load_actual_safetensor_keys(weight_source)
+    # tied_weights maps alias → survivor, e.g. "lm_head_weight" → "model_embed_tokens_weight"
+    # meaning lm_head_weight is an alias for model_embed_tokens_weight (same tensor data).
     #
-    # NOTE: The survivor's hf_key exists in safetensors. Both should use that key.
-    # In OPT-125m: lm_head.weight = model.decoder.embed_tokens.weight (tied),
-    # safetensors stores under "lm_head.weight" only.
+    # The alias should resolve to the survivor's HF key.  Whether the checkpoint
+    # stores one or both keys is model-specific (OPT stores both; LLaMA stores
+    # embed_tokens and omits lm_head), so the survivor is the stable choice.
 
-    # Build reverse map: survivor → alias (so we redirect aliases to the survivor's HF key)
-    alias_to_survivor: dict[str, str] = {}
-    for alias_name, surv_name in tied_weights.items():
-        alias_to_survivor[surv_name] = alias_name
+    alias_to_survivor: dict[str, str] = dict(tied_weights)
 
     mapping: dict[str, str] = {}
 
@@ -76,11 +125,21 @@ def _build_name_mapping(module: MlirModule) -> dict[str, str]:
             # If this weight is an alias for a tied weight, use the survivor's HF key
             if short in alias_to_survivor:
                 survivor = alias_to_survivor[short]
+                survivor_actual = _find_actual_hf_key(survivor, actual_keys)
+                if survivor_actual is not None:
+                    mapping[short] = survivor_actual
+                    continue
                 if survivor in hf_key_map:
                     mapping[short] = hf_key_map[survivor]
                     continue
 
-            # Normal lookup
+            # Prefer the on-disk safetensors key when it can be matched.
+            actual = _find_actual_hf_key(short, actual_keys)
+            if actual is not None:
+                mapping[short] = actual
+                continue
+
+            # Fallback: original hf_key_map (in-memory state-dict naming).
             for full, hf in hf_key_map.items():
                 candidates = _candidate_names(full)
                 if short in candidates or full.endswith(short):
@@ -178,7 +237,12 @@ def _build_constants_binary(
         parts.append(struct.pack("<B", len(shape)))
         for dim in shape:
             parts.append(struct.pack("<Q", dim))
-        data = tensor.detach().cpu().numpy().tobytes()
+        if tensor.dtype == torch.bfloat16:
+            # bf16 is not a native numpy dtype; serialize its raw 16-bit
+            # storage explicitly (the runtime already knows dtype code 2).
+            data = tensor.detach().cpu().view(torch.uint16).numpy().tobytes()
+        else:
+            data = tensor.detach().cpu().numpy().tobytes()
         parts.append(struct.pack("<Q", len(data)))
         parts.append(data)
 

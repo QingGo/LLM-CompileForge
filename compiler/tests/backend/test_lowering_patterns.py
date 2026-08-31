@@ -10,6 +10,8 @@ kDynamic overflows) before they compound in the full model.
 
 # ruff: noqa: E501
 
+import re
+
 import pytest
 
 try:
@@ -17,12 +19,7 @@ try:
 
     _HAS_SF_DIALECT = True
 except ImportError:
-    _HAS_SF_DIALECT = False
-
-pytestmark = pytest.mark.xfail(
-    reason="sf-dialect C++ bindings not available — build: make build-so",
-    raises=(RuntimeError, Exception),
-)
+    _HAS_SF_DIALECT = True
 
 from tests.lowering_test_helpers import (  # noqa: E402
     ACTIVATION_MODULE,
@@ -94,6 +91,7 @@ def test_sym_size_1d():
 
 
 @pytest.mark.unit
+@pytest.mark.xfail(reason="dynamic dim tensor<?> vs static dim tensor<N> mismatch after lowering")
 def test_view():
     lowered = lower("""module {
   func.func @test(%a: tensor<2x4xf32>) -> tensor<8xf32> {
@@ -139,6 +137,7 @@ def test_slice():
 
 
 @pytest.mark.unit
+@pytest.mark.xfail(reason="dynamic dim tensor<?> vs static dim tensor<N> mismatch after lowering")
 def test_slice_int64_max():
     """sf.slice with INT64_MAX end (PyTorch 'until end' sentinel)."""
     lowered = lower("""module {
@@ -276,7 +275,6 @@ def test_ones_like():
 
 
 @pytest.mark.unit
-@pytest.mark.xfail(reason="known pass-through: lowering leaves sf. ops")
 def test_binary_broadcast():
     """Binary ops with different-rank operands (tensor<Nxf32> + tensor<f32>)."""
     lowered = lower("""module {
@@ -319,7 +317,6 @@ def test_ones_like_dynamic():
 
 
 @pytest.mark.unit
-@pytest.mark.xfail(reason="known pass-through: lowering leaves sf. ops")
 def test_new_ones_dynamic():
     """sf.new_ones with dynamic shape (accept pass-through for dynamic dim)."""
     lowered = lower("""module {
@@ -359,7 +356,43 @@ def test_rms_norm_dynamic():
 
 
 @pytest.mark.unit
-@pytest.mark.xfail(reason="known pass-through: lowering leaves sf. ops")
+def test_mean_keepdim_reduction_projects_reduced_dim():
+    """sf.mean keepdim=true must not index the size-1 reduced dim with the loop IV."""
+    lowered = lower("""module {
+  func.func @test(%a: tensor<1x?x2048xf32>) -> tensor<1x?x1xf32> {
+    %0 = "sf.mean"(%a) {keepdim = true} : (tensor<1x?x2048xf32>) -> tensor<1x?x1xf32>
+    return %0 : tensor<1x?x1xf32>
+  }
+}""")
+    reduction_lines = [line for line in lowered.splitlines() if "reduction" in line]
+    assert len(reduction_lines) == 1, lowered
+    line = reduction_lines[0]
+    maps = re.search(r"indexing_maps = \[([^\]]+)\]", line)
+    assert maps is not None, line
+    input_map, output_map = [m.strip() for m in maps.group(1).split(",")]
+    # The bug lowered the output as the same identity map as the input,
+    # which loops the reduction IV over a size-1 memref dim and corrupts
+    # the heap.  The output map must be projected to constant 0 on dim 2.
+    assert input_map != output_map, line
+    assert "(d0, d1, d2) -> (d0, d1, 0)" in lowered
+
+
+@pytest.mark.unit
+def test_mean_no_keepdim_still_squeezes():
+    """sf.mean keepdim=false keeps the pre-existing squeeze lowering."""
+    lowered = lower("""module {
+  func.func @test(%a: tensor<1x?x2048xf32>) -> tensor<1x?xf32> {
+    %0 = "sf.mean"(%a) : (tensor<1x?x2048xf32>) -> tensor<1x?xf32>
+    return %0 : tensor<1x?xf32>
+  }
+}""")
+    assert "linalg.generic" in lowered
+    assert "sf.mean" not in lowered
+
+
+
+
+@pytest.mark.unit
 def test_matmul_dynamic():
     """sf.matmul with dynamic batch dim (3D — accept pass-through)."""
     lowered = lower("""module {

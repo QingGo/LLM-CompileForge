@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
-from typing import Any
+from typing import Any, cast
 
 import torch
 
@@ -16,17 +16,18 @@ def _empty_execution_plan(
 ) -> bytes:
     from gen.proto.python import sfa_abi_pb2
 
-    plan = sfa_abi_pb2.ExecutionPlan()
+    plan = sfa_abi_pb2.ExecutionPlan()  # type: ignore[attr-defined]
     for name, _ in global_inputs:
         plan.global_inputs.append(name)
     step = plan.steps.add()
     step.func_name = funcs[0].name
-    for name, _ in funcs[0].inputs:
+    for _name, _ in funcs[0].inputs:
         edge = step.inputs.add()
-        edge.source = sfa_abi_pb2.GLOBAL_INPUT
+        edge.source = sfa_abi_pb2.GLOBAL_INPUT  # type: ignore[attr-defined]
         edge.source_index = 0
         edge.producer_step = 0
-    return plan.SerializeToString()
+
+    return cast(bytes, plan.SerializeToString())
 
 
 _log = logging.getLogger(__name__)
@@ -219,6 +220,100 @@ def _log_split_plan(mlir_ops: list[Any], boundaries: list[int]) -> None:
     for i, (name, count) in enumerate(segments):
         print(f"[fx_to_mlir]   func_{i}: {name} — {count} ops", file=sys.stderr)
 
+_GQA_REPEAT_OPS = ("unsqueeze", "expand", "view")
+_MAX_GQA_TRACE = 8
+
+
+def _ssa_key(name: str) -> str:
+    """Normalize an SSA reference for producer-map lookups."""
+    return name.lstrip("%")
+
+
+def _producer_indices(mlir_ops: list[MlirOp]) -> dict[str, int]:
+    """Map result SSA name -> op index; last producer wins (MLIR SSA is unique)."""
+    producers: dict[str, int] = {}
+    for idx, op in enumerate(mlir_ops):
+        for result in op.results:
+            producers[_ssa_key(result)] = idx
+    return producers
+
+
+def _gqa_repeat_chain_start(
+    mlir_ops: list[MlirOp],
+    sdpa_idx: int,
+    operand_idx: int,
+    producer_by_result: dict[str, int],
+) -> int | None:
+    """Return the op index of the first repeat-kv op feeding an SDPA operand.
+
+    GQA models lower repeat-kv as ``unsqueeze -> expand -> view``.  The
+    cache boundary belongs before the first op in that chain so K/V are
+    cached at their native kv-head count.  Returns ``None`` when the operand
+    does not have a recognised repeat-kv chain.
+    """
+    sdpa_op = mlir_ops[sdpa_idx]
+    if operand_idx >= len(sdpa_op.operands):
+        return None
+    cur = _ssa_key(sdpa_op.operands[operand_idx])
+    path: list[int] = []
+    for _ in range(_MAX_GQA_TRACE):
+        producer_idx = producer_by_result.get(cur)
+        if producer_idx is None or producer_idx >= sdpa_idx:
+            break
+        op = mlir_ops[producer_idx]
+        if op.op_name not in _GQA_REPEAT_OPS or not op.operands:
+            break
+        path.append(producer_idx)
+        cur = _ssa_key(op.operands[0])
+        if op.op_name == "unsqueeze":
+            break
+    if [mlir_ops[i].op_name for i in path] == ["view", "expand", "unsqueeze"]:
+        return path[-1]
+    return None
+
+
+def sdpa_cache_boundary_indices(mlir_ops: list[MlirOp]) -> list[int]:
+    """Compute cache split boundaries for all SDPA ops.
+
+    Dense attention keeps the legacy boundary at the SDPA op itself.
+    GQA attention moves the boundary before the ``unsqueeze -> expand ->
+    view`` repeat-kv chain so the a-block caches native-head K/V.
+    """
+    producer_by_result = _producer_indices(mlir_ops)
+    boundaries: list[int] = []
+    for sdpa_idx, op in enumerate(mlir_ops):
+        if op.op_name != "scaled_dot_product_attention":
+            continue
+        k_start = _gqa_repeat_chain_start(mlir_ops, sdpa_idx, 1, producer_by_result)
+        v_start = _gqa_repeat_chain_start(mlir_ops, sdpa_idx, 2, producer_by_result)
+        starts = [idx for idx in (k_start, v_start) if idx is not None]
+        boundaries.append(min(starts) if len(starts) == 2 else sdpa_idx)
+    return boundaries
+
+
+def _trace_sdpa_cache_source(
+    block: list[MlirOp],
+    block_producer: dict[str, int],
+    operand: str,
+) -> str:
+    """Trace an SDPA operand back to the a-block value that should be cached.
+
+    In GQA graphs the SDPA K/V operands are produced in the same b-block by
+    ``view(expand(unsqueeze(x)))``.  The cache contract needs ``x`` (the
+    native kv-head tensor produced by the preceding a-block), not the
+    expanded operand.
+    """
+    cur = _ssa_key(operand)
+    for _ in range(_MAX_GQA_TRACE):
+        producer_idx = block_producer.get(cur)
+        if producer_idx is None:
+            return cur
+        op = block[producer_idx]
+        if op.op_name not in _GQA_REPEAT_OPS or not op.operands:
+            return cur
+        cur = _ssa_key(op.operands[0])
+    return cur
+
 
 def _make_multi_functions(
     mlir_ops: list[MlirOp],
@@ -228,7 +323,8 @@ def _make_multi_functions(
     param_names: set[str],
     const_names: set[str],
     base_name: str,
-) -> tuple[list[MlirFunction], list[str], list[int], bytes]:
+    cache_policy: Any = None,
+) -> tuple[list[MlirFunction], list[str], list[int], bytes, list[tuple[int, int, str]]]:
     """Split mlir_ops at sentinel boundaries into separate MlirFunction objects.
 
     If a block's first op is ``scaled_dot_product_attention`` (SD-PA), it is
@@ -240,6 +336,14 @@ def _make_multi_functions(
 
     All other blocks (embedding, unsplit layers, output) keep the plain
     ``main_N`` naming.
+
+    Returns a 5-tuple ``(functions, chain_order, exec_plan_data,
+    plan_bytes, cache_bindings)``.  ``cache_bindings`` is the KV cache
+    contract table: one ``(func_index, output_index, slab_id)`` entry per
+    cache-consumed K/V output of an a-block.  ``slab_id`` is resolved from
+    *cache_policy*'s ``scaled_dot_product_attention`` intercepts by source
+    operand (``operand[1]`` = K, ``operand[2]`` = V); the table is empty
+    when *cache_policy* is ``None`` or has no SDPA intercepts.
     """
 
     # Remove sentinel ops and partition into blocks
@@ -276,7 +380,7 @@ def _make_multi_functions(
             )
         ]
         empty_plan = _empty_execution_plan(global_inputs, funcs)
-        return funcs, [base_name], [], empty_plan
+        return funcs, [base_name], [], empty_plan, []
 
     # Build type map: SSA name → MLIR type string (normalize % prefix)
     type_map: dict[str, str] = {}
@@ -305,23 +409,66 @@ def _make_multi_functions(
                     weight_refs_per_func[fi].add(key)
 
     # ── Detect SD-PA split pairs and assign function names ──
-    # A "b" block is one whose first op is scaled_dot_product_attention.
-    # The preceding block is its "a" block (QKV proj).
-    # Both share the same layer number; other blocks count independently.
+    # A "b" block is one whose first non-preparation op is
+    # scaled_dot_product_attention.  In GQA graphs the boundary is placed
+    # before the repeat-kv chain, so the b-block may start with
+    # unsqueeze/expand/view before SDPA.  The preceding block is its "a"
+    # block (projections + native-head K/V); both share one layer number.
     _is_b_block: list[bool] = [False] * len(blocks)
+    sdpa_positions: list[int | None] = [None] * len(blocks)
     for fi, block in enumerate(blocks):
-        if fi > 0 and block and block[0].op_name == "scaled_dot_product_attention":
+        pos = next(
+            (i for i, op in enumerate(block) if op.op_name == "scaled_dot_product_attention"),
+            None,
+        )
+        sdpa_positions[fi] = pos
+        if fi > 0 and pos is not None and all(
+            op.op_name in _GQA_REPEAT_OPS for op in block[:pos]
+        ):
             _is_b_block[fi] = True
 
-    # Collect SSA names of K/V outputs from each "b" block's SD-PA op.
-    # operands[1]=K, operands[2]=V.
-    sdpa_kv_ssa: dict[int, tuple[str, str]] = {}  # block index → (K_ssa, V_ssa)
+    # Collect SSA names of Q/K/V outputs from each "b" block's SD-PA op.
+    # operands[0]=Q, operands[1]=K, operands[2]=V.  K/V are traced through
+    # the repeat-kv chain back to the native-head a-block values that the
+    # cache should actually store.
+    sdpa_kv_ssa: dict[int, tuple[str, str, str]] = {}  # block index → (Q_ssa, K_ssa, V_ssa)
     for fi, is_b in enumerate(_is_b_block):
-        if is_b:
-            sdpa_op = blocks[fi][0]
-            k_ssa = sdpa_op.operands[1].lstrip("%") if len(sdpa_op.operands) > 1 else ""
-            v_ssa = sdpa_op.operands[2].lstrip("%") if len(sdpa_op.operands) > 2 else ""
-            sdpa_kv_ssa[fi] = (k_ssa, v_ssa)
+        if not is_b:
+            continue
+        sdpa_pos = sdpa_positions[fi]
+        assert sdpa_pos is not None
+        sdpa_op = blocks[fi][sdpa_pos]
+        q_ssa = _ssa_key(sdpa_op.operands[0]) if len(sdpa_op.operands) > 0 else ""
+        block_producer: dict[str, int] = {}
+        for oi, op in enumerate(blocks[fi]):
+            for result in op.results:
+                block_producer[_ssa_key(result)] = oi
+        k_ssa = (
+            _trace_sdpa_cache_source(blocks[fi], block_producer, sdpa_op.operands[1])
+            if len(sdpa_op.operands) > 1
+            else ""
+        )
+        v_ssa = (
+            _trace_sdpa_cache_source(blocks[fi], block_producer, sdpa_op.operands[2])
+            if len(sdpa_op.operands) > 2
+            else ""
+        )
+        sdpa_kv_ssa[fi] = (q_ssa, k_ssa, v_ssa)
+
+    # ── KV cache binding table (contract) ──
+    # Map CachePolicy intercept source operands to slabs:
+    #   "operand[1]" (K) → slab_id, "operand[2]" (V) → slab_id.
+    # Only scaled_dot_product_attention intercepts participate.
+    operand_slab: dict[int, str] = {}
+    if cache_policy is not None:
+        for intercept in getattr(cache_policy, "intercepts", []):
+            if getattr(intercept, "op_name", None) != "scaled_dot_product_attention":
+                continue
+            src = getattr(intercept, "source", "")
+            m = re.fullmatch(r"operand\[(\d+)\]", src)
+            if m:
+                operand_slab[int(m.group(1))] = intercept.slab_id
+    bindings: list[tuple[int, int, str]] = []
 
     # Assign layer numbers and suffixes
     func_names: list[str] = [""] * len(blocks)
@@ -340,7 +487,7 @@ def _make_multi_functions(
             layer_n += 1
 
     # ── Build functions ──
-    funcs: list[MlirFunction] = []
+    built_funcs: list[MlirFunction] = []
 
     for fi, block in enumerate(blocks):
         # External inputs needed by this block (normalize %)
@@ -439,7 +586,7 @@ def _make_multi_functions(
         is_a_block = fi + 1 < len(blocks) and _is_b_block[fi + 1]
         kv_to_mark: set[str] = set()
         if is_a_block:
-            k_ssa, v_ssa = sdpa_kv_ssa[fi + 1]
+            _q_ssa, k_ssa, v_ssa = sdpa_kv_ssa[fi + 1]
             if k_ssa:
                 kv_to_mark.add(k_ssa)
             if v_ssa:
@@ -456,13 +603,37 @@ def _make_multi_functions(
             ]
 
         f_outputs: list[tuple[str, str, bool]] = []
-        for v in sorted(exported):
+        slab_for_ssa: dict[str, str] = {}
+        if is_a_block:
+            # Contract: a-block outputs are ordered [Q, K, V] so downstream
+            # ABI consumers can rely on consumed flags [False, True, True]
+            # (first consumed sub-output = K, second = V).  Never sort by
+            # SSA name — lexicographic order is layer-dependent and breaks
+            # the contract (e.g. %transpose_8/9/10 sorts as [10, 8, 9]).
+            q_ssa, k_ssa, v_ssa = sdpa_kv_ssa[fi + 1]
+            if operand_slab:
+                if k_ssa and 1 in operand_slab:
+                    slab_for_ssa[k_ssa] = operand_slab[1]
+                if v_ssa and 2 in operand_slab:
+                    slab_for_ssa[v_ssa] = operand_slab[2]
+            ordered = [s for s in (q_ssa, k_ssa, v_ssa) if s and s in exported]
+            ordered += [v for v in sorted(exported) if v not in ordered]
+        else:
+            ordered = sorted(exported)
+        for v in ordered:
             consumed = v in kv_to_mark
             f_outputs.append((f"%{v}", type_map.get(v, "tensor<f32>"), consumed))
+            slab_id = slab_for_ssa.get(v) if consumed else None
+            if slab_id is not None:
+                bindings.append((fi, len(f_outputs) - 1, slab_id))
 
         if not f_outputs:
+            # A split block with no downstream consumer still needs one
+            # output descriptor for the ABI, but it is NOT cache-consumed.
+            # The old `True` fallback collided with cache-policy contract
+            # checks once a model had any bound intercepts.
             p = list(produced_here)[0]
-            f_outputs = [(f"%{p}", type_map.get(p, "tensor<f32>"), True)]
+            f_outputs = [(f"%{p}", type_map.get(p, "tensor<f32>"), False)]
 
         # Compute rank of each function input from its type string
         input_rank_map: dict[str, int] = {}
@@ -472,7 +643,7 @@ def _make_multi_functions(
 
         adjusted_block = [_adjust_op_attributes(op, input_rank_map) for op in block]
 
-        funcs.append(
+        built_funcs.append(
             MlirFunction(
                 name=func_names[fi],
                 inputs=f_inputs,
@@ -485,11 +656,11 @@ def _make_multi_functions(
             )
         )
 
-    chain_order = [f.name for f in funcs]
+    chain_order = [f.name for f in built_funcs]
 
     # Build global input names (match proto ExecutionPlan.global_inputs order)
     global_names = [name for name, _ in global_inputs]
-    for op in funcs[0].ops:
+    for op in built_funcs[0].ops:
         if op.op_name == "weight":
             wname = op.attributes.get("name", "")
             if wname and wname not in global_names and not wname.startswith("_const_"):
@@ -497,7 +668,7 @@ def _make_multi_functions(
 
     # Build per-step input bindings as structured data (source, source_index, producer_step)
     step_inputs: list[list[tuple[int, int, int]]] = []
-    for fi, func in enumerate(funcs):
+    for fi, func in enumerate(built_funcs):
         sis: list[tuple[int, int, int]] = []
         for name, _ in func.inputs:
             key = name.lstrip("%")
@@ -510,7 +681,7 @@ def _make_multi_functions(
             else:
                 if key in weights:
                     out_idx = -1
-                    for oi, (oname, _, _) in enumerate(funcs[0].outputs):
+                    for oi, (oname, _, _) in enumerate(built_funcs[0].outputs):
                         if oname.lstrip("%") == key:
                             out_idx = oi
                             break
@@ -525,7 +696,7 @@ def _make_multi_functions(
                 else:
                     prod = producer.get(key)
                     if prod is not None and prod > 0:
-                        producer_func = funcs[prod]
+                        producer_func = built_funcs[prod]
                         out_idx = 0
                         for oi, (oname, _, _) in enumerate(producer_func.outputs):
                             if oname.lstrip("%") == key:
@@ -534,7 +705,7 @@ def _make_multi_functions(
                         sis.append((1, prod, out_idx))
                     else:
                         out_idx = 0
-                        for oi, (oname, _, _) in enumerate(funcs[0].outputs):
+                        for oi, (oname, _, _) in enumerate(built_funcs[0].outputs):
                             if oname.lstrip("%") == key:
                                 out_idx = oi
                                 break
@@ -544,19 +715,19 @@ def _make_multi_functions(
     # ── Generate ExecutionPlan proto (single source of truth) ──
     from gen.proto.python import sfa_abi_pb2
 
-    plan = sfa_abi_pb2.ExecutionPlan()
+    plan = sfa_abi_pb2.ExecutionPlan()  # type: ignore[attr-defined]
     for gn in global_names:
         plan.global_inputs.append(gn)
 
-    for fi, (func, sis) in enumerate(zip(funcs, step_inputs)):
+    for _fi, (func, sis) in enumerate(zip(built_funcs, step_inputs, strict=False)):
         step = plan.steps.add()
         step.func_name = func.name
         for src, source_index, producer_step in sis:
             edge = step.inputs.add()
             if src == 0:
-                edge.source = sfa_abi_pb2.GLOBAL_INPUT
+                edge.source = sfa_abi_pb2.GLOBAL_INPUT  # type: ignore[attr-defined]
             else:
-                edge.source = sfa_abi_pb2.STEP_OUTPUT
+                edge.source = sfa_abi_pb2.STEP_OUTPUT  # type: ignore[attr-defined]
             edge.source_index = source_index
             edge.producer_step = producer_step
 
@@ -566,10 +737,10 @@ def _make_multi_functions(
     # ensures protocol is the single source of truth for the wire format.
     exec_plan_data = _flatten_execution_plan(plan)
 
-    return funcs, chain_order, exec_plan_data, plan_bytes
+    return built_funcs, chain_order, exec_plan_data, plan_bytes, bindings
 
 
-def _flatten_execution_plan(plan) -> list[int]:
+def _flatten_execution_plan(plan: Any) -> list[int]:
     """Serialize ExecutionPlan proto into the flat int array consumed by
     SfChainWrapper.cpp and stored as sf.exec_plan_data MLIR module attribute.
 

@@ -105,7 +105,7 @@ class TestMlirModuleRoundtrip:
         module = _make_roundtrip_module()
         text = mlir_module_to_text(module)
         parsed = _parse_mlir_text(text)
-        for orig, parsed_func in zip(module.functions, parsed.functions):
+        for orig, parsed_func in zip(module.functions, parsed.functions, strict=True):
             assert parsed_func.weight_names == orig.weight_names, (
                 f"weight_names mismatch for {orig.name}: {parsed_func.weight_names} != {orig.weight_names}"
             )
@@ -114,7 +114,7 @@ class TestMlirModuleRoundtrip:
         module = _make_roundtrip_module()
         text = mlir_module_to_text(module)
         parsed = _parse_mlir_text(text)
-        for orig, parsed_func in zip(module.functions, parsed.functions):
+        for orig, parsed_func in zip(module.functions, parsed.functions, strict=True):
             orig_consumed = [c for _, _, c in orig.outputs]
             parsed_consumed = [c for _, _, c in parsed_func.outputs]
             assert parsed_consumed == orig_consumed, (
@@ -125,7 +125,7 @@ class TestMlirModuleRoundtrip:
         module = _make_roundtrip_module()
         text = mlir_module_to_text(module)
         parsed = _parse_mlir_text(text)
-        for orig, parsed_func in zip(module.functions, parsed.functions):
+        for orig, parsed_func in zip(module.functions, parsed.functions, strict=True):
             assert len(parsed_func.ops) == len(orig.ops), (
                 f"op count mismatch for {orig.name}: {len(parsed_func.ops)} != {len(orig.ops)}"
             )

@@ -136,6 +136,8 @@ def compile_mlir(
     # Restore metadata and weights from the original module
     if "hf_key_map" in orig_mlir_mod.metadata:
         mlir_mod.metadata["hf_key_map"] = orig_mlir_mod.metadata["hf_key_map"]
+    if "cache_bindings" in orig_mlir_mod.metadata:
+        mlir_mod.metadata["cache_bindings"] = orig_mlir_mod.metadata["cache_bindings"]
     for orig_func in orig_mlir_mod.functions:
         for mf in mlir_mod.functions:
             if mf.name == orig_func.name:
@@ -159,6 +161,16 @@ def compile_mlir(
             + (["sf_to_linalg"] if apply_lowering else [])
         )
         if cache_policy is not None and hasattr(cache_policy, "to_dict"):
+            bindings = mlir_mod.metadata.get("cache_bindings") or []
+            if bindings:
+                from compiler.cache_policy import bind_cache_policy
+
+                cache_policy = bind_cache_policy(cache_policy, bindings)
+                _log.info(
+                    "cache policy bound to %d KV intercepts (%d unbound)",
+                    len(bindings),
+                    len(cache_policy.intercepts) - len(bindings),
+                )
             mlir_mod.metadata["cache_policy"] = cache_policy.to_dict()
         if model_dir:
             safetensors_path = os.path.join(os.path.abspath(model_dir), "model.safetensors")
@@ -387,7 +399,7 @@ def _post_lowering_canonicalize(mlir_text: str) -> str:
 
 # Re-exports from pipeline submodules for backward compatibility
 from compiler.pipeline.actions import tile_matmuls_action  # noqa: F401, E402
-from compiler.pipeline.stages import (  # noqa: F401, E402
+from compiler.pipeline.stages import (  # type: ignore[attr-defined]  # noqa: F401, E402
     BUILTIN_STAGES,
     _make_verify_stage,
     _save_ir_snapshot,

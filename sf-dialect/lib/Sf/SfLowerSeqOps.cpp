@@ -25,6 +25,7 @@ struct SfSymSizeOpLowering : public OpRewritePattern<sf::SymSizeOp> {
     int64_t dim = 0;
     if (auto dimAttr = op.getOperation()->getAttrOfType<IntegerAttr>("dim"))
       dim = dimAttr.getInt();
+    if (dim < 0) dim += inputType.getRank();
     if (dim < 0 || dim >= inputType.getRank()) return failure();
 
     Value dimVal = tensor::DimOp::create(rewriter, loc, input, dim);
@@ -62,6 +63,7 @@ struct SfCumsumOpLowering : public OpRewritePattern<sf::CumsumOp> {
     int64_t dim = 0;
     if (auto dimAttr = op.getOperation()->getAttrOfType<IntegerAttr>("dim"))
       dim = dimAttr.getInt();
+    if (dim < 0) dim += inType.getRank();
     if (dim < 0 || dim >= inType.getRank())
       return failure();
 
@@ -449,8 +451,86 @@ struct SfIndexOpLowering : public OpRewritePattern<sf::IndexOp> {
 } // namespace
 
 namespace mlir::sf {
+
+struct SfCatOpLowering : public OpRewritePattern<sf::CatOp> {
+  using OpRewritePattern<sf::CatOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::CatOp op, PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    int64_t dim = 0;
+    if (auto dimAttr = op->getAttrOfType<IntegerAttr>("dim"))
+      dim = dimAttr.getInt();
+    auto inputs = op.getInputs();
+    if (inputs.size() < 1) return failure();
+    auto firstType = dyn_cast<RankedTensorType>(inputs[0].getType());
+    if (!firstType) return failure();
+    int64_t rank = firstType.getRank();
+    if (dim < 0) dim += rank;
+    if (dim < 0 || dim >= rank) return failure();
+    Value result = tensor::ConcatOp::create(rewriter, loc, dim, inputs);
+    rewriter.replaceOp(op, result.getDefiningOp()->getResult(0));
+    return success();
+  }
+};
+
+// Diff → (x[..., 1:] - x[..., :-1]) along the requested dim.  The Qwen graph
+// uses n=1; only that case is lowered here.
+struct SfDiffOpLowering : public OpRewritePattern<sf::DiffOp> {
+  using OpRewritePattern<sf::DiffOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::DiffOp op, PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    Value input = op.getInput();
+    auto inType = dyn_cast<RankedTensorType>(input.getType());
+    auto outType = dyn_cast<RankedTensorType>(op.getResult().getType());
+    if (!inType || !outType || inType.getRank() != outType.getRank()) return failure();
+    int64_t n = 1;
+    if (auto nAttr = op->getAttrOfType<IntegerAttr>("n"))
+      n = nAttr.getInt();
+    if (n != 1) return failure();
+    int64_t dim = 0;
+    if (auto dimAttr = op->getAttrOfType<IntegerAttr>("dim"))
+      dim = dimAttr.getInt();
+    int64_t rank = inType.getRank();
+    if (dim < 0) dim += rank;
+    if (dim < 0 || dim >= rank) return failure();
+
+    SmallVector<OpFoldResult> leftOffsets(rank, OpFoldResult(rewriter.getIndexAttr(0)));
+    SmallVector<OpFoldResult> rightOffsets(rank, OpFoldResult(rewriter.getIndexAttr(0)));
+    SmallVector<OpFoldResult> sizes(rank, OpFoldResult(rewriter.getIndexAttr(1)));
+    SmallVector<OpFoldResult> strides(rank, OpFoldResult(rewriter.getIndexAttr(1)));
+    rightOffsets[dim] = OpFoldResult(rewriter.getIndexAttr(1));
+    for (int64_t d = 0; d < rank; ++d) {
+      if (d == dim) {
+        if (inType.isDynamicDim(d)) {
+          Value dimVal = tensor::DimOp::create(rewriter, loc, input, d);
+          Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+          sizes[d] = Value(arith::SubIOp::create(rewriter, loc, dimVal, one).getResult());
+        } else {
+          sizes[d] = OpFoldResult(rewriter.getIndexAttr(inType.getDimSize(d) - 1));
+        }
+      } else if (inType.isDynamicDim(d)) {
+        sizes[d] = Value(tensor::DimOp::create(rewriter, loc, input, d).getResult());
+      } else {
+        sizes[d] = OpFoldResult(rewriter.getIndexAttr(inType.getDimSize(d)));
+      }
+    }
+    Value left = tensor::ExtractSliceOp::create(rewriter, loc, input, leftOffsets, sizes, strides);
+    Value right = tensor::ExtractSliceOp::create(rewriter, loc, input, rightOffsets, sizes, strides);
+    Value result = makeBinaryOp(
+        rewriter, loc, right, left, outType, rewriter,
+        [&](OpBuilder &b, Location bodyLoc, Value a, Value bVal) -> Value {
+          if (isa<FloatType>(outType.getElementType()))
+            return arith::SubFOp::create(b, bodyLoc, a, bVal);
+          return arith::SubIOp::create(b, bodyLoc, a, bVal);
+        });
+    if (!result) return failure();
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
 void registerSeqOpsPatterns(RewritePatternSet &patterns) {
-  patterns.add<SfCumsumOpLowering, SfEmbeddingOpLowering,
-               SfIndexOpLowering, SfSymSizeOpLowering>(patterns.getContext());
+  patterns.add<SfCatOpLowering, SfCumsumOpLowering, SfEmbeddingOpLowering,
+               SfIndexOpLowering, SfSymSizeOpLowering,
+               SfDiffOpLowering>(patterns.getContext());
 }
 } // namespace mlir::sf

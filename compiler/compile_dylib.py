@@ -10,6 +10,7 @@ import os
 import re as _re
 import sys
 from pathlib import Path
+from typing import Any
 
 from compiler.backend.compile_utils import _setup_mlir_path
 from compiler.backend.dylib import _check_sf_dialect_freshness, _sfa_relink_dylib
@@ -57,13 +58,13 @@ def main() -> None:
 
     import compiler.sfa_abi as sfa_abi
     import compiler.sfa_weights as sfa_weights
-    from compiler.artifact import (
+    from compiler.artifact import (  # type: ignore[attr-defined]
         _build_constants_binary,
         _build_name_mapping,
         _parse_mlir_text,
         mlir_module_to_ir_module,
     )
-    from compiler.backend.llvm_backend import (
+    from compiler.backend.llvm_backend import (  # type: ignore[attr-defined]
         compile_module_to_dylib,
         lower_linalg_to_llvm_ir,
     )
@@ -100,7 +101,7 @@ def main() -> None:
         from gen.proto.python import sfa_abi_pb2
 
         plan_bytes_for_abi = base64.b64decode(metadata["exec_plan_proto"])
-        plan = sfa_abi_pb2.ExecutionPlan()
+        plan = sfa_abi_pb2.ExecutionPlan()  # type: ignore[attr-defined]
         plan.ParseFromString(plan_bytes_for_abi)
         print(f"   ExecutionPlan proto: {len(plan.global_inputs)} global inputs, {len(plan.steps)} steps")
 
@@ -213,7 +214,7 @@ def main() -> None:
     else:
         print("   WARNING: No name mapping built")
 
-    sfa_constants: dict = {}
+    sfa_constants: dict[str, Any] = {}
     for func in module.functions:
         for wname in func.const_weight_names:
             if wname in func.weights:
@@ -266,7 +267,7 @@ def main() -> None:
 
             _shutil.copy(str(mlir_path), _debug_path)
         print(f"   Saved debug IR: {_debug_path}")
-        _save_failure_context("4", "lowering", compiled_path, copy_source=_debug_path)
+        _save_failure_context("4", "lowering", compiled_path, copy_source=str(_debug_path))
         raise
 
     lowered_text = ir_mod.operation.get_asm(print_generic_op_form=False)
@@ -439,22 +440,76 @@ def main() -> None:
     sfa_weights_bytes = sfa_weights.build_weight_data(name_mapping or {}, sfa_constants)
     print(f"   SFA weights: {len(sfa_weights_bytes)} bytes")
 
+    # Phase 5 M1: generate the additive op-level plan from the pre-lowering
+    # sf-dialect ops.  No plan is embedded for modules without a decoder
+    # layer KV split — the runtime falls back to the func-level path.
+    sfa_op_plan_bytes: bytes | None = None
+    from compiler.op_plan import generate_op_plan
+
+    sfa_op_plan_bytes = generate_op_plan(module, metadata)
+    if sfa_op_plan_bytes is not None:
+        from gen.proto.python import sfa_abi_pb2
+
+        op_plan_debug = sfa_abi_pb2.OpPlan()  # type: ignore[attr-defined]
+        op_plan_debug.ParseFromString(sfa_op_plan_bytes)
+        cache_nodes = sum(
+            1 for n in op_plan_debug.nodes for o in n.outputs if o.HasField("cache")
+        )
+        print(
+            f"   SFA op plan: {len(sfa_op_plan_bytes)} bytes, "
+            f"{len(op_plan_debug.nodes)} nodes, "
+            f"{len(op_plan_debug.func_outputs)} func-output projections, "
+            f"{cache_nodes} cache intercepts"
+        )
+
+    # Embed the cache policy contract (sfa_cache_policy symbol) when the
+    # model was compiled with a CachePolicy.  The symbol's presence is the
+    # runtime's feature-detect signal; legacy dylibs without it keep the
+    # JSON/heuristic fallback.
+    sfa_cache_policy_bytes: bytes | None = None
+    cp_dict = metadata.get("cache_policy")
+    if cp_dict:
+        from compiler.cache_policy import CachePolicy, serialize_cache_policy
+
+        policy = CachePolicy.from_dict(cp_dict)
+        if not policy.is_empty:
+            bound = [i for i in policy.intercepts if i.func_index is not None]
+            if len(func_metas) != len(module.functions):
+                raise RuntimeError(
+                    f"Cannot embed cache policy: {len(func_metas)} SfaFuncMeta entries "
+                    f"but {len(module.functions)} module functions — ABI func indices "
+                    f"would not align with intercept func_index values"
+                )
+            max_fi = max((i.func_index or 0) for i in bound) if bound else -1
+            if max_fi >= len(func_metas):
+                raise RuntimeError(
+                    f"Cache policy binding func_index {max_fi} out of range "
+                    f"({len(func_metas)} SfaFuncMeta entries)"
+                )
+            sfa_cache_policy_bytes = serialize_cache_policy(policy)
+            print(
+                f"   SFA cache policy: {len(sfa_cache_policy_bytes)} bytes, "
+                f"{len(bound)} bound intercepts, {len(policy.slabs)} slabs"
+            )
+
     _sfa_relink_dylib(
         compiled_path,
         model_name,
         sfa_abi_bytes,
         sfa_weights_bytes,
+        sfa_cache_policy_bytes,
+        sfa_op_plan_bytes,
     )
     print("   ✓ SFA symbols embedded in dylib")
 
     print(f"\nCompilation complete: {dylib_path}")
 
 
-def _strip_main_function(text):
+def _strip_main_function(text: str) -> str:
     return text  # no-op: chain-wrapper's main is kept, not stripped
 
 
-def _strip_dialect_attrs(lowered_text):
+def _strip_dialect_attrs(lowered_text: str) -> str:
     lowered_text = _re.sub(
         r"\s*sf\.\w+\s*=\s*\[[^\]]*\]\s*;\s*",
         " ",
@@ -468,7 +523,7 @@ def _strip_dialect_attrs(lowered_text):
     return lowered_text
 
 
-def _fixup_main_call_operands(ir_mod):
+def _fixup_main_call_operands(ir_mod: Any) -> None:
     """Fix call ops inside main() to match promoted callee signatures.
 
     sf-chain-wrapper generates main() before sf-promote-weights runs.
@@ -494,7 +549,7 @@ def _fixup_main_call_operands(ir_mod):
     main_args = list(main_block.arguments)
     print(f"   [fixup] main has {len(main_args)} args")
 
-    def _fix_call(call_op):
+    def _fix_call(call_op: Any) -> None:
         nonlocal main_args
         callee_sym = call_op.operation.attributes.get("callee")
         if callee_sym is None:
@@ -517,7 +572,9 @@ def _fixup_main_call_operands(ir_mod):
 
         if call_operand_count != callee_arg_count:
             print(
-                f"   [fixup] {callee_name}: call={call_operand_count} operands, callee={callee_arg_count} args, main={len(main_args)} args"
+                "   [fixup] "
+                f"{callee_name}: call={call_operand_count} operands, "
+                f"callee={callee_arg_count} args, main={len(main_args)} args"
             )
 
         if call_operand_count >= callee_arg_count:
@@ -548,7 +605,7 @@ def _fixup_main_call_operands(ir_mod):
     result_types = []
     if existing_func_type is not None:
         fn_type = existing_func_type.value
-        result_types = [t for t in fn_type.results]
+        result_types = list(fn_type.results)
     main_func_type = _ir.FunctionType.get(
         entry_types,
         result_types,

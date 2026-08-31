@@ -32,12 +32,13 @@ class SchedulingBridge:
         max_tokens_per_step: int = 2048,
         chunk_size: int = 64,
         enable_prefix_cache: bool = False,
+        use_kv_cache: bool = False,
     ) -> None:
         import llm_serveforge_runtime as _rt
 
         # ── Rust core runtime ──
         self._bm = _rt.PyBlockManager(num_blocks, block_size)
-        self._scheduler = _rt.PyScheduler(max_batch_size, max_tokens_per_step, chunk_size)
+        self._scheduler = _rt.PyScheduler(max_batch_size, max_tokens_per_step, chunk_size, use_kv_cache)
 
         # ── Prefix Cache (Python) — only if enabled ──
         self._radix_cache = None
@@ -84,8 +85,15 @@ class SchedulingBridge:
         request_id: str,
         prompt_tokens: list[int],
         max_tokens: int = 256,
+        stop_token_ids: list[int] | None = None,
     ) -> None:
-        self._scheduler.add_request(prompt_tokens, 0, 0.0, max_tokens, [], request_id)
+        self._scheduler.add_request(
+            prompt_tokens,
+            0,
+            max_tokens,
+            list(stop_token_ids or []),
+            request_id,
+        )
 
     def record_output(self, request_id: str, token_id: int) -> bool:
         """Notify scheduler of an output token. Returns True if request is finished."""

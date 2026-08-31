@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import ctypes
 import os
-import re
 import struct
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,10 +21,9 @@ import torch.nn as nn
 import torch.nn.functional as F  # noqa: N812
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-import sys
 
 sys.path.insert(0, str(ROOT))
-from compiler.dylib_ffi import DEFAULT_SRET_SIZE
+from compiler.dylib_ffi import DEFAULT_SRET_SIZE  # noqa: E402
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -59,13 +58,13 @@ class _Attention(nn.Module):
         self.causal = config.causal_mask
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, S, H = x.shape
-        q = self.q_proj(x).view(B, S, self.heads, self.d_k).transpose(1, 2)
-        k = self.k_proj(x).view(B, S, self.heads, self.d_k).transpose(1, 2)
-        v = self.v_proj(x).view(B, S, self.heads, self.d_k).transpose(1, 2)
+        b, s, h = x.shape
+        q = self.q_proj(x).view(b, s, self.heads, self.d_k).transpose(1, 2)
+        k = self.k_proj(x).view(b, s, self.heads, self.d_k).transpose(1, 2)
+        v = self.v_proj(x).view(b, s, self.heads, self.d_k).transpose(1, 2)
         scale = 1.0 / np.sqrt(self.d_k)
         attn = F.scaled_dot_product_attention(q, k, v, is_causal=self.causal, scale=scale)
-        attn = attn.transpose(1, 2).contiguous().view(B, S, H)
+        attn = attn.transpose(1, 2).contiguous().view(b, s, h)
         return self.out_proj(attn)
 
 
@@ -206,10 +205,18 @@ def _parse_sret_outputs(sret_bytes, output_ranks):
 @pytest.mark.integration
 @pytest.mark.timeout(120)
 class TestMiniTransformerExport:
-    @pytest.mark.xfail(reason="SIGSEGV in ciface call — likely view/transpose lowering bug in multi-head attention path")
     @pytest.mark.parametrize("layers", [1, 2, 4, 12])
     def test_export_compile_compare(self, layers):
-        """Full path: torch.export → fx_graph_to_mlir → dylib → ctypes → compare."""
+        """Full path: torch.export → fx_graph_to_mlir → dylib → ctypes → compare.
+
+        Regression: this test used to SIGSEGV inside _mlir_ciface_main.
+        Root cause: the weight argument list was extracted with a regex
+        over the lowered MLIR text; missing names silently became rank-1
+        np.zeros where main() expects a rank-2 descriptor → memref list
+        desync → wild reads.  Now the argument order/shapes come from
+        mlir_mod.functions[0].weight_names + weights (the authoritative
+        promotion contract).
+        """
         config = MiniConfig(layers=layers, causal_mask=False)
         torch.manual_seed(42)
         model = MiniTransformer(config).eval()
@@ -237,17 +244,26 @@ class TestMiniTransformerExport:
         ir_mod = mlir_module_to_ir_module(mlir_mod, ctx)
         mlir_text = str(ir_mod)
 
-        # Map state_dict names to promoted weight names
-        # state_dict: "tok_embed.weight" → promoted: "tok_embed_weight"
-        weight_map: dict[str, np.ndarray] = {
-            k.replace(".", "_"): v.numpy().astype(np.float32) for k, v in model.state_dict().items()
-        }
-
-        # Apply sf→linalg lowering once (shared for weight-name extraction + compilation)
+        # Apply sf→linalg lowering once (compilation input; the weight
+        # argument order is taken from the module itself, NOT from a regex
+        # over the lowered text — see below).
         lowered = _apply_sf_to_linalg(mlir_text)
-        wm = re.search(r"(?:debug_weight_names|sf\.weight_names)\s*=\s*\[(.*?)\]", lowered, re.DOTALL)
-        promoted = list(dict.fromkeys(w.strip().strip('"') for w in wm.group(1).split(",")))  # deduplicate
-        w_arrs = [weight_map.get(n, np.zeros((1,), dtype=np.float32)) for n in promoted]
+
+        # Authoritative input order: the chain-wrapper main() promotes
+        # main_0's weight_names, in order, right after the global inputs.
+        # Build the weight arrays from the module's OWN tensors so every
+        # memref descriptor matches the rank main() expects EXACTLY.
+        # (The old regex-based extraction silently substituted rank-1
+        # np.zeros for names missing from the state_dict map — a
+        # rank/pointer desync in the ctypes memref list that SIGSEGVs
+        # inside _mlir_ciface_main.)
+        main0 = mlir_mod.functions[0]
+        w_arrs = [
+            np.ascontiguousarray(
+                main0.weights[n].detach().numpy().astype(np.float32)
+            )
+            for n in main0.weight_names
+        ]
         all_in = [input_ids.numpy().astype(np.int64)] + w_arrs
 
         with tempfile.TemporaryDirectory() as td:
@@ -290,7 +306,6 @@ class TestChainOrder:
         ctx.allow_unregistered_dialects = True
         sf.register_dialects(ctx._CAPIPtr, load=True)
         ir_mod = mlir_module_to_ir_module(mlir_mod, ctx)
-        mlir_text = str(ir_mod)
 
         # chain_order must be present and sorted numerically
         order_attr = ir_mod.operation.attributes.get("sf.chain_order")
@@ -354,7 +369,6 @@ class TestExecPlanData:
                 assert idx + 2 < len(data), f"truncated at step {step} input"
                 src = data[idx]
                 a = data[idx + 1]
-                b = data[idx + 2]
                 idx += 3
                 assert src in (0, 1), f"bad source type {src} at step {step}"
                 if src == 0:

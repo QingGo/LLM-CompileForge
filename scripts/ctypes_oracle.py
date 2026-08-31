@@ -316,7 +316,18 @@ class CtypesOracle:
                 io_shape = inp["shape"]
 
                 if binding[0] == "global_input":
-                    arr = self.INPUT_IDS
+                    gi = binding[1] if len(binding) > 1 else 0
+                    if gi == 0:
+                        arr = self.INPUT_IDS
+                    else:
+                        seq = self.INPUT_IDS.shape[-1]
+                        batch = (
+                            self.INPUT_IDS.shape[0]
+                            if self.INPUT_IDS.ndim >= 2
+                            else 1
+                        )
+                        positions = np.arange(seq, dtype=np.int64).reshape(1, -1)
+                        arr = np.broadcast_to(positions, (batch, seq)).copy()
                 elif binding[0] == "weight":
                     key = binding[1]
                     try:

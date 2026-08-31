@@ -17,6 +17,7 @@ mod m1_tests {
 
     #[test]
     fn test_m1_add_two_via_dylib() {
+    let _dylib_guard = crate::dylib_lock::lock();
         let lib = unsafe {
             libloading::Library::new(DYLIB_PATH).expect("failed to load test_m1.dylib")
         };
@@ -98,6 +99,7 @@ mod integration_tests {
 
     #[test]
     fn test_opt_125m_forward_runs() {
+    let _dylib_guard = crate::dylib_lock::lock();
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let dylib = format!("{}/../outputs/compiled/opt_125m_fresh/libopt_125m_fresh.dylib", manifest_dir);
         let st = find_safetensors();
@@ -159,6 +161,7 @@ mod integration_tests {
     /// runs step() multiple times, verifies tokens are produced.
     #[test]
     fn test_runner_generate_end_to_end() {
+    let _dylib_guard = crate::dylib_lock::lock();
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let dylib = format!("{}/../outputs/compiled/opt_125m_fresh/libopt_125m_fresh.dylib", manifest_dir);
         let st = find_safetensors();

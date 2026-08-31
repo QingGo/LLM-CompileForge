@@ -13,7 +13,7 @@
 
 use std::ffi::c_void;
 
-use crate::hal::cpu::memref::{MemRefDescAny, MemRefDesc1, MemRefDesc2, MemRefDesc3, MemRefDesc4};
+use crate::hal::cpu::memref::{MemRefDesc1, MemRefDesc2, MemRefDesc3, MemRefDesc4, MemRefDescAny};
 use crate::model::sfa_tensor::{SFATensorRaw1, SFATensorRaw2, SFATensorRaw3, SFATensorRaw4};
 
 // ── Type aliases (matching include/sfa.h naming) ────────────────────
@@ -47,13 +47,21 @@ pub struct SfaMemRef {
     pub raw: SfaMemRefRaw,
     /// Element size in bytes (4 for f32, 8 for i64).
     pub elem_size: usize,
+    /// True when this output aliases a pass-through input buffer and the
+    /// executor may skip the dylib-output copy.
+    pub passthrough_alias: bool,
 }
 
 impl SfaMemRef {
     // ── Constructors ───────────────────────────────────────────────
 
     /// Build a rank-1 ``SfaMemRef`` from raw parts.
-    pub fn r1(allocated: *mut c_void, sizes: [i64; 1], strides: [i64; 1], elem_size: usize) -> Self {
+    pub fn r1(
+        allocated: *mut c_void,
+        sizes: [i64; 1],
+        strides: [i64; 1],
+        elem_size: usize,
+    ) -> Self {
         Self {
             raw: SfaMemRefRaw::R1(SfaMemRef1 {
                 allocated,
@@ -63,11 +71,17 @@ impl SfaMemRef {
                 strides,
             }),
             elem_size,
+            passthrough_alias: false,
         }
     }
 
     /// Build a rank-2 ``SfaMemRef`` from raw parts.
-    pub fn r2(allocated: *mut c_void, sizes: [i64; 2], strides: [i64; 2], elem_size: usize) -> Self {
+    pub fn r2(
+        allocated: *mut c_void,
+        sizes: [i64; 2],
+        strides: [i64; 2],
+        elem_size: usize,
+    ) -> Self {
         Self {
             raw: SfaMemRefRaw::R2(SfaMemRef2 {
                 allocated,
@@ -77,11 +91,17 @@ impl SfaMemRef {
                 strides,
             }),
             elem_size,
+            passthrough_alias: false,
         }
     }
 
     /// Build a rank-3 ``SfaMemRef`` from raw parts.
-    pub fn r3(allocated: *mut c_void, sizes: [i64; 3], strides: [i64; 3], elem_size: usize) -> Self {
+    pub fn r3(
+        allocated: *mut c_void,
+        sizes: [i64; 3],
+        strides: [i64; 3],
+        elem_size: usize,
+    ) -> Self {
         Self {
             raw: SfaMemRefRaw::R3(SfaMemRef3 {
                 allocated,
@@ -91,11 +111,17 @@ impl SfaMemRef {
                 strides,
             }),
             elem_size,
+            passthrough_alias: false,
         }
     }
 
     /// Build a rank-4 ``SfaMemRef`` from raw parts.
-    pub fn r4(allocated: *mut c_void, sizes: [i64; 4], strides: [i64; 4], elem_size: usize) -> Self {
+    pub fn r4(
+        allocated: *mut c_void,
+        sizes: [i64; 4],
+        strides: [i64; 4],
+        elem_size: usize,
+    ) -> Self {
         Self {
             raw: SfaMemRefRaw::R4(SfaMemRef4 {
                 allocated,
@@ -105,11 +131,16 @@ impl SfaMemRef {
                 strides,
             }),
             elem_size,
+            passthrough_alias: false,
         }
     }
 
     /// Build from a shape slice (dynamic rank).
-    pub fn from_shape(ptr: *mut c_void, shape: &[usize], elem_size: usize) -> Result<Self, anyhow::Error> {
+    pub fn from_shape(
+        ptr: *mut c_void,
+        shape: &[usize],
+        elem_size: usize,
+    ) -> Result<Self, anyhow::Error> {
         let rank = shape.len();
         if rank < 1 || rank > 4 {
             anyhow::bail!("SfaMemRef::from_shape: unsupported rank {}", rank);
@@ -124,9 +155,24 @@ impl SfaMemRef {
         }
         match rank {
             1 => Ok(Self::r1(ptr, [sizes[0]], [strides[0]], elem_size)),
-            2 => Ok(Self::r2(ptr, [sizes[0], sizes[1]], [strides[0], strides[1]], elem_size)),
-            3 => Ok(Self::r3(ptr, [sizes[0], sizes[1], sizes[2]], [strides[0], strides[1], strides[2]], elem_size)),
-            4 => Ok(Self::r4(ptr, [sizes[0], sizes[1], sizes[2], sizes[3]], [strides[0], strides[1], strides[2], strides[3]], elem_size)),
+            2 => Ok(Self::r2(
+                ptr,
+                [sizes[0], sizes[1]],
+                [strides[0], strides[1]],
+                elem_size,
+            )),
+            3 => Ok(Self::r3(
+                ptr,
+                [sizes[0], sizes[1], sizes[2]],
+                [strides[0], strides[1], strides[2]],
+                elem_size,
+            )),
+            4 => Ok(Self::r4(
+                ptr,
+                [sizes[0], sizes[1], sizes[2], sizes[3]],
+                [strides[0], strides[1], strides[2], strides[3]],
+                elem_size,
+            )),
             _ => unreachable!(),
         }
     }
@@ -296,6 +342,7 @@ mod tests {
     #[test]
     fn test_sfa_memref_r2_construction() {
         let layout = Layout::array::<f32>(8).unwrap();
+// SAFETY: Layout::array returns a valid non-zero-size layout; the returned pointer is only used within this test.
         let ptr = unsafe { alloc_zeroed(layout) as *mut c_void };
         let sfa = SfaMemRef::r2(ptr, [2, 4], [4, 1], 4);
         assert_eq!(sfa.rank(), 2);
@@ -305,12 +352,14 @@ mod tests {
         assert_eq!(sfa.element_size(), 4);
         assert!(!sfa.as_input_ptr().is_null());
         assert_eq!(sfa.data_ptr(), ptr as *mut u8);
+// SAFETY: ptr was returned by alloc_zeroed with this exact layout and has not been reused.
         unsafe { std::alloc::dealloc(ptr as *mut u8, layout) };
     }
 
     #[test]
     fn test_sfa_memref_r1_i64() {
         let layout = Layout::array::<i64>(3).unwrap();
+// SAFETY: the enclosing function documents the pointer/lifetime preconditions; they are satisfied by this call site.
         let ptr = unsafe { alloc_zeroed(layout) as *mut c_void };
         let sfa = SfaMemRef::r1(ptr, [3], [1], 8);
         assert_eq!(sfa.rank(), 1);
@@ -318,24 +367,28 @@ mod tests {
         assert_eq!(sfa.numel(), 3);
         assert_eq!(sfa.byte_len(), 24);
         assert_eq!(sfa.element_size(), 8);
+// SAFETY: ptr was returned by alloc_zeroed with this exact layout and has not been reused.
         unsafe { std::alloc::dealloc(ptr as *mut u8, layout) };
     }
 
     #[test]
     fn test_sfa_memref_from_shape() {
         let layout = Layout::array::<f32>(120).unwrap();
+// SAFETY: the enclosing function documents the pointer/lifetime preconditions; they are satisfied by this call site.
         let ptr = unsafe { alloc_zeroed(layout) as *mut c_void };
         let sfa = SfaMemRef::from_shape(ptr, &[2, 3, 4, 5], 4).unwrap();
         assert_eq!(sfa.rank(), 4);
         assert_eq!(sfa.sizes(), vec![2, 3, 4, 5]);
         assert_eq!(sfa.strides_i64(), vec![60, 20, 5, 1]);
         assert_eq!(sfa.numel(), 120);
+// SAFETY: ptr was returned by alloc_zeroed with this exact layout and has not been reused.
         unsafe { std::alloc::dealloc(ptr as *mut u8, layout) };
     }
 
     #[test]
     fn test_sfa_memref_to_memref_desc_any() {
         let layout = Layout::array::<f32>(8).unwrap();
+// SAFETY: the enclosing function documents the pointer/lifetime preconditions; they are satisfied by this call site.
         let ptr = unsafe { alloc_zeroed(layout) as *mut c_void };
         let sfa = SfaMemRef::r2(ptr, [2, 4], [4, 1], 4);
         let desc = sfa.to_memref_desc_any();
@@ -349,6 +402,7 @@ mod tests {
             }
             _ => panic!("expected R2 variant"),
         }
+// SAFETY: ptr was returned by alloc_zeroed with this exact layout and has not been reused.
         unsafe { std::alloc::dealloc(ptr as *mut u8, layout) };
     }
 

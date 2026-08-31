@@ -28,6 +28,44 @@
 
 using namespace mlir;
 
+/// Extract a scalar from a dyn_shape tensor operand and convert to index.
+/// Handles 0D tensors, rank-1 size-1 tensors (via tensor.extract),
+/// and already-index values. Converts f32/f64 → i64 → index as needed.
+/// Returns Value() on unsupported types.
+inline Value extractDynDimAsIndex(PatternRewriter &rewriter, Location loc,
+                                   Value tensorVal) {
+  (void)loc; // may be unused in some callers
+  auto dynTy = dyn_cast<RankedTensorType>(tensorVal.getType());
+  Value result;
+  if (dynTy && dynTy.getRank() == 0) {
+    Value extracted = tensor::ExtractOp::create(rewriter, loc,
+        dynTy.getElementType(), tensorVal, ValueRange{});
+    Value asInt = arith::FPToUIOp::create(rewriter, loc,
+        rewriter.getIntegerType(64), extracted);
+    result = arith::IndexCastOp::create(rewriter, loc,
+        rewriter.getIndexType(), asInt);
+  } else if (dynTy && dynTy.getRank() == 1 && dynTy.getDimSize(0) == 1) {
+    Value extracted = tensor::ExtractOp::create(rewriter, loc,
+        dynTy.getElementType(), tensorVal,
+        ValueRange{arith::ConstantIndexOp::create(rewriter, loc, 0)});
+    if (dynTy.getElementType().isF32() || dynTy.getElementType().isF64()) {
+      Value asInt = arith::FPToUIOp::create(rewriter, loc,
+          rewriter.getIntegerType(64), extracted);
+      result = arith::IndexCastOp::create(rewriter, loc,
+          rewriter.getIndexType(), asInt);
+    } else {
+      result = arith::IndexCastOp::create(rewriter, loc,
+          rewriter.getIndexType(), extracted);
+    }
+  } else if (!tensorVal.getType().isIndex()) {
+    result = arith::IndexCastOp::create(rewriter, loc,
+        rewriter.getIndexType(), tensorVal);
+  } else {
+    result = tensorVal;
+  }
+  return result;
+}
+
 inline Value makeEmpty(OpBuilder &b, Location loc, Type t, ValueRange inputs) {
   auto shaped = dyn_cast<ShapedType>(t);
   if (!shaped) return Value();
@@ -179,12 +217,14 @@ inline void populateBody(linalg::GenericOp op, PatternRewriter &rewriter,
                           function_ref<void(OpBuilder &, Location, ValueRange)> f) {
   auto guard = OpBuilder::InsertionGuard(rewriter);
   Block *body = rewriter.createBlock(&op.getRegion(), {});
-  auto shaped = cast<ShapedType>(op->getResult(0).getType());
-  auto eltTy = shaped.getElementType();
-  unsigned numInputs = op.getNumDpsInputs();
-  unsigned numOutputs = op.getNumDpsInits();
-  for (unsigned i = 0; i < numInputs + numOutputs; ++i)
-    body->addArgument(eltTy, op.getLoc());
+  // Add block arguments with the element type of each DPS operand, not the
+  // result type.  Compare ops (eq/ne/le) and casts legitimately have integer
+  // tensor inputs with float tensor outputs; using the result element type for
+  // all arguments is invalid in those cases.
+  for (Value input : op.getDpsInputs())
+    body->addArgument(cast<ShapedType>(input.getType()).getElementType(), op.getLoc());
+  for (Value init : op.getDpsInits())
+    body->addArgument(cast<ShapedType>(init.getType()).getElementType(), op.getLoc());
   rewriter.setInsertionPointToEnd(body);
   f(rewriter, op.getLoc(), body->getArguments());
 }
@@ -257,7 +297,7 @@ inline Value makeBinaryOp(OpBuilder &builder, Location loc, Value lhs, Value rhs
       }
     }
     if (!anyNonBroadcast) {
-      refinedShape[i] = 1;
+      refinedShape[i] = ShapedType::kDynamic;
     } else if (!anyDynamicNonBroadcast && bestStatic != ShapedType::kDynamic) {
       refinedShape[i] = bestStatic;
     } else {
@@ -518,6 +558,19 @@ struct SfActivationOpLowering : public OpRewritePattern<SfOpTy> {
         val = arith::NegFOp::create(b, loc, args[0]);
       } else if (opName == "sf.tanh") {
         val = math::TanhOp::create(b, loc, args[0]);
+      } else if (opName == "sf.cos") {
+        val = math::CosOp::create(b, loc, args[0]);
+      } else if (opName == "sf.sin") {
+        val = math::SinOp::create(b, loc, args[0]);
+      } else if (opName == "sf.rsqrt") {
+        val = math::RsqrtOp::create(b, loc, args[0]);
+      } else if (opName == "sf.softplus") {
+        Value one = arith::ConstantOp::create(b, loc, eltType, b.getFloatAttr(eltType, 1.0));
+        Value exp = math::ExpOp::create(b, loc, args[0]);
+        Value sum = arith::AddFOp::create(b, loc, exp, one);
+        val = math::LogOp::create(b, loc, sum);
+      } else if (opName == "sf.sqrt") {
+        val = math::SqrtOp::create(b, loc, args[0]);
       } else { return; }
       linalg::YieldOp::create(b, loc, val);
     });

@@ -21,10 +21,10 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "python_runtime"))
 
-from compiler.serialize import load_artifact
-from python_runtime.engine.mlir_executor import MlirExecutor
-from python_runtime.hal.pytorch_backend import PyTorchBackend
-from scripts._cos import cosine_similarity
+from compiler.serialize import load_artifact  # noqa: E402
+from python_runtime.engine.mlir_executor import MlirExecutor  # noqa: E402
+from python_runtime.hal.pytorch_backend import PyTorchBackend  # noqa: E402
+from scripts._cos import cosine_similarity  # noqa: E402
 
 
 @pytest.fixture(scope="module")

@@ -6,7 +6,11 @@
 use std::path::PathBuf;
 
 fn find_safetensors(compiled_dir: &PathBuf) -> Option<String> {
-    let try_names = ["model.safetensors", "weights.safetensors", "pytorch_model.bin"];
+    let try_names = [
+        "model.safetensors",
+        "weights.safetensors",
+        "pytorch_model.bin",
+    ];
     for name in &try_names {
         let p = compiled_dir.join(name);
         if p.exists() {
@@ -28,15 +32,29 @@ fn find_safetensors(compiled_dir: &PathBuf) -> Option<String> {
 
 /// Entry point for the forward_check binary.
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let compiled_dir = PathBuf::from("outputs/compiled/opt_125m_fresh");
-    let dylib_path = compiled_dir.join("libopt_125m_fresh.dylib");
+    let compiled_dir = PathBuf::from(
+        std::env::var("FORWARD_CHECK_COMPILED_DIR")
+            .unwrap_or_else(|_| "outputs/compiled/opt_125m_fresh".to_string()),
+    );
+    let dylib_path = std::env::var("FORWARD_CHECK_DYLIB")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| compiled_dir.join("libopt_125m_fresh.dylib"));
 
     if !dylib_path.exists() {
         let found = std::fs::read_dir(&compiled_dir)
-            .map_err(|e| format!("Cannot read compiled dir '{}': {}", compiled_dir.display(), e))?
+            .map_err(|e| {
+                format!(
+                    "Cannot read compiled dir '{}': {}",
+                    compiled_dir.display(),
+                    e
+                )
+            })?
             .filter_map(|e| e.ok())
             .find(|e| {
-                e.path().extension().map(|ext| ext == "dylib").unwrap_or(false)
+                e.path()
+                    .extension()
+                    .map(|ext| ext == "dylib")
+                    .unwrap_or(false)
             })
             .map(|e| e.path());
         if let Some(p) = found {
@@ -95,7 +113,8 @@ fn run_forward(
         .forward(&input_ids)
         .map_err(|e| format!("Forward failed: {}", e))?;
 
-    let logits = output.as_slice();
+    let output_f32 = output.to_f32();
+    let logits = output_f32.as_slice();
     let csv_path = "/tmp/rust_logits.csv";
     let mut wtr = csv::Writer::from_path(csv_path)?;
     for &v in logits {
@@ -103,10 +122,7 @@ fn run_forward(
     }
     wtr.flush()?;
 
-    println!(
-        "[forward_check] Logits written to {}",
-        csv_path
-    );
+    println!("[forward_check] Logits written to {}", csv_path);
     println!(
         "[forward_check] Shape: {:?}, numel: {}",
         output.shape,

@@ -60,24 +60,24 @@ def _flash_attention_fwd_triton(
     if scale is None:
         scale = 1.0 / math.sqrt(q.shape[-1])
 
-    @triton.jit
+    @triton.jit  # type: ignore[untyped-decorator]
     def _kernel(
-        Q_ptr,
-        K_ptr,
-        V_ptr,
-        O_ptr,
-        stride_qb,
-        stride_qh,
-        stride_qm,
-        stride_kb,
-        stride_kh,
-        stride_kn,
-        stride_vb,
-        stride_vh,
-        stride_vn,
-        stride_ob,
-        stride_oh,
-        stride_om,
+        Q_ptr: torch.Tensor,
+        K_ptr: torch.Tensor,
+        V_ptr: torch.Tensor,
+        O_ptr: torch.Tensor,
+        stride_qb: int,
+        stride_qh: int,
+        stride_qm: int,
+        stride_kb: int,
+        stride_kh: int,
+        stride_kn: int,
+        stride_vb: int,
+        stride_vh: int,
+        stride_vn: int,
+        stride_ob: int,
+        stride_oh: int,
+        stride_om: int,
         BATCH: tl.constexpr,
         N_HEADS: tl.constexpr,
         SEQ_LEN: tl.constexpr,
@@ -86,7 +86,7 @@ def _flash_attention_fwd_triton(
         BLOCK_N: tl.constexpr,
         CAUSAL: tl.constexpr,
         SCALE: tl.constexpr,
-    ):
+    ) -> None:
         pid = tl.program_id(0)
         num_m_blocks = tl.cdiv(SEQ_LEN, BLOCK_M)
         batch_idx = pid // (N_HEADS * num_m_blocks)

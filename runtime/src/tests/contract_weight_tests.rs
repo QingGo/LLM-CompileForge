@@ -186,6 +186,7 @@ fn test_weight_provider_constants_multiple_dtypes() {
 #[test]
 fn test_build_compute_graph_weight_binding_classification() {
     let mut func = SfaFuncMeta {
+        consumed_sub_output_flags: vec![],
         symbol: "layer0".to_string(),
         num_inputs: 2,
         output_rank: 2,
@@ -199,6 +200,7 @@ fn test_build_compute_graph_weight_binding_classification() {
         binding: Some(Binding::WeightName("q_proj_weight".to_string())),
         rank: 2,
         dims: vec![768, 768],
+        dtype: String::new(),
     });
 
     // SSA input from previous function.
@@ -210,6 +212,7 @@ fn test_build_compute_graph_weight_binding_classification() {
         })),
         rank: 3,
         dims: vec![1, 64, 768],
+        dtype: String::new(),
     });
 
     let header = SfaAbiHeader {
@@ -254,6 +257,7 @@ fn test_build_compute_graph_weight_binding_classification() {
 fn test_build_compute_graph_global_input_classification() {
     // Verify that SfaInputKind::SfaInputGlobal maps to InputBinding::GlobalInput.
     let mut func = SfaFuncMeta {
+        consumed_sub_output_flags: vec![],
         symbol: "main_0".to_string(),
         num_inputs: 1,
         output_rank: 2,
@@ -266,6 +270,7 @@ fn test_build_compute_graph_global_input_classification() {
         binding: None,
         rank: 2,
         dims: vec![0, 0],
+        dtype: String::new(),
     });
 
     let header = SfaAbiHeader {

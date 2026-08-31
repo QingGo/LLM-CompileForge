@@ -52,6 +52,11 @@ def build_weight_data(
         entry.dtype_code = _DTYPE_TO_CODE.get(tensor.dtype, 0)
         for dim in tensor.shape:
             entry.shape.append(dim)
-        entry.data = tensor.detach().cpu().contiguous().numpy().tobytes()
+        t = tensor.detach().cpu().contiguous()
+        if t.dtype == torch.bfloat16:
+            # bf16 is not a native numpy dtype; serialize raw uint16 storage.
+            entry.data = t.view(torch.uint16).numpy().tobytes()
+        else:
+            entry.data = t.numpy().tobytes()
 
     return bytes(msg.SerializeToString())

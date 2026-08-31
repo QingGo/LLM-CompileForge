@@ -7,7 +7,7 @@ sf-chain-wrapper, some with different pass ordering).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 SF_LOWERING_PIPELINE = "sf-promote-weights,canonicalize,cse,sf-chain-wrapper,sf-lower-to-linalg,canonicalize,cse"
 
@@ -41,4 +41,4 @@ def run_sf_lowering_pipeline(ir_mod: Any, ctx: Any, verify: bool = True) -> str:
     pman.enable_verifier(verify)
     pman.enable_timing()
     pman.run(ir_mod.operation)
-    return ir_mod.operation.get_asm(print_generic_op_form=True)
+    return cast(str, ir_mod.operation.get_asm(print_generic_op_form=True))

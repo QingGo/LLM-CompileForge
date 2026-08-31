@@ -31,6 +31,10 @@ mod contract_precision_tests;
 mod golden_tests;
 
 #[cfg(test)]
+#[path = "tests/golden_reader.rs"]
+mod golden_reader;
+
+#[cfg(test)]
 #[path = "tests/internal_e2e_tests.rs"]
 mod internal_e2e_tests;
 
@@ -47,8 +51,24 @@ mod contract_weight_tests;
 mod e2e_tests;
 
 #[cfg(test)]
+#[path = "tests/function_output_tests.rs"]
+mod function_output_tests;
+
+#[cfg(test)]
 #[path = "tests/diagnostic_tests.rs"]
 mod diagnostic_tests;
+
+#[cfg(test)]
+#[path = "tests/runner_consistency_tests.rs"]
+mod runner_consistency_tests;
+
+#[cfg(test)]
+#[path = "tests/sdpa_decode_shape_tests.rs"]
+mod sdpa_decode_shape_tests;
+
+#[cfg(test)]
+#[path = "tests/dylib_lock.rs"]
+pub mod dylib_lock;
 
 #[cfg(feature = "python-bindings")]
 mod py_bindings {
@@ -158,12 +178,14 @@ mod py_bindings {
     #[pymethods]
     impl PyScheduler {
         #[new]
+        #[pyo3(signature = (max_batch_size, max_tokens_per_step, chunk_size, use_kv_cache=false))]
         fn new(
             max_batch_size: usize,
             max_tokens_per_step: usize,
             chunk_size: usize,
+            use_kv_cache: bool,
         ) -> PyResult<Self> {
-            let inner = Scheduler::new(max_batch_size, max_tokens_per_step, chunk_size, false)
+            let inner = Scheduler::new(max_batch_size, max_tokens_per_step, chunk_size, use_kv_cache)
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
             Ok(Self { inner })
         }

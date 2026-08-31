@@ -89,6 +89,7 @@ mod tests {
             rank: 1,
             shape: vec![3],
             consumed_internally: false,
+            dtype: crate::model::tensor::Dtype::I64,
         };
         let result = fill_global_input(&[1u32, 2, 3], &[0u32, 1, 2], &io_def, 0);
         assert!(result.is_ok());
@@ -106,6 +107,7 @@ mod tests {
             rank: 1,
             shape: vec![3],
             consumed_internally: false,
+            dtype: crate::model::tensor::Dtype::I64,
         };
         let result = fill_global_input(&[1u32, 2, 3], &[0u32, 1, 2], &io_def, 0);
         assert!(result.is_ok());
@@ -113,6 +115,7 @@ mod tests {
         match &tensor.raw {
             SFATensorRawAny::R2(r) => {
                 let ptr = r.allocated as *const i64;
+// SAFETY: the pointer points to the owning allocation with at least the asserted element count.
                 let data = unsafe { std::slice::from_raw_parts(ptr, 3) };
                 assert_eq!(data, &[1i64, 2, 3]);
             }
@@ -126,6 +129,7 @@ mod tests {
             rank: 1,
             shape: vec![0], // dynamic sentinel
             consumed_internally: false,
+            dtype: crate::model::tensor::Dtype::I64,
         };
         let result = fill_global_input(&[1u32, 2, 3, 4], &[0u32, 1, 2, 3], &io_def, 0);
         assert!(result.is_ok());

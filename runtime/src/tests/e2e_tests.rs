@@ -81,6 +81,7 @@ use crate::cache::block::BlockManager;
     /// Check Rust forward produces the same argmax token as Python reference.
     #[test]
     fn test_forward_matches_python_argmax() {
+    let _dylib_guard = crate::dylib_lock::lock();
         let dir = COMPILED_DIR;
         let dylib = find_dylib(dir)
             .expect(&format!("no .dylib found in {}", dir));
@@ -139,6 +140,7 @@ use crate::cache::block::BlockManager;
     /// Verify Rust forward doesn't crash and output statistics are reasonable.
     #[test]
     fn test_forward_has_sensible_output() {
+    let _dylib_guard = crate::dylib_lock::lock();
         let dir = COMPILED_DIR;
         let dylib = find_dylib(dir)
             .expect(&format!("no .dylib found in {}", dir));
@@ -182,6 +184,7 @@ use crate::cache::block::BlockManager;
     /// outputs require forward_with_kv() for proper execution (tested in Task 3).
     #[test]
     fn test_compiled_kv_executor_loads() {
+    let _dylib_guard = crate::dylib_lock::lock();
         let executor = compiled_kv_executor();
         let n = executor.compute_graph.functions.len();
         let ci = executor.compute_graph.functions.iter()
@@ -195,6 +198,7 @@ use crate::cache::block::BlockManager;
     // ── Test: KV cache multi-step decode (should match HF) ────────
     #[test]
     fn test_kv_multistep_decode_matches_hf() {
+        let _dylib_guard = crate::dylib_lock::lock();
         let executor = compiled_kv_executor();
         let num_kv_heads = 12usize;
         let head_dim = 64usize;
@@ -279,6 +283,7 @@ use crate::cache::block::BlockManager;
 
     #[test]
     fn test_forward_with_kv_with_block_manager() {
+    let _dylib_guard = crate::dylib_lock::lock();
         let executor = compiled_kv_executor();
         let num_kv_heads = 12usize;
         let head_dim = 64usize;
@@ -410,6 +415,7 @@ use crate::cache::block::BlockManager;
 
     #[test]
     fn test_generate_with_kv_cache_matches_hf() {
+        let _dylib_guard = crate::dylib_lock::lock();
         let executor = compiled_kv_executor();
 
         // Manual autoregressive generation using forward_with_kv + BlockManager.
@@ -540,10 +546,100 @@ use crate::cache::block::BlockManager;
         eprintln!("✅ PASS: test_generate_with_kv_cache_matches_hf");
     }
 
+    // ── Test: decode step with KV cache must match full recompute ──
+    //
+    // Regression (2026-08): after fixing the Q/K/V output-order contract
+    // in the compiler, the KV-cache decode step still diverged from the
+    // HF baseline (token 46 instead of 812). This test isolates the
+    // cache path: the decode-step logits produced via BlockManager must
+    // equal the logits of a full-recompute forward of the same 7 tokens.
+    #[test]
+    fn test_kv_decode_step_matches_full_recompute() {
+    let _dylib_guard = crate::dylib_lock::lock();
+        let exec = compiled_kv_executor();
+        let num_kv_heads = 12usize;
+        let head_dim = 64usize;
+        let block_size = 16usize;
+        let num_blocks = 64usize;
+
+        let mut bm = BlockManager::new_with_cache(num_blocks, block_size, num_kv_heads, head_dim)
+            .expect("block manager");
+
+        bm.allocate("test_req", PROMPT_IDS.len() + 10)
+            .expect("allocate blocks for prefill + decode");
+
+        let n_tokens = PROMPT_IDS.len() + 10;
+        for func in &exec.compute_graph.functions {
+            let has_ci = func.outputs.iter().any(|o| o.consumed_internally);
+            if has_ci {
+                let layer_rid = format!("test_req_f{}", func.index);
+                bm.allocate(&layer_rid, n_tokens)
+                    .unwrap_or_else(|e| panic!("alloc {}: {e}", layer_rid));
+            }
+        }
+
+        // Prefill (positions 0..6)
+        let positions: Vec<u32> = (0..PROMPT_IDS.len() as u32).collect();
+        exec.forward_with_kv(PROMPT_IDS, &positions, Some(&mut bm), Some("test_req"))
+            .expect("prefill");
+
+        // Decode step 0 with the KV cache: token 5 at position 6.
+        std::env::set_var("DUMP_LAYERS", "/tmp/dump_decode");
+        let kv_logits = exec
+            .forward_with_kv(&[5], &[PROMPT_IDS.len() as u32], Some(&mut bm), Some("test_req"))
+            .expect("decode with cache");
+        assert_eq!(kv_logits.shape, vec![1, 1, 50272], "decode output shape");
+
+        // Full recompute of the same 7 tokens (no cache).
+        let mut full_ids: Vec<u32> = PROMPT_IDS.to_vec();
+        full_ids.push(5);
+        let full_positions: Vec<u32> = (0..full_ids.len() as u32).collect();
+        std::env::set_var("DUMP_LAYERS", "/tmp/dump_nc");
+        let full_logits = exec
+            .forward_with_kv(&full_ids, &full_positions, None, None)
+            .expect("full recompute");
+
+        let kv_last = &kv_logits.as_slice()[..50272];
+        let full_start = (full_ids.len() - 1) * 50272;
+        let full_last = &full_logits.as_slice()[full_start..full_start + 50272];
+
+        // 4-gate check (per .opencode/CONTEXT.md precision gating).
+        let max_abs_diff = kv_last
+            .iter()
+            .zip(full_last.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        let (kv_argmax, _) = kv_last.iter().enumerate().fold(
+            (0usize, f32::NEG_INFINITY),
+            |(mi, mv), (i, &v)| if v > mv { (i, v) } else { (mi, mv) },
+        );
+        let (full_argmax, _) = full_last.iter().enumerate().fold(
+            (0usize, f32::NEG_INFINITY),
+            |(mi, mv), (i, &v)| if v > mv { (i, v) } else { (mi, mv) },
+        );
+
+        eprintln!(
+            "decode-vs-recompute: max_abs_diff={} kv_argmax={} full_argmax={}",
+            max_abs_diff, kv_argmax, full_argmax
+        );
+
+        assert!(
+            max_abs_diff < 1e-3,
+            "KV-cache decode logits diverge from full recompute (max_abs_diff={})",
+            max_abs_diff
+        );
+        assert_eq!(
+            kv_argmax, full_argmax,
+            "KV-cache decode argmax {} != full recompute argmax {}",
+            kv_argmax, full_argmax
+        );
+    }
+
     // ── Test C: KV cache vs full recompute consistency ─────────────
 
     #[test]
     fn test_kv_cache_vs_full_recompute() {
+    let _dylib_guard = crate::dylib_lock::lock();
         // ── Sub-test A: same model (kv), KV-cache vs no-cache forward_with_kv ──
         eprintln!(
             "=== Sub-test A: same model, forward_with_kv(Some(BM)) vs forward_with_kv(None) ==="
@@ -561,6 +657,17 @@ use crate::cache::block::BlockManager;
 
         bm.allocate("test_req", PROMPT_IDS.len())
             .expect("allocate");
+
+        // Allocate per-function blocks for consumed outputs (KV cache layers)
+        let gn_ntokens = PROMPT_IDS.len() + 10;
+        for func in &exec.compute_graph.functions {
+            let has_ci = func.outputs.iter().any(|o| o.consumed_internally);
+            if has_ci {
+                let layer_rid = format!("test_req_f{}", func.index);
+                bm.allocate(&layer_rid, gn_ntokens)
+                    .unwrap_or_else(|e| panic!("alloc {}: {e}", layer_rid));
+            }
+        }
 
         // KV-cache prefill
         let positions: Vec<u32> = (0..PROMPT_IDS.len() as u32).collect();
@@ -654,6 +761,7 @@ use crate::cache::block::BlockManager;
 
     #[test]
     fn test_kv_cache_perf_comparison() {
+        let _dylib_guard = crate::dylib_lock::lock();
         use std::time::Instant;
 
         // ── Phase 1: KV-cache decode loop ──────────────────────────

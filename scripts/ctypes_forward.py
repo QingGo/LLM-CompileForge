@@ -26,10 +26,10 @@ from typing import Any
 import numpy as np
 
 from compiler.dylib_ffi import (
-    make_memref_descriptor,
-    parse_sret_outputs,
     compute_sret_size,
     load_graph_from_proto,
+    make_memref_descriptor,
+    parse_sret_outputs,
 )
 
 faulthandler.enable()
@@ -261,7 +261,16 @@ def run_ctypes(
             io_shape = inp["shape"]
 
             if binding[0] == "global_input":
-                arr = input_ids
+                # Global input ordinal: 0 = input_ids, 1 = position_ids.
+                # Mirrors the Rust runtime's bi==1 → positions convention.
+                gi = binding[1] if len(binding) > 1 else 0
+                if gi == 0:
+                    arr = input_ids
+                else:
+                    seq = input_ids.shape[-1]
+                    batch = input_ids.shape[0] if input_ids.ndim >= 2 else 1
+                    positions = np.arange(seq, dtype=np.int64).reshape(1, -1)
+                    arr = np.broadcast_to(positions, (batch, seq)).copy()
             elif binding[0] == "weight":
                 key = binding[1]
                 try:

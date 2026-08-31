@@ -5,6 +5,7 @@ L2: Validates LLVM IR sret pattern for multi-return rank-4 functions.
 
 import os
 from pathlib import Path
+
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -16,7 +17,7 @@ def test_kv_dylib_llvm_ir_has_malloc_for_rank4_outputs():
     """L2 test: The inner function @main_1a must use malloc for rank-4 outputs."""
     ll_path = os.path.join(ROOT, "outputs", "compiled", "opt_125m_kv", "model.ll")
     if not os.path.exists(ll_path):
-        pytest.skip(f"LLVM IR not found. Run: make rebuild-dylib for opt_125m_kv")
+        pytest.skip("LLVM IR not found. Run: make rebuild-dylib for opt_125m_kv")
 
     with open(ll_path) as f:
         ll_text = f.read()
@@ -58,20 +59,32 @@ def test_kv_dylib_llvm_ir_has_malloc_for_rank4_outputs():
         f"BUG: @main_1a return type should be rank-4 structs: {ret_line[:120]}"
     )
 
-    # Assert: ciface wrapper stores result to sret ptr %0
+    # Assert: ciface wrapper stores result to sret ptr %0.
+    # The wrapper may be emitted before OR after the inner function in the
+    # IR file — extract its own body (brace-balanced), never rely on its
+    # position relative to @main_1a.
     wrapper_start = None
     for i, line in enumerate(lines):
         if "_mlir_ciface_main_1a" in line and "define" in line:
             wrapper_start = i
             break
-    wrapper_text = "\n".join(lines[wrapper_start:inner_start])
+    assert wrapper_start is not None, "_mlir_ciface_main_1a wrapper not found in LLVM IR"
+    w_brace_count = 0
+    wrapper_end = None
+    for i in range(wrapper_start, len(lines)):
+        w_brace_count += lines[i].count("{") - lines[i].count("}")
+        if w_brace_count == 0 and i > wrapper_start:
+            wrapper_end = i
+            break
+    assert wrapper_end is not None, "_mlir_ciface_main_1a wrapper braces unbalanced"
+    wrapper_text = "\n".join(lines[wrapper_start : wrapper_end + 1])
     assert "store" in wrapper_text, "ciface wrapper must store result to sret"
     assert "ptr %0" in wrapper_text, "ciface wrapper must reference sret ptr %0"
 
-    print(f"PASS: LLVM IR validated for _mlir_ciface_main_1a")
+    print("PASS: LLVM IR validated for _mlir_ciface_main_1a")
     print(f"  malloc calls: {malloc_count}")
-    print(f"  ret type: rank-4 structs confirmed")
-    print(f"  ciface wrapper: store to sret ptr %0 confirmed")
+    print("  ret type: rank-4 structs confirmed")
+    print("  ciface wrapper: store to sret ptr %0 confirmed")
 
 
 @pytest.mark.integration
@@ -79,9 +92,10 @@ def test_kv_dylib_llvm_ir_has_malloc_for_rank4_outputs():
 def test_kv_dylib_all_symbols_loadable():
     """L3 test: All _mlir_ciface_* symbols from ABI proto must exist in dylib."""
     import ctypes
+
     from gen.proto.python.sfa_abi_pb2 import SfaAbiHeader
 
-    dylib_path = os.path.join(ROOT, "outputs", "compiled", "opt_125m_kv", "libopt_125m.dylib")
+    dylib_path = os.path.join(ROOT, "outputs", "compiled", "opt_125m_kv", "libopt_125m_kv.dylib")
     if not os.path.exists(dylib_path):
         pytest.skip("KV dylib not found")
 

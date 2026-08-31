@@ -85,16 +85,25 @@ pub trait Buffer: Debug + Send + Sync {
         1
     }
 
+    /// True for output buffers that alias a pass-through input buffer.
+    /// Executors use this to skip copying dylib-allocated output data when
+    /// the destination already contains the same values.
+    fn is_passthrough_alias(&self) -> bool {
+        false
+    }
+
     /// Convert this buffer into a unified ``SfaMemRef`` descriptor.
     fn as_sfa_memref(&self) -> super::sfa::SfaMemRef {
         let ptr = self.as_ptr() as *mut std::ffi::c_void;
         let shape = self.shape();
         let elem_size = self.element_size();
-        super::sfa::SfaMemRef::from_shape(ptr, &shape, elem_size)
-            .unwrap_or_else(|_| {
+        let mut memref =
+            super::sfa::SfaMemRef::from_shape(ptr, &shape, elem_size).unwrap_or_else(|_| {
                 let n = self.len() / elem_size.max(1);
                 super::sfa::SfaMemRef::r1(ptr, [n as i64], [1], elem_size)
-            })
+            });
+        memref.passthrough_alias = self.is_passthrough_alias();
+        memref
     }
 }
 
@@ -125,7 +134,6 @@ pub trait Executable: Debug + Send + Sync {
     fn supported_ops(&self) -> &[&str] {
         &[]
     }
-
 }
 
 /// Synchronization event.

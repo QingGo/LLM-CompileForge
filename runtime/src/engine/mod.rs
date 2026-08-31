@@ -1,8 +1,16 @@
 pub mod scheduler;
 pub mod types;
 pub mod compute_graph_runner;
+pub(crate) mod account;
+pub(crate) mod gemv;
 pub mod executor;
 pub mod graph_runner;
+pub(crate) mod blas;
+pub(crate) mod kernels;
+pub(crate) mod linear_attn;
+pub(crate) mod op_plan;
+pub(crate) mod opt_fused;
+pub mod spikes;
 pub(crate) mod runner;
 pub(crate) mod sampler;
 pub(crate) mod tokenizer;

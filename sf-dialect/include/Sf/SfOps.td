@@ -97,6 +97,15 @@ def Sf_LinearOp : Sf_Op<"linear", [Pure]> {
   let results = (outs Sf_FloatTensor:$result);
 }
 
+def Sf_Conv1dOp : Sf_Op<"conv1d", [Pure]> {
+  let summary = "1D convolution over the last-but-one dimension";
+  let arguments = (ins Sf_FloatTensor:$input, Sf_FloatTensor:$weight,
+                       Optional<Sf_FloatTensor>:$bias,
+                       I64ArrayAttr:$stride, I64ArrayAttr:$padding,
+                       I64ArrayAttr:$dilation, I64Attr:$groups);
+  let results = (outs Sf_FloatTensor:$result);
+}
+
 //===----------------------------------------------------------------------===//
 // Shape / transform ops
 //===----------------------------------------------------------------------===//
@@ -196,6 +205,32 @@ def Sf_SliceOp : Sf_ShapeOp<"slice"> {
   let results = (outs AnyTensor:$result);
 }
 
+def Sf_PadOp : Sf_ShapeOp<"pad"> {
+  let summary = "constant-mode pad (PyTorch aten.pad.default)";
+  let arguments = (ins AnyTensor:$input,
+                       Variadic<AnyTensor>:$aux,
+                       I64ArrayAttr:$pad);
+  let results = (outs AnyTensor:$result);
+}
+
+def Sf_TriuOp : Sf_ShapeOp<"triu"> {
+  let summary = "upper triangular part of a matrix";
+  let arguments = (ins AnyTensor:$input, OptionalAttr<I64Attr>:$diagonal);
+  let results = (outs AnyTensor:$result);
+}
+
+def Sf_TrilOp : Sf_ShapeOp<"tril"> {
+  let summary = "lower triangular part of a matrix";
+  let arguments = (ins AnyTensor:$input, OptionalAttr<I64Attr>:$diagonal);
+  let results = (outs AnyTensor:$result);
+}
+
+def Sf_MaskedFillOp : Sf_ShapeOp<"masked_fill"> {
+  let summary = "fill input elements where a boolean mask is true";
+  let arguments = (ins AnyTensor:$input, AnyTensor:$mask, AnyTensor:$value);
+  let results = (outs AnyTensor:$result);
+}
+
 def Sf_LogicalAndOp : Sf_Op<"logical_and", [
     Pure,
     DeclareOpInterfaceMethods<InferTypeOpInterface, ["inferReturnTypes"]>
@@ -208,7 +243,25 @@ def Sf_LogicalAndOp : Sf_Op<"logical_and", [
 def Sf_LeOp : Sf_CompareOp<"le">;
 
 def Sf_OnesLikeOp : Sf_ShapeOp<"ones_like"> {
-  let arguments = (ins AnyTensor:$input, Variadic<AnyTensor>:$dyn_shape);
+  let arguments = (ins Variadic<AnyTensor>:$operands);
+  let results = (outs AnyTensor:$result);
+}
+
+def Sf_ZerosOp : Sf_ShapeOp<"zeros"> {
+  let summary = "tensor of zeros";
+  let arguments = (ins Variadic<AnyTensor>:$operands, I64ArrayAttr:$shape);
+  let results = (outs AnyTensor:$result);
+}
+
+def Sf_ZerosLikeOp : Sf_ShapeOp<"zeros_like"> {
+  let summary = "tensor of zeros with the same shape as the input";
+  let arguments = (ins AnyTensor:$input);
+  let results = (outs AnyTensor:$result);
+}
+
+def Sf_EyeOp : Sf_ShapeOp<"eye"> {
+  let summary = "identity matrix";
+  let arguments = (ins I64Attr:$n, OptionalAttr<I64Attr>:$m);
   let results = (outs AnyTensor:$result);
 }
 
@@ -236,6 +289,11 @@ def Sf_IndexOp : Sf_ShapeOp<"index"> {
 
 def Sf_CumsumOp : Sf_ShapeOp<"cumsum"> {
   let arguments = (ins AnyTensor:$input);
+  let results = (outs AnyTensor:$result);
+}
+
+def Sf_DiffOp : Sf_ShapeOp<"diff"> {
+  let arguments = (ins AnyTensor:$input, AnyTensor:$n);
   let results = (outs AnyTensor:$result);
 }
 

@@ -17,6 +17,16 @@ message SfaFuncMeta {
   uint32 output_rank = 3;       // packed output memref rank (0-4) — max rank across all outputs
   repeated SfaInputField input_fields = 4;
   repeated OutputDescriptor outputs = 5;  // per-output descriptor (rank + dims)
+
+  // Pre-lowering consumed_internally flags for individual sub-tensors
+  // within the packed output. After bufferization, multiple SSA return
+  // values (e.g., Q, K, V) are packed into a single sret memref. This
+  // field preserves the per-output consumed flags so the runtime can
+  // correctly split the packed buffer and wire sub-tensors to the KV
+  // cache or to func_outputs.
+  // Index order matches the pre-lowering output positions
+  // (e.g., [false, true, true] for Q/K/V).
+  repeated bool consumed_sub_output_flags = 7;
 }
 
 // Describes a single output tensor from a ciface function.
@@ -24,6 +34,7 @@ message OutputDescriptor {
   uint32 rank = 1;
   repeated uint64 dims = 2;     // 0 = dynamic dimension
   bool consumed_internally = 3; // true = output consumed by KV cache (not exposed as SSA)
+  string dtype = 4;             // "f32" | "bf16" | "f16" | "i64" | ...
 }
 
 // Describes the kind and binding of each function input argument.
@@ -38,6 +49,7 @@ message SfaInputField {
   }
   uint32 rank = 5;              // tensor rank of this input (1-4)
   repeated uint64 dims = 6;     // tensor dimensions (0 = dynamic / unknown at compile time)
+  string dtype = 7;             // "f32" | "bf16" | "f16" | "i64" | ...
 }
 
 // Discriminated input source: global (model input), weight (compiled weight),
@@ -118,6 +130,122 @@ message EdgeInput {
 enum EdgeSource {
   GLOBAL_INPUT = 0;
   STEP_OUTPUT = 1;
+}
+
+// ── Op-level execution plan (field numbers 30-49) ─────────────────
+// Phase 5 HAL kernel-graph contract.  Produced by the Python compiler from
+// the sf-dialect op-level representation (not from lowered linalg) and
+// consumed by the Rust op-plan executor.  A dylib may export both the
+// func-level ``sfa_abi`` and this finer plan; ``sfa_abi`` remains the
+// fallback path and the cache-policy contract stays shared.
+
+message OpPlan {
+  // Whole-graph inputs; same order and names as ExecutionPlan.global_inputs.
+  repeated string global_inputs = 30;
+
+  // Topologically ordered nodes; node_index == array index.
+  repeated OpPlanNode nodes = 31;
+
+  // Plan-level output (the last decoder-layer hidden state).
+  OpPlanRef global_output = 32;
+
+  // Projection of every covered func-level output onto a node output.
+  // ``output_index`` uses the SfaFuncMeta output index (ABI order);
+  // consumed_internally mirrors SfaFuncMeta/OutputDescriptor so the
+  // runtime can push exactly the visible outputs into ``func_outputs``.
+  repeated OpPlanFuncOutput func_outputs = 33;
+}
+
+message OpPlanNode {
+  uint32 index = 1;
+  // Canonical HAL kernel name; must exist in the SfaOpCatalog-derived
+  // runtime registry (no ad-hoc op string dispatch).
+  string op_name = 2;
+
+  repeated OpPlanInput inputs = 3;
+  repeated OpPlanOutput outputs = 4;
+
+  // Source func-level split function(s) that emitted this node.  Used to
+  // project CachePolicy (func_index, output_index, slab_id) onto nodes.
+  repeated uint32 source_func_indices = 5;
+
+  // Scalar/1-D constant op parameters, serialized from the sf-dialect
+  // op attributes (e.g. eps, shape, dim0, scale).
+  map<string, string> attributes = 6;
+}
+
+message OpPlanInput {
+  enum Source {
+    GLOBAL = 0;         // index into OpPlan.global_inputs
+    WEIGHT = 1;         // compiled weight name in sfa_weights
+    SSA = 2;            // node-internal producer
+    CONSTANT = 3;       // embedded constant in sfa_weights
+    FUNC_OUTPUT = 4;    // value produced by a func-level step outside
+                        // this plan (head/tail boundary projection)
+  }
+  Source source = 1;
+  oneof binding {
+    uint32 global_index = 2;
+    string weight_name = 3;
+    OpPlanRef producer = 4;
+    string constant_name = 5;
+    OpPlanFuncRef func_producer = 7;
+  }
+  OpTensorSpec spec = 6;
+}
+
+message OpPlanOutput {
+  OpTensorSpec spec = 1;
+
+  // Buffer lifetime, driving the persistent buffer pool:
+  //   TRANSIENT          — single consumer; SSA value may be passed
+  //                        directly without any copy
+  //   LAYER_PERSISTENT   — consumed several times inside the layer
+  //   GRAPH_PERSISTENT   — cross-layer hidden state / final output
+  //   CACHE_OWNED        — K/V owned by CachePolicy/BlockManager
+  BufferLifetime lifetime = 2;
+
+  // Cache projection: non-empty exactly for K/V outputs that preserve the
+  // SfaCachePolicy intercept semantics.
+  OpPlanCacheIntercept cache = 3;
+}
+
+message OpPlanCacheIntercept {
+  string slab_id = 1;
+  uint32 source_func_index = 2;   // original (func_index, output_index)
+  uint32 source_output_index = 3; // K17 exact filtering must not guess
+}
+
+message OpPlanRef {
+  uint32 node_index = 1;
+  uint32 output_index = 2;
+}
+
+// Reference to a func-level output, in SfaFuncMeta output order.
+message OpPlanFuncRef {
+  uint32 func_index = 1;
+  uint32 output_index = 2;
+}
+
+// Projection of one covered func-level output onto a node output.
+message OpPlanFuncOutput {
+  uint32 func_index = 1;
+  uint32 output_index = 2;       // ABI/SfaFuncMeta output order
+  OpPlanRef value = 3;
+  bool consumed_internally = 4;
+}
+
+message OpTensorSpec {
+  uint32 rank = 1;
+  repeated uint64 dims = 2;      // 0 = dynamic; same rule as OutputDescriptor
+  string dtype = 3;              // "float32" | "float16" | ...
+}
+
+enum BufferLifetime {
+  BUFFER_TRANSIENT = 0;
+  BUFFER_LAYER_PERSISTENT = 1;
+  BUFFER_GRAPH_PERSISTENT = 2;
+  BUFFER_CACHE_OWNED = 3;
 }
 
 // ── Cache policy types (field numbers 200+) ───────────────────────

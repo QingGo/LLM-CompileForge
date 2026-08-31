@@ -99,12 +99,14 @@ impl traits::Device for MockDevice {
 
 #[test]
 fn test_executor_load_nonexistent_fails() {
+let _dylib_guard = crate::dylib_lock::lock();
     let result = ModelExecutor::load("/nonexistent/lib.dylib", None);
     assert!(result.is_err());
 }
 
 #[test]
 fn test_executor_load_with_device_calls_compile() {
+let _dylib_guard = crate::dylib_lock::lock();
     let device = MockDevice::new("mock-test");
     // This will fail because the .dylib doesn't exist, but compile()
     // should be called first.
@@ -118,6 +120,7 @@ fn test_executor_load_with_device_calls_compile() {
 
 #[test]
 fn test_global_input_i64_memref() {
+let _dylib_guard = crate::dylib_lock::lock();
     let input_ids: Vec<i64> = vec![2, 525, 484, 0];
     let raw: Vec<u8> = input_ids.iter().flat_map(|&v| v.to_ne_bytes()).collect();
     let p = raw.as_ptr();
@@ -143,6 +146,7 @@ fn test_global_input_i64_memref() {
 
 #[test]
 fn test_f16_to_f32_conversion() {
+let _dylib_guard = crate::dylib_lock::lock();
     use half::f16;
     let f16_vals: Vec<u16> = vec![
         f16::from_f32(1.0).to_bits(),
@@ -173,6 +177,7 @@ fn test_f16_to_f32_conversion() {
 
 #[test]
 fn test_desc_pointers_unique_and_stable_in_vec() {
+let _dylib_guard = crate::dylib_lock::lock();
     // Regression: as_input_ptr() must point to Vec element (not stack-local desc),
     // and must remain valid after subsequent pushes (Vec must not reallocate).
     let data = vec![1.0f32; 768];
@@ -203,6 +208,7 @@ fn test_desc_pointers_unique_and_stable_in_vec() {
 
 #[test]
 fn test_desc_pointers_different_for_different_ranks() {
+let _dylib_guard = crate::dylib_lock::lock();
     // Different rank descriptors should have different pointers
     let mut descs: Vec<MemRefDescAny> = Vec::with_capacity(3);
 
@@ -226,6 +232,7 @@ fn test_desc_pointers_different_for_different_ranks() {
 
 #[test]
 fn test_kv_cache_concat_decode_flow() {
+let _dylib_guard = crate::dylib_lock::lock();
     // Simulates the decode flow: pre-write 4 cached positions, write 1 new
     // position, then verify concat has shape [1, 5, 768].
     use crate::cache::block::BlockManager;
@@ -288,6 +295,7 @@ fn test_kv_cache_concat_decode_flow() {
 
 #[test]
 fn test_forward_with_kv_requires_compiled_model() {
+let _dylib_guard = crate::dylib_lock::lock();
     // This test validates that forward_with_kv is structurally callable.
     // It requires a compiled model with split functions (main_Xa + main_Xb).
     // If the model isn't compiled, we skip gracefully.
@@ -335,6 +343,7 @@ fn test_forward_with_kv_requires_compiled_model() {
 
 #[test]
 fn test_kv_model_loads_and_forwards() {
+let _dylib_guard = crate::dylib_lock::lock();
     let dylib = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../outputs/compiled/opt_125m_kv/libopt_125m_kv.dylib"
@@ -356,5 +365,202 @@ fn test_kv_model_loads_and_forwards() {
     eprintln!("PASS: KV model loads with {n} functions, {ci} consumed_internally");
 }
 
+/// Phase 4.3 regression: with `opt_fused_fastpath` enabled, the last-position
+/// logits must have the same argmax as the dylib path, on both the no-cache
+/// prefill path and the KV-cache decode path.
+#[test]
+fn test_opt_fused_fastpath_argmax_matches_dylib() {
+let _dylib_guard = crate::dylib_lock::lock();
+    let dylib = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../outputs/compiled/opt_125m_kv/libopt_125m_kv.dylib"
+    );
+    if !std::path::Path::new(dylib).exists() {
+        eprintln!("SKIP: no KV model at {dylib}");
+        return;
+    }
+    let mut st_path: Option<String> = None;
+    if let Ok(home) = std::env::var("HOME") {
+        let hub = std::path::Path::new(&home)
+            .join(".cache/huggingface/hub/models--facebook--opt-125m/snapshots");
+        if let Ok(entries) = std::fs::read_dir(&hub) {
+            for entry in entries.flatten() {
+                let cand = entry.path().join("model.safetensors");
+                if cand.exists() {
+                    st_path = Some(cand.to_string_lossy().to_string());
+                    break;
+                }
+            }
+        }
+    }
+    let Some(st_path) = st_path else {
+        eprintln!("SKIP: opt-125m safetensors not found");
+        return;
+    };
 
+    let mut executor = ModelExecutor::load(dylib, Some(&st_path))
+        .expect("load opt_125m_kv with safetensors");
+    let input_ids: Vec<u32> = vec![2, 31414, 6, 232, 328, 7181, 87, 9];
+    let positions: Vec<u32> = (0..input_ids.len() as u32).collect();
+    let vocab = 50272usize;
 
+    let last_argmax = |logits: &crate::model::tensor::Tensor| -> (usize, f32) {
+        let all = logits.as_slice();
+        let row = &all[all.len() - vocab..];
+        row.iter()
+            .enumerate()
+            .fold((0, f32::NEG_INFINITY), |(mi, mv), (i, &v)| {
+                if v > mv { (i, v) } else { (mi, mv) }
+            })
+    };
+
+    // ── No-cache prefill (fused b uses kv_new BNSD K/V) ──
+    executor.opt_fused_fastpath = false;
+    let dylib_prefill = executor
+        .forward_with_kv(&input_ids, &positions, None, None)
+        .expect("dylib prefill");
+    executor.opt_fused_fastpath = true;
+    let fused_prefill = executor
+        .forward_with_kv(&input_ids, &positions, None, None)
+        .expect("fused prefill");
+
+    let (ref_arg, _) = last_argmax(&dylib_prefill);
+    let (fused_arg, _) = last_argmax(&fused_prefill);
+    assert_eq!(fused_arg, ref_arg, "fused prefill argmax differs from dylib");
+
+    // ── KV-cache decode (fused b reads the BlockManager tables) ──
+    let make_bm = || {
+        let mut bm = crate::cache::block::BlockManager::new_with_cache(128, 16, 12, 64)
+            .expect("block manager");
+        bm.allocate("req", input_ids.len()).unwrap();
+        for fi in [1usize, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23] {
+            bm.allocate(&format!("req_f{fi}"), input_ids.len() + 1).unwrap();
+        }
+        bm
+    };
+    let mut bm_ref = make_bm();
+    executor.opt_fused_fastpath = false;
+    let dylib_pre = executor
+        .forward_with_kv(&input_ids, &positions, Some(&mut bm_ref), Some("req"))
+        .expect("dylib cache prefill");
+    let decode_id = last_argmax(&dylib_pre).0 as u32;
+    let dylib_decode = executor
+        .forward_with_kv(&[decode_id], &[8], Some(&mut bm_ref), Some("req"))
+        .expect("dylib decode");
+
+    let mut bm_fused = make_bm();
+    executor.opt_fused_fastpath = true;
+    let fused_pre = executor
+        .forward_with_kv(&input_ids, &positions, Some(&mut bm_fused), Some("req"))
+        .expect("fused cache prefill");
+    let fused_pre_arg = last_argmax(&fused_pre).0;
+    assert_eq!(fused_pre_arg, ref_arg, "fused cache prefill argmax differs");
+    let fused_decode = executor
+        .forward_with_kv(&[decode_id], &[8], Some(&mut bm_fused), Some("req"))
+        .expect("fused decode");
+
+    let (ref_decode_arg, _) = last_argmax(&dylib_decode);
+    let (fused_decode_arg, _) = last_argmax(&fused_decode);
+    assert_eq!(fused_decode_arg, ref_decode_arg, "fused decode argmax differs");
+    eprintln!("✅ opt-fused argmax matches dylib (prefill={}, decode={})", ref_arg, ref_decode_arg);
+}
+
+/// Phase 5.4 regression: the op-plan path (`--exec-plan auto`) must have the
+/// same greedy argmax as the func-level path on the no-cache prefill and the
+/// KV-cache decode paths.
+#[test]
+fn test_op_plan_argmax_matches_dylib() {
+let _dylib_guard = crate::dylib_lock::lock();
+    let dylib = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../outputs/compiled/opt_125m_kv/libopt_125m_kv.dylib"
+    );
+    if !std::path::Path::new(dylib).exists() {
+        eprintln!("SKIP: no KV model at {dylib}");
+        return;
+    }
+    let mut st_path: Option<String> = None;
+    if let Ok(home) = std::env::var("HOME") {
+        let hub = std::path::Path::new(&home)
+            .join(".cache/huggingface/hub/models--facebook--opt-125m/snapshots");
+        if let Ok(entries) = std::fs::read_dir(&hub) {
+            for entry in entries.flatten() {
+                let cand = entry.path().join("model.safetensors");
+                if cand.exists() {
+                    st_path = Some(cand.to_string_lossy().to_string());
+                    break;
+                }
+            }
+        }
+    }
+    let Some(st_path) = st_path else {
+        eprintln!("SKIP: opt-125m safetensors not found");
+        return;
+    };
+
+    let mut executor = ModelExecutor::load(dylib, Some(&st_path))
+        .expect("load opt_125m_kv with safetensors");
+    assert!(executor.op_plan.is_some(), "rebuilt KV dylib must carry sfa_op_plan");
+    let input_ids: Vec<u32> = vec![2, 31414, 6, 232, 328, 7181, 87, 9];
+    let positions: Vec<u32> = (0..input_ids.len() as u32).collect();
+    let vocab = 50272usize;
+
+    let last_argmax = |logits: &crate::model::tensor::Tensor| -> (usize, f32) {
+        let all = logits.as_slice();
+        let row = &all[all.len() - vocab..];
+        row.iter()
+            .enumerate()
+            .fold((0, f32::NEG_INFINITY), |(mi, mv), (i, &v)| {
+                if v > mv { (i, v) } else { (mi, mv) }
+            })
+    };
+
+    executor.opt_fused_fastpath = false;
+    executor.exec_plan_mode = ExecPlanMode::Func;
+    let func_prefill = executor
+        .forward_with_kv(&input_ids, &positions, None, None)
+        .expect("func prefill");
+    executor.exec_plan_mode = ExecPlanMode::Op;
+    let plan_prefill = executor
+        .forward_with_kv(&input_ids, &positions, None, None)
+        .expect("op-plan prefill");
+
+    let (ref_arg, _) = last_argmax(&func_prefill);
+    let (plan_arg, _) = last_argmax(&plan_prefill);
+    assert_eq!(plan_arg, ref_arg, "op-plan prefill argmax differs from func path");
+
+    let make_bm = || {
+        let mut bm = crate::cache::block::BlockManager::new_with_cache(128, 16, 12, 64)
+            .expect("block manager");
+        bm.allocate("req", input_ids.len()).unwrap();
+        for fi in [1usize, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23] {
+            bm.allocate(&format!("req_f{fi}"), input_ids.len() + 1).unwrap();
+        }
+        bm
+    };
+
+    let mut bm_func = make_bm();
+    executor.exec_plan_mode = ExecPlanMode::Func;
+    let func_pre = executor
+        .forward_with_kv(&input_ids, &positions, Some(&mut bm_func), Some("req"))
+        .expect("func cache prefill");
+    let decode_id = last_argmax(&func_pre).0 as u32;
+    let func_decode = executor
+        .forward_with_kv(&[decode_id], &[8], Some(&mut bm_func), Some("req"))
+        .expect("func decode");
+
+    let mut bm_plan = make_bm();
+    executor.exec_plan_mode = ExecPlanMode::Op;
+    let plan_pre = executor
+        .forward_with_kv(&input_ids, &positions, Some(&mut bm_plan), Some("req"))
+        .expect("op-plan cache prefill");
+    assert_eq!(last_argmax(&plan_pre).0, ref_arg, "op-plan cache prefill argmax differs");
+    let plan_decode = executor
+        .forward_with_kv(&[decode_id], &[8], Some(&mut bm_plan), Some("req"))
+        .expect("op-plan decode");
+
+    let (ref_decode_arg, _) = last_argmax(&func_decode);
+    let (plan_decode_arg, _) = last_argmax(&plan_decode);
+    assert_eq!(plan_decode_arg, ref_decode_arg, "op-plan decode argmax differs");
+    eprintln!("✅ op-plan argmax matches dylib (prefill={}, decode={})", ref_arg, ref_decode_arg);
+}

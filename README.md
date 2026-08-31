@@ -56,7 +56,7 @@ graph TB
         direction TB
         SCHED["Scheduler<br/>Continuous Batching<br/>Chunked Prefill"]
         KV["KV Cache<br/>PagedAttention<br/>Radix Tree Prefix Cache"]
-        EXECUTOR["Executor<br/>Path A (dylib) | Path B (HAL IR)"]
+        EXECUTOR["Executor<br/>Path A (dylib)"]
         SERVER["API Server<br/>OpenAI Compatible"]
     end
 
@@ -115,7 +115,7 @@ sequenceDiagram
     participant Scheduler as 📋 Scheduler
     participant KV as 💾 KV Cache
     participant Executor as 🔧 Executor
-    participant HAL as 🔌 HAL (dylib / HAL IR)
+    participant HAL as 🔌 HAL (dylib)
 
     Client->>Server: POST /v1/completions
     Server->>Engine: generate(prompt, params)
@@ -126,11 +126,7 @@ sequenceDiagram
         Scheduler->>KV: allocate/map blocks
         Scheduler->>Executor: execute(batch, kv_blocks)
 
-        alt Path A (dylib)
-            Executor->>HAL: ciface FFI → entire function
-        else Path B (HAL IR)
-            Executor->>HAL: op-by-op dispatch (634 ops)
-        end
+        Executor->>HAL: ciface FFI → entire function
 
         HAL-->>Executor: logits tensor
         Executor-->>Scheduler: output tokens
@@ -146,14 +142,15 @@ sequenceDiagram
 
 | Metric | Value |
 |---|---|
-| **Path A (dylib) vs HF cosine** | cos_sim = 0.999999 ✅ (Python executor); compiler pipeline verified at 207-param scale |
+| **Path A (dylib) vs HF cosine** | cos_sim = 1.0000000000 ✅ (verified: 5 configs × E2E cross-validation, Rust forward_check, Rust server) |
+| **Path A server (Rust)** | Token-exact greedy match ✅ (verified with real GPT2 tokenizer) |
 | **Path A (dylib with KV cache)** | KV infrastructure tests pass; numerical cos comparison pending |
-| **Path B (HAL IR)** | Build infrastructure incomplete — hal_ops_cpu.rs not generated |
+| **Path B (HAL IR)** | ~~Deprecated~~ — removed from Makefile |
 | **Models supported** | opt-125m, tiny-llama |
 | **Compilation time (opt-125m)** | ~4 min (llc O0 dominates) |
-| **Inference correctness** | Token-exact greedy match ✅ |
+| **Inference correctness** | Token-exact greedy match ✅ (Rust server == HF) |
 | **HAL operators** | 28 ops (reduce, element_wise, gather, matmul, attention...) |
-| **Test suite** | 298+ unit tests, integration + baseline tests |
+| **Test suite** | compiler: TDD precision tests (sf.view/transpose, arange, SDPA mask) + op composition framework + op-level bisect tool; runtime: 7 runner consistency tests; all layers verified |
 | **KV Cache** | PagedAttention with Radix Tree prefix cache |
 
 ## Project Structure
@@ -168,10 +165,10 @@ LLM-CompileForge/
 │   ├── dialect/           #   sf dialect Python definitions
 │   └── artifact/          #   MlirModule I/O
 ├── runtime/               # Rust runtime: scheduler, executor, KV cache
-│   ├── src/hal/           #   HAL Rust backend (Path B op processors)
-│   ├── src/hal_runner/    #   HAL IR graph executor
+│   ├── src/hal/           #   HAL (Hardware Abstraction Layer)
 │   ├── src/hal/primitives/#   Low-level kernels (matmul, attention...)
-│   └── src/executor.rs    #   Inference step loop
+│   ├── src/engine/        #   Inference engine (runner, executor, sampler, tokenizer)
+│   └── src/model/         #   ABI parsing, compute graph, weight loading
 ├── python_runtime/        # Python runtime: HAL, Engine, Server
 │   ├── hal/               #   HAL ABCs (Device, Buffer, OpExecutor)
 │   ├── engine/            #   LLM Engine, scheduler, sampler
@@ -240,18 +237,25 @@ curl -X POST http://localhost:8000/v1/completions \
 make run-prompt PROMPT="The meaning of life is" MAX_TOKENS=32
 ```
 
-## Two Execution Paths
+## Execution Paths
 
-LLM-CompileForge supports two execution modes, selected at compile time:
+LLM-CompileForge has one active execution mode (Path A). Path B (HAL IR) was deprecated and removed.
 
-| | Path A (dylib) | Path B (HAL IR) |
-|---|---|---|
-| **Execution unit** | Entire function (single FFI) | Op-by-op dispatch (634 Rust calls) |
-| **Runner** | `compute_graph_runner.rs` | `hal_runner.rs` |
-| **Executable** | `CpuExecutable` (loads .dylib) | `HalRustExecutable` (pure Rust) |
-| **Feature flag** | Default | `--features hal-rust` |
-| **Correctness** | cos_sim = 0.999999 ✅ (compiler-verified via Python executor, 35 tests GREEN) | Build infrastructure incomplete (hal_ops_cpu.rs not generated) |
-| **Purpose** | Production serving | Validation & new hardware bring-up |
+### Path A (dylib)
+
+The compiled `.dylib` exports ciface functions per model layer. The Rust runtime loads the dylib via `libloading`, constructs MemRef descriptors, and calls each function in topological SSA order.
+
+| Aspect | Detail |
+|--------|--------|
+| **Execution unit** | Entire function (single FFI call) |
+| **Runner** | `compute_graph_runner.rs` |
+| **Executable** | `CpuExecutable` (loads .dylib) |
+| **Correctness** | cos_sim = 1.0000000000 vs HF (verified: Python ctypes, Rust forward_check, Rust server) |
+| **Purpose** | Production serving |
+
+### Path B (HAL IR) — Deprecated
+
+Previously attempted op-by-op dispatch in pure Rust via `hal_runner.rs`. Removed due to build infrastructure issues. See git history for the HAL IR prototype.
 
 ## Feedback Loops
 
@@ -297,10 +301,13 @@ Bug fix workflow:
 - [x] PagedAttention KV Cache with Radix Tree prefix cache
 - [x] Continuous Batching + Chunked Prefill scheduler
 - [x] OpenAI-compatible REST API server
-- [x] Path A inference (cos_sim = 0.999999 vs HF, 35 compiler tests GREEN)
-- [ ] Path B inference (build pipeline incomplete — hal_ops_cpu.rs generation needed)
+- [x] Path A inference: cos_sim = 1.0000000000 vs HF, token-exact greedy match ✅
+- [x] TDD precision infrastructure: HF golden generation, op composition tests, op-level bisect
+- [x] sf.view -1 sentinel dynamic shape bug fixed
+- [ ] Path A with KV cache numerical cos verification
 - [ ] NVIDIA GPU backend (CUDA)
 - [ ] Quantization toolchain (AWQ, SmoothQuant)
+- [ ] Path B rebuild (HAL IR op-by-op dispatch)
 
 ## License
 

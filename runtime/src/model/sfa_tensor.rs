@@ -10,11 +10,11 @@
 //!   SFATensorRaw4: 24 + 32 + 32 = 88 bytes
 
 use std::alloc::{self, Layout};
-use std::ffi::c_void;
 use std::cell::Cell;
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::hal::cpu::memref::{MemRefDescAny, MemRefDesc1, MemRefDesc2, MemRefDesc3, MemRefDesc4};
+use crate::hal::cpu::memref::{MemRefDesc1, MemRefDesc2, MemRefDesc3, MemRefDesc4, MemRefDescAny};
 use crate::hal::traits;
 
 // ── Drop tracking for tests ────────────────────────────────────────
@@ -140,6 +140,7 @@ unsafe impl Send for OwnedBuf {}
 impl Drop for OwnedBuf {
     fn drop(&mut self) {
         if self.layout.size() > 0 {
+// SAFETY: ptr was returned by alloc_zeroed with this exact layout and has not been reused.
             unsafe { alloc::dealloc(self.ptr, self.layout) };
         }
     }
@@ -175,47 +176,72 @@ impl traits::Buffer for SfaTensorBuffer<'_> {
     }
 
     fn as_mut_ptr(&mut self) -> *mut u8 {
+// SAFETY: self.inner is a non-null pointer to a valid SFATensor for the lifetime of this view.
         let t = unsafe { &*self.inner };
         t.data_ptr()
     }
 
     fn len(&self) -> usize {
+// SAFETY: self.inner is a non-null pointer to a valid SFATensor for the lifetime of this view.
         let t = unsafe { &*self.inner };
         t.numel() * t.elem_size
     }
 
     fn element_size(&self) -> usize {
+// SAFETY: self.inner is a non-null pointer to a valid SFATensor for the lifetime of this view.
         let t = unsafe { &*self.inner };
         t.elem_size
     }
 
     fn shape(&self) -> Vec<usize> {
+// SAFETY: self.inner is a non-null pointer to a valid SFATensor for the lifetime of this view.
         let t = unsafe { &*self.inner };
         t.shape()
     }
 
     fn rank(&self) -> u8 {
+// SAFETY: self.inner is a non-null pointer to a valid SFATensor for the lifetime of this view.
         let t = unsafe { &*self.inner };
         t.rank() as u8
     }
 
-    fn copy_from_host(&mut self, src: &[u8], _stream: &dyn traits::Stream) -> Result<(), anyhow::Error> {
+    fn is_passthrough_alias(&self) -> bool {
+// SAFETY: self.inner is a non-null pointer to a valid SFATensor for the lifetime of this view.
+        let t = unsafe { &*self.inner };
+        t.passthrough_alias
+    }
+
+    fn copy_from_host(
+        &mut self,
+        src: &[u8],
+        _stream: &dyn traits::Stream,
+    ) -> Result<(), anyhow::Error> {
+// SAFETY: self.inner is a non-null pointer to a valid SFATensor for the lifetime of this view.
         let t = unsafe { &*self.inner };
         let ptr = t.data_ptr();
         let n = (t.numel() * t.elem_size).min(src.len());
         // SAFETY: ptr is a valid mutable pointer to owned/allowed tensor data.
         // src lives for the duration of this call. Regions are disjoint.
-        unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), ptr, n); }
+        unsafe {
+            std::ptr::copy_nonoverlapping(src.as_ptr(), ptr, n);
+        }
         Ok(())
     }
 
-    fn copy_to_host(&self, dst: &mut [u8], _stream: &dyn traits::Stream) -> Result<(), anyhow::Error> {
+    fn copy_to_host(
+        &self,
+        dst: &mut [u8],
+        _stream: &dyn traits::Stream,
+    ) -> Result<(), anyhow::Error> {
+// SAFETY: self.inner is a non-null pointer to a valid SFATensor for the lifetime of this view.
         let t = unsafe { &*self.inner };
         let src_ptr = t.data_ptr() as *const u8;
         let n = (t.numel() * t.elem_size).min(dst.len());
         // SAFETY: src_ptr points to valid tensor data. dst is a mutable
         // slice owned by the caller. Regions are disjoint.
-        unsafe { std::ptr::copy_nonoverlapping(src_ptr, dst.as_mut_ptr(), n); }
+        unsafe {
+            std::ptr::copy_nonoverlapping(src_ptr, dst.as_mut_ptr(), n);
+        }
         Ok(())
     }
 }
@@ -238,6 +264,8 @@ pub struct SFATensor {
     pub elem_size: usize,
     /// True rank (0 for scalars, 1..4 for tensors).
     rank_val: usize,
+    /// True when this tensor is a pass-through alias of another tensor.
+    pub passthrough_alias: bool,
     /// For Owned tensors: holds the backing allocation (deallocated on Drop).
     #[allow(dead_code)]
     owned_buf: Option<OwnedBuf>,
@@ -282,6 +310,7 @@ impl SFATensor {
             ownership: Ownership::Owned,
             elem_size,
             rank_val: rank,
+            passthrough_alias: false,
             owned_buf: Some(owned_buf),
         }
     }
@@ -321,6 +350,47 @@ impl SFATensor {
             ownership: Ownership::Owned,
             elem_size,
             rank_val: rank,
+            passthrough_alias: false,
+            owned_buf: Some(owned_buf),
+        }
+    }
+
+    /// Create an owned CPU tensor from raw 16-bit elements (F16/BF16).
+    ///
+    /// # Panics
+    /// Panics if `data.len() != product(shape)` or `shape.len()` not in 1..=4.
+    pub fn from_vec_u16(mut data: Vec<u16>, shape: Vec<usize>) -> Self {
+        let rank = shape.len();
+        assert!(rank >= 1 && rank <= 4, "rank must be 1..=4, got {}", rank);
+        let numel: usize = shape.iter().product();
+        assert_eq!(
+            data.len(),
+            numel,
+            "data length {} != numel {}",
+            data.len(),
+            numel
+        );
+
+        let elem_size = std::mem::size_of::<u16>();
+        let layout = Layout::array::<u16>(data.capacity()).expect("valid layout");
+        let ptr = data.as_ptr() as *mut c_void;
+
+        let raw_ptr = data.as_mut_ptr() as *mut u8;
+        let owned_buf = OwnedBuf {
+            ptr: raw_ptr,
+            layout,
+        };
+        std::mem::forget(data);
+
+        let raw = build_raw_any(rank, ptr, &shape, elem_size);
+
+        SFATensor {
+            raw,
+            device: Device::CPU,
+            ownership: Ownership::Owned,
+            elem_size,
+            rank_val: rank,
+            passthrough_alias: false,
             owned_buf: Some(owned_buf),
         }
     }
@@ -349,6 +419,7 @@ impl SFATensor {
             ownership,
             elem_size,
             rank_val: rank,
+            passthrough_alias: false,
             owned_buf: None,
         }
     }
@@ -359,6 +430,63 @@ impl SFATensor {
         let mut t = Self::from_vec_f32(data, vec![1]);
         t.rank_val = 0;
         t
+    }
+
+    /// Create a borrowed CPU f32 tensor referencing caller-owned data.
+    ///
+    /// Used for pass-through outputs that alias a weight input buffer: the
+    /// dylib returns the input descriptor unchanged, so the output does not
+    /// need its own allocation and must not be freed by this wrapper.
+    pub fn from_borrowed_f32(data: *mut u8, shape: Vec<usize>) -> Self {
+        assert!(
+            !shape.is_empty() && shape.len() <= 4,
+            "borrowed shape rank must be 1..=4"
+        );
+        assert!(!data.is_null(), "borrowed data pointer must not be null");
+        let rank = shape.len();
+        let raw = build_raw_any(rank, data as *mut std::ffi::c_void, &shape, 4);
+        Self {
+            raw,
+            device: Device::CPU,
+            ownership: Ownership::Borrowed,
+            elem_size: 4,
+            rank_val: rank,
+            passthrough_alias: true,
+            owned_buf: None,
+        }
+    }
+
+    /// Create a borrowed CPU tensor referencing an existing runtime Tensor.
+    ///
+    /// Used for pass-through weight outputs: the data may be f32 or raw
+    /// F16/BF16, and the descriptor element size must match the storage.
+    pub fn from_borrowed_tensor(
+        tensor: &crate::model::tensor::Tensor,
+        shape: Vec<usize>,
+    ) -> Self {
+        assert!(
+            !shape.is_empty() && shape.len() <= 4,
+            "borrowed shape rank must be 1..=4"
+        );
+        let rank = shape.len();
+        let (data_ptr, elem_size) = match tensor.dtype {
+            crate::model::tensor::Dtype::F32 => (tensor.as_slice().as_ptr() as *mut u8, 4),
+            crate::model::tensor::Dtype::F16 | crate::model::tensor::Dtype::BF16 => {
+                (tensor.as_u16().as_ptr() as *mut u8, 2)
+            }
+            other => panic!("unsupported borrowed tensor dtype: {}", other),
+        };
+        assert!(!data_ptr.is_null(), "borrowed data pointer must not be null");
+        let raw = build_raw_any(rank, data_ptr as *mut std::ffi::c_void, &shape, elem_size);
+        Self {
+            raw,
+            device: Device::CPU,
+            ownership: Ownership::Borrowed,
+            elem_size,
+            rank_val: rank,
+            passthrough_alias: true,
+            owned_buf: None,
+        }
     }
 
     // ── Accessors ──────────────────────────────────────────────────
@@ -420,6 +548,7 @@ impl SFATensor {
             let mut new_data = vec![0i64; numel];
             let src = self.data_ptr() as *const i64;
             let dst = new_data.as_mut_ptr();
+// SAFETY: the enclosing function documents the pointer/lifetime preconditions; they are satisfied by this call site.
             unsafe {
                 std::ptr::copy_nonoverlapping(src, dst, numel);
             }
@@ -428,6 +557,7 @@ impl SFATensor {
             let mut new_data = vec![0f32; numel];
             let src = self.data_ptr() as *const f32;
             let dst = new_data.as_mut_ptr();
+// SAFETY: the enclosing function documents the pointer/lifetime preconditions; they are satisfied by this call site.
             unsafe {
                 std::ptr::copy_nonoverlapping(src, dst, numel);
             }
@@ -443,6 +573,7 @@ impl SFATensor {
         assert!(self.elem_size == 4, "read_f32 requires elem_size=4");
         assert!(index < self.numel(), "read_f32 index out of bounds");
         let ptr = self.data_ptr() as *const f32;
+// SAFETY: bounds and element size were asserted immediately above.
         unsafe { *ptr.add(index) }
     }
 
@@ -462,42 +593,34 @@ impl SFATensor {
     /// compiled dylib functions expect.
     pub fn as_memref_descriptor_any(&self) -> MemRefDescAny {
         match &self.raw {
-            SFATensorRawAny::R1(r) => {
-                MemRefDescAny::R1(MemRefDesc1 {
-                    allocated: r.allocated,
-                    aligned: r.aligned,
-                    offset: r.offset,
-                    sizes: r.sizes,
-                    strides: r.strides,
-                })
-            }
-            SFATensorRawAny::R2(r) => {
-                MemRefDescAny::R2(MemRefDesc2 {
-                    allocated: r.allocated,
-                    aligned: r.aligned,
-                    offset: r.offset,
-                    sizes: r.sizes,
-                    strides: r.strides,
-                })
-            }
-            SFATensorRawAny::R3(r) => {
-                MemRefDescAny::R3(MemRefDesc3 {
-                    allocated: r.allocated,
-                    aligned: r.aligned,
-                    offset: r.offset,
-                    sizes: r.sizes,
-                    strides: r.strides,
-                })
-            }
-            SFATensorRawAny::R4(r) => {
-                MemRefDescAny::R4(MemRefDesc4 {
-                    allocated: r.allocated,
-                    aligned: r.aligned,
-                    offset: r.offset,
-                    sizes: r.sizes,
-                    strides: r.strides,
-                })
-            }
+            SFATensorRawAny::R1(r) => MemRefDescAny::R1(MemRefDesc1 {
+                allocated: r.allocated,
+                aligned: r.aligned,
+                offset: r.offset,
+                sizes: r.sizes,
+                strides: r.strides,
+            }),
+            SFATensorRawAny::R2(r) => MemRefDescAny::R2(MemRefDesc2 {
+                allocated: r.allocated,
+                aligned: r.aligned,
+                offset: r.offset,
+                sizes: r.sizes,
+                strides: r.strides,
+            }),
+            SFATensorRawAny::R3(r) => MemRefDescAny::R3(MemRefDesc3 {
+                allocated: r.allocated,
+                aligned: r.aligned,
+                offset: r.offset,
+                sizes: r.sizes,
+                strides: r.strides,
+            }),
+            SFATensorRawAny::R4(r) => MemRefDescAny::R4(MemRefDesc4 {
+                allocated: r.allocated,
+                aligned: r.aligned,
+                offset: r.offset,
+                sizes: r.sizes,
+                strides: r.strides,
+            }),
         }
     }
 
@@ -518,6 +641,7 @@ impl SFATensor {
         SfaMemRef {
             raw,
             elem_size: self.elem_size,
+            passthrough_alias: self.passthrough_alias,
         }
     }
 }
@@ -617,6 +741,7 @@ mod tests {
 
         // Verify data integrity via raw pointer.
         let ptr = t.data_ptr() as *const f32;
+// SAFETY: the pointer points to the owning allocation with at least the asserted element count.
         let data = unsafe { std::slice::from_raw_parts(ptr, 3) };
         assert_eq!(data, &[1.0f32, 2.0, 3.0]);
     }
@@ -657,6 +782,7 @@ mod tests {
             assert_eq!(t.numel(), 3);
             // Verify data is accessible.
             let ptr = t.data_ptr() as *const f32;
+// SAFETY: the pointer points to the owning allocation with at least the asserted element count.
             let data = unsafe { std::slice::from_raw_parts(ptr, 3) };
             assert_eq!(data, &[4.0f32, 5.0, 6.0]);
         } // t drops here — should be no-op.
@@ -684,6 +810,7 @@ mod tests {
 
         // Data must be accessible.
         let ptr = t.data_ptr() as *const f32;
+// SAFETY: bounds and element size were asserted immediately above.
         let val = unsafe { *ptr };
         assert!((val - std::f32::consts::PI).abs() < 1e-7);
     }
@@ -740,7 +867,8 @@ mod tests {
     #[test]
     fn test_sfa_field_offset_allocated() {
         assert_eq!(
-            std::mem::offset_of!(SFATensorRaw2, allocated), 0,
+            std::mem::offset_of!(SFATensorRaw2, allocated),
+            0,
             "allocated pointer must be at byte 0 for C ABI compatibility"
         );
     }
@@ -750,7 +878,8 @@ mod tests {
     #[test]
     fn test_sfa_field_offset_aligned() {
         assert_eq!(
-            std::mem::offset_of!(SFATensorRaw2, aligned), 8,
+            std::mem::offset_of!(SFATensorRaw2, aligned),
+            8,
             "aligned pointer must be at byte 8 for C ABI compatibility"
         );
     }
@@ -760,7 +889,8 @@ mod tests {
     #[test]
     fn test_sfa_field_offset_offset() {
         assert_eq!(
-            std::mem::offset_of!(SFATensorRaw2, offset), 16,
+            std::mem::offset_of!(SFATensorRaw2, offset),
+            16,
             "offset field must be at byte 16 for C ABI compatibility"
         );
     }
@@ -777,9 +907,18 @@ mod tests {
         println!("Rust:{}", std::mem::size_of::<SFATensorRaw2>());
         println!("Rust:{}", std::mem::size_of::<SFATensorRaw3>());
         println!("Rust:{}", std::mem::size_of::<SFATensorRaw4>());
-        println!("Rust:allocated={}", std::mem::offset_of!(SFATensorRaw2, allocated));
-        println!("Rust:aligned={}",   std::mem::offset_of!(SFATensorRaw2, aligned));
-        println!("Rust:offset={}",    std::mem::offset_of!(SFATensorRaw2, offset));
+        println!(
+            "Rust:allocated={}",
+            std::mem::offset_of!(SFATensorRaw2, allocated)
+        );
+        println!(
+            "Rust:aligned={}",
+            std::mem::offset_of!(SFATensorRaw2, aligned)
+        );
+        println!(
+            "Rust:offset={}",
+            std::mem::offset_of!(SFATensorRaw2, offset)
+        );
     }
 
     // ── as_memref_descriptor_any() roundtrip tests ──────────────────

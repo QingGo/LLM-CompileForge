@@ -87,7 +87,7 @@ class TestMain0WeightCount:
         )
         lowered = _make_lowered_text([("main_0", ["a", "b"])])
         errors = verify_weight_promotion_order(module, lowered)
-        assert len(errors) > 0, f"expected errors for count mismatch, got none"
+        assert len(errors) > 0, "expected errors for count mismatch, got none"
 
 
 class TestNonMain0WeightNames:
@@ -123,7 +123,7 @@ class TestNonMain0WeightNames:
         )
         lowered = _make_lowered_text([("main_1", ["different_weight"])])
         errors = verify_weight_promotion_order(module, lowered)
-        assert len(errors) > 0, f"expected errors for name mismatch, got none"
+        assert len(errors) > 0, "expected errors for name mismatch, got none"
 
 
 class TestMultiFunction:
@@ -184,4 +184,4 @@ class TestMultiFunction:
         )
         lowered = _make_lowered_text([("main_0", ["embed"])])
         errors = verify_weight_promotion_order(module, lowered)
-        assert len(errors) > 0, f"expected errors for missing main_1, got none"
+        assert len(errors) > 0, "expected errors for missing main_1, got none"

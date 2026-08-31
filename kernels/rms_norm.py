@@ -39,16 +39,16 @@ def _fused_rms_norm_add_triton(
     import triton  # noqa: F811
     import triton.language as tl
 
-    @triton.jit
+    @triton.jit  # type: ignore[untyped-decorator]
     def _kernel(
-        input_ptr,
-        residual_ptr,
-        weight_ptr,
-        output_ptr,
+        input_ptr: torch.Tensor,
+        residual_ptr: torch.Tensor,
+        weight_ptr: torch.Tensor,
+        output_ptr: torch.Tensor,
         n_cols: tl.constexpr,
         eps_val: tl.constexpr,
         block_size: tl.constexpr,
-    ):
+    ) -> None:
         pid = tl.program_id(0)
         offs = pid * block_size + tl.arange(0, block_size)
         mask = offs < n_cols

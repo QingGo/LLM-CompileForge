@@ -177,3 +177,96 @@ class TestConsumedInternallyContract:
         assert abi.funcs[0].outputs[0].consumed_internally is False, (
             "Contract: non-KV output must default to consumed_internally=false"
         )
+
+    def test_multi_output_per_descriptor_consumed_flags(self) -> None:
+        """Contract: multi-output sret keeps PER-OUTPUT consumed flags.
+
+        When the post-bufferization sret has one descriptor per
+        pre-lowering output (e.g. Q/K/V split functions emit three
+        descriptors), each descriptor must carry its own
+        consumed_internally flag positionally — NOT the "any output
+        consumed" aggregate on descriptor 0.
+
+        Regression: the aggregate propagation marked only output 0
+        consumed, so the runtime wrote Q into the K cache and rotated
+        the SDPA operands (opt-125m layer 3), corrupting multistep
+        decode logits.
+        """
+        from compiler.sfa_abi import merge_with_semantics, serialize_abi
+        from gen.proto.python.sfa_abi_pb2 import SfaAbiHeader
+
+        sigs = {"_mlir_ciface_main_1a": (4, 3)}
+        pre_lowering = {
+            "functions": [
+                {
+                    "name": "main_1a",
+                    "inputs": [],
+                    "outputs": [
+                        ("q_out", "tensor<?x12x?x64xf32>", False),
+                        ("k_cache", "tensor<?x12x?x64xf32>", True),
+                        ("v_cache", "tensor<?x12x?x64xf32>", True),
+                    ],
+                },
+            ]
+        }
+        # Post-bufferization: three separate rank-4 descriptors (Q, K, V).
+        lowered_output_types = {
+            "main_1a": [(4, [0, 12, 0, 64]), (4, [0, 12, 0, 64]), (4, [0, 12, 0, 64])],
+        }
+        metas = merge_with_semantics(
+            sigs,
+            pre_lowering,
+            lowered_arg_types={},
+            lowered_output_types=lowered_output_types,
+        )
+        abi_bytes = serialize_abi(metas)
+        abi = SfaAbiHeader()
+        abi.ParseFromString(abi_bytes)
+
+        assert len(abi.funcs[0].outputs) == 3, (
+            f"expected 3 output descriptors, got {len(abi.funcs[0].outputs)}"
+        )
+        flags = [o.consumed_internally for o in abi.funcs[0].outputs]
+        assert flags == [False, True, True], (
+            f"per-output consumed flags must be [False, True, True] "
+            f"(Q exported, K/V cache-consumed), got {flags}"
+        )
+
+    def test_packed_output_falls_back_to_aggregate_flag(self) -> None:
+        """Contract: packed single-sret output keeps the aggregate flag.
+
+        When post-bufferization packs many pre-lowering outputs into ONE
+        descriptor, the descriptor must be marked consumed if ANY
+        sub-output is consumed (the runtime splits the packed buffer via
+        consumed_sub_output_flags).
+        """
+        from compiler.sfa_abi import merge_with_semantics, serialize_abi
+        from gen.proto.python.sfa_abi_pb2 import SfaAbiHeader
+
+        sigs = {"_mlir_ciface_main_1a": (4, 1)}
+        pre_lowering = {
+            "functions": [
+                {
+                    "name": "main_1a",
+                    "inputs": [],
+                    "outputs": [
+                        ("q_out", "tensor<?x12x?x64xf32>", False),
+                        ("k_cache", "tensor<?x12x?x64xf32>", True),
+                        ("v_cache", "tensor<?x12x?x64xf32>", True),
+                    ],
+                },
+            ]
+        }
+        metas = merge_with_semantics(
+            sigs,
+            pre_lowering,
+            lowered_arg_types={},
+            lowered_output_types={"main_1a": [(4, [0, 12, 0, 64])]},
+        )
+        abi_bytes = serialize_abi(metas)
+        abi = SfaAbiHeader()
+        abi.ParseFromString(abi_bytes)
+
+        assert len(abi.funcs[0].outputs) == 1
+        assert abi.funcs[0].outputs[0].consumed_internally is True
+        assert list(abi.funcs[0].consumed_sub_output_flags) == [False, True, True]

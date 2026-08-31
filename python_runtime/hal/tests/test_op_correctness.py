@@ -121,7 +121,7 @@ def test_op_sdpa_model_mask() -> None:
     from scripts.ctypes_forward import run_ctypes
 
     model_dir = "outputs/compiled/opt_125m_fresh"
-    dylib = run_ctypes(model_dir, dylib_path=f"{model_dir}/libopt_125m.dylib")
+    dylib = run_ctypes(model_dir, dylib_path=f"{model_dir}/libopt_125m_fresh.dylib")
     model_mask = dylib._func_outputs[0][13]
 
     case = OpCase(
@@ -189,8 +189,8 @@ module {
 
     seq_len = np.array([4], dtype=np.int64)
 
-    engine, output_shape = lower_and_jit(mlir_text)
-    jit_mask = invoke_and_extract(engine, "main", [seq_len], output_shape)
+    engine, output_shape, output_dtype = lower_and_jit(mlir_text)
+    jit_mask = invoke_and_extract(engine, "main", [seq_len], output_shape, output_dtype)
 
     backend = PyTorchBackend("cpu")
     arange_out = backend.execute("arange", [torch.tensor(seq_len)], device="cpu", pin_memory=False)  # type: ignore[arg-type]
@@ -246,8 +246,8 @@ module {
 
     seq_len = np.array([4], dtype=np.int64)
 
-    engine, output_shape = lower_and_jit(mlir_text)
-    jit_mask = invoke_and_extract(engine, "main", [seq_len], output_shape)
+    engine, output_shape, output_dtype = lower_and_jit(mlir_text)
+    jit_mask = invoke_and_extract(engine, "main", [seq_len], output_shape, output_dtype)
 
     backend = PyTorchBackend("cpu")
     arange_out = backend.execute("arange", [torch.tensor(seq_len)], device="cpu", pin_memory=False)  # type: ignore[arg-type]
@@ -293,8 +293,8 @@ module {
 
     input_data = np.random.randn(4, 768).astype(np.float32)
 
-    engine, output_shape = lower_and_jit(mlir_text)
-    output = invoke_and_extract(engine, "main", [input_data], output_shape)
+    engine, output_shape, output_dtype = lower_and_jit(mlir_text)
+    output = invoke_and_extract(engine, "main", [input_data], output_shape, output_dtype)
 
     ref = torch.cumsum(torch.ones_like(torch.from_numpy(input_data)), dim=0).numpy()
 
@@ -307,11 +307,12 @@ module {
 
 
 def test_arange_to_index_chain() -> None:
-    """Test dtype chain: arange (i64) → cumsum (i64) → sub (i64) → unsqueeze.
+    """Test dtype chain: arange (i64) → cumsum (i64).
 
-    sf.arange always produces i64. cumsum promotes integer input to i64,
-    so the chain stays in integer arithmetic. The reference uses f32 since
-    the JIT uses f32 memref output format for comparison.
+    sf.arange contract (2026-08): the input carries the START value and
+    the size comes from the static output dim, so ``sf.arange([8])`` with
+    output ``tensor<8xi64>`` yields [8..15] (not [0..7]).  The JIT harness
+    must also read back i64 outputs (not just f32).
     """
     import numpy as np
     import torch
@@ -330,10 +331,10 @@ module {
 
     seq_len = np.array([8], dtype=np.int64)
 
-    engine, output_shape = lower_and_jit(mlir_text)
-    output = invoke_and_extract(engine, "main", [seq_len], output_shape)
+    engine, output_shape, output_dtype = lower_and_jit(mlir_text)
+    output = invoke_and_extract(engine, "main", [seq_len], output_shape, output_dtype)
 
-    a = torch.arange(8, dtype=torch.int64)
+    a = torch.arange(8, 16, dtype=torch.int64)  # start=8, size=8
     ref = torch.cumsum(a, dim=0).to(dtype=torch.float32).numpy()
 
     cos = cosine_similarity(output, ref)
@@ -375,10 +376,10 @@ module {
     index = np.array([1.0, 3.0], dtype=np.float32)
 
     # Lower/JIT, capture stderr (llvm::errs) for the WARNING
-    engine, output_shape = lower_and_jit(mlir_text)
+    engine, output_shape, output_dtype = lower_and_jit(mlir_text)
     _out, err = capfd.readouterr()
 
-    jit_out = invoke_and_extract(engine, "main", [data, index], output_shape)
+    jit_out = invoke_and_extract(engine, "main", [data, index], output_shape, output_dtype)
 
     ref_out = torch.from_numpy(data)[[1, 3]].numpy()
 

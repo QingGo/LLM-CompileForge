@@ -22,17 +22,17 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-from compiler.backend.compile_utils import (
+from compiler.backend.compile_utils import (  # noqa: E402
     _compile_serveforge_free,
     _find_llc,
     _setup_mlir_path,
     link_dylib,
 )
-from compiler.backend.fixups import _fixup_unrealized_casts_pass
-from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir
-from compiler.pipeline.lowering import SF_LOWERING_PIPELINE
-from compiler.dylib_ffi import DEFAULT_SRET_SIZE
-from scripts._cos import cosine_similarity
+from compiler.backend.fixups import _fixup_unrealized_casts_pass  # noqa: E402
+from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir  # noqa: E402
+from compiler.dylib_ffi import DEFAULT_SRET_SIZE  # noqa: E402
+from compiler.pipeline.lowering import SF_LOWERING_PIPELINE  # noqa: E402
+from scripts._cos import cosine_similarity  # noqa: E402
 
 _setup_mlir_path()
 import mlir.ir as ir  # noqa: E402
@@ -332,7 +332,9 @@ class TestDylibMultiOpRegression:
 
         _assert_cos(actual, expected, "layer_norm")
 
-    @pytest.mark.xfail(reason="sf.softmax is not lowered by sf-lower-to-linalg (softmax is handled inside SDPA decomposition)")
+    @pytest.mark.xfail(
+        reason="sf.softmax is not lowered by sf-lower-to-linalg (softmax is handled inside SDPA decomposition)"
+    )
     def test_softmax(self):
         batch, seq, hidden = 2, 4, 64
         rng = np.random.RandomState(55)
@@ -419,15 +421,19 @@ class TestDylibMultiOpRegression:
         ids = rng.randint(0, vocab, size=(batch, seq), dtype=np.int64)
 
         # Use 4D SDPA directly (1 head, d_k=hidden)
-        ln1_w = rng.randn(hidden).astype(np.float32); ln1_b = rng.randn(hidden).astype(np.float32)
+        ln1_w = rng.randn(hidden).astype(np.float32)
+        ln1_b = rng.randn(hidden).astype(np.float32)
         q_w = rng.randn(hidden, hidden).astype(np.float32)
         k_w = rng.randn(hidden, hidden).astype(np.float32)
         v_w = rng.randn(hidden, hidden).astype(np.float32)
         o_w = rng.randn(hidden, hidden).astype(np.float32)
-        ln2_w = rng.randn(hidden).astype(np.float32); ln2_b = rng.randn(hidden).astype(np.float32)
+        ln2_w = rng.randn(hidden).astype(np.float32)
+        ln2_b = rng.randn(hidden).astype(np.float32)
         ffn = 4 * hidden
-        fc1_w = rng.randn(ffn, hidden).astype(np.float32); fc1_b = rng.randn(ffn).astype(np.float32)
-        fc2_w = rng.randn(hidden, ffn).astype(np.float32); fc2_b = rng.randn(hidden).astype(np.float32)
+        fc1_w = rng.randn(ffn, hidden).astype(np.float32)
+        fc1_b = rng.randn(ffn).astype(np.float32)
+        fc2_w = rng.randn(hidden, ffn).astype(np.float32)
+        fc2_b = rng.randn(hidden).astype(np.float32)
 
         all_inputs = [ids, emb_w, ln1_w, ln1_b, q_w, k_w, v_w, o_w,
                       ln2_w, ln2_b, fc1_w, fc1_b, fc2_w, fc2_b]

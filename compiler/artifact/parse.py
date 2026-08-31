@@ -129,8 +129,8 @@ def _parse_mlir_text(text: str) -> MlirModule:
                     for i, name in enumerate(ret_names):
                         tp = current_func.outputs[i][1] if i < len(current_func.outputs) else "tensor<f32>"
                         # Parsed from text MLIR — no consumed_internally info, default False
-                        consumed_internally = current_func.outputs[i][2] if len(current_func.outputs[i]) > 2 else False
-                        new_outputs.append((name, tp, consumed_internally))
+                        consumed_flag = current_func.outputs[i][2] if len(current_func.outputs[i]) > 2 else False
+                        new_outputs.append((name, tp, consumed_flag))
                     if new_outputs:
                         current_func.outputs = new_outputs
             continue

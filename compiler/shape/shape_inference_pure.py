@@ -24,6 +24,57 @@ def _infer_elementwise_pure(
     return [(b, elts[0])]
 
 
+def _infer_identity_pure(
+    shapes: list[tuple[int | None, ...]],
+    elts: list[str],
+    **kwargs: Any,
+) -> list[tuple[tuple[int | None, ...], str]]:
+    if not shapes:
+        return [((1,), "f32")]
+    elt = elts[0]
+    dtype_raw = kwargs.get("dtype")
+    if dtype_raw is not None:
+        if hasattr(dtype_raw, "replace"):
+            elt = dtype_raw.replace("torch.", "")
+        else:
+            import torch
+            for dt, name in {
+                torch.float32: "f32", torch.float: "f32",
+                torch.float16: "f16", torch.half: "f16",
+                torch.bfloat16: "bf16", torch.float64: "f64", torch.double: "f64",
+                torch.int32: "i32", torch.int64: "i64", torch.long: "i64",
+                torch.int8: "i8", torch.uint8: "ui8", torch.bool: "i1",
+            }.items():
+                if dtype_raw == dt:
+                    elt = name
+                    break
+    return [(shapes[0], elt)]
+
+
+def _infer_type_as_pure(
+    shapes: list[tuple[int | None, ...]],
+    elts: list[str],
+    **kwargs: Any,
+) -> list[tuple[tuple[int | None, ...], str]]:
+    """type_as: take shape/values from operand 0, dtype from operand 1."""
+    if not shapes:
+        return [((1,), "f32")]
+    if len(shapes) >= 2 and len(elts) >= 2:
+        return [(shapes[0], elts[1])]
+    return [(shapes[0], elts[0])]
+
+
+def _infer_copy__pure(
+    shapes: list[tuple[int | None, ...]],
+    elts: list[str],
+    **kwargs: Any,
+) -> list[tuple[tuple[int | None, ...], str]]:
+    """copy_: shape and dtype come from the first operand."""
+    if not shapes:
+        return [((1,), "f32")]
+    return [(shapes[0], elts[0])]
+
+
 def _infer_index_pure(
     shapes: list[tuple[int | None, ...]],
     elts: list[str],
@@ -52,9 +103,10 @@ def _infer_arange_pure(
     elts: list[str],
     **kwargs: Any,
 ) -> list[tuple[tuple[int | None, ...], str]]:
-    """sf.arange: output size depends on input VALUE (runtime), not input shape.
-    The input is a scalar (shape=[1]) whose VALUE gives the output length.
-    Return dynamic shape (None,) so downstream ops see the tensor as dynamic-sized."""
+    """sf.arange: the first operand is the START value, dyn_shape[0] is the
+    SIZE (= end - start, normalized by converter._collect_arange_args).
+    The size is a runtime VALUE, not derivable from input shapes, so the
+    output shape is dynamic: (None,)."""
     return [((None,), "i64")]
 
 
@@ -92,8 +144,13 @@ def _infer_matmul_pure(
     a, b = shapes[0], shapes[1]
     if len(a) == 2 and len(b) == 2:
         return [((a[0], b[1]), elts[0])]
-    if len(a) == 3 and len(b) == 2:
-        return [((a[0], a[1], b[1]), elts[0])]
+    if len(a) >= 3 and len(b) == 2:
+        return [(tuple(a[:-1]) + (b[1],), elts[0])]
+    if len(a) == 2 and len(b) >= 3:
+        return [(tuple(b[:-2]) + (a[0], b[-1]), elts[0])]
+    if len(a) >= 3 and len(a) == len(b):
+        batch = _broadcast_shapes(a[:-2], b[:-2])
+        return [(batch + (a[-2], b[-1]), elts[0])]
     return [(a, elts[0])]
 
 
@@ -109,6 +166,113 @@ def _infer_linear_pure(
         out = tuple(list(a[:-1]) + [w[0]])
         return [(out, elts[0])]
     return [((None, None), elts[0])]
+
+
+def _conv1d_scalar(value: Any, default: int = 1) -> int:
+    """Extract the first element from PyTorch conv1d's list-like attrs."""
+    if isinstance(value, (list, tuple)):
+        if value:
+            return int(value[0])
+        return default
+    if value is None:
+        return default
+    return int(value)
+
+
+def _infer_zeros_pure(
+    shapes: list[tuple[int | None, ...]],
+    elts: list[str],
+    **kwargs: Any,
+) -> list[tuple[tuple[int | None, ...], str]]:
+    """torch.zeros: use the shape attribute when present."""
+    shape = kwargs.get("shape")
+    if isinstance(shape, (list, tuple)):
+        return [(tuple(int(d) if d is not None else None for d in shape), "f32")]
+    if shapes:
+        return [(shapes[0], "f32")]
+    return [((1,), "f32")]
+
+
+def _infer_zeros_like_pure(
+    shapes: list[tuple[int | None, ...]],
+    elts: list[str],
+    **kwargs: Any,
+) -> list[tuple[tuple[int | None, ...], str]]:
+    if shapes:
+        return [(shapes[0], elts[0] if elts else "f32")]
+    return [((1,), "f32")]
+
+
+def _infer_eye_pure(
+    shapes: list[tuple[int | None, ...]],
+    elts: list[str],
+    **kwargs: Any,
+) -> list[tuple[tuple[int | None, ...], str]]:
+    n = int(kwargs.get("n", 1))
+    m = int(kwargs.get("m", n or 1))
+    return [((n, m), elts[0] if elts else "f32")]
+
+
+def _infer_pad_pure(
+    shapes: list[tuple[int | None, ...]],
+    elts: list[str],
+    **kwargs: Any,
+) -> list[tuple[tuple[int | None, ...], str]]:
+    """Infer the output shape for PyTorch ``aten.pad.default``.
+
+    The pad list is in PyTorch order: (left, right, top, bottom, ...) from
+    the last dimension backwards.
+    """
+    if not shapes:
+        return [((1,), "f32")]
+    shape = shapes[0]
+    elt = elts[0] if elts else "f32"
+    pad = kwargs.get("pad")
+    if not isinstance(pad, (list, tuple)) or len(pad) % 2 != 0:
+        return [(shape, elt)]
+    n_pairs = len(pad) // 2
+    parts = list(shape)
+    for i in range(min(n_pairs, len(parts))):
+        dim = len(parts) - 1 - i
+        lo = int(pad[2 * i])
+        hi = int(pad[2 * i + 1])
+        if parts[dim] is not None:
+            parts[dim] = parts[dim] + lo + hi  # type: ignore[operator]
+    return [(tuple(parts), elt)]
+
+
+def _infer_conv1d_pure(
+    shapes: list[tuple[int | None, ...]],
+    elts: list[str],
+    **kwargs: Any,
+) -> list[tuple[tuple[int | None, ...], str]]:
+    """Infer Conv1d output shape: [batch, out_channels, out_length]."""
+    if len(shapes) < 2:
+        if shapes:
+            return [(shapes[0], elts[0] if elts else "f32")]
+        return [((1,), "f32")]
+    input_shape = shapes[0]
+    weight_shape = shapes[1]
+    if len(input_shape) < 3 or len(weight_shape) < 3:
+        # Fall back to broadcast-like behavior for malformed graphs.
+        return [(input_shape, elts[0] if elts else "f32")]
+
+    batch = input_shape[0]
+    out_channels = weight_shape[0]
+    kernel = weight_shape[2]
+    in_len = input_shape[2]
+    stride = _conv1d_scalar(kwargs.get("stride"), 1)
+    padding = _conv1d_scalar(kwargs.get("padding"), 0)
+    dilation = _conv1d_scalar(kwargs.get("dilation"), 1)
+
+    out_len: int | None
+    if in_len is None:
+        out_len = None
+    else:
+        in_len_int = int(in_len)
+        numerator = in_len_int + 2 * padding - dilation * (kernel - 1) - 1  # type: ignore[operator]
+        out_len = numerator // stride + 1 if stride > 0 else in_len_int
+    return [((batch, out_channels, out_len), elts[0] if elts else "f32")]
 
 
 def _infer_view_pure(
@@ -216,12 +380,46 @@ def _infer_cat_pure(
     dim = int(dim)
     parts = list(shapes[0])
     total = 0
+    has_unknown = False
     for s in shapes:
-        if dim < len(s) and s[dim] is not None:
-            total += s[dim]  # type: ignore[operator]
+        if dim < len(s):
+            dim_size = s[dim]
+            if dim_size is not None:
+                total += dim_size
+            else:
+                has_unknown = True
+        else:
+            has_unknown = True
     if dim < len(parts):
-        parts[dim] = total if total > 0 else None
+        parts[dim] = None if has_unknown else (total if total > 0 else None)
     return [(tuple(parts), elts[0])]
+
+
+def _normalize_reduce_dims(
+    dims: Any, rank: int
+) -> list[int]:
+    """Normalize a PyTorch/ATen reduction dim argument to a list of non-negative dims.
+
+    ``dim`` may be an int or a list/tuple of ints (``aten.sum.dim_IntList``
+    passes a one-element list even for a single dimension).
+    """
+    if dims is None:
+        return [rank - 1] if rank > 0 else []
+    if isinstance(dims, (list, tuple)):
+        raw = list(dims)
+    else:
+        raw = [dims]
+    out: list[int] = []
+    for d in raw:
+        try:
+            dv = int(d)
+        except (TypeError, ValueError):
+            continue
+        if dv < 0:
+            dv += rank
+        if 0 <= dv < rank and dv not in out:
+            out.append(dv)
+    return out
 
 
 def _infer_reduce_pure(
@@ -233,15 +431,17 @@ def _infer_reduce_pure(
 ) -> list[tuple[tuple[int | None, ...], str]]:
     if not shapes:
         return [((1,), elts[0] if elts else "f32")]
-    dim_v = int(kwargs.get("dim", dim))
     keepdim_v = bool(kwargs.get("keepdim", keepdim))
     s = list(shapes[0])
-    if 0 <= dim_v < len(s):
-        if keepdim_v:
-            s[dim_v] = 1
+    reduced = set(_normalize_reduce_dims(kwargs.get("dim", dim), len(s)))
+    out: list[int | None] = []
+    for i, d in enumerate(s):
+        if i in reduced:
+            if keepdim_v:
+                out.append(1)
         else:
-            s.pop(dim_v)
-    return [(tuple(s), elts[0])]
+            out.append(d)
+    return [(tuple(out), elts[0])]
 
 
 def _infer_expand_pure(
@@ -260,21 +460,18 @@ def _infer_expand_pure(
     shape = kwargs.get("shape")
     if shape:
         out: list[int | None] = []
-        in_idx = len(shape) - len(inp)  # leading dims are new
-        for entry in shape:
-            if isinstance(entry, int):
-                if entry == -1:
-                    if in_idx < len(inp):
-                        out.append(inp[in_idx])
-                    else:
-                        out.append(None)
-                    in_idx += 1
-                else:
-                    out.append(entry)
-            else:
+        lead = len(shape) - len(inp)
+        for i, entry in enumerate(shape):
+            if isinstance(entry, str):
                 # String (SSA ref) → dynamic
                 out.append(None)
-                in_idx += 1
+            elif isinstance(entry, int) and entry == -1:
+                # Torch broadcasts input to the target rank by right
+                # alignment; -1 copies the corresponding input dim.
+                in_idx = i - lead
+                out.append(inp[in_idx] if 0 <= in_idx < len(inp) else None)
+            else:
+                out.append(entry)
         return [(tuple(out), elts[0])]
     return [(inp, elts[0])]
 
@@ -379,9 +576,6 @@ def _build_pure_table() -> dict[str, Any]:
         "rms_norm",
         "triu",
         "tril",
-        "copy_",
-        "type_as",
-        "identity",
         "conv1d",
         "zeros_like",
         "diff",

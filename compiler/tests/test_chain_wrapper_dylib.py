@@ -24,17 +24,17 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-from compiler.backend.compile_utils import (
+from compiler.backend.compile_utils import (  # noqa: E402
     _compile_serveforge_free,
     _find_llc,
     _setup_mlir_path,
     link_dylib,
 )
-from compiler.backend.fixups import _fixup_unrealized_casts_pass
-from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir
-from compiler.pipeline.lowering import SF_LOWERING_PIPELINE
-from compiler.dylib_ffi import DEFAULT_SRET_SIZE
-from scripts._cos import cosine_similarity
+from compiler.backend.fixups import _fixup_unrealized_casts_pass  # noqa: E402
+from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir  # noqa: E402
+from compiler.dylib_ffi import DEFAULT_SRET_SIZE  # noqa: E402
+from compiler.pipeline.lowering import SF_LOWERING_PIPELINE  # noqa: E402
+from scripts._cos import cosine_similarity  # noqa: E402
 
 _setup_mlir_path()
 import mlir.ir as ir  # noqa: E402
@@ -385,8 +385,8 @@ def _compile_and_run_main_with_plan(
     from compiler.backend.compile_utils import _compile_serveforge_free, _find_llc, link_dylib
     from compiler.backend.fixups import _fixup_unrealized_casts_pass
     from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir
-    from compiler.pipeline.lowering import SF_LOWERING_PIPELINE
     from compiler.dylib_ffi import DEFAULT_SRET_SIZE
+    from compiler.pipeline.lowering import SF_LOWERING_PIPELINE
 
     with tempfile.TemporaryDirectory() as td:
         ctx = ir.Context()
@@ -476,11 +476,11 @@ class TestChainWrapperRealisticOps:
         b1_0 = rng.randn(ffn_dim).astype(np.float32)
         w2_0 = rng.randn(hidden, ffn_dim).astype(np.float32)
         b2_0 = rng.randn(hidden).astype(np.float32)
-        nw1 = rng.randn(hidden).astype(np.float32)
-        w1_1 = rng.randn(ffn_dim, hidden).astype(np.float32)
-        b1_1 = rng.randn(ffn_dim).astype(np.float32)
-        w2_1 = rng.randn(hidden, ffn_dim).astype(np.float32)
-        b2_1 = rng.randn(hidden).astype(np.float32)
+        _nw1 = rng.randn(hidden).astype(np.float32)
+        _w1_1 = rng.randn(ffn_dim, hidden).astype(np.float32)
+        _b1_1 = rng.randn(ffn_dim).astype(np.float32)
+        _w2_1 = rng.randn(hidden, ffn_dim).astype(np.float32)
+        _b2_1 = rng.randn(hidden).astype(np.float32)
 
         # 2 functions: main_0 does FFN and exports (hidden + 5 weights),
         # main_1 does FFN with the same weights.

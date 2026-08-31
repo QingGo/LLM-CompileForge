@@ -23,7 +23,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
-from compiler.dylib_ffi import DEFAULT_SRET_SIZE
+from compiler.dylib_ffi import DEFAULT_SRET_SIZE  # noqa: E402
 
 
 def _cos(a: np.ndarray, b: np.ndarray) -> float:
@@ -86,14 +86,14 @@ def _compile(sf_mlir, tmp, name):
         lower_linalg_to_llvm_ir(mod)
         _fixup_unrealized_casts_pass(mod)
         m = os.path.join(tmp, "m.mlir")
-        l = os.path.join(tmp, "m.ll")
+        ll_file = os.path.join(tmp, "m.ll")
         o = os.path.join(tmp, "m.o")
         d = os.path.join(tmp, f"{name}.dylib")
         with open(m, "w") as f:
             f.write(str(mod))
-        for cmd, out, desc in [
-            ([_find_tool("mlir-translate"), "--mlir-to-llvmir", m, "-o", l], None, "translate"),
-            ([_find_tool("cc"), "-c", l, "-o", o, "-O0"], None, "cc -c"),
+        for cmd, _out, desc in [
+            ([_find_tool("mlir-translate"), "--mlir-to-llvmir", m, "-o", ll_file], None, "translate"),
+            ([_find_tool("cc"), "-c", ll_file, "-o", o, "-O0"], None, "cc -c"),
             ([_find_tool("cc"), "-shared", "-o", d, o], None, "link"),
         ]:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)

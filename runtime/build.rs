@@ -3,7 +3,7 @@ use std::io::Write;
 fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
 
-    // Generate C trampolines for arities 1..300
+    // Generate C trampolines for arities 1..512
     let c_path = std::path::Path::new(&out_dir).join("call_gen.c");
     let mut f = std::fs::File::create(&c_path).unwrap();
 
@@ -11,7 +11,7 @@ fn main() {
     writeln!(f, "#include <stdint.h>").unwrap();
     writeln!(f).unwrap();
 
-    for n in 1..=300 {
+    for n in 1..=512 {
         writeln!(f, "void call_{n}(void (*fn)(), void *out, void **inputs) {{").unwrap();
         write!(f, "    ((void (*)(void*").unwrap();
         for _ in 0..n { write!(f, ", void*").unwrap(); }
@@ -23,7 +23,7 @@ fn main() {
 
     writeln!(f, "\nvoid call_mlir(void (*fn)(), void *out, void **inputs, int n) {{").unwrap();
     writeln!(f, "    switch (n) {{").unwrap();
-    for n in 1..=300 {
+    for n in 1..=512 {
         writeln!(f, "        case {n}: call_{n}(fn, out, inputs); break;").unwrap();
     }
     writeln!(f, "    }}").unwrap();
@@ -42,7 +42,7 @@ fn main() {
     writeln!(r, "}}").unwrap();
     writeln!(r, "pub unsafe fn call_n(fn_ptr: *const (), out: *mut std::ffi::c_void, inputs: &[*const std::ffi::c_void]) {{").unwrap();
     writeln!(r, "    let n = inputs.len() as i32;").unwrap();
-    writeln!(r, "    if n >= 1 && n <= 300 {{").unwrap();
+    writeln!(r, "    if n >= 1 && n <= 512 {{").unwrap();
     writeln!(r, "        call_mlir(fn_ptr, out, inputs.as_ptr(), n);").unwrap();
     writeln!(r, "    }} else {{").unwrap();
     writeln!(r, "        panic!(\"unsupported arity: {{}}\", n);").unwrap();

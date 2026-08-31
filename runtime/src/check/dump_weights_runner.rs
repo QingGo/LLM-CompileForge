@@ -169,6 +169,7 @@ fn write_npy(path: &str, data: &[f32], shape: &[usize]) -> std::io::Result<()> {
     }
 
     let byte_slice =
+// SAFETY: the pointer points to the owning allocation with at least the asserted element count.
         unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4) };
     file.write_all(byte_slice)?;
     Ok(())
@@ -265,6 +266,7 @@ pub fn run(
     let dylib_path = find_dylib(&compiled_dir)?;
     println!("[dump_weights] dylib: {}", dylib_path.display());
 
+// SAFETY: loading a trusted compiled dylib produced by the SFA toolchain.
     let lib = unsafe { libloading::Library::new(&dylib_path) }
         .map_err(|e| format!("Failed to load dylib '{}': {}", dylib_path.display(), e))?;
     let (registry, _graph_pos, _sfcf_version) =
