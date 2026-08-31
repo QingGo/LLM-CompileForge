@@ -99,11 +99,17 @@ def insert_identity_copies_action(module: Any) -> None:
     (results of ops like ``linalg.matmul``, ``linalg.add``, etc.) are left
     untouched.
     """
+    import mlir.dialects.arith as arith
     import mlir.dialects.func as func
     import mlir.dialects.tensor as tensor
     import mlir.ir as ir
 
     ctx = module.operation.context
+
+    def _dim_value(source: Any, dim: int, ip: Any) -> Any:
+        index_type = ir.IndexType.get(ctx)
+        index_value = arith.constant(index_type, dim, ip=ip)
+        return tensor.dim(source, index_value, ip=ip)
     total_inserted = 0
 
     main_block = module.operation.regions[0].blocks[0]
@@ -145,20 +151,38 @@ def insert_identity_copies_action(module: Any) -> None:
 
                 ip = ir.InsertionPoint(return_op.operation)
 
-                empty = tensor.empty(sizes=list(shape), element_type=element_type, ip=ip)
+                # tensor.empty's Python builder represents dynamic dims as
+                # SSA Values (tensor.dim), not as the int sentinel in the
+                # RankedTensorType shape list.  Passing -1/-922... as a static
+                # size crashes MLIR's getMixedValues invariant.
+                empty_sizes: list[int | Any] = []
+                for i, dim_size in enumerate(shape):
+                    if arg_type.is_dynamic_dim(i):
+                        empty_sizes.append(_dim_value(block_arg, i, ip))
+                    else:
+                        empty_sizes.append(dim_size)
+                empty = tensor.empty(sizes=empty_sizes, element_type=element_type, ip=ip)
+
                 rank = len(shape)
                 offsets = [0] * rank
-                sizes = list(shape)
+                static_sizes: list[int] = []
+                dynamic_sizes: list[Any] = []
+                for i, dim_size in enumerate(shape):
+                    if arg_type.is_dynamic_dim(i):
+                        static_sizes.append(ir.ShapedType.get_dynamic_size())
+                        dynamic_sizes.append(_dim_value(block_arg, i, ip))
+                    else:
+                        static_sizes.append(dim_size)
                 strides = [1] * rank
 
                 copied = tensor.insert_slice(
                     source=block_arg,
                     dest=empty,
                     static_offsets=offsets,
-                    static_sizes=sizes,
+                    static_sizes=static_sizes,
                     static_strides=strides,
                     offsets=[],
-                    sizes=[],
+                    sizes=dynamic_sizes,
                     strides=[],
                     ip=ip,
                 )

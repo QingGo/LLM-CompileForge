@@ -1,0 +1,1 @@
+tests/data/golden/npy/**/*.npz filter=lfs

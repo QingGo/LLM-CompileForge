@@ -82,20 +82,20 @@ def _compile(sf_mlir: str, tmp_dir: str, name: str) -> str:
         lower_linalg_to_llvm_ir(mod)
         _fixup_unrealized_casts_pass(mod)
         m = os.path.join(tmp_dir, "m.mlir")
-        l = os.path.join(tmp_dir, "m.ll")
+        ll_file = os.path.join(tmp_dir, "m.ll")
         o = os.path.join(tmp_dir, "m.o")
         d = os.path.join(tmp_dir, f"{name}.dylib")
         with open(m, "w") as f:
             f.write(str(mod))
         subprocess.run(
-            [_find_tool("mlir-translate"), "--mlir-to-llvmir", m, "-o", l],
+            [_find_tool("mlir-translate"), "--mlir-to-llvmir", m, "-o", ll_file],
             capture_output=True,
             text=True,
             check=True,
             timeout=60,
         )
         subprocess.run(
-            [_find_tool("cc"), "-c", l, "-o", o, "-O0"], capture_output=True, text=True, check=True, timeout=60
+            [_find_tool("cc"), "-c", ll_file, "-o", o, "-O0"], capture_output=True, text=True, check=True, timeout=60
         )
         free_o = _compile_serveforge_free(tmp_dir)
         link_dylib([o, free_o], d)

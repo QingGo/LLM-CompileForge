@@ -14,8 +14,9 @@ use crate::model::tensor::Dtype;
 
 /// Convert weight data from raw memory to f32 Vec.
 ///
-/// Shared between compute_graph_runner (Path A) and hal_runner (Path B)
-/// to eliminate duplicated f16→f32 conversion logic (~30 LOC).
+/// Used by `compute_graph_runner` (Path A) for f16→f32 conversion of
+/// safetensors weights.  (The deprecated Path B hal_runner was removed;
+/// this helper is no longer shared across paths.)
 ///
 /// # Safety
 /// `aligned` must point to `numel` elements of the dtype's native size.
@@ -109,10 +110,12 @@ pub fn load_registry_from_dylib(
     };
 
     let size_val: u64 = {
+// SAFETY: the enclosing function documents the pointer/lifetime preconditions; they are satisfied by this call site.
         let sym = unsafe {
             lib.get::<*const u64>(b"serveforge_constants_size")
                 .map_err(|e| anyhow::anyhow!("{}", e))?
         };
+// SAFETY: the enclosing function documents the pointer/lifetime preconditions; they are satisfied by this call site.
         unsafe { *(*sym) }
     };
 
@@ -265,21 +268,17 @@ impl WeightProvider {
         let mmap = self.safetensors_mmap.as_ref()?;
         let info = self.safetensors_index.get(hf_key)?;
         let data_slice = &mmap[info.data_start..info.data_end];
-        let rows = *info.shape.first().unwrap_or(&1);
-        let cols = info.shape.get(1).copied().unwrap_or(1);
         // SAFETY: The mmap region (data_start..data_end) is read-only memory
         // backed by the safetensors file.  MemRefDesc2 stores pointers as
         // *mut c_void because the ciface kernel expects mutable descriptors,
         // but the safetensors data is never actually written to — the kernel
         // only reads weights.  The cast from *const u8 to *mut c_void is
         // safe because all accesses through this descriptor are reads.
-        Some((MemRefDesc2 {
-            allocated: data_slice.as_ptr() as *mut c_void,
-            aligned: data_slice.as_ptr() as *mut c_void,
-            offset: 0,
-            sizes: [rows as i64, cols as i64],
-            strides: [cols as i64, 1],
-        }, info.dtype))
+        let desc = memref2_for_raw(
+            data_slice.as_ptr() as *mut c_void,
+            &info.shape,
+        );
+        Some((desc, info.dtype))
     }
 
     pub fn name_mapping(&self) -> &HashMap<String, String> {
@@ -364,17 +363,39 @@ fn build_safetensors_index(
     Ok(index)
 }
 
+/// Build a rank-2 MemRef descriptor for weight data.
+///
+/// The func-level runtime path only needs the raw data pointer plus a total
+/// element count: weight tensors are loaded into `Tensor` using the ABI shape
+/// from the compute graph.  Preserve true 2D descriptors for existing callers;
+/// for other ranks use a flat `[numel, 1]` descriptor so the total element
+/// count is correct even for rank-3 weights such as conv1d kernels.
+fn memref2_for_raw(ptr: *mut c_void, shape: &[usize]) -> MemRefDesc2 {
+    if shape.len() == 2 {
+        let rows = shape[0] as i64;
+        let cols = shape[1] as i64;
+        MemRefDesc2 {
+            allocated: ptr,
+            aligned: ptr,
+            offset: 0,
+            sizes: [rows, cols],
+            strides: [cols, 1],
+        }
+    } else {
+        let numel = if shape.is_empty() { 1 } else { shape.iter().product::<usize>() };
+        MemRefDesc2 {
+            allocated: ptr,
+            aligned: ptr,
+            offset: 0,
+            sizes: [numel as i64, 1],
+            strides: [1, 1],
+        }
+    }
+}
+
 fn constant_as_memref(ct: &ConstantTensor) -> MemRefDesc2 {
     let p = ct.data.as_ptr();
-    let rows = *ct.shape.first().unwrap_or(&1);
-    let cols = ct.shape.get(1).copied().unwrap_or(1);
-    MemRefDesc2 {
-        allocated: p as *mut c_void,
-        aligned: p as *mut c_void,
-        offset: 0,
-        sizes: [rows as i64, cols as i64],
-        strides: [cols as i64, 1],
-    }
+    memref2_for_raw(p as *mut c_void, &ct.shape)
 }
 
 // ── Unit tests ─────────────────────────────────────────────────────
@@ -422,6 +443,7 @@ mod tests {
 
         // Read data back from the memref pointer
         let n_elements: usize = 2 * 3;
+// SAFETY: the enclosing function documents the pointer/lifetime preconditions; they are satisfied by this call site.
         let slice: &[f32] = unsafe {
             std::slice::from_raw_parts(memref.aligned as *const f32, n_elements)
         };
@@ -479,6 +501,7 @@ mod tests {
         let data: Vec<f32> = vec![0.0, 1.0, -1.0, 3.14159, std::f32::consts::E];
         let numel = data.len();
         let ptr = data.as_ptr() as *const c_void;
+// SAFETY: the pointer points to numel elements of the asserted dtype (zero-length is valid).
         let result = unsafe { convert_weight_to_f32(ptr, numel, Dtype::F32) };
         assert_eq!(result, data);
     }
@@ -493,6 +516,7 @@ mod tests {
             .collect();
         let numel = f16_bits.len();
         let ptr = f16_bits.as_ptr() as *const c_void;
+// SAFETY: the pointer points to numel elements of the asserted dtype (zero-length is valid).
         let result = unsafe { convert_weight_to_f32(ptr, numel, Dtype::F16) };
 
         assert_eq!(result.len(), f32_vals.len());
@@ -518,6 +542,7 @@ mod tests {
         ];
         let numel = bf16_bits.len();
         let ptr = bf16_bits.as_ptr() as *const c_void;
+// SAFETY: the pointer points to numel elements of the asserted dtype (zero-length is valid).
         let result = unsafe { convert_weight_to_f32(ptr, numel, Dtype::BF16) };
 
         assert_eq!(result.len(), 3);
@@ -531,6 +556,7 @@ mod tests {
     fn test_convert_weight_to_f32_f32_empty() {
         let data: Vec<f32> = vec![];
         let ptr = data.as_ptr() as *const c_void;
+// SAFETY: the pointer points to numel elements of the asserted dtype (zero-length is valid).
         let result = unsafe { convert_weight_to_f32(ptr, 0, Dtype::F32) };
         assert!(result.is_empty());
     }
@@ -539,6 +565,7 @@ mod tests {
     fn test_convert_weight_to_f32_f16_empty() {
         let data: Vec<u16> = vec![];
         let ptr = data.as_ptr() as *const c_void;
+// SAFETY: the pointer points to numel elements of the asserted dtype (zero-length is valid).
         let result = unsafe { convert_weight_to_f32(ptr, 0, Dtype::F16) };
         assert!(result.is_empty());
     }

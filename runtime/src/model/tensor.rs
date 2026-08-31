@@ -73,6 +73,11 @@ pub enum TensorData {
     Owned(Arc<Vec<f32>>),
     #[allow(dead_code)]
     Borrowed(&'static [f32]),
+    /// Raw 16-bit weight storage (`F16` or `BF16`).  `Vec<u16>` has one
+    /// element per tensor element; no f32 conversion has happened yet.
+    OwnedU16(Arc<Vec<u16>>),
+    /// Owned i64 storage (for scalar/position/index tensors).
+    OwnedI64(Arc<Vec<i64>>),
 }
 
 pub struct Tensor {
@@ -97,6 +102,39 @@ impl Tensor {
         }
     }
 
+    /// Owned raw 16-bit weight tensor.  Only `F16` and `BF16` are valid.
+    pub fn new_owned_u16(shape: Vec<usize>, data: Vec<u16>, dtype: Dtype) -> Self {
+        debug_assert!(matches!(dtype, Dtype::F16 | Dtype::BF16));
+        debug_assert_eq!(
+            data.len(),
+            shape.iter().product::<usize>(),
+            "Tensor::new_owned_u16: data len {} != shape product {:?}",
+            data.len(),
+            shape.iter().product::<usize>()
+        );
+        Self {
+            data: TensorData::OwnedU16(Arc::new(data)),
+            shape,
+            dtype,
+        }
+    }
+
+    /// Owned i64 tensor.
+    pub fn new_owned_i64(shape: Vec<usize>, data: Vec<i64>) -> Self {
+        debug_assert_eq!(
+            data.len(),
+            shape.iter().product::<usize>(),
+            "Tensor::new_owned_i64: data len {} != shape product {:?}",
+            data.len(),
+            shape.iter().product::<usize>()
+        );
+        Self {
+            data: TensorData::OwnedI64(Arc::new(data)),
+            shape,
+            dtype: Dtype::I64,
+        }
+    }
+
     pub fn scalar(value: f32) -> Self {
         Self {
             data: TensorData::Owned(Arc::new(vec![value])),
@@ -109,6 +147,46 @@ impl Tensor {
         match &self.data {
             TensorData::Owned(arc) => arc.as_slice(),
             TensorData::Borrowed(s) => s,
+            TensorData::OwnedU16(_) => {
+                panic!("Tensor::as_slice called on {} raw-u16 tensor", self.dtype)
+            }
+            TensorData::OwnedI64(_) => {
+                panic!("Tensor::as_slice called on i64 tensor")
+            }
+        }
+    }
+
+    /// Raw u16 elements for F16/BF16 weight tensors.
+    pub fn as_u16(&self) -> &[u16] {
+        match &self.data {
+            TensorData::OwnedU16(arc) => arc.as_slice(),
+            other => panic!(
+                "Tensor::as_u16 called on {} tensor ({})",
+                self.dtype,
+                match other {
+                    TensorData::Owned(_) => "f32-owned",
+                    TensorData::Borrowed(_) => "f32-borrowed",
+                    TensorData::OwnedU16(_) => unreachable!(),
+                    TensorData::OwnedI64(_) => "i64-owned",
+                }
+            ),
+        }
+    }
+
+    /// Raw i64 elements for integer tensors.
+    pub fn as_i64(&self) -> &[i64] {
+        match &self.data {
+            TensorData::OwnedI64(arc) => arc.as_slice(),
+            other => panic!(
+                "Tensor::as_i64 called on {} tensor ({:?})",
+                self.dtype,
+                match other {
+                    TensorData::Owned(_) => "f32-owned",
+                    TensorData::Borrowed(_) => "f32-borrowed",
+                    TensorData::OwnedU16(_) => "u16-owned",
+                    TensorData::OwnedI64(_) => unreachable!(),
+                }
+            ),
         }
     }
 
@@ -121,6 +199,31 @@ impl Tensor {
         self.shape.len()
     }
 
+    /// Convert F16/BF16 raw tensors to an owned f32 Tensor.
+    ///
+    /// The runtime's legacy f32-oriented consumers (forward_check, cosine
+    /// comparisons, ctypes bridge) need a flat f32 logit vector.  This keeps
+    /// those paths dtype-aware without forcing every internal kernel to
+    /// allocate f32.
+    pub fn to_f32(&self) -> Tensor {
+        match &self.data {
+            TensorData::Owned(_) => self.clone(),
+            TensorData::Borrowed(s) => Tensor::new_owned(self.shape.clone(), s.to_vec(), Dtype::F32),
+            TensorData::OwnedU16(arc) => {
+                let data: Vec<f32> = match self.dtype {
+                    Dtype::F16 => arc.iter().map(|&h| half::f16::from_bits(h).to_f32()).collect(),
+                    Dtype::BF16 => arc.iter().map(|&h| half::bf16::from_bits(h).to_f32()).collect(),
+                    _ => arc.iter().map(|&h| half::f16::from_bits(h).to_f32()).collect(),
+                };
+                Tensor::new_owned(self.shape.clone(), data, Dtype::F32)
+            }
+            TensorData::OwnedI64(arc) => {
+                let data: Vec<f32> = arc.iter().map(|&v| v as f32).collect();
+                Tensor::new_owned(self.shape.clone(), data, Dtype::F32)
+            }
+        }
+    }
+
     pub fn to_owned(&self) -> Tensor {
         match &self.data {
             TensorData::Owned(arc) => Tensor {
@@ -130,6 +233,16 @@ impl Tensor {
             },
             TensorData::Borrowed(s) => Tensor {
                 data: TensorData::Owned(Arc::new(s.to_vec())),
+                shape: self.shape.clone(),
+                dtype: self.dtype,
+            },
+            TensorData::OwnedU16(arc) => Tensor {
+                data: TensorData::OwnedU16(Arc::clone(arc)),
+                shape: self.shape.clone(),
+                dtype: self.dtype,
+            },
+            TensorData::OwnedI64(arc) => Tensor {
+                data: TensorData::OwnedI64(Arc::clone(arc)),
                 shape: self.shape.clone(),
                 dtype: self.dtype,
             },
@@ -150,24 +263,68 @@ impl Clone for Tensor {
                 shape: self.shape.clone(),
                 dtype: self.dtype,
             },
+            TensorData::OwnedU16(arc) => Self {
+                data: TensorData::OwnedU16(Arc::clone(arc)),
+                shape: self.shape.clone(),
+                dtype: self.dtype,
+            },
+            TensorData::OwnedI64(arc) => Self {
+                data: TensorData::OwnedI64(Arc::clone(arc)),
+                shape: self.shape.clone(),
+                dtype: self.dtype,
+            },
         }
     }
 }
 
 impl fmt::Debug for Tensor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let data_preview = if self.numel() <= 6 {
-            format!("{:?}", self.as_slice())
-        } else {
-            format!(
-                "[{}, {}, {}, ..., {}, {}, {}]",
-                self.as_slice()[0],
-                self.as_slice()[1],
-                self.as_slice()[2],
-                self.as_slice()[self.numel() - 3],
-                self.as_slice()[self.numel() - 2],
-                self.as_slice()[self.numel() - 1],
-            )
+        let data_preview = match &self.data {
+            TensorData::OwnedU16(_) => {
+                if self.numel() <= 6 {
+                    format!("{:?}", self.as_u16())
+                } else {
+                    format!(
+                        "[{}, {}, {}, ..., {}, {}, {}]",
+                        self.as_u16()[0],
+                        self.as_u16()[1],
+                        self.as_u16()[2],
+                        self.as_u16()[self.numel() - 3],
+                        self.as_u16()[self.numel() - 2],
+                        self.as_u16()[self.numel() - 1],
+                    )
+                }
+            }
+            TensorData::OwnedI64(_) => {
+                if self.numel() <= 6 {
+                    format!("{:?}", self.as_i64())
+                } else {
+                    format!(
+                        "[{}, {}, {}, ..., {}, {}, {}]",
+                        self.as_i64()[0],
+                        self.as_i64()[1],
+                        self.as_i64()[2],
+                        self.as_i64()[self.numel() - 3],
+                        self.as_i64()[self.numel() - 2],
+                        self.as_i64()[self.numel() - 1],
+                    )
+                }
+            }
+            _ => {
+                if self.numel() <= 6 {
+                    format!("{:?}", self.as_slice())
+                } else {
+                    format!(
+                        "[{}, {}, {}, ..., {}, {}, {}]",
+                        self.as_slice()[0],
+                        self.as_slice()[1],
+                        self.as_slice()[2],
+                        self.as_slice()[self.numel() - 3],
+                        self.as_slice()[self.numel() - 2],
+                        self.as_slice()[self.numel() - 1],
+                    )
+                }
+            }
         };
         write!(
             f,
@@ -194,6 +351,14 @@ mod tests {
         let t = Tensor::new_owned(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], Dtype::F32);
         assert_eq!(t.rank(), 2);
         assert_eq!(t.numel(), 6);
+    }
+
+    #[test]
+    fn test_new_owned_u16_clones_raw_arc() {
+        let t = Tensor::new_owned_u16(vec![2, 2], vec![1, 2, 3, 4], Dtype::F16);
+        assert_eq!(t.as_u16(), &[1, 2, 3, 4]);
+        let cloned = t.to_owned();
+        assert_eq!(t.as_u16().as_ptr(), cloned.as_u16().as_ptr());
     }
 
     #[test]

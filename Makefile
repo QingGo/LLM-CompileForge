@@ -1,4 +1,4 @@
-.PHONY: lint lint-clippy lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-rust-cov test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-forward-smoke-rust test-forward-cos test-weight-consistency test-consistency verify-dylib verify-dylib-fresh verify-consistency verify-diag verify-preflight check-op-consistency test-contract build-rust install-rust build-so test-dylib-cos test-dylib-cos-quick clean-compiled test-dylib-quick debug-cos diagnose test-kv-compiler test-kv-rust test-kv-python-e2e test-kv-all build-sf rebuild-clean rebuild-mlir rebuild-dylib rebuild-test rebuild build-all build build-plugin serve serve-py run-prompt test-e2e-forward
+.PHONY: lint lint-clippy lint-ruff lint-mypy test-unit test-integration test-fast test-all test-model test-patterns test-smoke profile smoke clean clean-logs test-fixup test-ctypes-oracle test-pipeline-smoke test-rust test-rust-unit test-rust-integ test-rust-cov test-pipeline-quick test-changed test-pipeline-timing test-pipeline-debug test-pipeline-validate test-vec test-lower test-baseline test-compile-full test-forward-smoke test-forward-smoke-rust test-forward-cos test-weight-consistency test-consistency verify-dylib verify-dylib-fresh verify-consistency verify-diag verify-preflight check-op-consistency test-contract test-function-golden verify-golden-fresh build-rust install-rust build-so test-dylib-cos test-dylib-cos-quick clean-compiled test-dylib-quick debug-cos diagnose test-kv-compiler test-kv-rust test-kv-python-e2e test-kv-all build-sf rebuild-clean rebuild-mlir rebuild-dylib rebuild-test rebuild build-all build build-plugin serve serve-py run-prompt test-e2e-forward
 
 # ═══════════════════════════════════════════════════════════════
 #  环境
@@ -116,7 +116,17 @@ rebuild-mlir: $(VENV)
 #   需要 sf dialect Python bindings (需先 make build-so)
 #   产物: lib<model-name>.dylib (嵌入 constants.bin)
 rebuild-dylib: $(VENV)
-	$(DYLIB_ENV) $(PYTHON) compiler/compile_dylib.py outputs/compiled/opt_125m_fresh --model-name opt_125m
+	rm -f outputs/compiled/opt_125m_fresh/libopt_125m_fresh.dylib outputs/compiled/opt_125m_fresh/libopt_125m.dylib
+	$(DYLIB_ENV) $(PYTHON) compiler/compile_dylib.py outputs/compiled/opt_125m_fresh --model-name opt_125m_fresh
+
+# ---- KV cache dylib 编译 ----
+# compiler/compile.py 加 --cache-policy 触发 SDPA 边界切分 (28 functions)
+# 产物: libopt_125m_kv.dylib (含 consumed_internally 输出用于 KV 缓存)
+rebuild-kv: $(VENV)
+	rm -rf outputs/compiled/opt_125m_kv
+	mkdir -p outputs/compiled/opt_125m_kv
+	$(PYTHON) compiler/compile.py opt-125m --cache-policy --output-dir ./outputs/compiled/opt_125m_kv
+	$(DYLIB_ENV) $(PYTHON) compiler/compile_dylib.py outputs/compiled/opt_125m_kv --model-name opt_125m_kv
 
 # ---- 全量: step 1 + step 2 + Rust 测试 ----
 rebuild: rebuild-clean rebuild-mlir rebuild-dylib rebuild-test
@@ -202,7 +212,10 @@ build: proto-gen
 build-rust: $(VENV)
 	@echo "  🔧 构建 Python 绑定 (maturin develop --uv --features python-bindings)..."
 	@if [ -n "$$CONDA_PREFIX" ]; then echo "  ⚠️  检测到 CONDA_PREFIX，自动 unset..."; fi
-	cd runtime && source ../.venv/bin/activate && unset CONDA_PREFIX && maturin develop --features python-bindings --uv 2>&1
+	cd runtime && unset CONDA_PREFIX && \
+		VIRTUAL_ENV="$(PROJECT_ROOT)/$(VENV)" \
+		PATH="$(PROJECT_ROOT)/$(VENV)/bin:$$HOME/.local/bin:$$PATH" \
+		$(PROJECT_ROOT)/$(VENV)/bin/maturin develop --features python-bindings --uv 2>&1
 
 install-rust: build-rust
 
@@ -249,7 +262,7 @@ test-ddr:
 
 # L0: Contract — precision + ABI + memref golden tests across all subprojects
 TEST_CONTRACT_MODEL := outputs/compiled/opt_125m_fresh
-test-contract: $(VENV)
+test-contract: $(VENV) test-function-golden
 	@echo "=== sf-dialect precision ==="
 	$(DYLIB_ENV) $(PYTEST) sf-dialect/test/test_precision.py -v --timeout=60
 	@echo "=== compiler precision ==="
@@ -258,6 +271,24 @@ test-contract: $(VENV)
 	make -f tests/data/golden/Makefile
 	cd runtime && cargo test precision_contract --lib -- --nocapture
 	@echo "✓ All contract tests passed"
+
+# L0.5: Per-function golden tests
+test-function-golden: $(VENV)
+	@echo "=== Generating golden outputs ==="
+	python compiler/tests/generate_golden_outputs.py \
+		--config tests/data/golden/npy/opt_125m/configs.json \
+		--output tests/data/golden/npy/opt_125m/
+	@echo "=== Compiler per-function 4-gate tests ==="
+	$(PYTEST) compiler/tests/test_per_function_cos.py -v --timeout=0
+	@echo "=== Runtime per-function golden tests (release: heavy full forwards) ==="
+	cd runtime && cargo test --release function_output_tests --lib -- --include-ignored
+	@echo "=== test-function-golden PASSED ==="
+
+verify-golden-fresh:
+	python compiler/tests/generate_golden_outputs.py \
+		--config tests/data/golden/npy/opt_125m/configs.json \
+		--output tests/data/golden/npy/opt_125m/ \
+		--check-fresh
 
 # L1: 单元测试
 test-unit: $(VENV)

@@ -94,9 +94,11 @@ def mlir_module_to_text(module: MlirModule) -> str:
                     attr_parts.append(_format_attr(k, v))
                 if attr_parts:
                     attrs_str = " {" + ", ".join(attr_parts) + "}"
-            # Type signature
-            if op.input_types and op.output_types:
-                in_types = ", ".join(op.input_types)
+            # Type signature.  Print it whenever output types are known;
+            # zero-operand creators (eye/zeros/ones_like) must still carry
+            # their result type into the MLIR text for the IR builder.
+            if op.output_types:
+                in_types = ", ".join(op.input_types) if op.input_types else ""
                 out_tp = op.output_types[0] if len(op.output_types) == 1 else f"({', '.join(op.output_types)})"
                 type_sig = f"({in_types}) -> {out_tp}"
             else:

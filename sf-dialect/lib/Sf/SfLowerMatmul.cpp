@@ -19,6 +19,7 @@ struct SfMatmulOpLowering : public OpRewritePattern<sf::MatmulOp> {
     auto lhsType = cast<RankedTensorType>(lhs.getType());
     auto rhsType = cast<RankedTensorType>(rhs.getType());
     int64_t lhsRank = lhsType.getRank(), rhsRank = rhsType.getRank();
+    llvm::errs() << "  [SfMatmul] lowering " << lhsType << " x " << rhsType << " -> " << resultType << "\n";
 
 
     // Standard 2D matmul: use linalg.matmul
@@ -45,13 +46,27 @@ struct SfMatmulOpLowering : public OpRewritePattern<sf::MatmulOp> {
     auto resultRT = cast<RankedTensorType>(resultType);
     for (int64_t i = 0; i < resultRT.getRank(); ++i) {
       outShape.push_back(resultRT.getDimSize(i));
-      if (resultRT.isDynamicDim(i))
-        dynSizes.push_back(tensor::DimOp::create(rewriter, loc, resultRT.getRank() > lhsRank ? rhs : lhs, i));
+      if (!resultRT.isDynamicDim(i))
+        continue;
+      Value dimValue;
+      if (i == resultRT.getRank() - 1)
+        dimValue = tensor::DimOp::create(rewriter, loc, rhs, rhsRank - 1);
+      else if (i == resultRT.getRank() - 2)
+        dimValue = tensor::DimOp::create(rewriter, loc, lhs, lhsRank - 2);
+      else if (i < lhsRank)
+        dimValue = tensor::DimOp::create(rewriter, loc, lhs, i);
+      else
+        dimValue = tensor::DimOp::create(rewriter, loc, rhs, i);
+      dynSizes.push_back(dimValue);
     }
     while ((int64_t)outShape.size() < outerRank - 1)
       outShape.insert(outShape.begin(), 1);
-    Value empty = makeZeroedEmpty(rewriter, loc, resultType, {lhs});
-    if (!empty) return failure();
+    Value emptyTensor = tensor::EmptyOp::create(rewriter, loc, resultType, dynSizes);
+    auto matmulEltType = resultRT.getElementType();
+    Value matmulZero = arith::ConstantOp::create(rewriter, loc, matmulEltType,
+        rewriter.getFloatAttr(matmulEltType, 0.0f));
+    Value empty = linalg::FillOp::create(rewriter, loc,
+        ValueRange{matmulZero}, ValueRange{emptyTensor}).getResult(0);
     // Build maps: the loop has (outerRank) iterators: [batch..., M, N, K]
     int64_t loopRank = outerRank;  // [d0..d{LO}, K] where LO = outermost non-M/N/K dims
     // Actually: iterators = [batch_dims..., M_pos, N_pos, K_reduction]
@@ -274,10 +289,192 @@ struct SfLinearOpLowering : public OpRewritePattern<sf::LinearOp> {
   }
 };
 
+//===----------------------------------------------------------------------===//
+// Conv1d → padded linalg.generic
+//
+// The Qwen3.5 GatedDeltaNet short-conv is a depthwise Conv1d over the
+// projected (key+key+value) channel dimension.  This lowering is general:
+// it supports grouped Conv1d with stride/dilation, pads the spatial axis so
+// the linalg.generic never reads out of bounds, and then performs a small
+// 5D reduction over (kernel, in_channels_per_group).
+//===----------------------------------------------------------------------===//
+struct SfConv1dOpLowering : public OpRewritePattern<sf::Conv1dOp> {
+  using OpRewritePattern<sf::Conv1dOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::Conv1dOp op, PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    Value input = op.getInput();
+    Value weight = op.getWeight();
+    auto inType = dyn_cast<RankedTensorType>(input.getType());
+    auto wType = dyn_cast<RankedTensorType>(weight.getType());
+    auto outType = dyn_cast<RankedTensorType>(op.getResult().getType());
+    if (!inType || !wType || !outType) return failure();
+    if (inType.getRank() != 3 || wType.getRank() != 3 || outType.getRank() != 3)
+      return failure();
+    auto eltType = inType.getElementType();
+    if (!isa<FloatType>(eltType)) return failure();
+
+    auto listInt = [&](StringRef name, int64_t def) -> int64_t {
+      if (auto arr = op->getAttrOfType<ArrayAttr>(name)) {
+        if (!arr.empty()) {
+          if (auto a = dyn_cast<IntegerAttr>(arr[0]))
+            return a.getInt();
+        }
+      }
+      return def;
+    };
+    int64_t stride = listInt("stride", 1);
+    int64_t padding = listInt("padding", 0);
+    int64_t dilation = listInt("dilation", 1);
+    int64_t groups = 1;
+    if (auto g = op->getAttrOfType<IntegerAttr>("groups"))
+      groups = g.getInt();
+
+    int64_t outChannels = wType.getDimSize(0);
+    int64_t inChannels = inType.getDimSize(1);
+    int64_t kernel = wType.getDimSize(2);
+    if (outChannels <= 0 || kernel <= 0 || groups <= 0 || stride <= 0)
+      return failure();
+    if (outChannels % groups != 0 || (inChannels > 0 && inChannels % groups != 0))
+      return failure();
+    int64_t outPerGroup = outChannels / groups;
+    int64_t inPerGroup = wType.getDimSize(1);
+    if (inPerGroup <= 0 && inChannels > 0)
+      inPerGroup = inChannels / groups;
+    if (inPerGroup <= 0)
+      return failure();
+
+    // Pad the spatial axis by `padding` zeros on both sides.  After this,
+    // every output position gathers only in-bounds elements.
+    Value convInput = input;
+    if (padding > 0) {
+      SmallVector<int64_t> paddedShape = {
+          inType.getDimSize(0),
+          inType.getDimSize(1),
+          inType.isDynamicDim(2) ? ShapedType::kDynamic
+                                 : inType.getDimSize(2) + 2 * padding};
+      auto paddedType = RankedTensorType::get(paddedShape, eltType);
+      SmallVector<OpFoldResult> lows(3, OpFoldResult(rewriter.getIndexAttr(0)));
+      SmallVector<OpFoldResult> highs(3, OpFoldResult(rewriter.getIndexAttr(0)));
+      lows[2] = OpFoldResult(rewriter.getIndexAttr(padding));
+      highs[2] = OpFoldResult(rewriter.getIndexAttr(padding));
+      Value padValue = arith::ConstantOp::create(
+          rewriter, loc, eltType, rewriter.getFloatAttr(eltType, 0.0f));
+      convInput = rewriter.create<tensor::PadOp>(
+          loc, paddedType, input, lows, highs, padValue);
+    }
+
+    // Create the (possibly dynamic) output tensor.
+    SmallVector<Value> dynSizes;
+    for (int64_t i = 0; i < 3; ++i) {
+      if (!outType.isDynamicDim(i))
+        continue;
+      if (i == 0) {
+        dynSizes.push_back(tensor::DimOp::create(rewriter, loc, input, 0));
+      } else if (i == 1) {
+        dynSizes.push_back(tensor::DimOp::create(rewriter, loc, weight, 0));
+      } else {
+        // L_out = (L_padded - (dilation*(K-1)+1)) / stride + 1
+        Value paddedLen = tensor::DimOp::create(rewriter, loc, convInput, 2);
+        Value extent = arith::ConstantIndexOp::create(
+            rewriter, loc, dilation * (kernel - 1) + 1);
+        Value numerator = arith::SubIOp::create(rewriter, loc, paddedLen, extent);
+        Value strideVal = arith::ConstantIndexOp::create(rewriter, loc, stride);
+        Value outLen = arith::DivUIOp::create(rewriter, loc, numerator, strideVal);
+        outLen = arith::AddIOp::create(
+            rewriter, loc, outLen,
+            arith::ConstantIndexOp::create(rewriter, loc, 1));
+        dynSizes.push_back(outLen);
+      }
+    }
+    Value empty = tensor::EmptyOp::create(rewriter, loc, outType, dynSizes);
+    Value zero = arith::ConstantOp::create(
+        rewriter, loc, eltType, rewriter.getFloatAttr(eltType, 0.0f));
+    Value init = linalg::FillOp::create(
+        rewriter, loc, ValueRange{zero}, ValueRange{empty}).getResult(0);
+
+    // Iteration space: (batch, out_channel, out_len, kernel, in_ch_per_group).
+    auto ctx = rewriter.getContext();
+    AffineExpr d0 = getAffineDimExpr(0, ctx);
+    AffineExpr d1 = getAffineDimExpr(1, ctx);
+    AffineExpr d2 = getAffineDimExpr(2, ctx);
+    AffineExpr d3 = getAffineDimExpr(3, ctx);
+    AffineExpr d4 = getAffineDimExpr(4, ctx);
+
+    AffineExpr groupExpr = d1;
+    if (outPerGroup != 1) {
+      groupExpr = getAffineBinaryOpExpr(
+          AffineExprKind::FloorDiv, d1,
+          getAffineConstantExpr(outPerGroup, ctx));
+    }
+    AffineExpr inChExpr = groupExpr;
+    if (inPerGroup != 1) {
+      inChExpr = getAffineBinaryOpExpr(
+          AffineExprKind::Add,
+          getAffineBinaryOpExpr(
+              AffineExprKind::Mul, groupExpr,
+              getAffineConstantExpr(inPerGroup, ctx)),
+          d4);
+    }
+    AffineExpr posExpr = getAffineBinaryOpExpr(
+        AffineExprKind::Add,
+        getAffineBinaryOpExpr(
+            AffineExprKind::Mul, d2,
+            getAffineConstantExpr(stride, ctx)),
+        getAffineBinaryOpExpr(
+            AffineExprKind::Mul, d3,
+            getAffineConstantExpr(dilation, ctx)));
+
+    SmallVector<AffineExpr> inExprs = {d0, inChExpr, posExpr};
+    SmallVector<AffineExpr> weightExprs = {d1, d4, d3};
+    SmallVector<AffineExpr> outExprs = {d0, d1, d2};
+    auto inputMap = AffineMap::get(5, 0, inExprs, ctx);
+    auto weightMap = AffineMap::get(5, 0, weightExprs, ctx);
+    auto outMap = AffineMap::get(5, 0, outExprs, ctx);
+    SmallVector<utils::IteratorType> iters(5, utils::IteratorType::parallel);
+    iters[3] = utils::IteratorType::reduction;
+    iters[4] = utils::IteratorType::reduction;
+
+    auto generic = linalg::GenericOp::create(
+        rewriter, loc, outType,
+        ValueRange{convInput, weight}, ValueRange{init},
+        {inputMap, weightMap, outMap}, iters);
+    populateBody(generic, rewriter, [&](OpBuilder &b, Location bodyLoc, ValueRange args) {
+      Value mul = arith::MulFOp::create(b, bodyLoc, args[0], args[1]);
+      Value add = arith::AddFOp::create(b, bodyLoc, args[2], mul);
+      linalg::YieldOp::create(b, bodyLoc, add);
+    });
+    Value result = generic.getResult(0);
+
+    if (Value bias = op.getBias()) {
+      auto biasType = dyn_cast<RankedTensorType>(bias.getType());
+      if (biasType && biasType.getRank() == 1) {
+        auto biasMap = AffineMap::get(3, 0,
+            {getAffineDimExpr(1, ctx)}, ctx);
+        auto idMap = AffineMap::getMultiDimIdentityMap(3, ctx);
+        Value outEmpty = makeEmpty(rewriter, loc, outType, {result});
+        if (!outEmpty) return failure();
+        auto biasAdd = linalg::GenericOp::create(
+            rewriter, loc, outType,
+            ValueRange{result, bias}, ValueRange{outEmpty},
+            {idMap, biasMap, idMap},
+            SmallVector<utils::IteratorType>(3, utils::IteratorType::parallel));
+        populateBody(biasAdd, rewriter, [&](OpBuilder &b, Location bodyLoc, ValueRange args) {
+          Value v = arith::AddFOp::create(b, bodyLoc, args[0], args[1]);
+          linalg::YieldOp::create(b, bodyLoc, v);
+        });
+        result = biasAdd.getResult(0);
+      }
+    }
+
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
 } // namespace
 
 namespace mlir::sf {
 void registerMatmulPatterns(RewritePatternSet &patterns) {
-  patterns.add<SfMatmulOpLowering, SfLinearOpLowering>(patterns.getContext());
+  patterns.add<SfMatmulOpLowering, SfLinearOpLowering, SfConv1dOpLowering>(patterns.getContext());
 }
 } // namespace mlir::sf

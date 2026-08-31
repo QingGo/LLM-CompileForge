@@ -20,7 +20,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
-from compiler.dylib_ffi import DEFAULT_SRET_SIZE
+from compiler.dylib_ffi import DEFAULT_SRET_SIZE  # noqa: E402
 from gen.proto.python.sfa_precision_pb2 import NumericalTestCase, PrecisionContract  # noqa: E402
 
 FIXTURES_DIR = ROOT / "tests" / "contract" / "fixtures"

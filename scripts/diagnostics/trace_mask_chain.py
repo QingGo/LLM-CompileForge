@@ -98,7 +98,7 @@ def run_jit(
     mlir_text: str, input_arrays: list[np.ndarray[Any, Any]], output_shape: tuple[int, ...]
 ) -> np.ndarray[Any, Any]:
     """Lower and JIT compile MLIR, invoke with inputs."""
-    engine, _ = lower_and_jit(mlir_text)
+    engine, _, _ = lower_and_jit(mlir_text)
     try:
         return invoke_and_extract(engine, "main", input_arrays, output_shape)
     finally:
@@ -264,7 +264,7 @@ def main() -> None:
         "  }\n"
         "}"
     )
-    engine, out_shape = lower_and_jit(chain_mlir)
+    engine, out_shape, _ = lower_and_jit(chain_mlir)
     try:
         jit_chain = invoke_and_extract(engine, "main", [causal_3d.numpy()], (2, 4, 4))
         # PyTorch reference
@@ -390,7 +390,7 @@ def _test_single_op(
     return %0 : tensor<1xf32>
   }}
 }}"""
-        engine, shape = lower_and_jit(mlir)
+        engine, shape, _ = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [input_ids.numpy()], shape)
         return engine, out, torch.tensor([float(batch)])
 
@@ -402,7 +402,7 @@ def _test_single_op(
   }}
 }}"""
         sz = np.array([float(seq)], dtype=np.float32)
-        engine, shape = lower_and_jit(mlir)
+        engine, shape, _ = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [pos.numpy(), sz], shape)
         return engine, out, pos.view(batch, seq)
 
@@ -414,7 +414,7 @@ def _test_single_op(
   }}
 }}"""
         inp = np.array([0.0], dtype=np.float32)
-        engine, shape = lower_and_jit(mlir)
+        engine, shape, _ = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [inp], shape)
         return engine, out, torch.ones(batch, seq)
 
@@ -426,7 +426,7 @@ def _test_single_op(
   }}
 }}"""
         inp = torch.ones(batch, seq).numpy()
-        engine, shape = lower_and_jit(mlir)
+        engine, shape, _ = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [inp], shape)
         return engine, out, torch.cumsum(torch.ones(batch, seq), dim=1)
 
@@ -438,7 +438,7 @@ def _test_single_op(
   }
 }"""
         count = np.array([seq], dtype=np.int64)
-        engine, shape = lower_and_jit(mlir)
+        engine, shape, _ = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [count], (seq,))
         return engine, out, torch.arange(seq, dtype=torch.int64).float()
 
@@ -451,7 +451,7 @@ def _test_single_op(
 }"""
         a = np.array([2], dtype=np.int64)
         b = np.array([3], dtype=np.int64)
-        engine, shape = lower_and_jit(mlir)
+        engine, shape, _ = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [a, b], shape)
         return engine, out, (torch.tensor(2) + torch.tensor(3)).float()
 
@@ -463,7 +463,7 @@ def _test_single_op(
   }}
 }}"""
         inp = torch.arange(seq, dtype=torch.int64).numpy()
-        engine, shape = lower_and_jit(mlir)
+        engine, shape, _ = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [inp], shape)
         return engine, out, torch.arange(seq).unsqueeze(1).float()
 
@@ -475,7 +475,7 @@ def _test_single_op(
   }}
 }}"""
         inp = torch.randn(batch, seq).numpy()
-        engine, shape = lower_and_jit(mlir)
+        engine, shape, _ = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [inp], shape)
         return engine, out, torch.from_numpy(inp)[:batch, :seq]
 
@@ -487,7 +487,7 @@ def _test_single_op(
   }}
 }}"""
         inp = np.ones((1, 1, batch, 1), dtype=np.int64)
-        engine, shape = lower_and_jit(mlir)
+        engine, shape, _ = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [inp], shape)
         return engine, out, torch.ones(1, 1, batch, 1)
 
@@ -501,7 +501,7 @@ def _test_single_op(
         # le: a <= b → 1.0, else 0.0
         row = np.arange(seq).reshape(1, 1, seq, 1).astype(np.int64)
         col = np.arange(seq).reshape(1, 1, 1, seq).astype(np.int64)
-        engine, shape = lower_and_jit(mlir)
+        engine, shape, _ = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [col, row], shape)
         ref = (torch.tensor(col) <= torch.tensor(row)).float()
         return engine, out, ref.squeeze()
@@ -515,7 +515,7 @@ def _test_single_op(
 }}"""
         a = np.ones((1, 1, batch, 1), dtype=np.float32)
         b = causal_mask.unsqueeze(0).unsqueeze(0).numpy()
-        engine, shape = lower_and_jit(mlir)
+        engine, shape, _ = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [a, b], shape)
         return engine, out, torch.logical_and(torch.ones(1, 1, batch, 1), causal_mask.unsqueeze(0).unsqueeze(0)).float()
 
@@ -531,7 +531,7 @@ def _test_single_op(
         data = rng.randn(batch, seq).astype(np.float32)
         i0 = np.arange(batch).reshape(batch, 1, 1, 1).astype(np.int64)
         i1 = np.arange(seq).reshape(1, 1, 1, seq).astype(np.int64)
-        engine, shape = lower_and_jit(mlir)
+        engine, shape, _ = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [data, i0, i1], shape)
         # Reference: data[i0, i1] with proper aten.index.Tensor broadcasting
         # i0: [batch, 1, 1, 1], i1: [1, 1, 1, seq]
@@ -551,7 +551,7 @@ def _test_single_op(
   }
 }"""
         inp = causal_mask.unsqueeze(0).unsqueeze(0).numpy()  # [1, 1, 4, 4]
-        engine, shape = lower_and_jit(mlir)
+        engine, shape, _ = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [inp], shape)
         return engine, out, causal_mask.unsqueeze(0).unsqueeze(0)
 
@@ -563,7 +563,7 @@ def _test_single_op(
   }}
 }}"""
         inp = torch.randn(batch, seq).numpy()
-        engine, shape = lower_and_jit(mlir)
+        engine, shape, _ = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [inp], shape)
         return engine, out, torch.from_numpy(inp)
 
@@ -576,7 +576,7 @@ def _test_single_op(
 }}"""
         a = torch.randn(batch, seq).numpy()
         b = torch.randn(batch, seq).numpy()
-        engine, shape = lower_and_jit(mlir)
+        engine, shape, _ = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [a, b], shape)
         return engine, out, torch.from_numpy(a) * torch.from_numpy(b)
 
@@ -589,7 +589,7 @@ def _test_single_op(
 }}"""
         a = torch.randn(batch, seq).numpy()
         b = np.array([2.0], dtype=np.float32)
-        engine, shape = lower_and_jit(mlir)
+        engine, shape, _ = lower_and_jit(mlir)
         out = invoke_and_extract(engine, "main", [a, b], shape)
         return engine, out, torch.from_numpy(a) - 2.0
 

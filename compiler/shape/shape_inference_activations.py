@@ -223,14 +223,30 @@ def _infer_reduce(input_types: list[ir.Type], dim: int = -1, keepdim: bool = Fal
     et = _elt_type_str(inp)
     if s is None:
         return [_make_ranked_type((None,), et)]
-    dim_v = int(dim) if "dim" in kwargs else dim
+
+    # ATen reduction dims can be a scalar or a list (e.g. dim=[-1] for
+    # ``torch.sum(..., dim=[-1], keepdim=True)``).  Normalize before shaping.
+    raw_dims = kwargs.get("dim", dim)
+    if isinstance(raw_dims, (list, tuple)):
+        dims = list(raw_dims)
+    else:
+        dims = [raw_dims]
     keepdim_v = bool(kwargs.get("keepdim", keepdim))
-    parts = list(s)
-    if 0 <= dim_v < len(parts):
-        if keepdim_v:
-            parts[dim_v] = 1
+    normal: list[int] = []
+    for d in dims:
+        dv = int(d)
+        if dv < 0:
+            dv += len(s)
+        if 0 <= dv < len(s) and dv not in normal:
+            normal.append(dv)
+    reduced = set(normal)
+    parts: list[int | None] = []
+    for i, d in enumerate(s):
+        if i in reduced:
+            if keepdim_v:
+                parts.append(1)
         else:
-            parts.pop(dim_v)
+            parts.append(d)
     return [_make_ranked_type(tuple(parts), et)]
 
 

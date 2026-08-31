@@ -15,3 +15,22 @@ module {
 // CHECK:      linalg.generic
 // CHECK:      arith.cmpf
 // CHECK-NOT:  sf.le
+
+//===----------------------------------------------------------------------===//
+// sf.logical_and lowering — mixed i1/f32 operand conversion
+//===----------------------------------------------------------------------===//
+
+module {
+  func.func @logical_and_i1_mask(%mask: tensor<1x1x4x4xi1>,
+                                  %values: tensor<1x1x4x4xf32>) -> tensor<1x1x4x4xf32> {
+    %0 = "sf.logical_and"(%mask, %values)
+         : (tensor<1x1x4x4xi1>, tensor<1x1x4x4xf32>) -> tensor<1x1x4x4xf32>
+    return %0 : tensor<1x1x4x4xf32>
+  }
+}
+
+// CHECK:      func.func @logical_and_i1_mask
+// CHECK:      arith.uitofp
+// CHECK:      linalg.generic
+// CHECK:      arith.mulf
+// CHECK-NOT:  sf.logical_and

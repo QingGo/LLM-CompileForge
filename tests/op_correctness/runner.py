@@ -115,11 +115,18 @@ def generate_mlir(case: OpCase) -> str:
 
 def _register_sf_dialect(ctx: Any) -> None:
     try:
+        # Import mlir.ir FIRST: the sf extension dylib links against LLVM
+        # symbols (flat namespace) that only resolve once the core MLIR
+        # bindings are loaded.  Importing sf directly fails with
+        # "symbol not found in flat namespace '__ZN4llvm23EnableABIBreakingChecksE'".
+        import mlir.ir  # noqa: F401
         from mlir_sf._mlir_libs._sfDialectsNanobind import sf
 
         sf.register_dialects(ctx._CAPIPtr, load=True)
-    except ImportError:
-        pass
+    except Exception:
+        # Log instead of swallowing: an unregistered sf dialect makes every
+        # pipeline parse fail with a confusing "pass not registered" error.
+        _log.exception("Failed to register sf dialect — sf pass pipelines will fail")
 
 
 def _add_emit_c_interface(module: Any, ctx: Any) -> None:
@@ -176,6 +183,13 @@ def lower_and_jit(mlir_text: str) -> tuple[Any, tuple[int, ...]]:
         pman.run(module.operation)
         _log.debug("After sf-lower-to-linalg:\n%s", str(module))
 
+        # Detect the output spec BEFORE LLVM lowering: the function type
+        # is still `func.func ... -> tensor<...>` here.  After
+        # convert-func-to-llvm the signature is LLVM structs and the shape
+        # is unrecoverable (the old code silently fell back to a magic
+        # (4, 768) — wrong for everything else).
+        output_shape, output_dtype = _detect_output_spec(module)
+
         # Step 3: Add emit_c_interface
         _add_emit_c_interface(module, ctx)
 
@@ -208,8 +222,6 @@ def lower_and_jit(mlir_text: str) -> tuple[Any, tuple[int, ...]]:
         pman2.run(module.operation)
         _log.debug("After LLVM lowering:\n%s", str(module))
 
-        output_shape = _detect_output_shape(module)
-
         # Step 5: Fix remaining unrealized_conversion_cast ops
         from compiler.backend.fixups import _fixup_unrealized_casts_pass
 
@@ -230,37 +242,40 @@ def lower_and_jit(mlir_text: str) -> tuple[Any, tuple[int, ...]]:
             )
             shared_libs = [str(_runner_lib)] if _runner_lib.exists() else []
             engine = ExecutionEngine(module, opt_level=0, shared_libs=shared_libs)
-            return engine, output_shape
+            return engine, output_shape, output_dtype
         except Exception as e:
             raise RuntimeError(f"ExecutionEngine creation failed: {e}\nModule after lowering:\n{str(module)}") from e
 
 
-def _detect_output_shape(module: Any) -> tuple[int, ...]:
+def _detect_output_spec(module: Any) -> tuple[tuple[int, ...], np.dtype]:
+    """Detect the output tensor's (shape, dtype) from the lowered function type."""
     import mlir.ir as ir
 
-    output_shape: tuple[int, ...] | None = None
+    spec: tuple[tuple[int, ...], np.dtype] | None = None
+    _dtype_map = {"f32": np.float32, "f64": np.float64, "i64": np.int64, "i32": np.int32}
 
     def _find_func(op: Any) -> Any:
-        nonlocal output_shape
+        nonlocal spec
         if str(op.operation.name) == "func.func":
             ft = str(op.operation.attributes.get("function_type", ""))
             import re
 
             # Find the LAST tensor/memref type (the return type in function signature)
-            matches = list(re.finditer(r"(tensor|memref)<([\dx]*)xf32>", ft))
+            matches = list(re.finditer(r"(tensor|memref)<([\dx]*)x(f32|f64|i64|i32)>", ft))
             if matches:
                 m = matches[-1]
                 dims = m.group(2)
-                output_shape = tuple(int(d) if d.isdigit() else 0 for d in dims.split("x") if d)
-                if not output_shape:
-                    output_shape = ()
+                shape = tuple(int(d) if d.isdigit() else 0 for d in dims.split("x") if d)
+                spec = (shape or (), _dtype_map[m.group(3)])
         return ir.WalkResult.ADVANCE
 
     module.operation.walk(_find_func)
-    if output_shape is not None:
-        return output_shape
-
-    return (4, 768)
+    if spec is not None:
+        return spec
+    raise RuntimeError(
+        "could not detect output (shape, dtype) from the lowered module — "
+        f"supported dtypes: {sorted(_dtype_map)}"
+    )
 
 
 # ── Invocation and extraction ─────────────────────────────────────────
@@ -271,6 +286,7 @@ def invoke_and_extract(
     func_name: str,
     input_arrays: list[np.ndarray],
     output_shape: tuple[int, ...],
+    output_dtype: Any = np.float32,
 ) -> np.ndarray:
     """Invoke a JIT-compiled function with given numpy inputs and extract output.
 
@@ -284,7 +300,7 @@ def invoke_and_extract(
         input_inner_ptrs.append(inner)
         input_outer_ptrs.append(outer)
 
-    out_arr = np.zeros(output_shape, dtype=np.float32)
+    out_arr = np.zeros(output_shape, dtype=output_dtype)
     out_inner, out_outer = _make_memref_arg(out_arr)
 
     args: list[Any] = [out_outer] + input_outer_ptrs
@@ -327,7 +343,7 @@ class Runner:
         mlir_text = generate_mlir(case)
 
         # Step 2-6: Lower and JIT compile
-        engine, _ = lower_and_jit(mlir_text)
+        engine, _, _ = lower_and_jit(mlir_text)
 
         # Use known output shape from test case (detection from LLVM IR is fragile)
         output_shape = (case.output_shapes or [case.input_shapes[0]])[0]

@@ -9,7 +9,7 @@ use crate::engine::tokenizer::Tokenizer;
 fn compiled_executor() -> ModelExecutor {
     let dylib = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../outputs/compiled/opt_125m_fresh/libopt_125m.dylib"
+        "/../outputs/compiled/opt_125m_fresh/libopt_125m_fresh.dylib"
     );
     let st_path = concat!(
         env!("HOME"),
@@ -26,58 +26,108 @@ fn dummy_tokenizer() -> Tokenizer {
         env!("CARGO_MANIFEST_DIR"),
         "/../tests/data/test_tokenizer.json"
     );
-    Tokenizer::from_file(path)
-        .unwrap_or_else(|_| panic!(
-            "test tokenizer not found at {path}. Ensure the test data is present."
-        ))
+    Tokenizer::from_file(path).unwrap_or_else(|_| {
+        panic!("test tokenizer not found at {path}. Ensure the test data is present.")
+    })
 }
 
 #[test]
 fn test_runner_create() {
+    let _dylib_guard = crate::dylib_lock::lock();
     let exec = compiled_executor();
     let tokenizer = dummy_tokenizer();
     let config = RunnerConfig::default();
-    let runner =
-        InferenceRunner::new(exec, tokenizer, config).expect("create runner");
+    let runner = InferenceRunner::new(exec, tokenizer, config).expect("create runner");
     assert!(!runner.has_work());
 }
 
 #[test]
 fn test_runner_add_request() {
+    let _dylib_guard = crate::dylib_lock::lock();
     let exec = compiled_executor();
     let tokenizer = dummy_tokenizer();
     let config = RunnerConfig::default();
-    let mut runner =
-        InferenceRunner::new(exec, tokenizer, config).expect("create runner");
-    let rid = runner.add_request(
-        "Hello",
-        SamplerConfig { temperature: 0.0, top_p: 1.0, top_k: 0, max_tokens: None },
-    ).expect("add request");
+    let mut runner = InferenceRunner::new(exec, tokenizer, config).expect("create runner");
+    let rid = runner
+        .add_request(
+            "Hello",
+            SamplerConfig {
+                temperature: 0.0,
+                top_p: 1.0,
+                top_k: 0,
+                max_tokens: None,
+            },
+        )
+        .expect("add request");
     assert!(!rid.is_empty());
     assert!(runner.has_work());
 }
 
 #[test]
 fn test_runner_step_empty() {
+    let _dylib_guard = crate::dylib_lock::lock();
     let exec = compiled_executor();
     let tokenizer = dummy_tokenizer();
     let config = RunnerConfig::default();
-    let mut runner =
-        InferenceRunner::new(exec, tokenizer, config).expect("create runner");
-    let results = runner.step(&SamplerConfig::greedy()).expect("step with no requests");
+    let mut runner = InferenceRunner::new(exec, tokenizer, config).expect("create runner");
+    let results = runner
+        .step(&SamplerConfig::greedy())
+        .expect("step with no requests");
     assert!(results.is_empty());
 }
 
 #[test]
 fn test_runner_config_default() {
+    let _dylib_guard = crate::dylib_lock::lock();
     let config = RunnerConfig::default();
     assert_eq!(config.max_batch_size, 8);
     assert_eq!(config.block_size, 16);
 }
 
 #[test]
-#[ignore = "hangs during compiled_executor()/generate() — ASLR-affected dylib memory state causes non-deterministic completion. See contract_determinism_tests.rs and Issue #45."]
+fn test_runner_config_with_cache_policy_enables_kv() {
+    let mut dims = std::collections::HashMap::new();
+    dims.insert("heads".to_string(), 12usize);
+    dims.insert("dim".to_string(), 64usize);
+    let policy = CachePolicy {
+        slabs: vec![crate::cache::policy::SlabSpec {
+            slab_id: "k".into(),
+            storage: "paged".into(),
+            dims,
+            layout: "BNLD".into(),
+            dtype: "float32".into(),
+        }],
+        intercepts: vec![crate::cache::policy::InterceptSpec {
+            slab_id: "k".into(),
+            op_name: "scaled_dot_product_attention".into(),
+            direction: "read_write".into(),
+            source: "operand[1]".into(),
+            layer: "sequential".into(),
+            func_index: 1,
+            output_index: 1,
+        }],
+        block_size: 16,
+        max_requests: 256,
+    };
+
+    let config = RunnerConfig::default().with_cache_policy(&policy);
+    assert!(config.use_kv_cache);
+    assert_eq!(config.num_kv_heads, 12);
+    assert_eq!(config.head_dim, 64);
+    assert_eq!(config.block_size, 16);
+}
+
+#[test]
+fn test_runner_config_without_cache_policy_keeps_legacy() {
+    let config = RunnerConfig::default().with_cache_policy(&CachePolicy::none());
+    assert!(!config.use_kv_cache);
+    assert_eq!(config.num_kv_heads, 0);
+    assert_eq!(config.head_dim, 0);
+}
+
+#[test]
 fn test_generate_deterministic() {
+    let _dylib_guard = crate::dylib_lock::lock();
     let exec = compiled_executor();
     let tokenizer = dummy_tokenizer();
     let config = RunnerConfig {
@@ -85,8 +135,7 @@ fn test_generate_deterministic() {
         use_chat_template: false,
         ..Default::default()
     };
-    let mut runner =
-        InferenceRunner::new(exec, tokenizer, config.clone()).expect("create runner");
+    let mut runner = InferenceRunner::new(exec, tokenizer, config.clone()).expect("create runner");
     let result1 = runner.generate("Paris", 0.0, 1.0, 0).expect("generate v1");
 
     // Reuse the same executor to avoid dylib-load non-determinism.
@@ -95,8 +144,7 @@ fn test_generate_deterministic() {
     // See contract_determinism_tests.rs for detailed analysis.
     let exec2 = compiled_executor();
     let tokenizer2 = dummy_tokenizer();
-    let mut runner2 =
-        InferenceRunner::new(exec2, tokenizer2, config).expect("create runner");
+    let mut runner2 = InferenceRunner::new(exec2, tokenizer2, config).expect("create runner");
     let result2 = runner2.generate("Paris", 0.0, 1.0, 0).expect("generate v2");
 
     // Known issue: multi-function graph execution is non-deterministic.
@@ -112,12 +160,63 @@ fn test_generate_deterministic() {
     // );
 }
 
+/// Chunked prefill: intermediate chunks must NOT sample.  Their
+/// last-position logits come from partial context (the rest of the prompt
+/// has not been seen yet), so any token sampled there would be garbage
+/// appended to the output.  Only the final chunk (state flipped to Decode)
+/// may sample.
+#[test]
+fn test_runner_does_not_sample_intermediate_prefill_chunks() {
+    let _dylib_guard = crate::dylib_lock::lock();
+    let exec = compiled_executor();
+    let tokenizer = dummy_tokenizer();
+    let config = RunnerConfig {
+        chunk_size: 2,
+        use_chat_template: false,
+        ..Default::default()
+    };
+    let mut runner = InferenceRunner::new(exec, tokenizer, config).expect("create runner");
+    // Inject token IDs directly through the scheduler: the dummy tokenizer
+    // is WordLevel with no pre-tokenizer, so any text encodes to a single
+    // <unk> — unusable for chunked-prefill coverage.
+    runner
+        .scheduler
+        .add_request(vec![1, 2, 3, 4, 5, 6], 0, 512, vec![], None);
+
+    // First step = first 2-token prefill chunk: must not emit a token.
+    let first = runner.step(&SamplerConfig::greedy()).expect("step 1");
+    assert!(
+        first.is_empty(),
+        "intermediate prefill chunk must not sample (got {} results)",
+        first.len()
+    );
+
+    // Drain the remaining steps: sampling must eventually happen
+    // (final prefill chunk or decode), proving the request still runs.
+    let mut saw_token = false;
+    for _ in 0..40 {
+        let results = runner.step(&SamplerConfig::greedy()).expect("step");
+        if !results.is_empty() {
+            saw_token = true;
+            break;
+        }
+        if !runner.has_work() {
+            break;
+        }
+    }
+    assert!(
+        saw_token,
+        "request should produce tokens after prefill completes"
+    );
+}
+
 // ── KV Cache integration tests ─────────────────────────
 
 /// Verify that InferenceRunner initializes KV cache infrastructure
 /// when configured with use_kv_cache=true and proper dimensions.
 #[test]
 fn test_runner_kv_cache_initialization() {
+    let _dylib_guard = crate::dylib_lock::lock();
     let exec = compiled_executor();
     let tokenizer = dummy_tokenizer();
     let config = RunnerConfig {
@@ -130,17 +229,29 @@ fn test_runner_kv_cache_initialization() {
         use_chat_template: false,
         ..Default::default()
     };
-    let runner = InferenceRunner::new(exec, tokenizer, config)
-        .expect("create runner with KV cache");
+    let runner =
+        InferenceRunner::new(exec, tokenizer, config).expect("create runner with KV cache");
 
     if let Some(entry) = runner.block_manager.blocks.get(&0) {
-        assert!(matches!(entry, crate::cache::block::BlockEntry::Cached(_)),
-            "BlockManager should use Cached blocks when use_kv_cache=true");
+        assert!(
+            matches!(entry, crate::cache::block::BlockEntry::Cached(_)),
+            "BlockManager should use Cached blocks when use_kv_cache=true"
+        );
     }
 
-    assert!(runner.kv_cache_state.is_some(), "KVCacheState should be Some");
-    assert!(runner.kv_cache_state.as_ref().unwrap()
-        .request_id_to_cache.is_empty(), "no requests tracked yet");
+    assert!(
+        runner.kv_cache_state.is_some(),
+        "KVCacheState should be Some"
+    );
+    assert!(
+        runner
+            .kv_cache_state
+            .as_ref()
+            .unwrap()
+            .request_id_to_cache
+            .is_empty(),
+        "no requests tracked yet"
+    );
 }
 
 /// KV cache integration — scheduler produces proper use_kv_cache flags.
@@ -149,12 +260,12 @@ fn test_runner_kv_cache_initialization() {
 /// requests when the runner config enables KV cache.
 #[test]
 fn test_scheduler_kv_cache_flag() {
+    let _dylib_guard = crate::dylib_lock::lock();
     let mut s = crate::engine::scheduler::Scheduler::new(8, 128, 64, true)
         .expect("scheduler with kv cache");
     let rid = s.add_request(vec![1, 2, 3, 4], 0, 10, vec![], None);
 
-    let mut bm = crate::cache::block::BlockManager::new(100, 16)
-        .expect("block manager");
+    let mut bm = crate::cache::block::BlockManager::new(100, 16).expect("block manager");
     bm.allocate(&rid, 4).unwrap();
 
     let batch = s.schedule(&mut bm, &[]);
@@ -183,6 +294,7 @@ fn test_scheduler_kv_cache_flag() {
 /// prefill (forward_with_positions), block tracking, and flush.
 #[test]
 fn test_runner_kv_cache_infra() {
+    let _dylib_guard = crate::dylib_lock::lock();
     let exec = compiled_executor();
     let tokenizer = dummy_tokenizer();
     let config = RunnerConfig {
@@ -195,11 +307,19 @@ fn test_runner_kv_cache_infra() {
         use_chat_template: false,
         ..Default::default()
     };
-    let mut runner = InferenceRunner::new(exec, tokenizer, config)
-        .expect("create runner with KV cache");
-    let rid = runner.add_request("Paris",
-        SamplerConfig { temperature: 0.0, top_p: 1.0, top_k: 0, max_tokens: Some(5) },
-    ).expect("add request");
+    let mut runner =
+        InferenceRunner::new(exec, tokenizer, config).expect("create runner with KV cache");
+    let rid = runner
+        .add_request(
+            "Paris",
+            SamplerConfig {
+                temperature: 0.0,
+                top_p: 1.0,
+                top_k: 0,
+                max_tokens: Some(5),
+            },
+        )
+        .expect("add request");
 
     // Run all steps; if forward_with_kv fails (model doesn't support KV cache split),
     // we handle gracefully and still verify the infrastructure
@@ -211,8 +331,10 @@ fn test_runner_kv_cache_infra() {
                     if r.finished {
                         finished = true;
                         // After flush_request the block table should be gone
-                        assert!(runner.block_manager.get_blocks(&rid).is_err(),
-                            "blocks should be freed after finish");
+                        assert!(
+                            runner.block_manager.get_blocks(&rid).is_err(),
+                            "blocks should be freed after finish"
+                        );
                     }
                 }
             }
@@ -220,8 +342,10 @@ fn test_runner_kv_cache_infra() {
                 // The model may not support forward_with_kv (requires compiled
                 // split-attention functions).  That's OK — we still exercised
                 // the KV cache branching logic in step().
-                eprintln!("forward_with_kv failed (expected if model lacks \
-                    split attention): {e}");
+                eprintln!(
+                    "forward_with_kv failed (expected if model lacks \
+                    split attention): {e}"
+                );
                 // Break out to avoid infinite loop on persistent errors
                 break;
             }
@@ -230,9 +354,15 @@ fn test_runner_kv_cache_infra() {
 
     // If we got to finish, KVCacheState should be clean
     if finished {
-        assert!(runner.kv_cache_state.as_ref().unwrap()
-            .request_id_to_cache.is_empty(),
-            "KVCacheState should be empty after request completes");
+        assert!(
+            runner
+                .kv_cache_state
+                .as_ref()
+                .unwrap()
+                .request_id_to_cache
+                .is_empty(),
+            "KVCacheState should be empty after request completes"
+        );
     }
 }
 
@@ -242,28 +372,29 @@ fn test_runner_kv_cache_infra() {
 /// that the cache correctly accumulates K/V across prefill and decode steps.
 #[test]
 fn test_kv_cache_block_prefill_decode_flow() {
+    let _dylib_guard = crate::dylib_lock::lock();
     let num_kv_heads = 12;
     let head_dim = 64;
     let hidden_dim = num_kv_heads * head_dim; // 768
     let block_size = 16;
 
-    let mut bm = crate::cache::block::BlockManager::new_with_cache(
-        10, block_size, num_kv_heads, head_dim,
-    ).expect("block manager with cache");
+    let mut bm =
+        crate::cache::block::BlockManager::new_with_cache(10, block_size, num_kv_heads, head_dim)
+            .expect("block manager with cache");
 
     // Prefill: allocate blocks for 4 prompt tokens
     bm.allocate("test_req", 4).unwrap();
 
     // Prefill writes K/V for all 4 positions (simulating forward_with_kv
     // writing consumed_internally outputs after the first main_Xa call)
-    let k_prefill: Vec<f32> = (0..4 * hidden_dim)
-        .map(|i| (i % 100) as f32)
-        .collect();
+    let k_prefill: Vec<f32> = (0..4 * hidden_dim).map(|i| (i % 100) as f32).collect();
     let v_prefill: Vec<f32> = (0..4 * hidden_dim)
         .map(|i| ((i + 100) % 200) as f32)
         .collect();
-    bm.write_kv("test_req", 0, &k_prefill, hidden_dim, true).unwrap();
-    bm.write_kv("test_req", 0, &v_prefill, hidden_dim, false).unwrap();
+    bm.write_kv("test_req", 0, &k_prefill, hidden_dim, true)
+        .unwrap();
+    bm.write_kv("test_req", 0, &v_prefill, hidden_dim, false)
+        .unwrap();
 
     // Verify: after prefill, positions [0..4) have written data
     let (read_k, read_v) = bm.read_kv("test_req", 4, hidden_dim).unwrap();
@@ -290,14 +421,19 @@ fn test_kv_cache_block_prefill_decode_flow() {
     assert_eq!(v_all.len(), 5 * hidden_dim);
 
     // Write new K/V to cache at position 4
-    bm.write_kv("test_req", 4, &k_new_1, hidden_dim, true).unwrap();
-    bm.write_kv("test_req", 4, &v_new_1, hidden_dim, false).unwrap();
+    bm.write_kv("test_req", 4, &k_new_1, hidden_dim, true)
+        .unwrap();
+    bm.write_kv("test_req", 4, &v_new_1, hidden_dim, false)
+        .unwrap();
 
     // Verify: positions [0..5) have correct data
     let (verify_k, _verify_v) = bm.read_kv("test_req", 5, hidden_dim).unwrap();
     assert_eq!(verify_k.len(), 5 * hidden_dim);
     assert!((verify_k[0] - 0.0).abs() < 1e-6, "K[0] should be 0.0");
-    assert!((verify_k[4 * hidden_dim] - 200.0).abs() < 1e-6, "K[4*768] should be 200.0");
+    assert!(
+        (verify_k[4 * hidden_dim] - 200.0).abs() < 1e-6,
+        "K[4*768] should be 200.0"
+    );
 
     // Decode step 2: position 5
     let k_new_2: Vec<f32> = vec![400.0f32; hidden_dim];
@@ -306,16 +442,27 @@ fn test_kv_cache_block_prefill_decode_flow() {
     // First extend blocks for new position 5
     bm.ensure_blocks("test_req", 6).unwrap();
 
-    bm.write_kv("test_req", 5, &k_new_2, hidden_dim, true).unwrap();
-    bm.write_kv("test_req", 5, &v_new_2, hidden_dim, false).unwrap();
+    bm.write_kv("test_req", 5, &k_new_2, hidden_dim, true)
+        .unwrap();
+    bm.write_kv("test_req", 5, &v_new_2, hidden_dim, false)
+        .unwrap();
 
     // Verify final state
     let (final_k, final_v) = bm.read_kv("test_req", 6, hidden_dim).unwrap();
     assert_eq!(final_k.len(), 6 * hidden_dim);
-    assert!((final_k[5 * hidden_dim] - 400.0).abs() < 1e-6, "K[5*768] should be 400.0");
-    assert!((final_v[5 * hidden_dim] - 500.0).abs() < 1e-6, "V[5*768] should be 500.0");
+    assert!(
+        (final_k[5 * hidden_dim] - 400.0).abs() < 1e-6,
+        "K[5*768] should be 400.0"
+    );
+    assert!(
+        (final_v[5 * hidden_dim] - 500.0).abs() < 1e-6,
+        "V[5*768] should be 500.0"
+    );
 
     // Flush: verify blocks are freed
     bm.flush_request("test_req");
-    assert!(bm.get_blocks("test_req").is_err(), "blocks should be freed after flush");
+    assert!(
+        bm.get_blocks("test_req").is_err(),
+        "blocks should be freed after flush"
+    );
 }

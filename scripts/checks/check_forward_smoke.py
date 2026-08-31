@@ -20,9 +20,9 @@ import sys
 import torch
 
 from compiler.serialize import load_artifact
+from compiler.utils.logging import init_logging
 from python_runtime.engine.mlir_executor import MlirExecutor
 from python_runtime.hal.pytorch_backend import PyTorchBackend
-from compiler.utils.logging import init_logging
 
 faulthandler.enable()
 

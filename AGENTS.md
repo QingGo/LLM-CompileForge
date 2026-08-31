@@ -3,10 +3,7 @@
 ## 环境
 
 ```bash
-source .venv/bin/activate
-export KMP_DUPLICATE_LIB_OK=TRUE
-unset CONDA_PREFIX
-export DYLD_LIBRARY_PATH="$(pwd)/.venv/lib/python3.10/site-packages/torch/lib:$(pwd)/sf-dialect/build/python_packages/sf/mlir_sf/_mlir_libs:$(pwd)/llvm-project/build/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs"
+source scripts/env.sh
 ```
 
 Python 3.10 only。**绝不使用 conda 环境** — uv 独立管理。
@@ -36,8 +33,8 @@ Python 3.10 only。**绝不使用 conda 环境** — uv 独立管理。
 | `compiler/compile_dylib.py` | dylib 编译 CLI |
 | `python_runtime/hal/interface.py` | HAL 核心接口 (Device, Buffer, OpExecutor) |
 | `python_runtime/engine/llm_engine.py` | 推理引擎入口 |
-| `runtime/src/hal_runner.rs` | HalRustRunner — Path B 逐 op dispatch |
-| `runtime/src/hal/rust/executable.rs` | Path B op 处理器 (reduce/element_wise/gather/... ) |
+| `runtime/src/engine/runner.rs` | InferenceRunner — Path A 推理主循环 (step/generate) |
+| `runtime/src/engine/compute_graph_runner.rs` | ComputeGraphRunner — 加载 dylib 执行 function graph |
 | `.omo/plans/` | 实现计划 |
 
 ## 根目录结构
@@ -46,7 +43,7 @@ Python 3.10 only。**绝不使用 conda 环境** — uv 独立管理。
 |------|------|------|
 | `compiler/` | 子项目 | Python 编译器：FX Graph → sf dialect → linalg → LLVM → .dylib |
 | `python_runtime/` | 子项目 | Python 运行时：HAL → Engine → Server 四层架构的 Python 端 |
-| `runtime/` | 子项目 | Rust 运行时：Path A (dylib) + Path B (HAL IR) 推理执行 |
+| `runtime/` | 子项目 | Rust 运行时：Path A (dylib) 推理执行 |
 | `sf-dialect/` | 子项目 | C++ MLIR dialect：sf ops 定义 + sf→linalg lowering pass |
 | `include/` | 契约层 | 跨项目接口：`sfa.h` (热路径) + `sfa_abi.proto` (冷路径) |
 | `gen/` | 生成代码 | Proto 编译产物 (Python + Rust) |
@@ -73,13 +70,14 @@ Python 3.10 only。**绝不使用 conda 环境** — uv 独立管理。
 
 | 命令 | 用途 | 预算 |
 |------|------|------|
-| `make lint` | ruff + mypy | <2s |
-| `make test-fixup && make test-pipeline-quick && make test-rust-unit` | fixup + IR + Rust 单元 | <8s |
+| `make lint` | ruff + mypy | <5s |
+| `./scripts/gate.sh` | t + engine/HAL/compiler  + Rust  + KV  | <5min |
+| `make test-fixup && make test-pipeline-quick && make test-rust-unit` | fixup + IR + Rust 单元 | test-fixup <2s, pipeline-quick <60s, rust-unit 2-4min (含 dylib E2E) |
 | `make test-forward-smoke` | forward 无 NaN | <5s |
 | `make test-pipeline-smoke && make test-rust-integ` | pipeline + Rust 集成 | <90s |
-| `make test-e2e-forward-hal` | Path B e2e forward | <3min |
 | `make verify-dylib-fresh` | dylib 比 model.mlir 新 | <2s |
 | `make test-forward-cos` | cosine regression | <60s |
+| `make test-function-golden` | per-function golden (release, 含 seq6/seq32 重量级) | <3min |
 
 ## 技能路由 (按需加载)
 
@@ -157,12 +155,11 @@ include/sfa_abi.proto ←── 冷路径契约 (SfaFuncMeta, protobuf)
 1. **变更归因**: `git stash` → checkout 旧 commit → 复现 → 回退。不可凭 `nm`/`grep` 推断。
 2. **Token 偏差**: 精度是最后排除的假设。diff > 10 先查输入值/数据流，精度累积最后考虑。
 3. **精度门控**: cos_sim 高不等于精度问题。必须通过 4 项检查 (零均值/对称分布/无离群/top-N 重叠)。
-4. **三路对比验证**: numpy ←→ Path A (dylib) ←→ Path B (Rust)。禁止自洽性检验替代跨路径对比。
+4. **三路对比验证**: numpy ←→ Path A (Python ctypes dylib) ←→ Path A (Rust server)。禁止自洽性检验替代跨路径对比。
 
 ## HAL 规则 (摘要)
 
 - 所有 kernel 通过 `executable.execute(op_name, stream, &inputs, &outputs)`。禁止裸调 ciface。
-- Path B: `hal_runner.rs` → `hal_ir.json` → 逐 op `HalRustExecutable::execute()`。`HAL_TRACE=1|2|3` 调试。
 - Accelerate BLAS: `ldb >= max(K,1)`。窄矩阵 fallback naive matmul。
 - Unsafe audit: `bash scripts/audit-unsafe.sh`。全部 `unsafe {}` 必须有 `// SAFETY:` 注释。
 - 完整 HAL 规则、陷阱表、BLAS 细节 → @runtime/AGENTS.md

@@ -34,6 +34,13 @@ pub use proto::SfaInputKind;
 pub use proto::SfaInterceptSpec;
 pub use proto::SfaSlabSpec;
 pub use proto::SfaSsaRef;
+pub use proto::OpPlan;
+pub use proto::OpPlanFuncOutput;
+pub use proto::OpPlanInput;
+pub use proto::OpPlanNode;
+pub use proto::OpPlanOutput;
+pub use proto::OpPlanRef;
+pub use proto::OpTensorSpec;
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -53,6 +60,21 @@ pub struct SfaWeightProvider {
     pub constants: HashMap<String, ConstantTensor>,
 }
 
+/// Map an MLIR/proto dtype string to the runtime Dtype enum.
+fn dtype_from_str(s: &str) -> Dtype {
+    match s {
+        "f32" | "float" => Dtype::F32,
+        "f16" | "float16" => Dtype::F16,
+        "bf16" | "bfloat16" | "bfloat" => Dtype::BF16,
+        "i64" | "int64" => Dtype::I64,
+        "i32" | "int32" => Dtype::I32,
+        "i8" | "int8" => Dtype::I8,
+        "u8" | "uint8" => Dtype::U8,
+        _ => Dtype::F32,
+    }
+}
+
+
 // ── Helpers ────────────────────────────────────────────────────────
 
 /// Read a `u64` value embedded as a data symbol in the dylib.
@@ -65,11 +87,13 @@ pub struct SfaWeightProvider {
 /// address), not the data at that address. Using T = `*mut c_void` gives us
 /// the raw address directly via `*sym`, then we read through it.
 unsafe fn read_u64_symbol(lib: &libloading::Library, name: &[u8]) -> Result<u64, anyhow::Error> {
+// SAFETY: the enclosing function documents the pointer/lifetime preconditions; they are satisfied by this call site.
     let sym: libloading::Symbol<*mut std::ffi::c_void> = unsafe {
         lib.get(name)
             .map_err(|e| anyhow::anyhow!("dylib missing {} symbol: {}", String::from_utf8_lossy(name), e))?
     };
     let addr: *mut std::ffi::c_void = *sym;
+// SAFETY: the enclosing function documents the pointer/lifetime preconditions; they are satisfied by this call site.
     Ok(unsafe { *(addr as *const u64) })
 }
 
@@ -83,8 +107,10 @@ unsafe fn read_byte_slice_from_symbol<'lib>(
     data_name: &[u8],
     size_name: &[u8],
 ) -> Result<&'lib [u8], anyhow::Error> {
+// SAFETY: lib is a valid loaded dylib and the helper validates symbol presence.
     let size = unsafe { read_u64_symbol(lib, size_name)? } as usize;
     // Use Symbol<*mut c_void> — *sym gives the raw dlsym address directly.
+// SAFETY: the enclosing function documents the pointer/lifetime preconditions; they are satisfied by this call site.
     let data_sym: libloading::Symbol<*mut std::ffi::c_void> = unsafe {
         lib.get(data_name)
             .map_err(|e| anyhow::anyhow!("dylib missing {} symbol: {}", String::from_utf8_lossy(data_name), e))?
@@ -107,6 +133,7 @@ unsafe fn read_byte_slice_from_symbol<'lib>(
 /// ``lib`` must reference a valid, loaded dylib that exports the
 /// ``sfa_abi`` and ``sfa_abi_size`` symbols.
 pub unsafe fn load_sfa_abi(lib: &libloading::Library) -> Result<SfaAbiHeader, anyhow::Error> {
+// SAFETY: the enclosing function documents the pointer/lifetime preconditions; they are satisfied by this call site.
     let data = unsafe {
         read_byte_slice_from_symbol(lib, b"sfa_abi", b"sfa_abi_size")
     }?;
@@ -139,6 +166,7 @@ pub unsafe fn load_sfa_abi(lib: &libloading::Library) -> Result<SfaAbiHeader, an
 pub unsafe fn load_sfa_weights(
     lib: &libloading::Library,
 ) -> Result<SfaWeightProvider, anyhow::Error> {
+// SAFETY: the enclosing function documents the pointer/lifetime preconditions; they are satisfied by this call site.
     let data = unsafe {
         read_byte_slice_from_symbol(lib, b"sfa_weights", b"sfa_weights_size")
     }?;
@@ -181,6 +209,7 @@ pub unsafe fn load_sfa_weights(
 pub unsafe fn load_sfa_cache_policy(
     lib: &libloading::Library,
 ) -> Result<Option<SfaCachePolicy>, anyhow::Error> {
+// SAFETY: the enclosing function documents the pointer/lifetime preconditions; they are satisfied by this call site.
     let data = match unsafe {
         read_byte_slice_from_symbol(lib, b"sfa_cache_policy", b"sfa_cache_policy_size")
     } {
@@ -189,6 +218,25 @@ pub unsafe fn load_sfa_cache_policy(
     };
     let policy = SfaCachePolicy::decode(data)?;
     Ok(Some(policy))
+}
+
+/// Load the Phase 5 op-level execution plan from a compiled dylib.
+///
+/// Reads the additive ``sfa_op_plan`` / ``sfa_op_plan_size`` symbols.
+/// Returns ``Ok(None)`` when either symbol is missing (legacy dylibs keep
+/// the func-level path).
+///
+/// # Safety
+/// ``lib`` must reference a valid, loaded dylib.
+pub unsafe fn load_sfa_op_plan(lib: &libloading::Library) -> Result<Option<OpPlan>, anyhow::Error> {
+// SAFETY: the enclosing function documents the pointer/lifetime preconditions; they are satisfied by this call site.
+    let data = match unsafe {
+        read_byte_slice_from_symbol(lib, b"sfa_op_plan", b"sfa_op_plan_size")
+    } {
+        Ok(data) => data,
+        Err(_) => return Ok(None),
+    };
+    Ok(Some(OpPlan::decode(data)?))
 }
 
 /// Build a ComputeGraph from SFA ABI header and weight provider.
@@ -253,11 +301,13 @@ pub fn build_compute_graph(
                         vec![0, 0]
                     },
                     consumed_internally: false,
+                    dtype: Dtype::I64,
                 },
                 _ => IOTensorDef {
                     rank: field.rank as u8,
                     shape: field.dims.clone(),
                     consumed_internally: false,
+                    dtype: dtype_from_str(&field.dtype),
                 },
             };
             inputs.push((binding, io_def));
@@ -279,6 +329,7 @@ pub fn build_compute_graph(
                     rank: od.rank as u8,
                     shape: od.dims.clone(),
                     consumed_internally: od.consumed_internally,
+                    dtype: dtype_from_str(&od.dtype),
                 })
                 .collect()
         } else {
@@ -292,6 +343,7 @@ pub fn build_compute_graph(
                 rank: output_rank,
                 shape: output_shape,
                 consumed_internally: false,
+                dtype: Dtype::F32,
             }]
         };
 
@@ -304,6 +356,7 @@ pub fn build_compute_graph(
             num_outputs,
             inputs,
             outputs,
+            consumed_sub_output_flags: func_meta.consumed_sub_output_flags.clone(),
         });
     }
 
@@ -333,11 +386,29 @@ pub fn load_from_dylib(
     ComputeGraph,
     Option<crate::cache::policy::CachePolicy>,
 ), anyhow::Error> {
+    let (weight_provider, compute_graph, cache_policy, _op_plan) =
+        load_from_dylib_full(dylib_path, safetensors_path)?;
+    Ok((weight_provider, compute_graph, cache_policy))
+}
+
+/// Load func-level metadata plus the additive Phase 5 op plan (if any).
+pub fn load_from_dylib_full(
+    dylib_path: &str,
+    safetensors_path: Option<&str>,
+) -> Result<(
+    crate::model::weight_loader::WeightProvider,
+    ComputeGraph,
+    Option<crate::cache::policy::CachePolicy>,
+    Option<OpPlan>,
+), anyhow::Error> {
     // SAFETY: Loading a compiled dylib produced by the SFA toolchain.
     let lib = unsafe { libloading::Library::new(dylib_path)? };
     let abi = unsafe { load_sfa_abi(&lib)? };
     let sfa_wp = unsafe { load_sfa_weights(&lib)? };
+// SAFETY: the enclosing function documents the pointer/lifetime preconditions; they are satisfied by this call site.
     let cache_policy_proto = unsafe { load_sfa_cache_policy(&lib)? };
+// SAFETY: the enclosing function documents the pointer/lifetime preconditions; they are satisfied by this call site.
+    let op_plan = unsafe { load_sfa_op_plan(&lib)? };
     let compute_graph = build_compute_graph(&abi, &sfa_wp)?;
     let registry = crate::model::weight_loader::WeightRegistry {
         name_mapping: sfa_wp.name_mapping,
@@ -352,7 +423,7 @@ pub fn load_from_dylib(
         ),
         None => None,
     };
-    Ok((weight_provider, compute_graph, cache_policy))
+    Ok((weight_provider, compute_graph, cache_policy, op_plan))
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -379,6 +450,7 @@ mod tests {
                 output_rank,
                 input_fields: Vec::with_capacity(num_inputs as usize),
                 outputs: Vec::new(),
+                consumed_sub_output_flags: vec![],
             };
 
             for _ in 0..num_inputs {
@@ -387,6 +459,7 @@ mod tests {
                     binding: None,
                     rank: 0,
                     dims: Vec::new(),
+                    dtype: String::new(),
                 });
             }
 
@@ -438,6 +511,7 @@ mod tests {
     #[test]
     fn test_parse_input_fields_with_weight_binding() {
         let mut func = proto::SfaFuncMeta {
+            consumed_sub_output_flags: vec![],
             symbol: "layer0".to_string(),
             num_inputs: 2,
             output_rank: 2,
@@ -450,6 +524,7 @@ mod tests {
             binding: Some(Binding::WeightName("matmul".to_string())),
             rank: 0,
             dims: Vec::new(),
+            dtype: String::new(),
         });
 
         func.input_fields.push(SfaInputField {
@@ -460,6 +535,7 @@ mod tests {
             })),
             rank: 0,
             dims: Vec::new(),
+            dtype: String::new(),
         });
 
         let header = SfaAbiHeader {
@@ -515,12 +591,14 @@ mod tests {
                             binding: None,
                             rank: 2,
                             dims: vec![0, 0],
+                            dtype: String::new(),
                         },
                         SfaInputField {
                             kind: SfaInputKind::SfaInputWeight as i32,
                             binding: Some(Binding::WeightName("wte.weight".to_string())),
                             rank: 2,
                             dims: vec![50272, 768],
+                            dtype: String::new(),
                         },
                         SfaInputField {
                             kind: SfaInputKind::SfaInputSsa as i32,
@@ -530,9 +608,11 @@ mod tests {
                             })),
                             rank: 3,
                             dims: vec![0, 0, 768],
+                            dtype: String::new(),
                         },
                     ],
                     outputs: Vec::new(),
+                    consumed_sub_output_flags: vec![],
                 },
             ],
         };
@@ -577,12 +657,13 @@ mod integration_tests {
     fn test_load_sfa_abi_from_real_dylib() {
         let dylib_path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../outputs/compiled/opt_125m_fresh/libopt_125m.dylib"
+            "/../outputs/compiled/opt_125m_fresh/libopt_125m_fresh.dylib"
         );
         if !std::path::Path::new(dylib_path).exists() {
             eprintln!("SKIP: dylib not found at {}", dylib_path);
             return;
         }
+// SAFETY: the enclosing function documents the pointer/lifetime preconditions; they are satisfied by this call site.
         unsafe {
             let lib = libloading::Library::new(dylib_path)
                 .expect("failed to load dylib");

@@ -128,7 +128,13 @@ class TestLLMEngineStep:
     def test_step_returns_generation_results(self):
         engine = LLMEngine(_make_test_mlir(), PyTorchBackend("cpu"), max_batch_size=4, chunk_size=2)
         engine.add_request([1, 2, 3], max_tokens=2, temperature=0)
-        results = engine.step()
+        # Intermediate prefill chunks don't sample; keep stepping until
+        # the final chunk/decode produces results.
+        results: list = []
+        for _ in range(10):
+            results = engine.step()
+            if results:
+                break
         assert len(results) > 0
         for r in results:
             assert r.request_id.startswith("req_")

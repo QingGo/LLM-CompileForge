@@ -46,7 +46,7 @@ from compiler.artifact.ir import (  # noqa: F401
     _update_function_type,
     mlir_module_to_ir_module,
 )
-from compiler.artifact.load import (  # noqa: F401
+from compiler.artifact.load import (  # type: ignore[attr-defined]  # noqa: F401
     _candidate_names,
     _guess_func,
     _load_weights_legacy,

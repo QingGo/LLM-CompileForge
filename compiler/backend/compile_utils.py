@@ -24,7 +24,6 @@ from compiler.backend.fixups import (
 from compiler.exceptions import (
     LinkError,
     LLCError,
-    MissingBindingsError,
     MLIRTranslateError,
     ToolNotFoundError,
 )
@@ -239,25 +238,6 @@ def llc_compile(
     return output
 
 
-def jit_compile_and_run(ir_module: Any, func_name: str = "main") -> Any:
-    """JIT-compile an LLVM IR module and return a callable wrapper.
-
-    Args:
-        ir_module: ir.Module with LLVM dialect.
-        func_name: Name of the function to look up.
-
-    Returns:
-        An ExecutionEngine that can invoke the function.
-    """
-    if not _has_bindings():
-        raise MissingBindingsError()
-
-    from mlir.execution_engine import ExecutionEngine
-
-    engine = ExecutionEngine(ir_module, opt_level=2)
-    return engine
-
-
 def link_dylib(
     obj_files: list[str],
     output: str,
@@ -296,6 +276,11 @@ def link_dylib(
     ]
     if debug:
         cmd.insert(1, "-g")  # DWARF debug info for lldb
+    if sys.platform == "darwin":
+        # The SFA BLAS bridge object references cblas_sgemm from the
+        # Accelerate framework.  Link it explicitly so ctypes/Python hosts
+        # can load the dylib without pre-linking Accelerate themselves.
+        cmd.extend(["-framework", "Accelerate"])
     if runner_lib.is_file():
         cmd.extend(["-L", str(build_lib), "-lmlir_c_runner_utils"])
         cmd.append(f"-Wl,-rpath,{build_lib}")
@@ -391,6 +376,7 @@ def _compile_mlir_to_dylib_with_constants(
             obj_files.append(_compile_embedded_data(const_bin_path, td))
 
         obj_files.append(_compile_serveforge_free(td))
+        obj_files.append(_compile_sfa_blas_bridge(td))
 
         link_dylib(obj_files, dylib_path, debug=debug)
 
@@ -461,6 +447,182 @@ void serveforge_free(void* ptr) { free(ptr); }
     if result.returncode != 0:
         raise RuntimeError(
             f"Failed to compile serveforge_free stub (exit {result.returncode}):\n{result.stderr[:2000]}"
+        )
+    return o_path
+
+
+def _compile_sfa_blas_bridge(work_dir: str) -> str:
+    """Compile the C BLAS bridge used by linalg.matmul lowering.
+
+    The MLIR matmul rewrite calls ``sfa_sgemm`` / ``sfa_batch_sgemm`` with
+    normal lowered memref arguments (allocated, aligned, offset, sizes,
+    strides).  The bridge delegates to cblas_sgemm and falls back to a
+    scalar loop for layouts that Accelerate cannot express.
+    """
+    c_path = os.path.join(work_dir, "sfa_blas_bridge.c")
+    o_path = os.path.join(work_dir, "sfa_blas_bridge.o")
+    with open(c_path, "w") as f:
+        f.write(r"""\
+#include <Accelerate/Accelerate.h>
+#include <stdint.h>
+
+static void naive_sgemm(const float *a, const float *b, float *c,
+                        int64_t m, int64_t n, int64_t k,
+                        int64_t lda, int64_t ldb, int64_t ldc) {
+  for (int64_t i = 0; i < m; ++i) {
+    for (int64_t j = 0; j < n; ++j) {
+      float sum = 0.0f;
+      for (int64_t p = 0; p < k; ++p) {
+        sum += a[i * lda + p] * b[p * ldb + j];
+      }
+      c[i * ldc + j] = sum;
+    }
+  }
+}
+
+void sfa_sgemm(float *a_alloc, float *a_aligned, int64_t a_off,
+               int64_t a_s0, int64_t a_s1, int64_t a_str0, int64_t a_str1,
+               float *b_alloc, float *b_aligned, int64_t b_off,
+               int64_t b_s0, int64_t b_s1, int64_t b_str0, int64_t b_str1,
+               float *c_alloc, float *c_aligned, int64_t c_off,
+               int64_t c_s0, int64_t c_s1, int64_t c_str0, int64_t c_str1) {
+  (void)a_alloc; (void)b_alloc; (void)c_alloc; (void)a_off; (void)b_off; (void)c_off;
+  // MLIR memref semantics: `aligned` already points at the first element
+  // (it is allocated + offset).  Adding offset again would double-apply it.
+  const float *a = a_aligned;
+  const float *b = b_aligned;
+  float *c = c_aligned;
+  const int64_t m = a_s0;
+  const int64_t k = a_s1;
+  const int64_t n = b_s1;
+  if (a_str1 == 1 && b_str1 == 1 && c_str1 == 1 &&
+      a_str0 >= k && b_str0 >= n && c_str0 >= n) {
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                (int)m, (int)n, (int)k, 1.0f, a, (int)a_str0,
+                b, (int)b_str0, 0.0f, c, (int)c_str0);
+  } else {
+    naive_sgemm(a, b, c, m, n, k, a_str0, b_str0, c_str0);
+  }
+}
+
+void sfa_batch_sgemm(float *a_alloc, float *a_aligned, int64_t a_off,
+                     int64_t a_s0, int64_t a_s1, int64_t a_s2,
+                     int64_t a_str0, int64_t a_str1, int64_t a_str2,
+                     float *b_alloc, float *b_aligned, int64_t b_off,
+                     int64_t b_s0, int64_t b_s1, int64_t b_s2,
+                     int64_t b_str0, int64_t b_str1, int64_t b_str2,
+                     float *c_alloc, float *c_aligned, int64_t c_off,
+                     int64_t c_s0, int64_t c_s1, int64_t c_s2,
+                     int64_t c_str0, int64_t c_str1, int64_t c_str2) {
+  (void)a_alloc; (void)b_alloc; (void)c_alloc; (void)a_off; (void)b_off; (void)c_off;
+  // MLIR memref semantics: `aligned` already points at the first element
+  // (it is allocated + offset).  Adding offset again would double-apply it.
+  const float *a = a_aligned;
+  const float *b = b_aligned;
+  float *c = c_aligned;
+  const int64_t batch = a_s0;
+  const int64_t m = a_s1;
+  const int64_t k = a_s2;
+  const int64_t n = b_s2;
+  const int use_blas = a_str2 == 1 && b_str2 == 1 && c_str2 == 1 &&
+                       a_str1 >= k && b_str1 >= n && c_str1 >= n;
+  for (int64_t bidx = 0; bidx < batch; ++bidx) {
+    const float *aa = a + bidx * a_str0;
+    const float *bb = b + bidx * b_str0;
+    float *cc = c + bidx * c_str0;
+    if (use_blas) {
+      cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                  (int)m, (int)n, (int)k, 1.0f, aa, (int)a_str1,
+                  bb, (int)b_str1, 0.0f, cc, (int)c_str1);
+    } else {
+      naive_sgemm(aa, bb, cc, m, n, k, a_str1, b_str1, c_str1);
+    }
+  }
+}
+
+static void naive_sgemm_transb(const float *a, const float *b, float *c,
+                               int64_t m, int64_t n, int64_t k,
+                               int64_t lda, int64_t ldb, int64_t ldc) {
+  /* b is stored as [n, k] and used as B^T. */
+  for (int64_t i = 0; i < m; ++i) {
+    for (int64_t j = 0; j < n; ++j) {
+      float sum = 0.0f;
+      for (int64_t p = 0; p < k; ++p) {
+        sum += a[i * lda + p] * b[j * ldb + p];
+      }
+      c[i * ldc + j] = sum;
+    }
+  }
+}
+
+/* C = A @ B^T, where A is [m, k] and B is [n, k] in the torch linear
+   weight layout.  This avoids materializing the transposed weight on every
+   forward step. */
+void sfa_sgemm_transb(float *a_alloc, float *a_aligned, int64_t a_off,
+                      int64_t a_s0, int64_t a_s1, int64_t a_str0, int64_t a_str1,
+                      float *b_alloc, float *b_aligned, int64_t b_off,
+                      int64_t b_s0, int64_t b_s1, int64_t b_str0, int64_t b_str1,
+                      float *c_alloc, float *c_aligned, int64_t c_off,
+                      int64_t c_s0, int64_t c_s1, int64_t c_str0, int64_t c_str1) {
+  (void)a_alloc; (void)b_alloc; (void)c_alloc; (void)a_off; (void)b_off; (void)c_off;
+  const float *a = a_aligned;
+  const float *b = b_aligned;
+  float *c = c_aligned;
+  const int64_t m = a_s0;
+  const int64_t k = a_s1;
+  const int64_t n = b_s0;
+  if (a_str1 == 1 && b_str1 == 1 && c_str1 == 1 &&
+      a_str0 >= k && b_str0 >= k && c_str0 >= n) {
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                (int)m, (int)n, (int)k, 1.0f, a, (int)a_str0,
+                b, (int)b_str0, 0.0f, c, (int)c_str0);
+  } else {
+    naive_sgemm_transb(a, b, c, m, n, k, a_str0, b_str0, c_str0);
+  }
+}
+
+/* Batched C = A @ B^T: A is [batch, m, k] and B is the shared rank-2
+   [n, k] torch linear weight. */
+void sfa_batch_sgemm_transb(float *a_alloc, float *a_aligned, int64_t a_off,
+                            int64_t a_s0, int64_t a_s1, int64_t a_s2,
+                            int64_t a_str0, int64_t a_str1, int64_t a_str2,
+                            float *b_alloc, float *b_aligned, int64_t b_off,
+                            int64_t b_s0, int64_t b_s1,
+                            int64_t b_str0, int64_t b_str1,
+                            float *c_alloc, float *c_aligned, int64_t c_off,
+                            int64_t c_s0, int64_t c_s1, int64_t c_s2,
+                            int64_t c_str0, int64_t c_str1, int64_t c_str2) {
+  (void)a_alloc; (void)b_alloc; (void)c_alloc; (void)a_off; (void)b_off; (void)c_off;
+  const float *a = a_aligned;
+  const float *b = b_aligned;
+  float *c = c_aligned;
+  const int64_t batch = a_s0;
+  const int64_t m = a_s1;
+  const int64_t k = a_s2;
+  const int64_t n = b_s0;
+  const int use_blas = a_str2 == 1 && b_str1 == 1 && c_str2 == 1 &&
+                       a_str1 >= k && b_str0 >= k && c_str1 >= n;
+  for (int64_t bidx = 0; bidx < batch; ++bidx) {
+    const float *aa = a + bidx * a_str0;
+    float *cc = c + bidx * c_str0;
+    if (use_blas) {
+      cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                  (int)m, (int)n, (int)k, 1.0f, aa, (int)a_str1,
+                  b, (int)b_str0, 0.0f, cc, (int)c_str1);
+    } else {
+      naive_sgemm_transb(aa, b, cc, m, n, k, a_str1, b_str0, c_str1);
+    }
+  }
+}
+""")
+    cc_bin = _find_cc()
+    cmd = [cc_bin, "-O3", "-c", c_path, "-o", o_path]
+    if sys.platform == "darwin":
+        cmd += ["-framework", "Accelerate"]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to compile SFA BLAS bridge (exit {result.returncode}):\n{result.stderr[:2000]}"
         )
     return o_path
 

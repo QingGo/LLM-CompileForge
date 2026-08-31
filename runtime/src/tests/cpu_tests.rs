@@ -355,7 +355,7 @@ fn test_sret_second_descriptor_misalignment_reproduces_0xc00() {
 fn test_sfa_abi_proto_one_output_per_function() {
     let dylib_path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../outputs/compiled/opt_125m_fresh/libopt_125m.dylib"
+        "/../outputs/compiled/opt_125m_fresh/libopt_125m_fresh.dylib"
     );
     if !std::path::Path::new(dylib_path).exists() {
         eprintln!("SKIP: dylib not found at {}", dylib_path);

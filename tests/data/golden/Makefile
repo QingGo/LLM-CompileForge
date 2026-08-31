@@ -11,7 +11,7 @@ CFLAGS := -O0 -fPIC -Wall -Wextra -Wno-unused-parameter
 
 GOLDEN_DIR := tests/data/golden
 
-all: $(GOLDEN_DIR)/matmul.dylib $(GOLDEN_DIR)/layer_norm.dylib $(GOLDEN_DIR)/sret_write.dylib $(GOLDEN_DIR)/rms_norm.dylib $(GOLDEN_DIR)/layer_norm_multi.dylib
+all: $(GOLDEN_DIR)/matmul.dylib $(GOLDEN_DIR)/layer_norm.dylib $(GOLDEN_DIR)/sret_write.dylib $(GOLDEN_DIR)/rms_norm.dylib $(GOLDEN_DIR)/layer_norm_multi.dylib $(GOLDEN_DIR)/ssa_chain_3func.dylib $(GOLDEN_DIR)/ssa_chain_fork.dylib $(GOLDEN_DIR)/ssa_chain_dynamic.dylib
 
 $(GOLDEN_DIR)/sret_write.dylib: $(GOLDEN_DIR)/sret_write.c
 	$(CC) $(CFLAGS) -shared -o $@ $<
@@ -31,7 +31,16 @@ $(GOLDEN_DIR)/rms_norm.dylib: $(GOLDEN_DIR)/rms_norm.c
 $(GOLDEN_DIR)/layer_norm_multi.dylib: $(GOLDEN_DIR)/layer_norm_multi.c
 	$(CC) $(CFLAGS) -shared -o $@ $< -lm
 
+$(GOLDEN_DIR)/ssa_chain_3func.dylib: $(GOLDEN_DIR)/ssa_chain_3func.c
+	$(CC) $(CFLAGS) -shared -o $@ $<
+
+$(GOLDEN_DIR)/ssa_chain_fork.dylib: $(GOLDEN_DIR)/ssa_chain_fork.c
+	$(CC) $(CFLAGS) -shared -o $@ $< -lm
+
+$(GOLDEN_DIR)/ssa_chain_dynamic.dylib: $(GOLDEN_DIR)/ssa_chain_dynamic.c
+	$(CC) $(CFLAGS) -shared -o $@ $<
+
 clean:
-	rm -f $(GOLDEN_DIR)/matmul.dylib $(GOLDEN_DIR)/layer_norm.dylib $(GOLDEN_DIR)/rms_norm.dylib $(GOLDEN_DIR)/layer_norm_multi.dylib $(GOLDEN_DIR)/sret_write.dylib
+	rm -f $(GOLDEN_DIR)/matmul.dylib $(GOLDEN_DIR)/layer_norm.dylib $(GOLDEN_DIR)/rms_norm.dylib $(GOLDEN_DIR)/layer_norm_multi.dylib $(GOLDEN_DIR)/sret_write.dylib $(GOLDEN_DIR)/ssa_chain_3func.dylib $(GOLDEN_DIR)/ssa_chain_fork.dylib $(GOLDEN_DIR)/ssa_chain_dynamic.dylib
 
 .PHONY: all clean

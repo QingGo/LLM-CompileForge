@@ -22,7 +22,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
-from compiler.dylib_ffi import DEFAULT_SRET_SIZE
+from compiler.dylib_ffi import DEFAULT_SRET_SIZE  # noqa: E402
 
 
 def _cos(a: np.ndarray, b: np.ndarray) -> float:
@@ -86,20 +86,20 @@ def _compile_sf_to_dylib(sf_mlir: str, tmp_dir: str, name: str) -> str:
         lower_linalg_to_llvm_ir(mod)
         _fixup_unrealized_casts_pass(mod)
         m = os.path.join(tmp_dir, "m.mlir")
-        l = os.path.join(tmp_dir, "m.ll")
+        ll_file = os.path.join(tmp_dir, "m.ll")
         o = os.path.join(tmp_dir, "m.o")
         d = os.path.join(tmp_dir, f"{name}.dylib")
         with open(m, "w") as f:
             f.write(str(mod))
         subprocess.run(
-            [_find_tool("mlir-translate"), "--mlir-to-llvmir", m, "-o", l],
+            [_find_tool("mlir-translate"), "--mlir-to-llvmir", m, "-o", ll_file],
             capture_output=True,
             text=True,
             check=True,
             timeout=60,
         )
         subprocess.run(
-            [_find_tool("cc"), "-c", l, "-o", o, "-O0"],
+            [_find_tool("cc"), "-c", ll_file, "-o", o, "-O0"],
             capture_output=True,
             text=True,
             check=True,
@@ -136,8 +136,6 @@ def _make_mini_gpt_mlir(num_layers: int = 2) -> tuple[str, list[str], list[tuple
 
     h = str(HIDDEN)  # "64"
     v = str(VOCAB)  # "100"
-    dk = str(D_K)  # "16"
-    hd = str(HEADS)  # "4"
     b, s = str(BATCH), str(SEQ)
 
     args = [f"%input_ids: tensor<{b}x{s}xi64>"]
@@ -149,7 +147,8 @@ def _make_mini_gpt_mlir(num_layers: int = 2) -> tuple[str, list[str], list[tuple
     # Token embedding
     lines.append(f"    {w('tok_embed', (VOCAB, HIDDEN))}")
     lines.append(
-        f'    %h = "sf.embedding"(%tok_embed, %input_ids) : (tensor<{v}x{h}xf32>, tensor<{b}x{s}xi64>) -> tensor<{b}x{s}x{h}xf32>'
+        f'    %h = "sf.embedding"(%tok_embed, %input_ids) : '
+        f"(tensor<{v}x{h}xf32>, tensor<{b}x{s}xi64>) -> tensor<{b}x{s}x{h}xf32>"
     )
 
     # Position embedding — use sf.embedding for simplicity
@@ -159,13 +158,17 @@ def _make_mini_gpt_mlir(num_layers: int = 2) -> tuple[str, list[str], list[tuple
         f'    %pos = "sf.embedding"(%pos_embed, %pos_ids_0) : (tensor<{s}x{h}xf32>, tensor<4xi64>) -> tensor<4x{h}xf32>'
     )
     lines.append(
-        f'    %pos_bc = linalg.generic {{indexing_maps = [affine_map<(d0, d1, d2) -> (d1, d2)>, affine_map<(d0, d1, d2) -> (d0, d1, d2)>], iterator_types = ["parallel", "parallel", "parallel"]}} ins(%pos : tensor<4x{h}xf32>) outs(%h : tensor<{b}x{s}x{h}xf32>) {{'
+        f'    %pos_bc = linalg.generic {{indexing_maps = [affine_map<(d0, d1, d2) -> (d1, d2)>, '
+        f'affine_map<(d0, d1, d2) -> (d0, d1, d2)>], '
+        f'iterator_types = ["parallel", "parallel", "parallel"]}} '
+        f'ins(%pos : tensor<4x{h}xf32>) outs(%h : tensor<{b}x{s}x{h}xf32>) {{'
     )
     lines.append("    ^bb0(%pv: f32, %o: f32):")
     lines.append("      linalg.yield %pv : f32")
     lines.append(f"    }} -> tensor<{b}x{s}x{h}xf32>")
     lines.append(
-        f'    %h1 = "sf.add"(%h, %pos_bc) : (tensor<{b}x{s}x{h}xf32>, tensor<{b}x{s}x{h}xf32>) -> tensor<{b}x{s}x{h}xf32>'
+        f'    %h1 = "sf.add"(%h, %pos_bc) : '
+        f"(tensor<{b}x{s}x{h}xf32>, tensor<{b}x{s}x{h}xf32>) -> tensor<{b}x{s}x{h}xf32>"
     )
 
     h_var = "%h1"
@@ -175,7 +178,8 @@ def _make_mini_gpt_mlir(num_layers: int = 2) -> tuple[str, list[str], list[tuple
         lines.append(f"    {w(f'{p}_ln1_w', (HIDDEN,))}")
         lines.append(f"    {w(f'{p}_ln1_b', (HIDDEN,))}")
         lines.append(
-            f'    %{p}_ln1 = "sf.layer_norm"({h_var}, %{p}_ln1_w, %{p}_ln1_b) : (tensor<{b}x{s}x{h}xf32>, tensor<{h}xf32>, tensor<{h}xf32>) -> tensor<{b}x{s}x{h}xf32>'
+            f'    %{p}_ln1 = "sf.layer_norm"({h_var}, %{p}_ln1_w, %{p}_ln1_b) : '
+            f"(tensor<{b}x{s}x{h}xf32>, tensor<{h}xf32>, tensor<{h}xf32>) -> tensor<{b}x{s}x{h}xf32>"
         )
 
         # Self-attention: Q, K, V projections
@@ -184,13 +188,16 @@ def _make_mini_gpt_mlir(num_layers: int = 2) -> tuple[str, list[str], list[tuple
         lines.append(f"    {w(f'{p}_v_w', (HIDDEN, HIDDEN))}")
         lines.append(f"    {w(f'{p}_o_w', (HIDDEN, HIDDEN))}")
         lines.append(
-            f'    %{p}_q = "sf.linear"(%{p}_ln1, %{p}_q_w) : (tensor<{b}x{s}x{h}xf32>, tensor<{h}x{h}xf32>) -> tensor<{b}x{s}x{h}xf32>'
+            f'    %{p}_q = "sf.linear"(%{p}_ln1, %{p}_q_w) : '
+            f"(tensor<{b}x{s}x{h}xf32>, tensor<{h}x{h}xf32>) -> tensor<{b}x{s}x{h}xf32>"
         )
         lines.append(
-            f'    %{p}_k = "sf.linear"(%{p}_ln1, %{p}_k_w) : (tensor<{b}x{s}x{h}xf32>, tensor<{h}x{h}xf32>) -> tensor<{b}x{s}x{h}xf32>'
+            f'    %{p}_k = "sf.linear"(%{p}_ln1, %{p}_k_w) : '
+            f"(tensor<{b}x{s}x{h}xf32>, tensor<{h}x{h}xf32>) -> tensor<{b}x{s}x{h}xf32>"
         )
         lines.append(
-            f'    %{p}_v = "sf.linear"(%{p}_ln1, %{p}_v_w) : (tensor<{b}x{s}x{h}xf32>, tensor<{h}x{h}xf32>) -> tensor<{b}x{s}x{h}xf32>'
+            f'    %{p}_v = "sf.linear"(%{p}_ln1, %{p}_v_w) : '
+            f"(tensor<{b}x{s}x{h}xf32>, tensor<{h}x{h}xf32>) -> tensor<{b}x{s}x{h}xf32>"
         )
 
         # Reshape for multi-head: (B,S,H) → (B,S,HEADS,D_K) — skip for simplicity, use single head
@@ -199,24 +206,29 @@ def _make_mini_gpt_mlir(num_layers: int = 2) -> tuple[str, list[str], list[tuple
         # SDPA
         scale_val = 1.0 / np.sqrt(D_K)
         lines.append(
-            f'    %{p}_attn = "sf.scaled_dot_product_attention"(%{p}_q, %{p}_k, %{p}_v) {{scale = {scale_val} : f64}} : (tensor<{b}x{s}x{h}xf32>, tensor<{b}x{s}x{h}xf32>, tensor<{b}x{s}x{h}xf32>) -> tensor<{b}x{s}x{h}xf32>'
+            f'    %{p}_attn = "sf.scaled_dot_product_attention"(%{p}_q, %{p}_k, %{p}_v) '
+            f'{{scale = {scale_val} : f64}} : '
+            f"(tensor<{b}x{s}x{h}xf32>, tensor<{b}x{s}x{h}xf32>, tensor<{b}x{s}x{h}xf32>) -> tensor<{b}x{s}x{h}xf32>"
         )
 
         # Output projection
         lines.append(
-            f'    %{p}_attn_out = "sf.linear"(%{p}_attn, %{p}_o_w) : (tensor<{b}x{s}x{h}xf32>, tensor<{h}x{h}xf32>) -> tensor<{b}x{s}x{h}xf32>'
+            f'    %{p}_attn_out = "sf.linear"(%{p}_attn, %{p}_o_w) : '
+            f"(tensor<{b}x{s}x{h}xf32>, tensor<{h}x{h}xf32>) -> tensor<{b}x{s}x{h}xf32>"
         )
 
         # Residual
         lines.append(
-            f'    %{p}_res1 = "sf.add"({h_var}, %{p}_attn_out) : (tensor<{b}x{s}x{h}xf32>, tensor<{b}x{s}x{h}xf32>) -> tensor<{b}x{s}x{h}xf32>'
+            f'    %{p}_res1 = "sf.add"({h_var}, %{p}_attn_out) : '
+            f"(tensor<{b}x{s}x{h}xf32>, tensor<{b}x{s}x{h}xf32>) -> tensor<{b}x{s}x{h}xf32>"
         )
 
         # Layer norm 2 (pre-FFN)
         lines.append(f"    {w(f'{p}_ln2_w', (HIDDEN,))}")
         lines.append(f"    {w(f'{p}_ln2_b', (HIDDEN,))}")
         lines.append(
-            f'    %{p}_ln2 = "sf.layer_norm"(%{p}_res1, %{p}_ln2_w, %{p}_ln2_b) : (tensor<{b}x{s}x{h}xf32>, tensor<{h}xf32>, tensor<{h}xf32>) -> tensor<{b}x{s}x{h}xf32>'
+            f'    %{p}_ln2 = "sf.layer_norm"(%{p}_res1, %{p}_ln2_w, %{p}_ln2_b) : '
+            f"(tensor<{b}x{s}x{h}xf32>, tensor<{h}xf32>, tensor<{h}xf32>) -> tensor<{b}x{s}x{h}xf32>"
         )
 
         # FFN: fc1 → silu → fc2
@@ -227,16 +239,19 @@ def _make_mini_gpt_mlir(num_layers: int = 2) -> tuple[str, list[str], list[tuple
         lines.append(f"    {w(f'{p}_fc2_w', (HIDDEN, ffn_hidden))}")
         lines.append(f"    {w(f'{p}_fc2_b', (HIDDEN,))}")
         lines.append(
-            f'    %{p}_fc1 = "sf.linear"(%{p}_ln2, %{p}_fc1_w, %{p}_fc1_b) : (tensor<{b}x{s}x{h}xf32>, tensor<{fh}x{h}xf32>, tensor<{fh}xf32>) -> tensor<{b}x{s}x{fh}xf32>'
+            f'    %{p}_fc1 = "sf.linear"(%{p}_ln2, %{p}_fc1_w, %{p}_fc1_b) : '
+            f"(tensor<{b}x{s}x{h}xf32>, tensor<{fh}x{h}xf32>, tensor<{fh}xf32>) -> tensor<{b}x{s}x{fh}xf32>"
         )
         lines.append(f'    %{p}_act = "sf.silu"(%{p}_fc1) : (tensor<{b}x{s}x{fh}xf32>) -> tensor<{b}x{s}x{fh}xf32>')
         lines.append(
-            f'    %{p}_fc2 = "sf.linear"(%{p}_act, %{p}_fc2_w, %{p}_fc2_b) : (tensor<{b}x{s}x{fh}xf32>, tensor<{h}x{fh}xf32>, tensor<{h}xf32>) -> tensor<{b}x{s}x{h}xf32>'
+            f'    %{p}_fc2 = "sf.linear"(%{p}_act, %{p}_fc2_w, %{p}_fc2_b) : '
+            f"(tensor<{b}x{s}x{fh}xf32>, tensor<{h}x{fh}xf32>, tensor<{h}xf32>) -> tensor<{b}x{s}x{h}xf32>"
         )
 
         # Residual
         lines.append(
-            f'    %{p}_res2 = "sf.add"(%{p}_res1, %{p}_fc2) : (tensor<{b}x{s}x{h}xf32>, tensor<{b}x{s}x{h}xf32>) -> tensor<{b}x{s}x{h}xf32>'
+            f'    %{p}_res2 = "sf.add"(%{p}_res1, %{p}_fc2) : '
+            f"(tensor<{b}x{s}x{h}xf32>, tensor<{b}x{s}x{h}xf32>) -> tensor<{b}x{s}x{h}xf32>"
         )
 
         h_var = f"%{p}_res2"
@@ -245,7 +260,8 @@ def _make_mini_gpt_mlir(num_layers: int = 2) -> tuple[str, list[str], list[tuple
     lines.append(f"    {w('final_ln_w', (HIDDEN,))}")
     lines.append(f"    {w('final_ln_b', (HIDDEN,))}")
     lines.append(
-        f'    %final_ln = "sf.layer_norm"({h_var}, %final_ln_w, %final_ln_b) : (tensor<{b}x{s}x{h}xf32>, tensor<{h}xf32>, tensor<{h}xf32>) -> tensor<{b}x{s}x{h}xf32>'
+        f'    %final_ln = "sf.layer_norm"({h_var}, %final_ln_w, %final_ln_b) : '
+        f"(tensor<{b}x{s}x{h}xf32>, tensor<{h}xf32>, tensor<{h}xf32>) -> tensor<{b}x{s}x{h}xf32>"
     )
 
     ret_vals.append("%final_ln")
@@ -339,7 +355,7 @@ class TestMiniGpt:
         """Mini GPT compiles to dylib and produces output matching numpy ref."""
         rng = np.random.RandomState(42)
         mlir, w_names, w_shapes = _make_mini_gpt_mlir(num_layers=num_layers)
-        weights = {n: rng.randn(*s).astype(np.float32) * 0.02 for n, s in zip(w_names, w_shapes)}
+        weights = {n: rng.randn(*s).astype(np.float32) * 0.02 for n, s in zip(w_names, w_shapes, strict=True)}
         input_ids = np.array([[2, 3, 1, 5], [0, 0, 0, 0]], dtype=np.int64)
 
         # Compile to dylib
@@ -352,7 +368,7 @@ class TestMiniGpt:
             from compiler.pipeline import _apply_sf_to_linalg
 
             lowered = _apply_sf_to_linalg(mlir)
-            wm = re.search(r"sf\.weight_names\s*=\s*\[(.*?)\]", lowered, re.DOTALL)
+            wm = re.search(r"weight_names[^]]*\[(.*?)\]", lowered, re.DOTALL)
             promoted_names = [w.strip().strip('"') for w in wm.group(1).split(",")]
 
             # Build input args: input_ids + weights in promoted order

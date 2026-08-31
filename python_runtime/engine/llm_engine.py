@@ -89,6 +89,16 @@ class LLMEngine:
         # ── Auto-detect cache config from module metadata ─
         cp = _CacheParams(module, **kwargs)
 
+        # ── Executor ─────────────────────────────────────
+        # Created before the scheduling bridge so the bridge can adopt the
+        # executor's KV capability (scheduler KV mode → single-token decode).
+        if executor is not None:
+            self.executor: Any = executor
+        else:
+            from python_runtime.engine.mlir_executor import MlirExecutor
+
+            self.executor = MlirExecutor(module, hal_backend)
+
         # ── Scheduling bridge (Rust Scheduler + BlockManager + RadixCache) ──
         self._bridge = SchedulingBridge(
             num_blocks=cp.num_blocks,
@@ -97,15 +107,8 @@ class LLMEngine:
             max_tokens_per_step=kwargs.get("max_tokens_per_step", DEFAULT_MAX_TOKENS_PER_STEP),
             chunk_size=kwargs.get("chunk_size", DEFAULT_CHUNK_SIZE),
             enable_prefix_cache=kwargs.get("enable_prefix_cache", False),
+            use_kv_cache=getattr(self.executor, "_uses_cache_manager", False),
         )
-
-        # ── Executor ─────────────────────────────────────
-        if executor is not None:
-            self.executor: Any = executor
-        else:
-            from python_runtime.engine.mlir_executor import MlirExecutor
-
-            self.executor = MlirExecutor(module, hal_backend)
 
         # ── Inference loop ───────────────────────────────
         self._loop = InferenceLoop(
@@ -116,6 +119,18 @@ class LLMEngine:
             head_dim=cp.head_dim,
             kv_dtype=cp.dtype,
         )
+
+        # ── Align cache-manager slab capacity with the block pool ──
+        # The Rust BlockManager owns physical block ids (0..num_blocks);
+        # the executor's slab must cover them all.  Executors constructed
+        # before the engine — hence before the num_blocks metadata
+        # injection — may have sized their slabs from the stale default.
+        if getattr(self.executor, "_uses_cache_manager", False):
+            mgr = getattr(self.executor, "_cache_mgr", None)
+            if mgr is not None and getattr(mgr, "_num_blocks", 0) != cp.num_blocks:
+                from python_runtime.engine.cache_manager import CacheManager
+
+                self.executor._cache_mgr = CacheManager(mgr._policy, num_blocks=cp.num_blocks)
 
         # ── Tokenizer ────────────────────────────────────
         self._tokenizer: Any = None
@@ -164,6 +179,7 @@ class LLMEngine:
         top_p: float = 1.0,
         top_k: int = 0,
         priority: int = 0,
+        stop_token_ids: list[int] | None = None,
     ) -> str:
         if isinstance(prompt, str):
             if self._tokenizer is None:
@@ -172,8 +188,8 @@ class LLMEngine:
         else:
             prompt_tokens = list(prompt)
 
-        rid = str(time.monotonic_ns())
-        self._bridge.add_request(rid, prompt_tokens, max_tokens)
+        rid = f"req_{time.monotonic_ns()}"
+        self._bridge.add_request(rid, prompt_tokens, max_tokens, stop_token_ids)
         self.__loop.add_request(
             rid,
             prompt_tokens,
@@ -206,6 +222,7 @@ class LLMEngine:
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
+            stop_token_ids=[self._eos_token_id] if self._eos_token_id is not None else None,
         )
 
         all_output_tokens: list[int] = []

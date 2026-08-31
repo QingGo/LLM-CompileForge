@@ -56,6 +56,13 @@ def _dict_to_proto_cache_policy(raw: dict[str, Any]) -> SfaCachePolicy:
         ispec.intercept_type = i["direction"]
         ispec.source = i.get("source", "")
         ispec.layer = i.get("layer", "sequential")
+        # Preserve the contract keys (func_index, output_index) the JSON
+        # metadata carries — they pin each intercept to the producer
+        # function's K/V output.
+        if i.get("func_index") is not None:
+            ispec.param_indices.append(int(i["func_index"]))
+        if i.get("output_index") is not None:
+            ispec.param_indices.append(int(i["output_index"]))
     return policy
 
 
@@ -146,11 +153,22 @@ class CacheManager:
         for i, pos in enumerate(pos_list):
             block_idx = pos // bs
             offset = pos % bs
+            written = False
             for blocks in bt.values():
                 if block_idx < len(blocks):
                     phys_id = blocks[block_idx]
                     slab[phys_id, layer_idx, offset] = data_norm[i]
+                    written = True
                     break
+            if not written:
+                _logger.warning(
+                    "KV write skipped: position %d (block_idx=%d) not covered "
+                    "by any request's block table (table lengths: %s). This "
+                    "indicates a block allocation gap or stale position data.",
+                    pos,
+                    block_idx,
+                    [len(b) for b in bt.values()],
+                )
 
     def read_paged(
         self,

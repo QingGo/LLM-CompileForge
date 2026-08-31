@@ -91,6 +91,7 @@ mod precision_contract {
 
     #[test]
     fn test_contract_matmul_2x2_f32() {
+    let _dylib_guard = crate::dylib_lock::lock();
         let contract = load_contract();
         let case = find_case(&contract, "matmul_2x2_f32");
 
@@ -152,6 +153,7 @@ mod precision_contract {
 
     #[test]
     fn test_contract_rms_norm_2x4_f32() {
+    let _dylib_guard = crate::dylib_lock::lock();
         let contract = load_contract();
         let case = find_case(&contract, "rms_norm_2x4_f32");
 
@@ -206,6 +208,7 @@ mod precision_contract {
 
     #[test]
     fn test_contract_multi_out_ln_f32() {
+    let _dylib_guard = crate::dylib_lock::lock();
         let contract = load_contract();
         let case = find_case(&contract, "multi_out_ln_f32");
 

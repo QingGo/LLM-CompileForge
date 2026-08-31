@@ -21,7 +21,7 @@ using namespace mlir::sf;
 namespace {
 
 // Maximum supported rank for binary broadcast ops.
-constexpr int64_t kMaxBinaryRank = 4;
+constexpr int64_t kMaxBinaryRank = 5;
 
 } // namespace
 

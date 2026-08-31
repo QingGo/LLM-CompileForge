@@ -29,6 +29,7 @@ class _BatchRequest:
     positions: torch.Tensor
     block_table: list[int]
     is_decode: bool
+    state: str
 
     @property
     def n_tokens(self) -> int:
@@ -206,13 +207,17 @@ class InferenceLoop:
         batch_requests: list[_BatchRequest] = []
         for rd in reqs_data:
             rid = rd["request_id"]
-            is_decode = rd["state"] == "decode"
+            # Decode is defined by the input being a single token (same
+            # convention as the Rust runtime's `input_ids.len() == 1`).
+            # The scheduler flips request state to "decode" on the FINAL
+            # prefill chunk, so state alone would misclassify it.
             br = _BatchRequest(
                 request_id=rid,
                 input_ids=torch.tensor(rd["input_ids"], dtype=torch.long),
                 positions=torch.tensor(rd["positions"], dtype=torch.long),
                 block_table=rd["block_table"],
-                is_decode=is_decode,
+                is_decode=rd["n_tokens"] == 1,
+                state=rd["state"],
             )
             batch_requests.append(br)
 
@@ -247,6 +252,11 @@ class InferenceLoop:
     def _can_batch_forward(self, batch: _Batch) -> bool:
         if len(batch._requests) <= 1:
             return len(batch._requests) == 1
+        # The cache-manager intercept writes/reads are keyed per request
+        # block table; batching multiple KV requests would collide.  Run
+        # them one at a time.
+        if self._uses_new_cache():
+            return False
         first_n = batch._requests[0].n_tokens
         for r in batch._requests[1:]:
             if r.n_tokens != first_n:
@@ -278,27 +288,29 @@ class InferenceLoop:
         return self._sample_from_logits(logits, batch)
 
     def _step_per_request(self, batch: _Batch, use_kv: bool) -> list[GenerationResult]:
-        if use_kv:
-            self.executor.set_kv_cache(
-                kv_cache=self._kv_cache,
-                block_tables=batch.block_tables,
-                block_size=self._bridge.block_size,
-                num_kv_heads=self._num_kv_heads,
-                head_dim=self._head_dim,
-            )
-
         results: list[GenerationResult] = []
         for i, br in enumerate(batch._requests):
             req_input = br.input_ids.unsqueeze(0) if br.input_ids.dim() == 1 else br.input_ids
             req_pos = br.positions.unsqueeze(0) if br.positions.dim() == 1 else br.positions
 
             if use_kv:
+                # Pass only THIS request's block table: the cache-manager
+                # write/read paths address positions through the active
+                # table, and multiple requests would collide.
+                req_bt = {br.request_id: batch.block_tables.get(br.request_id, [])}
+                self.executor.set_kv_cache(
+                    kv_cache=self._kv_cache,
+                    block_tables=req_bt,
+                    block_size=self._bridge.block_size,
+                    num_kv_heads=self._num_kv_heads,
+                    head_dim=self._head_dim,
+                )
                 logits, kv_tensors = self.executor.forward_with_kv(
                     req_input,
                     positions=req_pos,
                     is_decode=br.is_decode,
                 )
-                self._write_kv_outputs(kv_tensors, req_pos, batch.block_tables)
+                self._write_kv_outputs(kv_tensors, req_pos, req_bt)
             else:
                 logits = self.executor.forward(req_input, positions=req_pos)
 
@@ -317,6 +329,13 @@ class InferenceLoop:
 
         for req_idx, br in enumerate(batch._requests[req_start:req_end]):
             rid = br.request_id
+
+            # Intermediate prefill chunks must not sample: their last
+            # position is partial context.  The final chunk is already
+            # flagged "decode" by the scheduler, so it still samples the
+            # first output token here.
+            if br.state == "prefill":
+                continue
 
             if logits_tensor.dim() >= 3:
                 req_logits = logits_tensor[req_idx : req_idx + 1, -1, :]

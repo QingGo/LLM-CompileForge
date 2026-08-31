@@ -33,3 +33,10 @@ gen/
 docs/
 .agent_memory.md
 .session_handoff.md
+
+# golden outputs — auto-generated on first test run, not committed
+tests/data/golden/npy/**/*.npz
+tests/data/golden/npy/**/.sha256sum
+
+outputs/compiled/opt_125m_kv/
+**/.lit_test_times.txt

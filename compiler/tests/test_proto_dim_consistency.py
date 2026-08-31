@@ -30,7 +30,7 @@ def _load_proto(sfa_abi_path: str):
     return hdr
 
 
-def _parse_lowered_arg_types(lowered_path: str) -> dict[str, list[tuple[int, list[int]]]]:
+def _parse_lowered_arg_types(lowered_path: str) -> dict[str, list[tuple[int, list[int], str]]]:
     """Parse lowered MLIR function argument tensor types."""
     from compiler.sfa_abi import parse_lowered_argument_types
 
@@ -77,7 +77,7 @@ class TestProtoDimConsistency:
             if lt_pos >= len(lt):
                 errors.append(f"lwn[{wi}]='{wname}' → lt[{lt_pos}] out of bounds")
                 continue
-            expected_rank, expected_dims = lt[lt_pos]
+            expected_rank, expected_dims, _expected_dtype = lt[lt_pos]
 
             if wname not in proto_weights:
                 errors.append(f"'{wname}' not found in proto weight entries")

@@ -6,6 +6,10 @@ package sfa;
 // Defines numerical correctness test vectors that both compiler and runtime
 // subprojects import and verify independently against their own artifacts.
 //
+// Two complementary test case types:
+//   NumericalTestCase  — single-op precision (matmul, rms_norm, etc.)
+//   FunctionTestCase   — multi-op composition (attention_chain, ffn_block, etc.)
+//
 // Usage:
 //   Compiler: compile mini model → ctypes call dylib → compare output against cases
 //   Runtime:  MockExecutable returns case.expected_output → verify executor pipeline
@@ -23,9 +27,28 @@ message NumericalTestCase {
   double max_abs_error = 9;        // runtime-side per-element error threshold
 }
 
+// Multi-op composition test case.
+// Complement to NumericalTestCase: tests correctness of op chains (e.g. attention_chain,
+// ffn_block) where intermediate outputs are exposed for per-op verification.
+// Expected output values are NOT stored here — they are computed at test time from
+// the HuggingFace reference model to avoid stale data.
+message FunctionTestCase {
+  string name = 1;                 // "attention_chain_seq2"
+  string mlir_template = 2;        // sf-dialect MLIR for the op chain
+  repeated int64 input_shape = 3;  // input tensor dimensions
+  repeated float input_data = 4;   // flattened input data (optional — can be random)
+  repeated string output_names = 5; // names of intermediate outputs exposed (e.g. ["ln_out", "q_raw", "k_raw", "sdpa_out", "final"])
+  repeated int64 expected_shapes = 6; // packed shapes: [out0_rank, out0_dim0, ..., out1_rank, out1_dim0, ...]
+  double min_cosine = 7;           // per-test minimum cosine similarity threshold
+  string description = 8;          // human-readable description
+  // Note: expected_output data is NOT included — comparison is done at test time
+  // by computing the HF reference dynamically. Static expected data would go stale.
+}
+
 // Top-level precision contract container.
 // Embedded in dylib or distributed as standalone test fixture.
 message PrecisionContract {
-  string version = 1;              // "1.0"
-  repeated NumericalTestCase cases = 2;
+  string version = 1;                           // "1.0"
+  repeated NumericalTestCase cases = 2;         // single-op test cases
+  repeated FunctionTestCase function_cases = 3; // multi-op composition test cases
 }

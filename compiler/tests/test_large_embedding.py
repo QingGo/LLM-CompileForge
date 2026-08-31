@@ -20,7 +20,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
-from compiler.dylib_ffi import DEFAULT_SRET_SIZE
+from compiler.dylib_ffi import DEFAULT_SRET_SIZE  # noqa: E402
 
 
 def _cos(a: np.ndarray, b: np.ndarray) -> float:
@@ -84,20 +84,20 @@ def _compile(sf_mlir: str, tmp_dir: str, name: str) -> str:
         lower_linalg_to_llvm_ir(mod)
         _fixup_unrealized_casts_pass(mod)
         m = os.path.join(tmp_dir, "m.mlir")
-        l = os.path.join(tmp_dir, "m.ll")
+        ll_file = os.path.join(tmp_dir, "m.ll")
         o = os.path.join(tmp_dir, "m.o")
         d = os.path.join(tmp_dir, f"{name}.dylib")
         with open(m, "w") as f:
             f.write(str(mod))
         subprocess.run(
-            [_find_tool("mlir-translate"), "--mlir-to-llvmir", m, "-o", l],
+            [_find_tool("mlir-translate"), "--mlir-to-llvmir", m, "-o", ll_file],
             capture_output=True,
             text=True,
             check=True,
             timeout=60,
         )
         subprocess.run(
-            [_find_tool("cc"), "-c", l, "-o", o, "-O0"], capture_output=True, text=True, check=True, timeout=60
+            [_find_tool("cc"), "-c", ll_file, "-o", o, "-O0"], capture_output=True, text=True, check=True, timeout=60
         )
         free_o = _compile_serveforge_free(tmp_dir)
         link_dylib([o, free_o], d)
@@ -109,9 +109,9 @@ def _compile(sf_mlir: str, tmp_dir: str, name: str) -> str:
 class TestLargeEmbedding:
     def test_large_embedding_high_indices(self):
         """sf.embedding with 50K vocab — high-index tokens match reference."""
-        VOCAB, HIDDEN = 50000, 768
+        vocab, hidden = 50000, 768
         rng = np.random.RandomState(42)
-        emb_w = rng.randn(VOCAB, HIDDEN).astype(np.float32)
+        emb_w = rng.randn(vocab, hidden).astype(np.float32)
 
         input_ids = np.zeros((2, 4), dtype=np.int64)
         input_ids[0, 0] = 2  # low index
@@ -120,9 +120,9 @@ class TestLargeEmbedding:
         input_ids[0, 3] = 49999  # max index
 
         mlir = f"""module {{
-  func.func @main_0(%ids: tensor<2x4xi64>, %w: tensor<{VOCAB}x{HIDDEN}xf32>) -> tensor<2x4x{HIDDEN}xf32> {{
-    %emb = "sf.embedding"(%w, %ids) : (tensor<{VOCAB}x{HIDDEN}xf32>, tensor<2x4xi64>) -> tensor<2x4x{HIDDEN}xf32>
-    return %emb : tensor<2x4x{HIDDEN}xf32>
+  func.func @main_0(%ids: tensor<2x4xi64>, %w: tensor<{vocab}x{hidden}xf32>) -> tensor<2x4x{hidden}xf32> {{
+    %emb = "sf.embedding"(%w, %ids) : (tensor<{vocab}x{hidden}xf32>, tensor<2x4xi64>) -> tensor<2x4x{hidden}xf32>
+    return %emb : tensor<2x4x{hidden}xf32>
   }}
 }}"""
         with tempfile.TemporaryDirectory() as td:
@@ -144,11 +144,11 @@ class TestLargeEmbedding:
             for batch in range(2):
                 for seq in range(4):
                     tid = int(input_ids[batch, seq])
-                    expected = emb_w[tid % VOCAB]
+                    expected = emb_w[tid % vocab]
                     act = actual[batch, seq]
                     cos = _cos(act, expected)
                     status = "✅" if cos >= 0.9999 else "❌"
                     print(f"  token {tid:>5}: cos={cos:.8f} {status}")
 
-            overall_cos = _cos(actual, emb_w[input_ids % VOCAB])
+            overall_cos = _cos(actual, emb_w[input_ids % vocab])
             assert overall_cos >= 0.9999, f"Large embedding cos={overall_cos:.8f} < 0.9999"

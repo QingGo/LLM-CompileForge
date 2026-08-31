@@ -232,6 +232,19 @@ impl Scheduler {
 
                     num_decode += 1;
 
+                    // Grow the block table to cover the token about to be
+                    // written/read by this decode step (KV positions reach
+                    // prompt_len + output_len - 1).  Without this, KV writes
+                    // beyond the prompt-length allocation are dropped.
+                    if self.use_kv_cache {
+                        let target_tokens = req.prompt_tokens.len()
+                            + req.output_tokens.len()
+                            + 1;
+                        if block_manager.ensure_blocks(&req.request_id, target_tokens).is_err() {
+                            continue; // OOM — retry next step
+                        }
+                    }
+
                     let blocks = match block_manager.get_blocks(&req.request_id) {
                         Ok(blks) => blks.to_vec(),
                         Err(_) => continue,
@@ -245,10 +258,17 @@ impl Scheduler {
                             .unwrap_or_else(|| req.prompt_tokens.last().copied().unwrap_or(0));
                         let current_seq_len = req.prompt_tokens.len() + req.output_tokens.len();
 
+                        // The fed token's TRUE absolute position.  The executor
+                        // convention (see test_kv_decode_step_matches_full_recompute)
+                        // is: position = index the fed token occupies in the full
+                        // sequence, so the last output token o_k sits at
+                        // prompt_len + output_len - 1 = current_seq_len - 1.
+                        let fed_pos = current_seq_len.saturating_sub(1) as u32;
+
                         scheduled.push(ScheduledRequest {
                             request_id: req.request_id.clone(),
                             input_ids: vec![last_token],
-                            positions: vec![current_seq_len as u32],
+                            positions: vec![fed_pos],
                             state: req.state,
                             block_table: blocks.clone(),
                             use_kv_cache: true,

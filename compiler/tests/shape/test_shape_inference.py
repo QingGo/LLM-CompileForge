@@ -23,6 +23,10 @@ class TestMatmul:
         out = infer_output_shape("matmul", [(None, 8), (8, 16)], ["f32", "f32"])
         assert out == [((None, 16), "f32")]
 
+    def test_batched_3d_matmul(self) -> None:
+        out = infer_output_shape("matmul", [(1, 32, 1), (1, 1, None)], ["f32", "f32"])
+        assert out == [((1, 32, None), "f32")]
+
 
 class TestElementWise:
     """Element-wise ops broadcast inputs and pass-thru first element type."""
@@ -62,6 +66,14 @@ class TestSoftmax:
 
 class TestShapeManip:
     """view/unsqueeze/transpose: explicit shape changes."""
+
+    def test_expand_minus_one_right_aligned(self) -> None:
+        out = infer_output_shape("expand", [(1, 32, 1)], ["f32"], shape=[1, -1, 1])
+        assert out == [((1, 32, 1), "f32")]
+
+    def test_expand_minus_one_lower_rank_input(self) -> None:
+        out = infer_output_shape("expand", [(32, 1)], ["f32"], shape=[1, -1, 1])
+        assert out == [((1, 32, 1), "f32")]
 
     def test_view(self) -> None:
         out = infer_output_shape("view", [(2, 64)], ["f32"], shape=(4, 32))

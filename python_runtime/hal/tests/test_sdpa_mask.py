@@ -44,7 +44,7 @@ class TestSDPAMaskConversion:
 
         mock_return = torch.randn_like(qkv[0])
         with patch(
-            "hal.pytorch_backend._ops_attention.F.scaled_dot_product_attention",
+            "python_runtime.hal.pytorch_backend._ops_attention.F.scaled_dot_product_attention",
             return_value=mock_return,
         ) as mock_sdpa:
             ops._op_scaled_dot_product_attention(
@@ -64,7 +64,7 @@ class TestSDPAMaskConversion:
 
         mock_return = torch.randn_like(qkv[0])
         with patch(
-            "hal.pytorch_backend._ops_attention.F.scaled_dot_product_attention",
+            "python_runtime.hal.pytorch_backend._ops_attention.F.scaled_dot_product_attention",
             return_value=mock_return,
         ) as mock_sdpa:
             ops._op_scaled_dot_product_attention(
@@ -91,7 +91,7 @@ class TestSDPAMaskConversion:
 
         mock_return = torch.randn_like(qkv[0])
         with patch(
-            "hal.pytorch_backend._ops_attention.F.scaled_dot_product_attention",
+            "python_runtime.hal.pytorch_backend._ops_attention.F.scaled_dot_product_attention",
             return_value=mock_return,
         ) as mock_sdpa:
             ops._op_scaled_dot_product_attention(
@@ -109,7 +109,7 @@ class TestSDPAMaskConversion:
 
         mock_return = torch.randn_like(qkv[0])
         with patch(
-            "hal.pytorch_backend._ops_attention.F.scaled_dot_product_attention",
+            "python_runtime.hal.pytorch_backend._ops_attention.F.scaled_dot_product_attention",
             return_value=mock_return,
         ) as mock_sdpa:
             ops._op_scaled_dot_product_attention(

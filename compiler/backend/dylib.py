@@ -7,6 +7,7 @@ from pathlib import Path
 
 from compiler.backend.compile_utils import (
     _compile_serveforge_free,
+    _compile_sfa_blas_bridge,
     _find_cc,
 )
 
@@ -121,9 +122,20 @@ def _sfa_relink_dylib(
     model_name: str,
     sfa_abi_data: bytes,
     sfa_weights_data: bytes,
+    sfa_cache_policy_data: bytes | None = None,
+    sfa_op_plan_data: bytes | None = None,
 ) -> None:
-    """Re-link the dylib with SFA ABI and weights object files embedded."""
-    from compiler.backend.llvm_backend import (
+    """Re-link the dylib with SFA ABI and weights object files embedded.
+
+    When ``sfa_cache_policy_data`` is provided, the ``sfa_cache_policy`` /
+    ``sfa_cache_policy_size`` symbol pair is exported too.  Its presence is
+    the runtime's feature-detect signal for the proto cache-policy contract
+    (absent on legacy dylibs, which keep the JSON/heuristic fallback).
+
+    When ``sfa_op_plan_data`` is provided, the additive ``sfa_op_plan`` /
+    ``sfa_op_plan_size`` pair is exported for the Phase 5 HAL kernel graph.
+    """
+    from compiler.backend.llvm_backend import (  # type: ignore[attr-defined]
         _compile_embedded_data,
         link_dylib,
         llc_compile,
@@ -145,13 +157,30 @@ def _sfa_relink_dylib(
     )
 
     model_ll = os.path.join(work_dir, "model.ll")
-    model_o = llc_compile(model_ll, arch="native", opt_level=0)
+    model_o = llc_compile(model_ll, arch="native", opt_level=3)
 
     const_bin = os.path.join(work_dir, "constants.bin")
     const_o = _compile_embedded_data(const_bin, work_dir)
 
     free_o = _compile_serveforge_free(work_dir)
+    blas_o = _compile_sfa_blas_bridge(work_dir)
 
     dylib_path = os.path.join(work_dir, f"lib{model_name}.dylib")
-    obj_files = [model_o, const_o, free_o, sfa_abi_o, sfa_weights_o]
+    obj_files = [model_o, const_o, free_o, blas_o, sfa_abi_o, sfa_weights_o]
+    if sfa_cache_policy_data is not None:
+        sfa_cache_policy_o = _compile_blob_to_o(
+            sfa_cache_policy_data,
+            "sfa_cache_policy",
+            "sfa_cache_policy_size",
+            work_dir,
+        )
+        obj_files.append(sfa_cache_policy_o)
+    if sfa_op_plan_data is not None:
+        sfa_op_plan_o = _compile_blob_to_o(
+            sfa_op_plan_data,
+            "sfa_op_plan",
+            "sfa_op_plan_size",
+            work_dir,
+        )
+        obj_files.append(sfa_op_plan_o)
     link_dylib(obj_files, dylib_path)

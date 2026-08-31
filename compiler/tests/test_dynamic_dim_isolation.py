@@ -24,16 +24,16 @@ import torch
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-from compiler.backend.compile_utils import (
+from compiler.backend.compile_utils import (  # noqa: E402
     _compile_serveforge_free,
     _find_llc,
     _setup_mlir_path,
     link_dylib,
 )
-from compiler.backend.fixups import _fixup_unrealized_casts_pass
-from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir
-from compiler.pipeline.lowering import SF_LOWERING_PIPELINE
-from compiler.dylib_ffi import DEFAULT_SRET_SIZE
+from compiler.backend.fixups import _fixup_unrealized_casts_pass  # noqa: E402
+from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir  # noqa: E402
+from compiler.dylib_ffi import DEFAULT_SRET_SIZE  # noqa: E402
+from compiler.pipeline.lowering import SF_LOWERING_PIPELINE  # noqa: E402
 
 _setup_mlir_path()
 import mlir.ir as ir  # noqa: E402
@@ -253,7 +253,6 @@ class TestDynamicDimIsolation:
         b2 = st[f"{prefix}fc2.bias"].numpy().astype(np.float32)  # [768]
 
         hidden = 768
-        ffn_dim = 3072
         batch, seq = 2, 4
         rng = np.random.RandomState(42)
         x = rng.randn(batch, seq, hidden).astype(np.float32)

@@ -25,6 +25,7 @@ from compiler.fx.split import (
     _log_split_plan,
     _make_multi_functions,
     _split_into_functions,
+    sdpa_cache_boundary_indices,
 )
 from compiler.fx.utils import (
     _extract_node_kwargs,
@@ -141,29 +142,34 @@ def fx_graph_to_mlir(
             laa = _LIST_ARG_ATTR.get(hal_op, "__skip__")
 
             if hal_op == "getitem":
-                _do_getitem(node, ssa_map, weights, tuple_outputs, mlir_ops)
+                _do_getitem(node, ssa_map, weights, tuple_outputs, mlir_ops, shape_map)
                 continue
 
             if hal_op == "split":
-                _do_split(node, ssa_map, tuple_outputs, mlir_ops)
+                _do_split(node, ssa_map, tuple_outputs, mlir_ops, shape_map)
                 continue
 
             if hal_op == "chunk":
-                _do_chunk(node, ssa_map, tuple_outputs, mlir_ops)
+                _do_chunk(node, ssa_map, tuple_outputs, mlir_ops, shape_map)
                 continue
 
             extra_kwargs: dict[str, Any] = {}
-            input_names, name_counter = _collect_input_args(
-                node,
-                hal_op,
-                ssa_map,
-                name_counter,
-                weights,
-                skwargs,
-                sipos,
-                laa,
-                extra_kwargs,
-            )
+            if hal_op == "arange":
+                input_names, name_counter = _collect_arange_args(
+                    node, ssa_map, name_counter, weights,
+                )
+            else:
+                input_names, name_counter = _collect_input_args(
+                    node,
+                    hal_op,
+                    ssa_map,
+                    name_counter,
+                    weights,
+                    skwargs,
+                    sipos,
+                    laa,
+                    extra_kwargs,
+                )
             kwargs = _extract_node_kwargs(node)
             kwargs.update(extra_kwargs)
             _apply_post_kwargs(hal_op, node, input_names, kwargs)
@@ -176,6 +182,7 @@ def fx_graph_to_mlir(
             kwargs["dump_layer"] = current_layer
 
             # Compute output types via shape inference
+            promotions: list[tuple[int, str, str]] = []
             input_types, output_types = _resolve_op_types(
                 hal_op,
                 input_names,
@@ -183,7 +190,33 @@ def fx_graph_to_mlir(
                 shape_map,
                 weights,
                 kwargs,
+                promotions,
             )
+            # Insert explicit identity casts for PyTorch mixed-float
+            # promotions (e.g. bf16 * f32 → f32 * f32).  The converter
+            # otherwise has no textual cast op available.
+            for operand_idx, src_type, target_elt in promotions:
+                src_name = input_names[operand_idx]
+                cast_name = f"%promote_{name_counter}"
+                name_counter += 1
+                target_type = input_types[operand_idx]
+                mlir_ops.append(
+                    MlirOp(
+                        name="sf.identity",
+                        dialect="sf",
+                        op_name="identity",
+                        operands=[src_name],
+                        results=[cast_name],
+                        attributes={
+                            "dtype": f"torch.{target_elt}",
+                            "source_node": kwargs.get("source_node", "promotion"),
+                            "dump_layer": current_layer,
+                        },
+                        input_types=[src_type],
+                        output_types=[target_type],
+                    )
+                )
+                input_names[operand_idx] = cast_name
             # Record output shape for downstream ops
             if output_types:
                 shape_map[node.name] = _parse_mlir_type_to_shape(output_types[0])
@@ -202,15 +235,28 @@ def fx_graph_to_mlir(
                 if dim_names:
                     kwargs["dim_names"] = dim_names
 
+            # copy_ and type_as are dtype-only aliases; the sf dialect has
+            # no dedicated op for them, so emit sf.identity with the
+            # type_as/copy_ shape-inference output type.
+            emit_op_name = "identity" if hal_op in ("copy_", "type_as") else hal_op
+
+            emit_input_names = input_names
+            emit_input_types = input_types
+            if emit_op_name == "identity" and hal_op in ("copy_", "type_as"):
+                # copy_(dest, src) and type_as(x, dtype_ref) both lower to a
+                # unary cast on the first operand.
+                emit_input_names = input_names[:1]
+                emit_input_types = input_types[:1]
+
             mlir_ops.append(
                 MlirOp(
-                    name=f"sf.{hal_op}",
+                    name=f"sf.{emit_op_name}",
                     dialect="sf",
-                    op_name=hal_op,
-                    operands=input_names,
+                    op_name=emit_op_name,
+                    operands=emit_input_names,
                     results=[output_name],
                     attributes=kwargs,
-                    input_types=input_types,
+                    input_types=emit_input_types,
                     output_types=output_types,
                 )
             )
@@ -283,11 +329,11 @@ def fx_graph_to_mlir(
             getattr(i, "op_name", None) == "scaled_dot_product_attention" for i in cache_policy.intercepts
         )
         if has_sdpa_intercept:
-            sdpa_indices = [i for i, op in enumerate(mlir_ops) if op.op_name == "scaled_dot_product_attention"]
+            sdpa_indices = sdpa_cache_boundary_indices(mlir_ops)
             if sdpa_indices:
                 adjusted_boundaries = sorted(set(adjusted_boundaries) | set(sdpa_indices))
                 _log.info(
-                    "[fx_to_mlir] SD-PA split: %d SD-PA ops found, total boundaries = %d",
+                    "[fx_to_mlir] SD-PA cache split: %d boundaries (dense or GQA pre-repeat), total = %d",
                     len(sdpa_indices),
                     len(adjusted_boundaries),
                 )
@@ -325,6 +371,9 @@ def fx_graph_to_mlir(
     meta: dict[str, Any] = {"source": "torch.export", "artifact_format": "mlir"}
     if hf_key_map:
         meta["hf_key_map"] = hf_key_map
+    # KV cache binding table — empty for unsplit modules; populated by
+    # _make_multi_functions when cache_policy SDPA intercepts trigger a split.
+    meta["cache_bindings"] = []
 
     if func_count == 1:
         return MlirModule(
@@ -344,7 +393,7 @@ def fx_graph_to_mlir(
         )
     else:
         # Multi-function: split by function boundaries computed by _split_into_functions
-        functions, chain_order, exec_plan_data, plan_bytes = _make_multi_functions(
+        functions, chain_order, exec_plan_data, plan_bytes, cache_bindings = _make_multi_functions(
             mlir_ops,
             func_inputs,
             func_outputs,
@@ -352,8 +401,10 @@ def fx_graph_to_mlir(
             param_names,
             const_names,
             function_name,
+            cache_policy=cache_policy,
         )
         meta["num_functions"] = func_count
+        meta["cache_bindings"] = cache_bindings
         module = MlirModule(
             functions=functions,
             metadata=meta,
@@ -373,13 +424,17 @@ def _do_getitem(
     weights: dict[str, torch.Tensor],
     tuple_outputs: dict[str, list[str]],
     mlir_ops: list[MlirOp],
+    shape_map: dict[str, tuple[tuple[int | None, ...], str]] | None = None,
 ) -> None:
     source_node = node.args[0] if node.args else None
     idx = node.args[1] if len(node.args) > 1 else 0
     if isinstance(source_node, torch.fx.Node) and source_node.name in tuple_outputs:
         outputs = tuple_outputs[source_node.name]
         if isinstance(idx, int) and 0 <= idx < len(outputs):
-            ssa_map[node.name] = outputs[idx]
+            ssa_name = outputs[idx]
+            ssa_map[node.name] = ssa_name
+            if shape_map is not None and ssa_name in shape_map:
+                shape_map[node.name] = shape_map[ssa_name]
             return
     if isinstance(source_node, torch.fx.Node):
         tensor_ssa = ssa_map.get(source_node.name, source_node.name)
@@ -403,6 +458,7 @@ def _do_split(
     ssa_map: dict[str, str],
     tuple_outputs: dict[str, list[str]],
     mlir_ops: list[MlirOp],
+    shape_map: dict[str, tuple[tuple[int | None, ...], str]] | None = None,
 ) -> None:
     tensor_node = node.args[0] if node.args else None
     split_sizes_raw = node.args[1] if len(node.args) > 1 else []
@@ -412,6 +468,8 @@ def _do_split(
     tensor_ssa = ssa_map.get(tensor_node.name, tensor_node.name)
     if isinstance(dim, torch.SymInt):
         dim = _symint_to_int(dim) or 0
+    if not isinstance(dim, int):
+        return
     sizes: list[int] = []
     for s in split_sizes_raw:  # type: ignore[union-attr]
         concrete = _symint_to_int(s) if isinstance(s, torch.SymInt) else s
@@ -421,10 +479,26 @@ def _do_split(
             return
     if not sizes:
         return
+
+    src_shape: tuple[int | None, ...] | None = None
+    src_elt = "f32"
+    src_type = ""
+    if shape_map and tensor_node.name in shape_map:
+        src_shape, src_elt = shape_map[tensor_node.name]
+        src_type = _shape_to_mlir_type(src_shape, src_elt)
+    norm_dim = dim
+    if norm_dim < 0 and src_shape is not None:
+        norm_dim += len(src_shape)
+
     outputs: list[str] = []
     offset = 0
     for i, size in enumerate(sizes):
         out_name = f"%{node.name}__split_{i}"
+        out_type = ""
+        if src_shape is not None and 0 <= norm_dim < len(src_shape):
+            out_shape = list(src_shape)
+            out_shape[norm_dim] = size
+            out_type = _shape_to_mlir_type(tuple(out_shape), src_elt)
         mlir_ops.append(
             MlirOp(
                 name="sf.slice",
@@ -433,12 +507,20 @@ def _do_split(
                 operands=[tensor_ssa],
                 results=[out_name],
                 attributes={"dim": dim, "start": offset, "end": offset + size, "source_node": node.name},
+                input_types=[src_type] if src_type else [],
+                output_types=[out_type] if out_type else [],
             )
         )
+        if shape_map is not None and out_type:
+            # The consumer must see the actual split slice type, not the
+            # fallback (2,64) shape used before split output types existed.
+            shape_map[out_name] = (tuple(d if d is None or d >= 0 else None for d in out_shape), src_elt)
         outputs.append(out_name)
         offset += size
     tuple_outputs[node.name] = outputs
     ssa_map[node.name] = outputs[0] if outputs else ssa_map.get(node.name, node.name)
+    if shape_map is not None and outputs and outputs[0] in shape_map:
+        shape_map[node.name] = shape_map[outputs[0]]
 
 
 def _do_chunk(
@@ -446,6 +528,7 @@ def _do_chunk(
     ssa_map: dict[str, str],
     tuple_outputs: dict[str, list[str]],
     mlir_ops: list[MlirOp],
+    shape_map: dict[str, tuple[tuple[int | None, ...], str]] | None = None,
 ) -> None:
     tensor_node = node.args[0] if node.args else None
     chunks = node.args[1] if len(node.args) > 1 else 2
@@ -457,18 +540,39 @@ def _do_chunk(
         chunks = _symint_to_int(chunks) or 2
     if isinstance(dim, torch.SymInt):
         dim = _symint_to_int(dim) or 0
+    if not isinstance(dim, int):
+        return
     fake = tensor_node.meta["val"]
-    shape = _resolve_shape_tuple(fake.shape)
-    total_val = shape[dim] if isinstance(dim, int) and dim < len(shape) else None
+    fake_shape = _resolve_shape_tuple(fake.shape)
+    src_shape: tuple[int | None, ...] | None = fake_shape
+    src_elt = _fake_to_shape_tuple(fake)[1]
+    src_type = ""
+    if shape_map is not None and tensor_node.name in shape_map:
+        src_shape, src_elt = shape_map[tensor_node.name]
+        src_type = _shape_to_mlir_type(src_shape, src_elt)
+    if src_shape is None:
+        return
+    total_val = src_shape[dim] if isinstance(dim, int) and dim < len(src_shape) else None
+    if total_val is None:
+        # Fall back to fake shape for the chunk count when the MLIR type is
+        # dynamic; the runtime shape is resolved by the slice itself.
+        total_val = fake_shape[dim] if dim < len(fake_shape) else None
     if total_val is None:
         return
     total: int = total_val
     n_chunks = int(chunks)  # type: ignore[arg-type]
+    norm_dim = dim
+    if norm_dim < 0:
+        norm_dim += len(src_shape)
     outputs: list[str] = []
     offset = 0
     for i in range(n_chunks):
         size = total // n_chunks + (1 if i < (total % n_chunks) else 0)
         out_name = f"%{node.name}__chunk_{i}"
+        out_shape = list(src_shape)
+        if 0 <= norm_dim < len(out_shape):
+            out_shape[norm_dim] = size
+        out_type = _shape_to_mlir_type(tuple(out_shape), src_elt)
         mlir_ops.append(
             MlirOp(
                 name="sf.slice",
@@ -477,12 +581,18 @@ def _do_chunk(
                 operands=[tensor_ssa],
                 results=[out_name],
                 attributes={"dim": dim, "start": offset, "end": offset + size, "source_node": node.name},
+                input_types=[src_type] if src_type else [],
+                output_types=[out_type] if out_type else [],
             )
         )
+        if shape_map is not None and out_type:
+            shape_map[out_name] = (tuple(d if d is None or d >= 0 else None for d in out_shape), src_elt)
         outputs.append(out_name)
         offset += size
     tuple_outputs[node.name] = outputs
     ssa_map[node.name] = outputs[0] if outputs else ssa_map.get(node.name, node.name)
+    if shape_map is not None and outputs and outputs[0] in shape_map:
+        shape_map[node.name] = shape_map[outputs[0]]
 
 
 def _semantic_ssa_name(
@@ -511,13 +621,76 @@ def _semantic_ssa_name(
     if hal_op == "le":
         return "%causal_mask"
     if hal_op == "expand":
-        return "%attn_mask"
+        return f"%attn_mask_{name_counter}"
     if hal_op == "logical_and":
         return f"%mask_and_{name_counter}"
     if hal_op == "view":
         return f"%reshape_{name_counter}"
     # Default: keep original FX node name
     return f"%{node.name}" if node.name else f"%_out_{name_counter}"
+
+
+def _collect_arange_args(
+    node: torch.fx.Node,
+    ssa_map: dict[str, str],
+    name_counter: int,
+    weights: dict[str, torch.Tensor],
+) -> tuple[list[str], int]:
+    """Normalize torch.arange args into the sf.arange contract.
+
+    Contract (see sf-dialect/lib/Sf/SfLowerGenOps.cpp and
+    compiler/tests/test_arange_fix.py): the first operand is the START
+    value, ``dyn_shape[0]`` is the SIZE — ``[start, start+1, ...,
+    start+size-1]``.  ``torch.arange(end)`` and ``torch.arange(start,
+    end)`` both normalize to this form (size = end - start, step must be
+    1).  A symbolic ``end`` is only supported when ``start == 0`` (then
+    size == end; symbolic-start arange does not occur in supported models).
+    """
+    args = list(node.args)
+    if not args:
+        raise NotImplementedError("torch.arange requires at least one argument")
+
+    def _val(arg: Any) -> int | float | None:
+        return _symint_to_int(arg) if isinstance(arg, torch.SymInt) else arg
+
+    start: Any = 0 if len(args) == 1 else args[0]
+    end: Any = args[0] if len(args) == 1 else args[1]
+    step: Any = args[2] if len(args) >= 3 else 1
+
+    step_v = _val(step) if not isinstance(step, torch.fx.Node) else None
+    if isinstance(step, torch.fx.Node) or step_v != 1:
+        raise NotImplementedError("torch.arange with step != 1 is not supported by sf.arange")
+
+    if isinstance(start, torch.fx.Node):
+        raise NotImplementedError("symbolic arange start is not supported")
+
+    start_v = _val(start)
+    start_const = f"_const_{name_counter}"
+    name_counter += 1
+    if isinstance(start_v, float):
+        weights[start_const] = torch.tensor(start_v, dtype=torch.float32)
+    else:
+        weights[start_const] = torch.tensor(int(start_v) if start_v is not None else 0, dtype=torch.int64)
+    input_names = [start_const]
+
+    # size = end - start
+    if isinstance(end, torch.fx.Node):
+        if start_v != 0:
+            raise NotImplementedError(
+                "symbolic arange end with nonzero start is not supported"
+            )
+        input_names.append(ssa_map.get(end.name, end.name))
+    else:
+        end_v = _val(end)
+        if end_v is None:
+            raise NotImplementedError("unsupported arange end value")
+        size_v = end_v - (start_v or 0)
+        size_const = f"_const_{name_counter}"
+        name_counter += 1
+        weights[size_const] = torch.tensor(int(size_v), dtype=torch.int64)
+        input_names.append(size_const)
+
+    return input_names, name_counter
 
 
 def _collect_input_args(

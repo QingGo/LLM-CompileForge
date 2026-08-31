@@ -25,7 +25,6 @@ from compiler.pipeline.stages_utils import (
     Stage,
     StageResult,
     _count_module_ops,
-    _DeadStageTracker,
     _save_ir_snapshot,
     _verify_function_signatures,
 )
@@ -158,6 +157,372 @@ def _unsqueeze_copies_action(module: Any) -> None:
     _action(module)
 
 
+def _is_identity_region_yield(op: Any) -> bool:
+    """True when a bufferized linalg.generic has the pure copy body ``yield %in``."""
+    try:
+        block = op.regions[0].blocks[0]
+    except (IndexError, AttributeError):
+        return False
+    if len(block.arguments) != 2:
+        return False
+    body_ops = list(block.operations)
+    if len(body_ops) != 1 or str(body_ops[0].operation.name) != "linalg.yield":
+        return False
+    yield_op = body_ops[0]
+    return len(yield_op.operands) == 1 and yield_op.operands[0] == block.arguments[0]
+
+
+def _generic_maps(op: Any) -> list[str]:
+    maps_attr = op.operation.attributes.get("indexing_maps")
+    if maps_attr is None:
+        return []
+    return [str(m) for m in maps_attr]
+
+
+def _iterator_types_parallel(op: Any) -> bool:
+    iter_attr = op.operation.attributes.get("iterator_types")
+    if iter_attr is None:
+        return False
+    return all("parallel" in str(it) for it in iter_attr)
+
+
+def _is_f32_memref(value: Any, rank: int) -> bool:
+    import mlir.ir as ir
+
+    try:
+        ty = value.type
+    except AttributeError:
+        return False
+    return (
+        isinstance(ty, ir.MemRefType)
+        and ty.rank == rank
+        and str(ty.element_type) == "f32"
+    )
+
+
+def _memref_dim(value: Any, dim: int) -> int:
+    ty = value.type
+    return ty.get_dim_size(dim) if not ty.is_dynamic_dim(dim) else 0
+
+
+def _dims_compatible(a: int, b: int) -> bool:
+    return a == 0 or b == 0 or a == b
+
+
+def _is_pure_transpose_generic(op: Any) -> bool:
+    """Match the bufferized ``W -> W^T`` identity linalg.generic."""
+    if (
+        str(op.operation.name) != "linalg.generic"
+        or len(op.operands) != 2
+        or not _is_f32_memref(op.operands[0], 2)
+        or not _is_f32_memref(op.operands[1], 2)
+    ):
+        return False
+    if _generic_maps(op) != [
+        "affine_map<(d0, d1) -> (d1, d0)>",
+        "affine_map<(d0, d1) -> (d0, d1)>",
+    ]:
+        return False
+    if not _iterator_types_parallel(op):
+        return False
+    if not _dims_compatible(_memref_dim(op.operands[0], 0), _memref_dim(op.operands[1], 1)):
+        return False
+    if not _dims_compatible(_memref_dim(op.operands[0], 1), _memref_dim(op.operands[1], 0)):
+        return False
+    return _is_identity_region_yield(op)
+
+
+def _is_pure_broadcast_generic(op: Any) -> bool:
+    """Match ``W^T[K, N] -> B[? K N]`` rank-2 to rank-3 broadcast."""
+    if (
+        str(op.operation.name) != "linalg.generic"
+        or len(op.operands) != 2
+        or not _is_f32_memref(op.operands[0], 2)
+        or not _is_f32_memref(op.operands[1], 3)
+    ):
+        return False
+    if _generic_maps(op) != [
+        "affine_map<(d0, d1, d2) -> (d1, d2)>",
+        "affine_map<(d0, d1, d2) -> (d0, d1, d2)>",
+    ]:
+        return False
+    if not _iterator_types_parallel(op):
+        return False
+    if not _dims_compatible(_memref_dim(op.operands[0], 0), _memref_dim(op.operands[1], 1)):
+        return False
+    if not _dims_compatible(_memref_dim(op.operands[0], 1), _memref_dim(op.operands[1], 2)):
+        return False
+    return _is_identity_region_yield(op)
+
+
+def _block_containing_op(op: Any) -> Any | None:
+    """Return the Block object directly containing ``op``."""
+    parent = getattr(op, "parent", None)
+    if parent is None:
+        return None
+
+    def _search(container: Any) -> Any | None:
+        for region in getattr(container, "regions", []):
+            for block in region.blocks:
+                if any(child == op for child in block.operations):
+                    return block
+                found = _search(block)
+                if found is not None:
+                    return found
+        return None
+
+    return _search(parent)
+
+
+def _find_last_writer_before(
+    block_ops: list[Any],
+    target: Any,
+    before_idx: int,
+) -> Any | None:
+    """Return the last linalg op writing ``target`` before ``before_idx``."""
+    for idx in range(before_idx - 1, -1, -1):
+        op = block_ops[idx]
+        if len(op.operands) >= 2 and op.operands[-1] == target:
+            return op
+    return None
+
+
+def _find_transb_rank2_chain(
+    matmul_op: Any,
+    block_ops: list[Any],
+    matmul_idx: int,
+) -> tuple[Any, Any] | None:
+    """Recognize transpose(W) -> linalg.matmul and return (transpose, W)."""
+    if len(matmul_op.operands) != 3:
+        return None
+    b_val = matmul_op.operands[1]
+    if not _is_f32_memref(b_val, 2):
+        return None
+    transpose_op = _find_last_writer_before(block_ops, b_val, matmul_idx)
+    if transpose_op is None or not _is_pure_transpose_generic(transpose_op):
+        return None
+    weight_val = transpose_op.operands[0]
+    if not _is_f32_memref(weight_val, 2):
+        return None
+    if not _dims_compatible(_memref_dim(b_val, 0), _memref_dim(weight_val, 1)):
+        return None
+    if not _dims_compatible(_memref_dim(b_val, 1), _memref_dim(weight_val, 0)):
+        return None
+    return transpose_op, weight_val
+
+
+def _find_transb_rank3_chain(
+    matmul_op: Any,
+    block_ops: list[Any],
+    matmul_idx: int,
+) -> tuple[Any, Any, Any] | None:
+    """Recognize transpose(W) -> broadcast -> linalg.batch_matmul.
+
+    Returns ``(transpose_op, broadcast_op, W)`` or ``None``.
+    """
+    if len(matmul_op.operands) != 3:
+        return None
+    b_val = matmul_op.operands[1]
+    if not _is_f32_memref(b_val, 3):
+        return None
+    broadcast_op = _find_last_writer_before(block_ops, b_val, matmul_idx)
+    if broadcast_op is None or not _is_pure_broadcast_generic(broadcast_op):
+        return None
+    broadcast_idx = block_ops.index(broadcast_op)
+    transposed_val = broadcast_op.operands[0]
+    if not _is_f32_memref(transposed_val, 2):
+        return None
+    transpose_op = _find_last_writer_before(block_ops, transposed_val, broadcast_idx)
+    if transpose_op is None or not _is_pure_transpose_generic(transpose_op):
+        return None
+    weight_val = transpose_op.operands[0]
+    if not _is_f32_memref(weight_val, 2):
+        return None
+    # B is [batch, K, N]; W is [N, K].
+    if not _dims_compatible(_memref_dim(b_val, 1), _memref_dim(weight_val, 1)):
+        return None
+    if not _dims_compatible(_memref_dim(b_val, 2), _memref_dim(weight_val, 0)):
+        return None
+    return transpose_op, broadcast_op, weight_val
+
+
+def _lower_linalg_matmul_to_sfa_blas_action(module: Any) -> None:
+    """Replace bufferized linalg matmuls with calls to the SFA BLAS bridge.
+
+    Stage C3 has already bufferized all tensor ops, so each ``linalg.matmul``
+    / ``linalg.batch_matmul`` now operates on memrefs.  The default
+    ``convert-linalg-to-loops`` path lowers them to scalar loops, which runs
+    an order of magnitude slower than Accelerate/OpenBLAS SGEMM on CPU.
+
+    In addition to the NoTrans bridge, this action recognizes the per-step
+    weight-copy chain emitted for ``torch.nn.Linear``:
+
+    * rank-2: ``linalg.generic(transpose W)`` -> ``linalg.matmul``
+    * rank-3: ``linalg.generic(transpose W)`` ->
+      ``linalg.generic(broadcast W^T)`` -> ``linalg.batch_matmul``
+
+    Those chains are replaced by ``sfa_sgemm_transb`` /
+    ``sfa_batch_sgemm_transb``, which accept the original ``[N, K]`` weight
+    memref and call ``cblas_sgemm`` with ``CblasTrans``.  The transpose and
+    broadcast linalg.generics are erased; a following canonicalize/cse stage
+    removes the now-dead ``memref.alloc`` buffers.
+    """
+    import os
+
+    import mlir.ir as ir
+
+    if os.environ.get("SERVEFORGE_NO_SFA_BLAS") == "1":
+        return
+
+    f32 = ir.F32Type.get()
+    dyn = ir.ShapedType.get_dynamic_size()
+    memref2 = ir.MemRefType.get([dyn, dyn], f32)
+    memref3 = ir.MemRefType.get([dyn, dyn, dyn], f32)
+    callee_by_rank = {
+        2: ("sfa_sgemm", memref2),
+        3: ("sfa_batch_sgemm", memref3),
+    }
+    transb_decls = {
+        "sfa_sgemm_transb": (memref2, memref2, memref2),
+        "sfa_batch_sgemm_transb": (memref3, memref2, memref3),
+    }
+
+    module_body = module.operation.regions[0].blocks[0]
+
+    def _ensure_decl(callee: str, memref_types: tuple[Any, ...]) -> None:
+        for op in module_body.operations:
+            if str(op.operation.name) == "func.func":
+                if ir.StringAttr(op.operation.attributes.get("sym_name")).value == callee:
+                    return
+        ftype = ir.FunctionType.get(list(memref_types), [])
+        attrs = {
+            "function_type": ir.TypeAttr.get(ftype),
+            "sym_name": ir.StringAttr.get(callee),
+            "sym_visibility": ir.StringAttr.get("private"),
+        }
+        with module.operation.context, ir.Location.unknown():
+            ir.Operation.create(
+                "func.func",
+                results=[],
+                operands=[],
+                attributes=attrs,
+                regions=1,
+                loc=ir.Location.unknown(),
+                ip=ir.InsertionPoint.at_block_begin(module_body),
+            )
+
+    matmul_ops: list[tuple[str, Any, Any, str]] = []
+
+    def _collect(op: ir.Operation) -> None:
+        name = str(op.operation.name)
+        if name not in ("linalg.matmul", "linalg.batch_matmul") or len(op.operands) != 3:
+            pass
+        else:
+            # The SFA BLAS bridge is f32-only.  BF16/F16 matmuls must stay
+            # on the linalg path; op-plan/runtime GEMV kernels cover them.
+            element_types = [str(v.type.element_type) for v in op.operands if isinstance(v.type, ir.MemRefType)]
+            if element_types and all(t == "f32" for t in element_types):
+                target_ty = memref3 if name == "linalg.batch_matmul" else memref2
+                callee = "sfa_batch_sgemm" if name == "linalg.batch_matmul" else "sfa_sgemm"
+                matmul_ops.append((name, op, target_ty, callee))
+        for region in op.regions:
+            for block in region.blocks:
+                for child in list(block.operations):
+                    _collect(child)
+
+    for region in module.operation.regions:
+        for block in region.blocks:
+            for op in list(block.operations):
+                _collect(op)
+
+    if not matmul_ops:
+        return
+
+    for _callee, _memref_ty in callee_by_rank.values():
+        _ensure_decl(_callee, (_memref_ty, _memref_ty, _memref_ty))
+    for _callee, _memref_tys in transb_decls.items():
+        _ensure_decl(_callee, _memref_tys)
+
+    replaced_transb = 0
+    replaced_regular = 0
+    for _name, op, target_ty, regular_callee in matmul_ops:
+        if not all(isinstance(v.type, ir.MemRefType) for v in op.operands):
+            raise RuntimeError(
+                f"{_name} reached SFA BLAS rewrite before bufferization: {op}"
+            )
+
+        # The rewrite mutates the IR as it walks, so re-list the containing
+        # block for each matmul to keep writer lookups and op order fresh.
+        parent_block = _block_containing_op(op)
+        if parent_block is None:
+            raise RuntimeError(f"matmul is not inside a block: {op}")
+        block_ops = list(parent_block.operations)
+        matmul_idx = block_ops.index(op)
+
+        chain: tuple[Any, ...] | None = None
+        if _name == "linalg.matmul":
+            found = _find_transb_rank2_chain(op, block_ops, matmul_idx)
+            if found is not None:
+                transpose_op, weight_val = found
+                chain = ("sfa_sgemm_transb", (memref2, memref2, memref2), [transpose_op], weight_val)
+        else:
+            found3 = _find_transb_rank3_chain(op, block_ops, matmul_idx)
+            if found3 is not None:
+                transpose_op, broadcast_op, weight_val = found3
+                chain = (
+                    "sfa_batch_sgemm_transb",
+                    (memref3, memref2, memref3),
+                    [transpose_op, broadcast_op],
+                    weight_val,
+                )
+
+        with module.operation.context, ir.InsertionPoint(op):
+            if chain is not None:
+                callee, cast_types, dead_chain_ops, weight_val = chain
+                call_operands = [op.operands[0], weight_val, op.operands[2]]
+            else:
+                callee = regular_callee
+                cast_types = (target_ty, target_ty, target_ty)
+                call_operands = list(op.operands)
+                dead_chain_ops = []
+
+            cast_operands = []
+            for operand, cast_ty in zip(call_operands, cast_types, strict=True):
+                cast_operands.append(
+                    ir.Operation.create(
+                        "memref.cast",
+                        results=[cast_ty],
+                        operands=[operand],
+                        loc=op.location,
+                        ip=ir.InsertionPoint(op),
+                    ).result
+                )
+            ir.Operation.create(
+                "func.call",
+                results=[],
+                operands=cast_operands,
+                attributes={"callee": ir.FlatSymbolRefAttr.get(callee)},
+                loc=op.location,
+                ip=ir.InsertionPoint(op),
+            )
+        op.erase()
+        for dead_op in dead_chain_ops:
+            dead_op.erase()
+        if chain is not None:
+            replaced_transb += 1
+        else:
+            replaced_regular += 1
+
+    if replaced_transb:
+        _log.info(
+            "  Replaced %d linalg matmuls with SFA BLAS bridge calls (%d transb)",
+            len(matmul_ops),
+            replaced_transb,
+        )
+    else:
+        _log.info("  Replaced %d linalg matmuls with SFA BLAS bridge calls", len(matmul_ops))
+
+
 # The flattened equivalent of the LLVM lowering stages below is
 # available as LINALG_TO_LLVM_PIPELINE in compile_utils.py.
 # Keep the two definitions in sync.
@@ -181,6 +546,12 @@ BUILTIN_STAGES: list[Stage] = [
         ),
         timeout=60.0,
     ),
+    Stage("C4-linalg-matmul→sfa-blas", action=_lower_linalg_matmul_to_sfa_blas_action, timeout=60.0),
+    Stage(
+        "C4.1-canonicalize-dead-weight-copies",
+        "canonicalize,cse",
+        timeout=60.0,
+    ),
     # ── Phase D: loops → control flow ──
     Stage("D1-linalg→loops", "convert-linalg-to-loops"),
     Stage("D2-lower-affine", "lower-affine"),
@@ -195,6 +566,8 @@ BUILTIN_STAGES: list[Stage] = [
     Stage("E6-cf→llvm", "convert-cf-to-llvm"),
     Stage("E7-bufferization→memref", "convert-bufferization-to-memref"),
     Stage("E8-finalize-memref-2", "finalize-memref-to-llvm{use-generic-functions=false}", timeout=60.0),
+    Stage("E8.5-lower-affine-late", "lower-affine", timeout=30.0),
+    Stage("E8.6-arith-to-llvm-late", "convert-arith-to-llvm", timeout=30.0),
     Stage("E9-reconcile-casts", "reconcile-unrealized-casts"),
     Stage("E10-strip-gep-nuw", "sf-strip-gep-nuw", timeout=10.0, warn_only=False),
     _make_verify_stage(),
@@ -272,19 +645,6 @@ def run_stages(
         op_count_post = sum(post_counts.values()) if post_counts else 0
         all_dialects = set(pre_counts.keys()) | set(post_counts.keys())
         dialect_deltas = {d: post_counts.get(d, 0) - pre_counts.get(d, 0) for d in sorted(all_dialects)}
-
-        # ── Dead stage detection (persistent across runs) ──
-        if pre_counts and post_counts:
-            no_change = pre_counts == post_counts
-            is_dead = _DeadStageTracker.record(stage.name, dialect_changed=not no_change)
-            if no_change and is_dead:
-                _log.warning(
-                    "  ⚠️ Stage '%s' marked DEAD after %d consecutive runs with no dialect change — pre=%s post=%s",
-                    stage.name,
-                    _DeadStageTracker.CONSECUTIVE_THRESHOLD,
-                    dict(sorted(pre_counts.items())),
-                    dict(sorted(post_counts.items())),
-                )
 
         # DEBUG: save per-stage snapshot
         if _is_debug:

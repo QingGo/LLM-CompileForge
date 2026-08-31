@@ -23,14 +23,14 @@ import pytest
 _project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_project_root))
 
-import mlir.ir as ir
-import mlir.passmanager as pm
-from mlir_sf._mlir_libs._sfDialectsNanobind import sf
+import mlir.ir as ir  # noqa: E402
+import mlir.passmanager as pm  # noqa: E402
+from mlir_sf._mlir_libs._sfDialectsNanobind import sf  # noqa: E402
 
-from compiler.pipeline.lowering import SF_LOWERING_PIPELINE
-from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir
-from compiler.backend.fixups import _fixup_unrealized_casts_pass
-from compiler.backend.compile_utils import _compile_serveforge_free
+from compiler.backend.compile_utils import _compile_serveforge_free  # noqa: E402
+from compiler.backend.fixups import _fixup_unrealized_casts_pass  # noqa: E402
+from compiler.backend.llvm_backend import lower_linalg_to_llvm_ir  # noqa: E402
+from compiler.pipeline.lowering import SF_LOWERING_PIPELINE  # noqa: E402
 
 # ── Local helpers (copied from other test files) ──────────────────────
 
@@ -196,8 +196,13 @@ int main(int argc, char** argv) {{
 '''
 
 
+@pytest.mark.timeout(180)
 class TestCompilerViaCHarness:
-    """Validate compiler-produced dylibs via C harness (no ctypes dependency)."""
+    """Validate compiler-produced dylibs via C harness (no ctypes dependency).
+
+    180s class timeout: each test runs a subprocess lowering pipeline
+    (mlir-translate + cc), which exceeds the global 30s default under load.
+    """
 
     def test_layer_norm_identity(self) -> None:
         """LayerNorm with w=[1,1], b=[0,0] — output should match normalized input."""

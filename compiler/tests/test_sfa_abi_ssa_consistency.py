@@ -97,7 +97,7 @@ class TestSfaAbiSsaConsistency:
         )
 
         errors: list[str] = []
-        for i, (ep, abi_e) in enumerate(zip(ep_edges, abi_edges)):
+        for i, (ep, abi_e) in enumerate(zip(ep_edges, abi_edges, strict=True)):
             if ep != abi_e:
                 errors.append(
                     f"Edge {i}: ExecutionPlan={ep} SfaAbiHeader={abi_e}"

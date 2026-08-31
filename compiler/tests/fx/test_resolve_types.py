@@ -85,6 +85,45 @@ class TestResolveOpTypesScalarFix:
         )
         assert any("tensor<1xf32>" in t for t in input_types), f"Expected tensor<1xf32> in {input_types}"
 
+    def test_mixed_bf16_weight_promotes_to_f32(self):
+        """f32 SSA + bf16 weight follows PyTorch promotion to f32."""
+        from compiler.fx.utils import _resolve_op_types
+
+        weights = {"w": torch.randn(64, dtype=torch.bfloat16)}
+        ssa_map = {"a": "%a", "w": "%w"}
+        shape_map = {"a": ((64,), "f32"), "w": ((64,), "bf16")}
+
+        input_types, _ = _resolve_op_types(
+            "add",
+            ["%a", "%w"],
+            ssa_map,
+            shape_map,
+            weights,
+            {},
+        )
+        assert weights["w"].dtype == torch.float32
+        assert all("tensor<64xf32>" in t for t in input_types), input_types
+
+    def test_mixed_nonweight_floats_record_promotion(self):
+        """bf16 * f32 non-weight operands promote to f32 with a cast record."""
+        from compiler.fx.utils import _resolve_op_types
+
+        ssa_map = {"a": "%a", "b": "%b"}
+        shape_map = {"a": ((64,), "bf16"), "b": ((64,), "f32")}
+        promotions: list[tuple[int, str, str]] = []
+
+        input_types, _ = _resolve_op_types(
+            "mul",
+            ["%a", "%b"],
+            ssa_map,
+            shape_map,
+            {},
+            {},
+            promotions,
+        )
+        assert promotions == [(0, "tensor<64xbf16>", "f32")]
+        assert all("tensor<64xf32>" in t for t in input_types), input_types
+
     def test_shape_map_takes_priority(self):
         """shape_map entries should take priority over weight lookup."""
         from compiler.fx.utils import _resolve_op_types

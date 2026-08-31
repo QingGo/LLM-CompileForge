@@ -39,7 +39,7 @@ while IFS=: read -r file line content; do
         echo "MISSING SAFETY: $file:$line"
         errors=$((errors + 1))
     fi
-done < <(grep -rn 'unsafe {' --include='*.rs' rust/src/ || true)
+done < <(grep -rn 'unsafe {' --include='*.rs' runtime/src/ || true)
 
 if [ "$errors" -eq 0 ]; then
     echo "OK: All unsafe blocks have SAFETY comments"

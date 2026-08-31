@@ -10,7 +10,7 @@ These functions are the Python-side counterpart to the Rust runtime's
 
 import ctypes
 import struct
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -78,7 +78,7 @@ def compute_sret_size(
     """
     if output_defs:
         total = sum(24 + 16 * od.get("rank", 0) for od in output_defs)
-        return max(total, floor)
+        return cast(int, max(total, floor))
     return floor
 
 
@@ -223,7 +223,7 @@ def verify_output_shapes(
 # =====================================================================
 
 
-def _read_proto_symbol(lib, name: str, size_name: str) -> bytes:
+def _read_proto_symbol(lib: Any, name: str, size_name: str) -> bytes:
     """Read a protobuf-encoded data symbol from a loaded dylib.
 
     The dylib exports ``name`` as a const array address and ``size_name``
@@ -241,8 +241,8 @@ def _read_proto_symbol(lib, name: str, size_name: str) -> bytes:
 
 
 def load_graph_from_proto(
-    lib,
-    dylib_constants: dict[str, np.ndarray] | None = None,
+    lib: Any,
+    dylib_constants: dict[str, np.ndarray[Any, Any]] | None = None,
 ) -> dict[str, Any]:
     """Load compute graph from proto symbols embedded in the dylib.
 
@@ -256,14 +256,14 @@ def load_graph_from_proto(
         global_output: (func_idx, output_idx) tuple
     """
     from gen.proto.python.sfa_abi_pb2 import (  # type: ignore[attr-defined]
+        SFA_INPUT_GLOBAL,
+        SFA_INPUT_SSA,
+        SFA_INPUT_WEIGHT,
         SfaAbiHeader,
         SfaWeightData,
-        SFA_INPUT_GLOBAL,
-        SFA_INPUT_WEIGHT,
-        SFA_INPUT_SSA,
     )
 
-    constants: dict[str, np.ndarray] = dylib_constants if dylib_constants is not None else {}
+    constants: dict[str, np.ndarray[Any, Any]] = dylib_constants if dylib_constants is not None else {}
 
     abi_bytes = _read_proto_symbol(lib, "sfa_abi", "sfa_abi_size")
     abi = SfaAbiHeader()
@@ -287,16 +287,21 @@ def load_graph_from_proto(
     functions: list[dict[str, Any]] = []
     for fm in abi.funcs:
         inputs: list[dict[str, Any]] = []
+        global_ordinal = 0
         for fld in fm.input_fields:
-            binding: tuple
+            binding: tuple[Any, ...]
             if fld.kind == SFA_INPUT_GLOBAL:
-                binding = ("global_input",)
+                # Ordinal distinguishes multiple global inputs (e.g.
+                # input_ids=0, position_ids=1) — mirrors the Rust
+                # runtime's bi==1 → positions convention.
+                binding = ("global_input", global_ordinal)
+                global_ordinal += 1
             elif fld.kind == SFA_INPUT_WEIGHT:
                 binding = ("weight", fld.weight_name)
             elif fld.kind == SFA_INPUT_SSA:
                 binding = ("ssa", fld.ssa.producer_func, fld.ssa.producer_out)
             else:
-                binding = ("global_input",)
+                binding = ("global_input", 0)
             inputs.append({
                 "binding": binding,
                 "rank": fld.rank,

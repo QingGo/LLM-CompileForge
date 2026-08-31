@@ -89,20 +89,20 @@ def _paged_attention_triton(
     if scale is None:
         scale = 1.0 / math.sqrt(q.shape[-1])
 
-    @triton.jit
+    @triton.jit  # type: ignore[untyped-decorator]
     def _kernel(
-        Q_ptr,
-        K_cache_ptr,
-        V_cache_ptr,
-        block_table_ptr,
-        seq_lens_ptr,
-        O_ptr,
+        Q_ptr: torch.Tensor,
+        K_cache_ptr: torch.Tensor,
+        V_cache_ptr: torch.Tensor,
+        block_table_ptr: torch.Tensor,
+        seq_lens_ptr: torch.Tensor,
+        O_ptr: torch.Tensor,
         scale_val: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
         HEAD_DIM: tl.constexpr,
         N_HEADS: tl.constexpr,
         MAX_BLOCKS: tl.constexpr,
-    ):
+    ) -> None:
         pid = tl.program_id(0)
         batch_idx = pid // N_HEADS
         head_idx = pid % N_HEADS

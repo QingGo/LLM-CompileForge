@@ -17,7 +17,6 @@ from compiler.backend.compile_utils import (
     compile_mlir_to_dylib,
     compile_module_to_dylib,
     emit_llvm_ir_to_file,
-    jit_compile_and_run,
     link_dylib,
     llc_compile,
     mlir_module_to_llvm_ir,

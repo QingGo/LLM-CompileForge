@@ -2,6 +2,7 @@
 #include "SfLoweringHelpers.h"
 #include "Sf/SfDialect.h"
 #include "Sf/SfOps.h"
+#include "Sf/ViewShapeSolver.h"
 
 #define DEBUG_TYPE "sf-lower-to-linalg"
 
@@ -22,121 +23,53 @@ struct SfViewOpLowering : public OpRewritePattern<sf::ViewOp> {
       return success();
     }
     // Rank-changing view: use tensor.reshape with the correct shape.
-    // The shape attribute tells which output dims come from dyn_shape operands,
-    // which are static, and which are -1 (inferred from element count).
     auto shapeAttr = op->getAttrOfType<ArrayAttr>("shape");
+    if (!shapeAttr) return failure();
     auto dynShapeOperands = op.getDynShape();
+
+    // Convert ArrayAttr to int64_t vector for pure decision logic.
+    // StringAttr entries become kSSARefSentinel.
+    std::vector<int64_t> shapeVec;
+    shapeVec.reserve(shapeAttr.size());
+    for (Attribute elem : shapeAttr) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(elem))
+        shapeVec.push_back(intAttr.getInt());
+      else if (dyn_cast<StringAttr>(elem))
+        shapeVec.push_back(kSSARefSentinel);
+      else
+        return failure();
+    }
+
+    // Delegate all shape resolution logic to the pure function.
+    auto plan = resolveViewShape(shapeVec,
+                                  (int64_t)dynShapeOperands.size());
+    if (plan.empty() && !shapeVec.empty()) return failure();
 
     // Pass 1: collect shape values and track the -1 (inferred) dimension.
     SmallVector<Value> shapeVals;
     int64_t inferredIdx = -1;
-    int64_t dynIdx = 0;  // counter into dynShapeOperands
 
     for (int64_t i = 0; i < outType.getRank(); ++i) {
       if (!outType.isDynamicDim(i)) {
-        // Static dim → constant index
-        shapeVals.push_back(arith::ConstantIndexOp::create(rewriter, loc, outType.getDimSize(i)));
+        shapeVals.push_back(arith::ConstantIndexOp::create(rewriter, loc,
+            outType.getDimSize(i)));
         continue;
       }
-      // Dynamic dim — consult the shape attribute.
-      // IntegerAttr(-1) means "infer from product of other dims" (only for the
-      // LAST unresolved dim).  If dyn_shape operands are still available, they
-      // take priority over the -1 sentinel — the -1 was placed there by the
-      // compiler to mark a dynamic dimension that comes from an operand, not
-      // from inference.
-      if (shapeAttr && i < (int64_t)shapeAttr.size()) {
-        Attribute elem = shapeAttr[i];
-        if (auto intAttr = dyn_cast<IntegerAttr>(elem)) {
-          int64_t val = intAttr.getInt();
-          if (val == -1 && dynIdx < (int64_t)dynShapeOperands.size()) {
-            // -1 with remaining operands → dynamic dim from operand
-            Value dynVal = dynShapeOperands[dynIdx++];
-            auto dynTy = dyn_cast<RankedTensorType>(dynVal.getType());
-            if (dynTy && dynTy.getRank() == 0) {
-              Value extracted = tensor::ExtractOp::create(rewriter, loc,
-                  dynTy.getElementType(), dynVal, ValueRange{});
-              Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
-              dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), asInt);
-            } else if (dynTy && dynTy.getRank() == 1 && dynTy.getDimSize(0) == 1) {
-              Value extracted = tensor::ExtractOp::create(rewriter, loc,
-                  dynTy.getElementType(), dynVal,
-                  ValueRange{arith::ConstantIndexOp::create(rewriter, loc, 0)});
-              if (dynTy.getElementType().isF32() || dynTy.getElementType().isF64()) {
-                Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
-                dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), asInt);
-              } else {
-                dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), extracted);
-              }
-            } else if (!dynVal.getType().isIndex()) {
-              dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), dynVal);
-            }
-            shapeVals.push_back(dynVal);
-          } else if (val < -1 && (size_t)(-val - 2) < dynShapeOperands.size()) {
-            // Negative sentinel (-2, -3, ...) → use dyn_shape operand at position
-            // (-val-2).  The Python compiler emits -(dyn_pos+2) for each dynamic dim
-            // to distinguish it from -1 (inferred) and static dims.
-            Value dynVal = dynShapeOperands[-val - 2];
-            auto dynTy = dyn_cast<RankedTensorType>(dynVal.getType());
-            if (dynTy && dynTy.getRank() == 0) {
-              Value extracted = tensor::ExtractOp::create(rewriter, loc,
-                  dynTy.getElementType(), dynVal, ValueRange{});
-              Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
-              dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), asInt);
-            } else if (dynTy && dynTy.getRank() == 1 && dynTy.getDimSize(0) == 1) {
-              Value extracted = tensor::ExtractOp::create(rewriter, loc,
-                  dynTy.getElementType(), dynVal,
-                  ValueRange{arith::ConstantIndexOp::create(rewriter, loc, 0)});
-              if (dynTy.getElementType().isF32() || dynTy.getElementType().isF64()) {
-                Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
-                dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), asInt);
-              } else {
-                dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), extracted);
-              }
-            } else if (!dynVal.getType().isIndex()) {
-              dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), dynVal);
-            }
-            shapeVals.push_back(dynVal);
-          } else if (val == -1) {
-            // -1 with no remaining operands → truly inferred (pass 2)
-            inferredIdx = i;
-            shapeVals.push_back(nullptr);  // placeholder for pass 2
-          } else {
-            shapeVals.push_back(arith::ConstantIndexOp::create(rewriter, loc, val));
-          }
-        } else if (dyn_cast<StringAttr>(elem)) {
-          // SSA reference → use corresponding dyn_shape operand.
-          // dyn_shape values are 0D f32 tensors (from sf.sym_size).
-          // Extract the scalar and cast to index.
-          if (dynIdx < (int64_t)dynShapeOperands.size()) {
-            Value dynVal = dynShapeOperands[dynIdx++];
-            auto dynTy = dyn_cast<RankedTensorType>(dynVal.getType());
-            if (dynTy && dynTy.getRank() == 0) {
-              Value extracted = tensor::ExtractOp::create(rewriter, loc,
-                  dynTy.getElementType(), dynVal, ValueRange{});
-              Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
-              dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), asInt);
-            } else if (dynTy && dynTy.getRank() == 1 && dynTy.getDimSize(0) == 1) {
-              Value extracted = tensor::ExtractOp::create(rewriter, loc,
-                  dynTy.getElementType(), dynVal,
-                  ValueRange{arith::ConstantIndexOp::create(rewriter, loc, 0)});
-              if (dynTy.getElementType().isF32() || dynTy.getElementType().isF64()) {
-                Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
-                dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), asInt);
-              } else {
-                dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), extracted);
-              }
-            } else if (!dynVal.getType().isIndex()) {
-              dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), dynVal);
-            }
-            shapeVals.push_back(dynVal);
-          } else {
-            return failure();
-          }
-        } else {
-          return failure();
-        }
-      } else {
-        return failure();
+      if (i >= (int64_t)plan.size()) return failure();
+      auto& src = plan[i];
+      switch (src.kind) {
+        case DimSourceKind::Static:
+          shapeVals.push_back(arith::ConstantIndexOp::create(rewriter, loc,
+              *src.staticVal));
+          break;
+        case DimSourceKind::DynOperand:
+          shapeVals.push_back(extractDynDimAsIndex(rewriter, loc,
+              dynShapeOperands[*src.operandIdx]));
+          break;
+        case DimSourceKind::Inferred:
+          inferredIdx = i;
+          shapeVals.push_back(nullptr);
+          break;
       }
     }
 
@@ -187,27 +120,8 @@ struct SfExpandOpLowering : public OpRewritePattern<sf::ExpandOp> {
         if (dyn_cast<StringAttr>(elem)) {
           // SSA reference → dyn_shape operand
           if (dynIdx >= (int64_t)dynShapeOperands.size()) return failure();
-          Value dynVal = dynShapeOperands[dynIdx++];
-          auto dynTy = dyn_cast<RankedTensorType>(dynVal.getType());
-          if (dynTy && dynTy.getRank() == 0) {
-            Value extracted = tensor::ExtractOp::create(rewriter, loc,
-                dynTy.getElementType(), dynVal, ValueRange{});
-            Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
-            dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), asInt);
-          } else if (dynTy && dynTy.getRank() == 1 && dynTy.getDimSize(0) == 1) {
-            Value extracted = tensor::ExtractOp::create(rewriter, loc,
-                dynTy.getElementType(), dynVal,
-                ValueRange{arith::ConstantIndexOp::create(rewriter, loc, 0)});
-            if (dynTy.getElementType().isF32() || dynTy.getElementType().isF64()) {
-              Value asInt = arith::FPToUIOp::create(rewriter, loc, rewriter.getIntegerType(64), extracted);
-              dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), asInt);
-            } else {
-              dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), extracted);
-            }
-          } else if (!dynVal.getType().isIndex()) {
-            dynVal = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), dynVal);
-          }
-          dynSizes.push_back(dynVal);
+          dynSizes.push_back(extractDynDimAsIndex(rewriter, loc,
+              dynShapeOperands[dynIdx++]));
         } else if (auto intAttr = dyn_cast<IntegerAttr>(elem)) {
           int64_t val = intAttr.getInt();
           if (val == -1) {
@@ -326,11 +240,12 @@ struct SfTransposeOpLowering : public OpRewritePattern<sf::TransposeOp> {
       d1 = d1Attr.getInt();
     SmallVector<int64_t> perm(rank);
     for (int64_t i = 0; i < rank; ++i) perm[i] = i;
+    if (d0 < 0) d0 += rank;
+    if (d1 < 0) d1 += rank;
     std::swap(perm[d0], perm[d1]);
 
     // Build inverse permutation: for each output dim j, which input dim
-    // provides its size.  makeEmpty({input}) at line 1437 used same-index
-    // matching which is WRONG for transpose — dynamic dims move positions.
+    // provides its value coordinate.
     SmallVector<int64_t> invPerm(rank);
     for (int64_t i = 0; i < rank; ++i)
       invPerm[perm[i]] = i;
@@ -344,9 +259,25 @@ struct SfTransposeOpLowering : public OpRewritePattern<sf::TransposeOp> {
     Value empty = tensor::EmptyOp::create(rewriter, loc, rt, dynSizes);
     if (!empty) return failure();
 
-    auto transposeOp = linalg::TransposeOp::create(rewriter, 
-        loc, input, empty, rewriter.getDenseI64ArrayAttr(perm));
-    rewriter.replaceOp(op, transposeOp->getResult(0));
+    // Use an explicit linalg.generic instead of linalg.transpose.  The
+    // named op path has been observed to crash for rank>=3 dynamic tensors;
+    // a generic with an explicit inverse-permutation input map is both
+    // rank-generic and avoids the bad path.
+    auto ctx = rewriter.getContext();
+    SmallVector<AffineExpr> inputExprs;
+    inputExprs.reserve(rank);
+    for (int64_t i = 0; i < rank; ++i)
+      inputExprs.push_back(getAffineDimExpr(invPerm[i], ctx));
+    auto inputMap = AffineMap::get(rank, 0, inputExprs, ctx);
+    auto outMap = AffineMap::getMultiDimIdentityMap(rank, ctx);
+    SmallVector<utils::IteratorType> iters(rank, utils::IteratorType::parallel);
+    auto generic = linalg::GenericOp::create(
+        rewriter, loc, rt, ValueRange{input}, ValueRange{empty},
+        {inputMap, outMap}, iters);
+    populateBody(generic, rewriter, [&](OpBuilder &b, Location bodyLoc, ValueRange args) {
+      linalg::YieldOp::create(b, bodyLoc, args[0]);
+    });
+    rewriter.replaceOp(op, generic.getResult(0));
     return success();
   }
 };
@@ -358,29 +289,205 @@ struct SfSliceOpLowering : public OpRewritePattern<sf::SliceOp> {
     auto loc = op.getLoc(); Value input = op.getInput();
     auto inType = ::mlir::dyn_cast<::mlir::RankedTensorType>(input.getType());
     if (!inType) return failure();
-    int64_t dim = 0, start = 0, sEnd = 0;
+    int64_t dim = 0, start = 0, sEnd = 0, step = 1;
     if (auto attr = op.getOperation()->getAttrOfType<IntegerAttr>("dim")) dim = attr.getInt();
     if (auto attr = op.getOperation()->getAttrOfType<IntegerAttr>("start")) start = attr.getInt();
     if (auto attr = op.getOperation()->getAttrOfType<IntegerAttr>("end")) sEnd = attr.getInt();
-    static constexpr int64_t kDynSentinel = 9223372036854775807LL;
+    if (auto attr = op.getOperation()->getAttrOfType<IntegerAttr>("step")) step = attr.getInt();
+    if (step <= 0) step = 1;
     int64_t rank = inType.getRank();
+    if (dim < 0) dim += rank;
+    if (dim < 0 || dim >= rank) return failure();
+    llvm::errs() << "  [SfSlice] input=" << inType << " dim=" << dim
+                 << " start=" << start << " end=" << sEnd
+                 << " step=" << step << "\n";
+    static constexpr int64_t kDynSentinel = 9223372036854775807LL;
     SmallVector<OpFoldResult> offs, szs, strs;
     for (int64_t i = 0; i < rank; ++i) {
       offs.push_back(rewriter.getIndexAttr((i == dim) ? start : 0));
       if (i == dim && sEnd == kDynSentinel) {
-        // INT64_MAX sentinel: size = dim(input, i) - start (runtime)
+        // INT64_MAX sentinel: size = ceil((dim(input, i) - start) / step)
         Value dimVal = tensor::DimOp::create(rewriter, loc, input, i);
         Value startVal = arith::ConstantIndexOp::create(rewriter, loc, start);
-        szs.push_back(Value(arith::SubIOp::create(rewriter, loc, dimVal, startVal).getResult()));
+        Value lenVal = arith::SubIOp::create(rewriter, loc, dimVal, startVal);
+        if (step != 1) {
+          Value stepVal = arith::ConstantIndexOp::create(rewriter, loc, step);
+          Value stepMinus1 = arith::ConstantIndexOp::create(rewriter, loc, step - 1);
+          lenVal = arith::AddIOp::create(rewriter, loc, lenVal, stepMinus1);
+          lenVal = arith::DivSIOp::create(rewriter, loc, lenVal, stepVal);
+        }
+        szs.push_back(lenVal);
+      } else if (i == dim) {
+        // Explicit static end: use the exact sliced length even if the input
+        // dimension is dynamic (previously this fell into the dynamic-dim
+        // branch and accidentally sliced the full dimension).
+        int64_t len = (sEnd >= start) ? (sEnd - start) : 0;
+        if (step != 1)
+          len = (len + step - 1) / step;
+        llvm::errs() << "  [SfSlice] len=" << len << "\n";
+        szs.push_back(rewriter.getIndexAttr(len));
       } else if (inType.isDynamicDim(i)) {
         szs.push_back(Value(tensor::DimOp::create(rewriter, loc, input, i).getResult()));
       } else {
-        szs.push_back(rewriter.getIndexAttr((i == dim) ? (sEnd - start) : inType.getDimSize(i)));
+        szs.push_back(rewriter.getIndexAttr(inType.getDimSize(i)));
       }
-      strs.push_back(rewriter.getIndexAttr(1));
+      strs.push_back(rewriter.getIndexAttr(step == 1 ? 1 : step));
     }
     auto slice = tensor::ExtractSliceOp::create(rewriter, loc, input, offs, szs, strs);
+    llvm::errs() << "  [SfSlice] created type=" << slice->getResult(0).getType() << "\n";
     rewriter.replaceOp(op, slice->getResult(0));
+    return success();
+  }
+};
+
+// Pad → tensor.pad (constant mode) or identity when the pad is all zeros.
+// PyTorch's pad list is (left, right, top, bottom, ...) from the last
+// dimension backwards; MLIR tensor.pad uses per-dimension low/high in
+// forward order.
+struct SfPadOpLowering : public OpRewritePattern<sf::PadOp> {
+  using OpRewritePattern<sf::PadOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::PadOp op, PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    Value input = op.getInput();
+    auto inType = dyn_cast<RankedTensorType>(input.getType());
+    auto outType = dyn_cast<RankedTensorType>(op.getResult().getType());
+    if (!inType || !outType) return failure();
+    if (outType.getRank() != inType.getRank()) return failure();
+
+    auto padAttr = op->getAttrOfType<ArrayAttr>("pad");
+    if (!padAttr) return failure();
+    SmallVector<int64_t> pad;
+    pad.reserve(padAttr.size());
+    for (Attribute a : padAttr) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(a))
+        pad.push_back(intAttr.getInt());
+      else
+        return failure();
+    }
+
+    bool allZero = true;
+    for (int64_t v : pad)
+      if (v != 0) { allZero = false; break; }
+    if (allZero) {
+      rewriter.replaceOp(op, input);
+      return success();
+    }
+
+    int64_t rank = inType.getRank();
+    SmallVector<OpFoldResult> lows, highs;
+    lows.reserve(rank);
+    highs.reserve(rank);
+    for (int64_t d = 0; d < rank; ++d) {
+      int64_t lo = 0, hi = 0;
+      // PyTorch pad pair index for this dim (from last dim backwards).
+      int64_t pairIdx = rank - 1 - d;
+      if (pairIdx >= 0 && pairIdx * 2 + 1 < (int64_t)pad.size()) {
+        lo = pad[pairIdx * 2];
+        hi = pad[pairIdx * 2 + 1];
+      }
+      lows.push_back(rewriter.getIndexAttr(lo));
+      highs.push_back(rewriter.getIndexAttr(hi));
+    }
+
+    auto eltType = outType.getElementType();
+    Value padValue;
+    auto aux = op.getAux();
+    if (!aux.empty()) {
+      Value pv = aux[aux.size() - 1];
+      auto pvType = dyn_cast<RankedTensorType>(pv.getType());
+      if (!pvType) return failure();
+      SmallVector<Value> idx(pvType.getRank(),
+          arith::ConstantIndexOp::create(rewriter, loc, 0));
+      Value extracted = tensor::ExtractOp::create(
+          rewriter, loc, pvType.getElementType(), pv, idx);
+      if (extracted.getType() != eltType) {
+        if (isa<FloatType>(extracted.getType()) && isa<FloatType>(eltType)) {
+          auto srcF = cast<FloatType>(extracted.getType());
+          auto dstF = cast<FloatType>(eltType);
+          if (srcF.getWidth() < dstF.getWidth())
+            extracted = arith::ExtFOp::create(rewriter, loc, eltType, extracted);
+          else if (srcF.getWidth() > dstF.getWidth())
+            extracted = arith::TruncFOp::create(rewriter, loc, eltType, extracted);
+          else
+            return failure();
+        } else {
+          return failure();
+        }
+      }
+      padValue = extracted;
+    } else {
+      padValue = arith::ConstantOp::create(
+          rewriter, loc, eltType, rewriter.getFloatAttr(eltType, 0.0f));
+    }
+
+    Value padded = rewriter.create<tensor::PadOp>(
+        loc, outType, input, lows, highs, padValue);
+    rewriter.replaceOp(op, padded);
+    return success();
+  }
+};
+
+// Select → extract a slice of size 1 along `dim`, then collapse that unit
+// dimension away.  PyTorch `select.int` removes the selected dimension.
+struct SfSelectOpLowering : public OpRewritePattern<sf::SelectOp> {
+  using OpRewritePattern<sf::SelectOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::SelectOp op, PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    Value input = op.getInput();
+    auto inType = dyn_cast<RankedTensorType>(input.getType());
+    auto outType = dyn_cast<RankedTensorType>(op.getResult().getType());
+    llvm::errs() << "  [SfSelect] lowering " << inType << " -> " << outType << "\n";
+    if (!inType || !outType) return failure();
+    int64_t rank = inType.getRank();
+    if (rank < 1 || outType.getRank() != rank - 1) return failure();
+
+    int64_t dim = 0;
+    int64_t index = 0;
+    if (auto attr = op->getAttrOfType<IntegerAttr>("dim")) dim = attr.getInt();
+    if (auto attr = op->getAttrOfType<IntegerAttr>("index")) index = attr.getInt();
+    if (dim < 0) dim += rank;
+    if (dim < 0 || dim >= rank) return failure();
+
+    SmallVector<OpFoldResult> offsets(rank, OpFoldResult(rewriter.getIndexAttr(0)));
+    SmallVector<OpFoldResult> sizes(rank, OpFoldResult(rewriter.getIndexAttr(1)));
+    SmallVector<OpFoldResult> strides(rank, OpFoldResult(rewriter.getIndexAttr(1)));
+    offsets[dim] = OpFoldResult(rewriter.getIndexAttr(index));
+    for (int64_t d = 0; d < rank; ++d) {
+      if (d == dim) continue;
+      if (inType.isDynamicDim(d)) {
+        sizes[d] = Value(tensor::DimOp::create(rewriter, loc, input, d).getResult());
+      } else {
+        sizes[d] = OpFoldResult(rewriter.getIndexAttr(inType.getDimSize(d)));
+      }
+    }
+
+    // Slice keeps the selected unit dim, so build the intermediate type.
+    SmallVector<int64_t> sliceShape(inType.getShape().begin(), inType.getShape().end());
+    sliceShape[dim] = 1;
+    auto sliceTy = RankedTensorType::get(sliceShape, inType.getElementType());
+    auto slice = tensor::ExtractSliceOp::create(rewriter, loc, sliceTy, input, offsets, sizes, strides);
+
+    // Collapse the unit dimension.  The reassociation groups input dims
+    // into output dims; the selected dimension merges with an adjacent
+    // dimension (with a previous neighbor if one exists, else the next).
+    SmallVector<ReassociationIndices> reassoc;
+    if (rank == 1) {
+      reassoc.push_back({0});
+    } else if (dim == 0) {
+      reassoc.push_back({0, 1});
+      for (int64_t d = 2; d < rank; ++d)
+        reassoc.push_back({d});
+    } else {
+      for (int64_t d = 0; d < rank; ++d) {
+        if (d == dim) {
+          reassoc.back().push_back(d);
+        } else {
+          reassoc.push_back({d});
+        }
+      }
+    }
+    auto collapsed = tensor::CollapseShapeOp::create(rewriter, loc, outType, slice, reassoc);
+    rewriter.replaceOp(op, collapsed.getResult());
     return success();
   }
 };
@@ -391,6 +498,7 @@ namespace mlir::sf {
 void registerShapePatterns(RewritePatternSet &patterns) {
   patterns.add<SfViewOpLowering, SfExpandOpLowering,
                SfUnsqueezeOpLowering, SfTransposeOpLowering,
-               SfSliceOpLowering>(patterns.getContext());
+               SfSliceOpLowering, SfPadOpLowering,
+               SfSelectOpLowering>(patterns.getContext());
 }
 } // namespace mlir::sf

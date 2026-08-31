@@ -123,9 +123,8 @@ struct SfLowerToLinalgPass
       llvm::errs() << "  [sf-lower-to-linalg] pre-walk type fixing...\n";
       func.walk([&](Operation *op) {
         if (auto onesLike = dyn_cast<sf::OnesLikeOp>(op)) {
-          // Total dimensions = input (scalar tensor containing dim 0's size)
-          // + dyn_shape operands (additional dim sizes).
-          size_t numDims = 1 + onesLike.getDynShape().size();
+          // Total dimensions = all operands (input + extra dynamic sizes).
+          size_t numDims = onesLike.getOperands().size();
           auto resultTy = dyn_cast<RankedTensorType>(op->getResult(0).getType());
           if (resultTy && resultTy.getRank() < (int64_t)numDims) {
             auto newTy = RankedTensorType::get(

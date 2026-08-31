@@ -99,7 +99,7 @@ def _build_sf_mlir_with_weights(
         lines.append(f'    %{name} = "sf.weight"() {{name = "{name}"}} : () -> tensor<{shape_str}xf32>')
 
     # All weights are also returned as identity copies
-    for name, s in zip(weight_names, weight_shapes):
+    for name, s in zip(weight_names, weight_shapes, strict=True):
         shape_str = "x".join(str(d) for d in s)
         ret_types.append(f"tensor<{shape_str}xf32>")
         ret_vals.append(f"%{name}")
@@ -169,13 +169,13 @@ class TestEmbeddingWithWeightPromotion:
     @pytest.mark.parametrize("num_weights", [25, 50, 100])
     def test_embedding_not_corrupted(self, num_weights):
         """sf.embedding + sf.weight promotion: high-index tokens must be correct."""
-        VOCAB, HIDDEN = 1000, 64
+        vocab, hidden = 1000, 64
         rng = np.random.RandomState(42)
 
-        mlir, w_names, w_shapes = _build_sf_mlir_with_weights(VOCAB, HIDDEN, num_weights)
+        mlir, w_names, w_shapes = _build_sf_mlir_with_weights(vocab, hidden, num_weights)
 
         w_arrays = {}
-        for name, shape in zip(w_names, w_shapes):
+        for name, shape in zip(w_names, w_shapes, strict=True):
             w_arrays[name] = rng.randn(*shape).astype(np.float32) * 0.02
         emb_w = w_arrays["tok_embed_weight"]
 
@@ -194,7 +194,7 @@ class TestEmbeddingWithWeightPromotion:
 
             # Apply sf→linalg once, parse weight names from result
             lowered = _apply_sf_to_linalg(mlir)
-            wm = re.search(r"sf\.weight_names\s*=\s*\[(.*?)\]", lowered, re.DOTALL)
+            wm = re.search(r"weight_names[^]]*\[(.*?)\]", lowered, re.DOTALL)
             promoted = [w.strip().strip('"') for w in wm.group(1).split(",")]
             w_arrs = [w_arrays.get(n, np.zeros((1,), dtype=np.float32)) for n in promoted]
             all_inputs = [input_ids] + w_arrs
@@ -221,7 +221,7 @@ class TestEmbeddingWithWeightPromotion:
             for batch in range(2):
                 for seq in range(4):
                     tid = int(input_ids[batch, seq])
-                    expected = emb_w[tid % VOCAB]
+                    expected = emb_w[tid % vocab]
                     cos_val = _cos(actual[batch, seq], expected)
                     if cos_val < 0.9999:
                         failures.append(f"  token {tid:>4}: cos={cos_val:.8f}")

@@ -7,6 +7,8 @@
 
 // ── Input binding ──────────────────────────────────────────────────
 
+use crate::model::tensor::Dtype;
+
 #[derive(Debug, Clone)]
 pub enum InputBinding {
     Weight(String),
@@ -21,6 +23,8 @@ pub struct IOTensorDef {
     pub rank: u8,
     pub shape: Vec<u64>,
     pub consumed_internally: bool,
+    /// MLIR tensor element type ("f32", "bf16", "f16", "i64", ...).
+    pub dtype: Dtype,
 }
 
 impl IOTensorDef {
@@ -32,7 +36,7 @@ impl IOTensorDef {
     /// Create an IOTensorDef with consumed_internally (used for outputs).
     #[allow(dead_code)]
     pub fn new(rank: u8, shape: Vec<u64>, consumed_internally: bool) -> Self {
-        Self { rank, shape, consumed_internally }
+        Self { rank, shape, consumed_internally, dtype: Dtype::F32 }
     }
 }
 
@@ -47,6 +51,12 @@ pub struct FuncDef {
     pub num_outputs: usize,
     pub inputs: Vec<(InputBinding, IOTensorDef)>,
     pub outputs: Vec<IOTensorDef>,
+    /// Pre-lowering consumed_internally flags for individual sub-tensors
+    /// within the packed sret output. When populated and != outputs.len(),
+    /// the packed output contains multiple sub-tensors (e.g., Q, K, V
+    /// for KV-split functions) and the runner must split it before
+    /// wiring to func_outputs or KV cache intercepts.
+    pub consumed_sub_output_flags: Vec<bool>,
 }
 
 impl FuncDef {

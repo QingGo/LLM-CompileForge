@@ -239,6 +239,7 @@ class TestCoverageAllOps:
             # Matmul
             "sf.matmul",
             "sf.linear",
+            "sf.conv1d",
             # Shape ops
             "sf.identity",
             "sf.view",
@@ -247,9 +248,13 @@ class TestCoverageAllOps:
             "sf.sum",
             "sf.transpose",
             "sf.slice",
+            "sf.pad",
+            "sf.triu",
+            "sf.tril",
             # Comparison / logic
             "sf.le",
             "sf.logical_and",
+            "sf.masked_fill",
             # Fill
             "sf.ones_like",
             "sf.new_ones",
@@ -287,7 +292,6 @@ class TestCoverageAllOps:
             # Common PyTorch ops pre-processed by _preprocess or directly emitted
             "sf.cat",
             "sf.chunk",
-            "sf.conv1d",
             "sf.copy_",
             "sf.cos",
             "sf.diff",
@@ -299,9 +303,7 @@ class TestCoverageAllOps:
             "sf.gt",
             "sf.linalg_norm",
             "sf.lt",
-            "sf.masked_fill",
             "sf.ne",
-            "sf.pad",
             "sf.permute",
             "sf.pow",
             "sf.rsqrt",
@@ -309,8 +311,6 @@ class TestCoverageAllOps:
             "sf.split",
             "sf.sqrt",
             "sf.stack",
-            "sf.tril",
-            "sf.triu",
             "sf.type_as",
             "sf.var",
             "sf.view_as",

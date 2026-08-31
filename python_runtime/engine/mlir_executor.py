@@ -99,13 +99,23 @@ class MlirExecutor(_KVCacheMixin):
         self._uses_cache_manager = False
         self._uses_static_shape = self._detect_static_shape()
 
+        # SSA output name → (producer_func_index, output_index).  Used to
+        # pin policy intercepts (func_index, output_index) to the exact
+        # consuming op — contract-driven, no op-name heuristics.
+        self._ssa_producer: dict[str, tuple[int, int]] = {}
+        for fi, func in enumerate(module.functions):
+            for oi, (out_name, _tp, _flag) in enumerate(func.outputs):
+                self._ssa_producer[out_name] = (fi, oi)
+                self._ssa_producer[out_name.lstrip("%")] = (fi, oi)
+
         raw_policy = module.metadata.get("cache_policy")
         if raw_policy and not self._uses_static_shape:
+            from python_runtime.engine._constants import DEFAULT_NUM_BLOCKS
             from python_runtime.engine.cache_manager import CacheManager, _dict_to_proto_cache_policy
 
             policy = _dict_to_proto_cache_policy(raw_policy)
             if len(policy.slabs) > 0:
-                num_blocks = module.metadata.get("num_blocks", 1000)
+                num_blocks = module.metadata.get("num_blocks", DEFAULT_NUM_BLOCKS)
                 self._cache_mgr = CacheManager(policy, num_blocks=int(num_blocks))
                 self._uses_cache_manager = True
                 for idef in policy.intercepts:
@@ -174,6 +184,12 @@ class MlirExecutor(_KVCacheMixin):
         """Run ALL functions sequentially, chaining outputs→inputs."""
         ssa_values: dict[str, torch.Tensor] = {}
 
+        # Cache-manager per-step state: reset layer counters ONCE per
+        # forward so sequential intercepts resolve to layers 0..L-1.
+        # (Resetting per function made every layer collide at index 0.)
+        if self._uses_cache_manager and self._cache_mgr is not None:
+            self._cache_mgr.begin_step(self._block_tables)
+
         for fi, func in enumerate(self._module.functions):
             self._function = func  # switch current function for weight lookups
 
@@ -189,6 +205,33 @@ class MlirExecutor(_KVCacheMixin):
                         if clean in kwargs:
                             ssa_values[named_input] = kwargs[clean]
                             ssa_values[clean] = kwargs[clean]
+                        elif clean == "position_ids":
+                            # Models exported with position_ids as an input
+                            # default to sequential positions (prefill
+                            # semantics).  KV decode passes absolute
+                            # positions under the shared "positions" kwarg
+                            # (forward()/forward_with_kv() convention);
+                            # honor "position_ids" too for API compat.
+                            # Defaulting to arange here would silently
+                            # misplace single-token decode inputs at
+                            # position 0.
+                            positions_arg = kwargs.get("positions", kwargs.get("position_ids"))
+                            if positions_arg is not None:
+                                ssa_values[named_input] = positions_arg
+                                ssa_values[clean] = positions_arg
+                                continue
+                            b, s = input_ids.shape
+                            if isinstance(input_ids, torch.Tensor):
+                                ids_dtype, ids_device = input_ids.dtype, input_ids.device
+                            else:
+                                # numpy/list input_ids: torch.arange rejects
+                                # numpy dtypes — coerce to int64 on CPU.
+                                ids_dtype, ids_device = torch.int64, "cpu"
+                            default_pos = torch.arange(
+                                s, dtype=ids_dtype, device=ids_device
+                            ).unsqueeze(0).expand(b, -1)
+                            ssa_values[named_input] = default_pos
+                            ssa_values[clean] = default_pos
             else:
                 # Subsequent functions: all inputs are already in ssa_values
                 # from previous function's outputs. Just ensure they exist.
@@ -199,9 +242,6 @@ class MlirExecutor(_KVCacheMixin):
                         ssa_values.setdefault(clean, torch.tensor([]))
 
             self._reset_forward_state(kwargs)
-
-            if self._uses_cache_manager and self._cache_mgr is not None:
-                self._cache_mgr.begin_step(self._block_tables)
 
             # ── Execute ops ─────────────────────────────────
             for op in func.ops:
@@ -333,6 +373,25 @@ class MlirExecutor(_KVCacheMixin):
             if idef.intercept_type not in ("write", "read_write"):
                 continue
 
+            # ── Contract filter ──────────────────────────────
+            # Intercepts carry (func_index, output_index) identifying the
+            # PRODUCER function's K/V output.  This op (the consumer) must
+            # reference exactly that output via its source operand, so
+            # each layer's SDPA applies only its own intercept pair.
+            if len(idef.param_indices) >= 2:
+                contract = (int(idef.param_indices[0]), int(idef.param_indices[1]))
+                src_idx: int | None = None
+                if idef.source.startswith("operand["):
+                    src_idx = int(idef.source[len("operand[") : -1])
+                if src_idx is None or src_idx >= len(op.operands):
+                    continue
+                operand_name = op.operands[src_idx]
+                producer = self._ssa_producer.get(operand_name) or self._ssa_producer.get(
+                    operand_name.lstrip("%")
+                )
+                if producer is None or producer != contract:
+                    continue
+
             slab_id = idef.slab_id
             data = self._extract_source(idef, op, ssa_values)
             if data is None:
@@ -345,8 +404,13 @@ class MlirExecutor(_KVCacheMixin):
                 self._cache_mgr.write_paged(slab_id, layer_idx, data, flat_pos)
 
             if idef.intercept_type == "read_write" and self._block_tables and self._current_is_decode:
-                max_seq = self._max_seq_from_tables(self._block_tables)
-                gathered = self._cache_mgr.read_paged(slab_id, layer_idx, max_seq)
+                # Gather exactly the prefix through the fed token
+                # (max_position + 1) — a block-multiple gather would pad
+                # the attention with zero/stale rows.
+                if positions is None or positions.numel() == 0:
+                    continue
+                seq_len = int(positions.max().item()) + 1
+                gathered = self._cache_mgr.read_paged(slab_id, layer_idx, seq_len)
                 source_key = self._get_source_ssa_key(idef, op)
                 if source_key and source_key in ssa_values:
                     orig_dtype = ssa_values[source_key].dtype

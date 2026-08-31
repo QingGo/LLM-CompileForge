@@ -57,9 +57,6 @@ requires_opt = pytest.mark.skipif(
 # ── Test: tiny_llama compiles (structural) ───────────────────
 
 
-@pytest.mark.xfail(
-    reason="pre-existing: FX converter type inference doesn't handle i64→f32 in embed_prefix matmul; see test file docstring"
-)
 @pytest.mark.integration
 @pytest.mark.timeout(60)
 @requires_tiny

@@ -54,9 +54,16 @@ def _lowered_to_type_str(rank: int, dims: list[int]) -> str:
     return f"tensor<{'x'.join(parts)}>"
 
 
+def _tensor_dtype(dim_str: str) -> str:
+    """Extract the MLIR tensor element type string from a tensor body."""
+    if not dim_str:
+        return "f32"
+    return dim_str.strip().split("x")[-1].strip()
+
+
 def parse_lowered_argument_types(
     lowered_mlir_path: str,
-) -> dict[str, list[tuple[int, list[int]]]]:
+) -> dict[str, list[tuple[int, list[int], str]]]:
     """Parse lowered MLIR to extract function argument types (rank + dims).
 
     Scans for ``func.func @NAME(%arg0: tensor<DIMS>, ...)`` and parses
@@ -70,7 +77,7 @@ def parse_lowered_argument_types(
 
     Returns:
         Dict mapping base function name (e.g. ``"main_0"``) to a list of
-        ``(rank, dims)`` tuples, one per argument.  If a function has no
+        ``(rank, dims, dtype)`` tuples, one per argument.  If a function has no
         tensor arguments or the file cannot be read, the entry may be
         empty or missing.
     """
@@ -89,20 +96,20 @@ def parse_lowered_argument_types(
 
     _tensor_re = re.compile(r"tensor<([^>]*)>")
 
-    result: dict[str, list[tuple[int, list[int]]]] = {}
+    result: dict[str, list[tuple[int, list[int], str]]] = {}
 
     for func_match in _func_re.finditer(text):
         func_name = func_match.group(1)
         args_str = func_match.group(2)
 
-        arg_types: list[tuple[int, list[int]]] = []
+        arg_types: list[tuple[int, list[int], str]] = []
 
         # Find all tensor types in the argument string
         for tensor_match in _tensor_re.finditer(args_str):
             dim_str = tensor_match.group(1).strip()
             if not dim_str:
                 # scalar tensor: tensor<f32> → rank=0, dims=[]
-                arg_types.append((0, []))
+                arg_types.append((0, [], "f32"))
                 continue
 
             # Split by 'x' to get individual dimensions. The last 'x'-separated
@@ -117,7 +124,7 @@ def parse_lowered_argument_types(
                 else:
                     dims.append(int(d))
 
-            arg_types.append((len(dims), dims))
+            arg_types.append((len(dims), dims, _tensor_dtype(dim_str)))
 
         if func_name in result:
             # Duplicate function name (shouldn't happen in well-formed MLIR)
@@ -153,7 +160,7 @@ def parse_lowered_weight_names(
 
 def parse_lowered_output_types(
     lowered_mlir_path: str,
-) -> dict[str, list[tuple[int, list[int]]]]:
+) -> dict[str, list[tuple[int, list[int], str]]]:
     """Parse lowered MLIR to extract function return types (rank + dims).
 
     Scans for ``func.func @NAME(...) -> TYPES {`` and parses the
@@ -168,7 +175,7 @@ def parse_lowered_output_types(
 
     Returns:
         Dict mapping base function name (e.g. ``"main_0"``) to a list of
-        ``(rank, dims)`` tuples, one per output.  If a function has no
+        ``(rank, dims, dtype)`` tuples, one per output.  If a function has no
         tensor return types or the file cannot be read, the entry may be
         empty or missing.
     """
@@ -185,18 +192,18 @@ def parse_lowered_output_types(
 
     _tensor_re = re.compile(r"tensor<([^>]*)>")
 
-    result: dict[str, list[tuple[int, list[int]]]] = {}
+    result: dict[str, list[tuple[int, list[int], str]]] = {}
 
     for func_match in _func_re.finditer(text):
         func_name = func_match.group(1)
         return_str = func_match.group(2).strip()
 
-        output_types: list[tuple[int, list[int]]] = []
+        output_types: list[tuple[int, list[int], str]] = []
 
         for tensor_match in _tensor_re.finditer(return_str):
             dim_str = tensor_match.group(1).strip()
             if not dim_str:
-                output_types.append((0, []))
+                output_types.append((0, [], "f32"))
                 continue
 
             dim_parts = [d.strip() for d in dim_str.split("x")]
@@ -208,7 +215,7 @@ def parse_lowered_output_types(
                 else:
                     dims.append(int(d))
 
-            output_types.append((len(dims), dims))
+            output_types.append((len(dims), dims, _tensor_dtype(dim_str)))
 
         if func_name not in result:
             result[func_name] = output_types
@@ -284,8 +291,8 @@ def parse_ciface_signatures(llvm_ir_path: str) -> dict[str, tuple[int, int]]:
 def merge_with_semantics(
     signatures: dict[str, tuple[int, int]],
     pre_lowering_module: dict[str, Any],
-    lowered_arg_types: dict[str, list[tuple[int, list[int]]]] | None = None,
-    lowered_output_types: dict[str, list[tuple[int, list[int]]]] | None = None,
+    lowered_arg_types: dict[str, list[tuple[int, list[int], str]]] | None = None,
+    lowered_output_types: dict[str, list[tuple[int, list[int], str]]] | None = None,
     lowered_weight_names: dict[str, list[str]] | None = None,
     execution_plan_bytes: bytes | None = None,
 ) -> list[dict[str, Any]]:
@@ -356,7 +363,7 @@ def merge_with_semantics(
     if lowered_output_types:
         for fname, outs in lowered_output_types.items():
             tmap: dict[str, list[int]] = {}
-            for idx, (rank, dims) in enumerate(outs):
+            for idx, (rank, dims, _dtype) in enumerate(outs):
                 type_str = _lowered_to_type_str(rank, dims)
                 tmap.setdefault(type_str, []).append(idx)
             producer_type_indices[fname] = tmap
@@ -378,12 +385,8 @@ def merge_with_semantics(
         if execution_plan_bytes is not None:
             from gen.proto.python import sfa_abi_pb2  # noqa: E402
 
-            plan = sfa_abi_pb2.ExecutionPlan()
+            plan = sfa_abi_pb2.ExecutionPlan()  # type: ignore[attr-defined]
             plan.ParseFromString(execution_plan_bytes)
-
-            # Build global input name set for weight detection:
-            # global_inputs[0] = input_ids (real global), rest = weights
-            global_input_set: set[str] = set(plan.global_inputs)
 
             # Find the execution step matching this function
             step = None
@@ -395,11 +398,11 @@ def merge_with_semantics(
             if step is not None:
                 # Build input_fields from ExecutionPlan edges (in order)
                 for edge in step.inputs:
-                    if edge.source == sfa_abi_pb2.GLOBAL_INPUT:
+                    if edge.source == sfa_abi_pb2.GLOBAL_INPUT:  # type: ignore[attr-defined]
                         input_fields.append(
                             {"kind": SfaInputKind.Value("SFA_INPUT_GLOBAL")}
                         )
-                    elif edge.source == sfa_abi_pb2.STEP_OUTPUT:
+                    elif edge.source == sfa_abi_pb2.STEP_OUTPUT:  # type: ignore[attr-defined]
                         input_fields.append(
                             {
                                 "kind": SfaInputKind.Value("SFA_INPUT_SSA"),
@@ -527,28 +530,57 @@ def merge_with_semantics(
         # If lowered output types are available, replace with per-output descriptors
         if lowered_output_types and func["name"] in lowered_output_types:
             lot = lowered_output_types[func["name"]]
-            output_descs = [{"rank": rank, "dims": dims, "consumed_internally": False} for rank, dims in lot]
+            output_descs = [
+                {"rank": rank, "dims": dims, "consumed_internally": False, "dtype": dtype}
+                for rank, dims, dtype in lot
+            ]
 
         # Propagate consumed_internally from pre-lowering outputs.
-        # After bufferization there is only 1 packed output per function.
-        # If ANY pre-lowering output is consumed_internally, mark the
-        # packed output as consumed so the runtime knows to intercept it.
-        # Propagate consumed_internally from pre-lowering outputs.
-        # After bufferization there is only 1 packed output per function.
-        # If ANY pre-lowering output is consumed_internally, mark the
-        # packed output as consumed so the runtime knows to intercept it.
+        # Two cases:
+        #   (a) Multi-output sret (one descriptor per pre-lowering output,
+        #       e.g. Q/K/V split functions emit three descriptors): copy
+        #       each output's consumed flag POSITIONALLY.  The runtime
+        #       relies on descriptor[i].consumed_internally to decide
+        #       per-output cache interception.
+        #   (b) Packed sret (post-bufferization collapses many outputs
+        #       into ONE descriptor): mark the packed output consumed if
+        #       ANY pre-lowering output is consumed; the runtime splits
+        #       the packed buffer using consumed_sub_output_flags.
         pre_outputs = func.get("outputs", [])
         if pre_outputs and output_descs:
-            any_consumed = any(len(out) > 2 and out[2] for out in pre_outputs)
-            output_descs[0]["consumed_internally"] = any_consumed
+            if len(pre_outputs) == len(output_descs):
+                for i, out in enumerate(pre_outputs):
+                    output_descs[i]["consumed_internally"] = bool(
+                        len(out) > 2 and out[2]
+                    )
+            else:
+                any_consumed = any(len(out) > 2 and out[2] for out in pre_outputs)
+                output_descs[0]["consumed_internally"] = any_consumed
+
+        # Store the pre-lowering consumed mask for the Rust runtime.
+        # The Rust compute graph runner splits the packed output into
+        # individual sub-tensors (Q, K, V) when consumed_internally=True
+        # and needs to know which sub-tensors are consumed.
+        # Use the output_descs list length as signal: expanded from 1 to 3
+        # for KV-split functions (handled at lower-level sret parse).
 
         # Populate rank/dims from lowered MLIR arg types when available
         if lowered_arg_types and func["name"] in lowered_arg_types:
             lt = lowered_arg_types[func["name"]]
             for idx in range(min(len(input_fields), len(lt))):
-                rank, dims = lt[idx]
+                rank, dims, dtype = lt[idx]
                 input_fields[idx]["rank"] = rank
                 input_fields[idx]["dims"] = dims
+                input_fields[idx]["dtype"] = dtype
+
+        # Store pre-lowering consumed_sub_output_flags so the Rust runtime
+        # can split the packed sret output into individual sub-tensors
+        # (e.g., Q, K, V) and apply per-output consumed_internally logic.
+        pre_outputs = func.get("outputs", [])
+        consumed_sub_output_flags = []
+        for out in pre_outputs:
+            consumed = len(out) > 2 and out[2]
+            consumed_sub_output_flags.append(consumed)
 
         metas.append(
             {
@@ -557,6 +589,7 @@ def merge_with_semantics(
                 "output_rank": effective_output_rank,
                 "input_fields": input_fields,
                 "outputs": output_descs,
+                "consumed_sub_output_flags": consumed_sub_output_flags,
             }
         )
 
@@ -602,11 +635,17 @@ def serialize_abi(func_metas: list[dict[str, Any]]) -> bytes:
                 input_field.rank = field["rank"]
             if "dims" in field:
                 input_field.dims.extend(field["dims"])
+            if "dtype" in field:
+                input_field.dtype = field["dtype"]
 
         for od in meta.get("outputs", []):
             out_desc = func_meta.outputs.add()
             out_desc.rank = od["rank"]
             out_desc.dims.extend(od["dims"])
             out_desc.consumed_internally = od.get("consumed_internally", False)
+            out_desc.dtype = od.get("dtype", "f32")
+
+        for flag in meta.get("consumed_sub_output_flags", []):
+            func_meta.consumed_sub_output_flags.append(flag)
 
     return bytes(header.SerializeToString())

@@ -23,8 +23,8 @@ fn compiled_executor() -> ModelExecutor {
 }
 
 #[test]
-#[ignore = "known non-determinism in multi-function graph execution. Single-function ciface is deterministic (verified in compiler/tests/test_precision_contract.py). Root cause: ASLR-affected dylib memory state in run_function_graph() SSA wiring."]
 fn test_forward_bit_identical_rerun() {
+    let _dylib_guard = crate::dylib_lock::lock();
     let exec = compiled_executor();
     let input = vec![1u32, 2, 3, 4];
 
@@ -64,14 +64,13 @@ fn test_forward_bit_identical_rerun() {
         }
     }
 
-    // Documented known issue: multi-function graph execution is non-deterministic.
-    // Single-function ciface calls via ctypes are deterministic (verified in
-    // compiler/tests/test_precision_contract.py). The non-determinism appears
-    // only in multi-function compute graph orchestration.
-    // See: .opencode/TRAPS.md, session analysis 2026-06-05.
+    // Previously documented non-determinism (2026-06-05) is resolved:
+    // bit-identical reruns verified after the Q/K/V output-order contract,
+    // per-output consumed flags, position_ids input, and SDPA mask
+    // broadcast fixes. See .opencode/TRAPS.md.
     if first_diff_idx.is_some() {
         eprintln!(
-            "NOTE: Known non-determinism in multi-function graph execution. "
+            "NOTE: Forward pass is NOT bit-identical across reruns. "
         );
     }
 }

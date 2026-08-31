@@ -92,13 +92,15 @@ fn test_scheduler_decode_single_token() {
     assert_eq!(batch.requests.len(), 1);
     assert_eq!(batch.requests[0].input_ids, vec![1, 2, 3, 4]);
 
-    // Second schedule: decode should send single token with position = current_seq_len
+    // Second schedule: decode should send single token with position =
+    // the fed token's TRUE absolute position (current_seq_len - 1).
+    // No output sampled yet → fed token is the last prompt token p_3 at
+    // position 3 (prompt len 4).
     let batch = s.schedule(&mut bm, &[]);
     assert_eq!(batch.requests.len(), 1);
     assert!(batch.requests[0].use_kv_cache);
     assert_eq!(batch.requests[0].input_ids.len(), 1);
-    // prompt_tokens.len()=4 + output_tokens.len()=0 = current_seq_len=4
-    assert_eq!(batch.requests[0].positions, vec![4]);
+    assert_eq!(batch.requests[0].positions, vec![3]);
     assert!(!batch.requests[0].kv_cache_block_table.is_empty(),
         "kv_cache_block_table must be populated when use_kv_cache=true");
 
@@ -107,10 +109,40 @@ fn test_scheduler_decode_single_token() {
     let batch2 = s.schedule(&mut bm, &[]);
     assert_eq!(batch2.requests.len(), 1);
     assert_eq!(batch2.requests[0].input_ids.len(), 1);
-    // prompt_tokens.len()=4 + output_tokens.len()=1 = current_seq_len=5
-    assert_eq!(batch2.requests[0].positions, vec![5]);
+    // Fed token 42 occupies absolute position 4.
+    assert_eq!(batch2.requests[0].positions, vec![4]);
     // Last token should be the recorded output token
     assert_eq!(batch2.requests[0].input_ids[0], 42);
+}
+
+#[test]
+fn test_scheduler_decode_grows_block_table() {
+    // Decode writes KV at prompt+output positions; the block table must
+    // grow past the prompt-length allocation as outputs accumulate.
+    let mut s = Scheduler::new(32, 512, 256, true).unwrap();
+    let mut bm = BlockManager::new(1000, 16).unwrap();
+    let prompt: Vec<u32> = vec![7; 20]; // 20 tokens → 2 blocks of 16
+    s.add_request(prompt, 0, 100, vec![], None);
+
+    let batch = s.schedule(&mut bm, &[]);
+    assert_eq!(batch.requests.len(), 1);
+    assert_eq!(bm.get_blocks("req_1").unwrap().len(), 2);
+
+    // First decode: fed token = last prompt token at position 19.
+    let batch = s.schedule(&mut bm, &[]);
+    assert!(batch.requests[0].use_kv_cache);
+    assert_eq!(batch.requests[0].positions, vec![19]);
+    assert_eq!(bm.get_blocks("req_1").unwrap().len(), 2);
+
+    // Outputs 1..=15: fed token position reaches 20+15-1=34 → block 2
+    // (positions 32..47), which requires a third block.
+    for step in 0..15 {
+        s.record_output("req_1", 42 + step);
+        let b = s.schedule(&mut bm, &[]);
+        assert_eq!(b.requests[0].positions, vec![20 + step], "decode step {}", step);
+    }
+    assert_eq!(bm.get_blocks("req_1").unwrap().len(), 3,
+        "block table must grow to cover decode positions");
 }
 
 #[test]

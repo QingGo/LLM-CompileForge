@@ -7,7 +7,6 @@ binding consistency between compute graph and lowered MLIR.
 
 import os
 import re
-import sys
 from typing import Any
 
 
@@ -15,6 +14,7 @@ def parse_compute_graph_outputs(compiled_dir: str) -> list[dict]:
     """Parse the compute graph from dylib proto and return per-function output counts."""
     import ctypes
     import glob
+
     import numpy as np
 
     # Find dylib in compiled_dir

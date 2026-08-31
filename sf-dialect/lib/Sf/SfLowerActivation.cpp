@@ -54,6 +54,10 @@ void registerActivationPatterns(RewritePatternSet &patterns) {
                SfActivationOpLowering<sf::SigmoidOp>,
                SfActivationOpLowering<sf::ExpOp>,
                SfActivationOpLowering<sf::NegOp>,
-               SfActivationOpLowering<sf::TanhOp>>(patterns.getContext());
+               SfActivationOpLowering<sf::TanhOp>,
+               SfActivationOpLowering<sf::CosOp>,
+               SfActivationOpLowering<sf::SinOp>,
+               SfActivationOpLowering<sf::RsqrtOp>,
+               SfActivationOpLowering<sf::SoftplusOp>>(patterns.getContext());
 }
 } // namespace mlir::sf

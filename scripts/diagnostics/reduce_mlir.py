@@ -25,8 +25,8 @@ import sys
 import tempfile
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 _log = logging.getLogger("reduce_mlir")
 
@@ -35,7 +35,7 @@ _log = logging.getLogger("reduce_mlir")
 # MLIR context (shared, lazily initialized)
 # =========================================================================
 
-_mlir_ctx: "ir.Context | None" = None  # type: ignore[name-defined]
+_mlir_ctx: ir.Context | None = None  # type: ignore[name-defined]
 
 
 def _get_mlir_ctx():
@@ -240,10 +240,11 @@ class PassInterestingness(InterestingnessTest):
         self._timeout = timeout
 
     def is_interesting(self, mlir_text: str) -> bool:
-        import mlir.ir as ir
-        import mlir.passmanager as pm
         from concurrent.futures import ThreadPoolExecutor
         from concurrent.futures import TimeoutError as FutureTimeout
+
+        import mlir.ir as ir
+        import mlir.passmanager as pm
 
         ctx = _get_mlir_ctx()
         try:

@@ -27,7 +27,6 @@ from compiler.backend.compile_utils import (
     compile_mlir_to_dylib,
     compile_module_to_dylib,
     emit_llvm_ir_to_file,
-    jit_compile_and_run,
     link_dylib,
     llc_compile,
     mlir_module_to_llvm_ir,
@@ -103,7 +102,7 @@ def lower_linalg_to_llvm_ir(
         _log.warning("Dialect registry registration failed: %s (may affect bufferization)", e)
 
     with ir.Location.unknown(ctx):
-        from compiler.pipeline import (  # noqa: E402
+        from compiler.pipeline import (  # type: ignore[attr-defined]  # noqa: E402
             BUILTIN_STAGES,
             run_stages,
         )

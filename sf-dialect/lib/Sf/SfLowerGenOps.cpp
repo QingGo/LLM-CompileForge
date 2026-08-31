@@ -19,46 +19,47 @@ struct SfOnesLikeOpLowering : public OpRewritePattern<sf::OnesLikeOp> {
   LogicalResult matchAndRewrite(sf::OnesLikeOp op, PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     Type rt = op.getResult().getType();
+    llvm::errs() << "  [SfOnesLike] lowering " << rt << "\n";
     if (!isa<ShapedType>(rt)) return failure();
     auto shapedType = cast<ShapedType>(rt);
     auto eltType = shapedType.getElementType();
-    if (!isa<FloatType>(eltType)) return failure();
+    if (!isa<FloatType>(eltType) && !isa<IntegerType>(eltType)) return failure();
 
-    auto dynShape = op.getDynShape();
-    if (!dynShape.empty()) {
-      // Dynamic shape from scalar tensor operands.
-      // Collect all: input + dyn_shape together define the output rank.
-      SmallVector<Value> allInputs;
-      allInputs.push_back(op.getInput());
-      allInputs.append(dynShape.begin(), dynShape.end());
+    auto operands = op.getOperands();
 
-      size_t numDims = allInputs.size();
+    // Builder for the one-value constant in the output element type.
+    Value oneVal;
+    if (isa<FloatType>(eltType)) {
+      oneVal = arith::ConstantOp::create(
+          rewriter, loc, eltType, rewriter.getFloatAttr(eltType, 1.0));
+    } else {
+      oneVal = arith::ConstantOp::create(
+          rewriter, loc, eltType, rewriter.getIntegerAttr(eltType, 1));
+    }
+
+    if (!operands.empty() && operands.size() > 1) {
+      // Dynamic shape from scalar tensor operands.  Each operand is a
+      // scalar tensor providing one dimension size.
+      size_t numDims = operands.size();
       SmallVector<int64_t> shape(numDims, ShapedType::kDynamic);
       auto tensorType = RankedTensorType::get(shape, eltType);
 
-      // Extract scalar f32 from each operand → i64 → index for tensor.empty
-      // Operands can be 0D (tensor<f32>) or 1D (tensor<1xf32>).
       SmallVector<Value> dynSizes;
       auto idxType = rewriter.getIndexType();
-      for (auto operand : allInputs) {
-        Value extracted;
+      for (auto operand : operands) {
         auto operandTy = dyn_cast<RankedTensorType>(operand.getType());
-        if (operandTy && operandTy.getRank() == 0) {
-          extracted = tensor::ExtractOp::create(rewriter, loc,
-              operandTy.getElementType(), operand, ValueRange{});
-        } else if (operandTy && operandTy.getRank() > 0) {
-          SmallVector<Value> indices(operandTy.getRank(),
-              arith::ConstantIndexOp::create(rewriter, loc, 0));
-          extracted = tensor::ExtractOp::create(rewriter, loc,
-              operandTy.getElementType(), operand, indices);
-        } else {
-          return failure();
-        }
+        if (!operandTy) return failure();
+        SmallVector<Value> indices(operandTy.getRank(),
+            arith::ConstantIndexOp::create(rewriter, loc, 0));
+        Value extracted = tensor::ExtractOp::create(
+            rewriter, loc, operandTy.getElementType(), operand, indices);
         Value i64Val;
         if (isa<FloatType>(extracted.getType())) {
-          i64Val = arith::FPToUIOp::create(rewriter, loc, rewriter.getI64Type(), extracted);
+          i64Val = arith::FPToUIOp::create(
+              rewriter, loc, rewriter.getI64Type(), extracted);
         } else if (isa<IntegerType>(extracted.getType())) {
-          i64Val = arith::IndexCastOp::create(rewriter, loc, rewriter.getI64Type(), extracted);
+          i64Val = arith::IndexCastOp::create(
+              rewriter, loc, rewriter.getI64Type(), extracted);
         } else {
           return failure();
         }
@@ -68,19 +69,28 @@ struct SfOnesLikeOpLowering : public OpRewritePattern<sf::OnesLikeOp> {
 
       Value empty = tensor::EmptyOp::create(rewriter, loc, tensorType, dynSizes);
       if (!empty) return failure();
-
-      Value oneVal = arith::ConstantOp::create(rewriter, loc, eltType,
-          rewriter.getFloatAttr(eltType, 1.0));
-      rewriter.replaceOpWithNewOp<linalg::FillOp>(op, ValueRange{oneVal}, ValueRange{empty});
+      rewriter.replaceOpWithNewOp<linalg::FillOp>(
+          op, ValueRange{oneVal}, ValueRange{empty});
       return success();
     }
 
-    // Default path: no dyn_shape, copy shape from input tensor
-    Value empty = makeEmpty(rewriter, loc, rt, {op.getInput()});
+    // Zero-operand form (`torch.ones` with a static shape): fill the
+    // declared result type with ones.  One-operand form (`ones_like`):
+    // copy the input tensor shape.
+    Value empty;
+    if (operands.size() == 1) {
+      empty = makeEmpty(rewriter, loc, rt, {operands[0]});
+    } else {
+      for (int64_t i = 0; i < shapedType.getRank(); ++i) {
+        if (shapedType.isDynamicDim(i)) {
+          return failure();
+        }
+      }
+      empty = tensor::EmptyOp::create(rewriter, loc, shapedType, ValueRange{});
+    }
     if (!empty) return failure();
-    Value oneVal = arith::ConstantOp::create(rewriter, loc, eltType,
-        rewriter.getFloatAttr(eltType, 1.0));
-    rewriter.replaceOpWithNewOp<linalg::FillOp>(op, ValueRange{oneVal}, ValueRange{empty});
+    rewriter.replaceOpWithNewOp<linalg::FillOp>(
+        op, ValueRange{oneVal}, ValueRange{empty});
     return success();
   }
 };
@@ -108,8 +118,119 @@ struct SfNewOnesOpLowering : public OpRewritePattern<sf::NewOnesOp> {
   }
 };
 
+// Zeros / ZerosLike → linalg.fill with zero.
+struct SfZerosOpLowering : public OpRewritePattern<sf::ZerosOp> {
+  using OpRewritePattern<sf::ZerosOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::ZerosOp op, PatternRewriter &rewriter) const override {
+    auto rt = op.getResult().getType();
+    auto shaped = dyn_cast<ShapedType>(rt);
+    llvm::errs() << "  [SfZeros] lowering " << rt << "\n";
+    if (!shaped) return failure();
+    auto elt = shaped.getElementType();
+    if (!isa<FloatType>(elt) && !isa<IntegerType>(elt)) return failure();
+    auto loc = op.getLoc();
+    SmallVector<Value> dynSizes;
+    for (int64_t i = 0; i < shaped.getRank(); ++i) {
+      if (shaped.isDynamicDim(i)) return failure();
+    }
+    Value empty = tensor::EmptyOp::create(rewriter, loc, shaped, dynSizes);
+    if (!empty) return failure();
+    Value zero;
+    if (isa<FloatType>(elt)) {
+      zero = arith::ConstantOp::create(rewriter, loc, elt,
+          rewriter.getFloatAttr(elt, 0.0f));
+    } else {
+      zero = arith::ConstantOp::create(rewriter, loc, elt,
+          rewriter.getIntegerAttr(elt, 0));
+    }
+    rewriter.replaceOpWithNewOp<linalg::FillOp>(op, ValueRange{zero}, ValueRange{empty});
+    return success();
+  }
+};
+
+struct SfZerosLikeOpLowering : public OpRewritePattern<sf::ZerosLikeOp> {
+  using OpRewritePattern<sf::ZerosLikeOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::ZerosLikeOp op, PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto rt = op.getResult().getType();
+    llvm::errs() << "  [SfZerosLike] lowering " << rt << "\n";
+    if (!isa<ShapedType>(rt)) return failure();
+    auto shaped = cast<ShapedType>(rt);
+    auto elt = shaped.getElementType();
+    if (!isa<FloatType>(elt) && !isa<IntegerType>(elt)) return failure();
+    Value empty = makeEmpty(rewriter, loc, rt, {op.getInput()});
+    if (!empty) return failure();
+    Value zero;
+    if (isa<FloatType>(elt)) {
+      zero = arith::ConstantOp::create(rewriter, loc, elt,
+          rewriter.getFloatAttr(elt, 0.0f));
+    } else {
+      zero = arith::ConstantOp::create(rewriter, loc, elt,
+          rewriter.getIntegerAttr(elt, 0));
+    }
+    rewriter.replaceOpWithNewOp<linalg::FillOp>(op, ValueRange{zero}, ValueRange{empty});
+    return success();
+  }
+};
+
+// Eye → linalg.generic: 1.0 on the diagonal, 0.0 elsewhere.
+struct SfEyeOpLowering : public OpRewritePattern<sf::EyeOp> {
+  using OpRewritePattern<sf::EyeOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(sf::EyeOp op, PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto outType = dyn_cast<RankedTensorType>(op.getResult().getType());
+    llvm::errs() << "  [SfEye] lowering " << outType << "\n";
+    if (!outType || outType.getRank() != 2) return failure();
+    auto elt = outType.getElementType();
+    if (!isa<FloatType>(elt) && !isa<IntegerType>(elt)) return failure();
+    SmallVector<Value> dynSizes;
+    for (int64_t i = 0; i < 2; ++i)
+      if (outType.isDynamicDim(i)) return failure();
+    Value empty = tensor::EmptyOp::create(rewriter, loc, outType, dynSizes);
+    if (!empty) return failure();
+    Value zero;
+    Value one;
+    if (isa<FloatType>(elt)) {
+      zero = arith::ConstantOp::create(rewriter, loc, elt,
+          rewriter.getFloatAttr(elt, 0.0f));
+      one = arith::ConstantOp::create(rewriter, loc, elt,
+          rewriter.getFloatAttr(elt, 1.0f));
+    } else {
+      zero = arith::ConstantOp::create(rewriter, loc, elt,
+          rewriter.getIntegerAttr(elt, 0));
+      one = arith::ConstantOp::create(rewriter, loc, elt,
+          rewriter.getIntegerAttr(elt, 1));
+    }
+    auto idMap = AffineMap::getMultiDimIdentityMap(2, rewriter.getContext());
+    SmallVector<utils::IteratorType> iters(2, utils::IteratorType::parallel);
+    auto generic = linalg::GenericOp::create(
+        rewriter, loc, outType, ValueRange{}, ValueRange{empty},
+        {idMap}, iters);
+    populateBody(generic, rewriter, [&](OpBuilder &b, Location bodyLoc, ValueRange args) {
+      Value row = linalg::IndexOp::create(b, bodyLoc, 0);
+      Value col = linalg::IndexOp::create(b, bodyLoc, 1);
+      Value isDiag = arith::CmpIOp::create(
+          b, bodyLoc, arith::CmpIPredicate::eq, row, col);
+      Value val = arith::SelectOp::create(b, bodyLoc, isDiag, one, zero);
+      linalg::YieldOp::create(b, bodyLoc, val);
+    });
+    rewriter.replaceOp(op, generic.getResult(0));
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Arange → tensor.empty + scf.for fill
+//
+// Contract (see compiler/tests/test_arange_fix.py):
+//   sf.arange(start, [size]) produces [start, start+1, ..., start+size-1]
+//   in the OUTPUT element type.  The input operand is the START value
+//   (scalar tensor<1xT>; torch.arange(start, end) normalizes to
+//   start + size = end - start on the compiler side).  The size comes from:
+//     1. the static output dim (tensor<Nx...>), else
+//     2. dyn_shape[0], else
+//     3. legacy fallback (pre-contract artifacts): input value IS the
+//        size and start is 0 — matches torch.arange(end).
 //===----------------------------------------------------------------------===//
 
 struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
@@ -118,7 +239,6 @@ struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
     auto loc = op.getLoc();
     Value input = op.getInput();
     Type rt = op.getResult().getType();
-    llvm::errs() << "  [sf.arange] rt=" << rt << " operands=" << op.getOperation()->getNumOperands() << "\n";
     auto outType = ::mlir::dyn_cast<::mlir::RankedTensorType>(rt);
     if (!outType) return failure();
     if (outType.getRank() == 0) {
@@ -133,46 +253,76 @@ struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
     if (outType.getRank() != 1) return failure();
     auto eltType = getElementTypeOrSelf(rt);
 
-    // Extract first element from input — this is the START value
+    // Build zero-index vector for scalar extraction
     auto inType = ::mlir::dyn_cast<::mlir::RankedTensorType>(input.getType());
     SmallVector<Value> zeroIdx;
     if (inType) for (int64_t _i = 0; _i < inType.getRank(); ++_i)
       zeroIdx.push_back(arith::ConstantIndexOp::create(rewriter, loc, 0));
-    Value startVal = tensor::ExtractOp::create(rewriter, loc,
-        getElementTypeOrSelf(input.getType()), input, zeroIdx);
-    auto startType = startVal.getType();
 
-    // Determine loop bound (output size) and dynamic size for EmptyOp
+    // Determine loop bound (output size) and dynamic size for EmptyOp.
+    // Priority: static output dim > dyn_shape[0] > legacy input-as-size.
+    int64_t staticOutDim = outType.getDimSize(0);
+    bool legacyLimit = staticOutDim == ShapedType::kDynamic && op.getDynShape().empty();
+
+    Value inputScalar = tensor::ExtractOp::create(rewriter, loc,
+        getElementTypeOrSelf(input.getType()), input, zeroIdx);
+
     Value loopBound;
     SmallVector<int64_t> outShape;
     SmallVector<Value> dynSizes;
-    int64_t staticOutDim = outType.getDimSize(0);
     if (staticOutDim != ShapedType::kDynamic) {
       // Static output: use declared size
       loopBound = arith::ConstantIndexOp::create(rewriter, loc, staticOutDim);
       outShape = {staticOutDim};
-    } else {
-      // Dynamic output: use dyn_shape[0] if available; otherwise query tensor.dim
-      if (!op.getDynShape().empty()) {
-        Value shapeOp = op.getDynShape()[0];
-        // Extract scalar from tensor<1xi64> shape operand
-        Value extracted = tensor::ExtractOp::create(rewriter, loc,
-            getElementTypeOrSelf(shapeOp.getType()), shapeOp, zeroIdx);
-        loopBound = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), extracted);
-      } else {
-        // No dyn_shape — create empty tensor first, then query dim at runtime
-        outShape = {ShapedType::kDynamic};
-        // Use a placeholder size of 1 for EmptyOp; actual loop bound comes from tensor.dim
-        dynSizes.push_back(arith::ConstantIndexOp::create(rewriter, loc, 1));
-        Value placeholder = tensor::EmptyOp::create(rewriter, loc, outShape, eltType, dynSizes);
-        loopBound = rewriter.create<tensor::DimOp>(loc, placeholder, 0);
-        // Reset dynSizes for the actual output tensor
-        dynSizes.clear();
-      }
+    } else if (!op.getDynShape().empty()) {
+      // dyn_shape[0] = size (end - start on the compiler side)
+      Value shapeOp = op.getDynShape()[0];
+      Value extracted = tensor::ExtractOp::create(rewriter, loc,
+          getElementTypeOrSelf(shapeOp.getType()), shapeOp, zeroIdx);
+      Value sizeI64 = extracted;
+      if (isa<FloatType>(extracted.getType()))
+        sizeI64 = arith::FPToSIOp::create(rewriter, loc, rewriter.getI64Type(), extracted);
+      else if (!extracted.getType().isInteger(64))
+        sizeI64 = arith::IndexCastOp::create(rewriter, loc, rewriter.getI64Type(), extracted);
+      loopBound = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), sizeI64);
       outShape = {ShapedType::kDynamic};
-      if (dynSizes.empty()) {
-        dynSizes.push_back(loopBound);
+      dynSizes.push_back(loopBound);
+    } else {
+      // Legacy fallback: input value is the size (torch.arange(end)).
+      Value sizeVal = inputScalar;
+      auto sizeType = sizeVal.getType();
+      Value sizeI64;
+      if (isa<FloatType>(sizeType)) {
+        sizeI64 = arith::FPToSIOp::create(rewriter, loc, rewriter.getI64Type(), sizeVal);
+      } else {
+        sizeI64 = sizeVal;
       }
+      loopBound = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), sizeI64);
+      outShape = {ShapedType::kDynamic};
+      dynSizes.push_back(loopBound);
+    }
+
+    // Start value, converted to the OUTPUT element type.
+    // Legacy fallback: start is 0 (input was the limit).  Otherwise the
+    // input operand carries the start (i64 or f32 scalar).
+    Value startVal;
+    if (legacyLimit) {
+      startVal = createSafeConst(rewriter, loc, eltType, 0.0, 0);
+      if (!startVal) return failure();
+    } else if (isa<FloatType>(eltType)) {
+      if (isa<FloatType>(inputScalar.getType())) {
+        startVal = inputScalar;
+      } else {
+        startVal = arith::SIToFPOp::create(rewriter, loc, eltType, inputScalar);
+      }
+    } else if (eltType.isInteger(64)) {
+      if (isa<FloatType>(inputScalar.getType())) {
+        startVal = arith::FPToSIOp::create(rewriter, loc, rewriter.getI64Type(), inputScalar);
+      } else {
+        startVal = inputScalar;
+      }
+    } else {
+      return failure();
     }
 
     Value rawEmpty = tensor::EmptyOp::create(rewriter, loc, outShape, eltType, dynSizes);
@@ -200,29 +350,11 @@ struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
     Value ivI64 = arith::IndexCastOp::create(rewriter, loc, rewriter.getI64Type(), iv);
     Value outVal;
     if (eltType.isInteger(64)) {
-      // startVal (i64 or f32) + ivI64 (i64) → insert at position iv
-      Value startI64;
-      if (startType.isInteger(64)) {
-        startI64 = startVal;
-      } else if (isa<FloatType>(startType)) {
-        startI64 = arith::FPToSIOp::create(rewriter, loc, rewriter.getI64Type(), startVal);
-      } else {
-        return failure();
-      }
-      Value valI64 = arith::AddIOp::create(rewriter, loc, startI64, ivI64);
+      Value valI64 = arith::AddIOp::create(rewriter, loc, startVal, ivI64);
       outVal = tensor::InsertOp::create(rewriter, loc, iterArg.getType(), valI64, iterArg, iv);
     } else if (isa<FloatType>(eltType)) {
-      // startVal (f32) + ivF32 (f32) → insert at position iv
-      Value startF32;
-      if (isa<FloatType>(startType)) {
-        startF32 = startVal;
-      } else if (startType.isInteger(64)) {
-        startF32 = arith::SIToFPOp::create(rewriter, loc, eltType, startVal);
-      } else {
-        return failure();
-      }
       Value ivF32 = arith::SIToFPOp::create(rewriter, loc, eltType, ivI64);
-      Value valF32 = arith::AddFOp::create(rewriter, loc, startF32, ivF32);
+      Value valF32 = arith::AddFOp::create(rewriter, loc, startVal, ivF32);
       outVal = tensor::InsertOp::create(rewriter, loc, iterArg.getType(), valF32, iterArg, iv);
     } else {
       return failure();
@@ -240,6 +372,7 @@ struct SfArangeOpLowering : public OpRewritePattern<sf::ArangeOp> {
 namespace mlir::sf {
 void registerGenOpsPatterns(RewritePatternSet &patterns) {
   patterns.add<SfOnesLikeOpLowering, SfNewOnesOpLowering,
-               SfArangeOpLowering>(patterns.getContext());
+               SfZerosOpLowering, SfZerosLikeOpLowering,
+               SfEyeOpLowering, SfArangeOpLowering>(patterns.getContext());
 }
 } // namespace mlir::sf
