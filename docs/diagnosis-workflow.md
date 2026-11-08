@@ -148,4 +148,4 @@ compiler lowering or the kernel.
 | `scripts/diagnostics/reduce_mlir.py` | MLIR function-level reducer |
 | `tests/data/golden/npy/opt_125m/configs.json` | Test matrix (seq=1,2,6,32 x 16 functions) |
 | `tests/contract/fixtures/precision_cases.pb` | Precision contract test vectors |
-| `.omo/plans/function-level-testing.md` | Full infrastructure plan |
+| `.omo/plans/function-level-testing.md` | Full infrastructure plan (本地 `.omo/`，gitignored，不随仓库分发) |

@@ -26,8 +26,8 @@ Python 3.10 only。**绝不使用 conda 环境** — uv 独立管理。
 | 路径 | 内容 |
 |------|------|
 | `AGENTS.md` | **当前文件** — 项目级铁律 |
-| `.opencode/CONTEXT.md` | 共享语言 (四层架构 / Path A vs B / 术语表) |
-| `.opencode/TRAPS.md` | 全部已知陷阱 |
+| `README.md` | 架构总览 (四层架构 / Path A / 术语表) |
+| `docs/diagnosis-workflow.md` | 调试流程 (精度/IR 归因) |
 | `compiler/pipeline/__init__.py` | 编译入口: `compile_mlir()` |
 | `compiler/compile.py` | 模型导出 CLI |
 | `compiler/compile_dylib.py` | dylib 编译 CLI |
@@ -53,8 +53,8 @@ Python 3.10 only。**绝不使用 conda 环境** — uv 独立管理。
 | `outputs/` | 产物 | 编译产物 (compiled/, logs/, benchmark_results.json) |
 | `models/` | 数据 | 下载的 HF 模型文件 |
 | `docs/` | 文档 | 设计文档、教程 |
-| `.opencode/` | 配置 | 共享语言 (CONTEXT.md), 陷阱 (TRAPS.md), 技能 |
-| `.omo/` | 工作流 | 实现计划 (.omo/plans/), 证据 (.omo/evidence/) |
+| `.opencode/` | 本地配置 | OpenCode 本地配置 (gitignored，仓库不包含；技能路由见下) |
+| `.omo/` | 本地工作流 | 实现计划/证据 (gitignored，仓库不包含) |
 
 ## 子项目约定 (渐进式展开)
 
@@ -79,29 +79,9 @@ Python 3.10 only。**绝不使用 conda 环境** — uv 独立管理。
 | `make test-forward-cos` | cosine regression | <60s |
 | `make test-function-golden` | per-function golden (release, 含 seq6/seq32 重量级) | <3min |
 
-## 技能路由 (按需加载)
+## 技能路由（本地配置，仓库不包含）
 
-| 问题 | 技能 |
-|------|------|
-| 架构/设计讨论 | @.opencode/skills/grill-me/SKILL.md |
-| TDD 开发 | @.opencode/skills/tdd/SKILL.md |
-| Rust SIGSEGV/NaN | @.opencode/skills/debug-rust-forward/SKILL.md |
-| Pipeline 挂死 | @.opencode/skills/pipeline-hang-debug/SKILL.md |
-| Pipeline 故障 | @.opencode/skills/pipeline-debug/SKILL.md |
-| LLVM lowering cast 残留 | @.opencode/skills/fix-unrealized-casts/SKILL.md |
-| 向量化 IR 爆炸 | @.opencode/skills/debug-vectorization/SKILL.md |
-| HF cosine 精度退化 | @.opencode/skills/debug-correctness/SKILL.md |
-| 模型导出失败 | @.opencode/skills/debug-model-export/SKILL.md |
-| weight not found | @.opencode/skills/trace-weight-mapping/SKILL.md |
-| 内存调试 (lldb/ASAN/malloc) | @.opencode/skills/debug-tools/SKILL.md |
-| 新 MLIR pass | @.opencode/skills/add-mlir-pass/SKILL.md |
-| 新 HAL op | @.opencode/skills/add-hal-op/SKILL.md |
-| 架构改进 | @.opencode/skills/improve-codebase-architecture/SKILL.md |
-| 设计+文档 | @.opencode/skills/grill-with-docs/SKILL.md |
-| 结构化调试循环 | @.opencode/skills/diagnose/SKILL.md |
-| 会话交接 | @.opencode/skills/handoff/SKILL.md |
-| 精简模式 | @.opencode/skills/caveman/SKILL.md |
-| 反馈优化 | @.opencode/skills/feedback-optimization/SKILL.md |
+技能路由表放在本地 `.opencode/skills/`（`.gitignore` 忽略，不随仓库分发；当前 checkout 没有该目录）。需要时从你的开发机恢复；没有这些技能时，按 `README.md`、`CONTRIBUTING.md` 和 `docs/` 的流程执行。
 
 ## 开发范式 — 契约驱动、子项目独立
 
@@ -150,7 +130,7 @@ include/sfa_abi.proto ←── 冷路径契约 (SfaFuncMeta, protobuf)
 
 ## 调试方法论 (摘要)
 
-详见 `.opencode/CONTEXT.md` 调试章节。核心原则：
+详见 `docs/diagnosis-workflow.md`。核心原则：
 
 1. **变更归因**: `git stash` → checkout 旧 commit → 复现 → 回退。不可凭 `nm`/`grep` 推断。
 2. **Token 偏差**: 精度是最后排除的假设。diff > 10 先查输入值/数据流，精度累积最后考虑。

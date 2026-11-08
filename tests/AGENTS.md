@@ -7,7 +7,7 @@
 | **Contract** (跨子项目 ABI) | `tests/contract/` | `make test-contract` | <1s |
 | **Unit** (子项目内) | 各子项目 test/ | `make test-rust-unit`, `pytest compiler/tests/` | <5s |
 | **Integration** | `tests/` | `make test-pipeline-smoke`, `make test-rust-integ` | <90s |
-| **E2E** | `tests/` | `make test-e2e-forward`, `make test-e2e-forward-hal` | <3min |
+| **E2E** | `tests/` | `make test-e2e-forward` | <3min |
 | **Correctness** | `tests/` | `make test-forward-cos` | <60s |
 
 ## Contract 测试
@@ -22,7 +22,6 @@
 
 ```bash
 make test-e2e-forward        # Path A (dylib) forward 正确性
-make test-e2e-forward-hal    # Path B (HAL IR) forward 正确性
 ```
 
 E2E 测试需要已编译的模型 artifact (`compiled/<model>/model.mlir` + `.dylib`)。

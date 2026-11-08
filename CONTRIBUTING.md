@@ -1,7 +1,7 @@
 # Contributing to LLM-CompileForge
 
-See @AGENTS.md for project conventions and skill routing.
-See @.opencode/CONTEXT.md for shared language and architecture overview.
+See @AGENTS.md for project conventions.
+See README.md for the architecture overview. (The local `.opencode/` agent setup is gitignored and not part of this checkout.)
 
 ## One-command setup
 

@@ -166,10 +166,10 @@ LLM-CompileForge/
 │   ├── dialect/           #   sf 方言 Python 定义
 │   └── artifact/          #   MlirModule 读写
 ├── runtime/               # Rust 运行时：调度器、执行器、KV 缓存
-│   ├── src/hal/           #   HAL Rust 后端（Path B 算子处理）
-│   ├── src/hal_runner/    #   HAL IR 图执行器
+│   ├── src/engine/        #   runner / compute_graph_runner / executor
+│   ├── src/hal/           #   HAL 抽象与 CPU 后端
 │   ├── src/hal/primitives/#   底层内核（矩阵乘、注意力等）
-│   └── src/executor.rs    #   推理 step 循环
+│   └── src/kv_cache.rs    #   KV cache 管理
 ├── python_runtime/        # Python 运行时：HAL、引擎、服务器
 │   ├── hal/               #   HAL 抽象接口（Device, Buffer, OpExecutor）
 │   ├── engine/            #   LLM 引擎、调度器、采样器
@@ -238,18 +238,11 @@ curl -X POST http://localhost:8000/v1/completions \
 make run-prompt PROMPT="生命的意义是" MAX_TOKENS=32
 ```
 
-## 两条执行路径
+## 执行路径
 
-LLM-CompileForge 支持两种执行模式，编译时选择：
+当前只有一个执行模式：Path A (dylib)。Path B (HAL IR) 已在 commit `495ca08` 中移除，`hal_runner.rs` / `HalRustExecutable` 不再存在；旧实现见 git history。
 
-| | Path A (dylib) | Path B (HAL IR) |
-|---|---|---|
-| **执行单元** | 整函数（单次 FFI） | 逐算子分发（634 次 Rust 调用） |
-| **Runner** | `compute_graph_runner.rs` | `hal_runner.rs` |
-| **Executable** | `CpuExecutable`（加载 .dylib） | `HalRustExecutable`（纯 Rust） |
-| **Feature 开关** | 默认 | `--features hal-rust` |
-| **正确性** | cos_sim = 1.0 ✅ | NaN（开发中 — 类型追踪） |
-| **用途** | 生产级推理服务 | 验证与新硬件适配 |
+Path A 的执行单元是编译后的整函数：Rust runtime 通过 `libloading` 加载 `.dylib`，构造 MemRef 描述符，按拓扑 SSA 顺序调用每个 ciface 函数；正确性以 cos_sim = 1.0 对拍 HF（Python ctypes / Rust forward_check / Rust server），用于生产级推理服务。
 
 ## 反馈环
 

@@ -76,10 +76,6 @@ pytest python_runtime/hal/tests/ -m unit --tb=short  # 快速单元测试
 - 单机单进程
 - Triton/CUDA 后端计划中
 
-## 技能路由
+## 技能路由（本地配置）
 
-| 问题 | 技能 |
-|------|------|
-| Engine 调度/性能 | @.opencode/skills/grill-me/SKILL.md |
-| HAL 算子实现 | @.opencode/skills/add-hal-op/SKILL.md |
-| 调试运行时问题 | @.opencode/skills/debug-rust-forward/SKILL.md |
+技能路由在本地 `.opencode/skills/`（gitignored，仓库不包含）；当前 checkout 没有该目录，按 `README.md` 和 `docs/` 的流程执行。
